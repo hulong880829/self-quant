@@ -1,0 +1,54 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Release",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "utils-release",
+      "displayName": "Utils-only Release",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/utils-release",
+      "cacheVariables": {
+        "SELF_QUANT_ENABLE_MDS": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "utils-release",
+      "configurePreset": "utils-release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "utils-release",
+      "configurePreset": "utils-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+# Local environment and secrets (keep templates).
+**/.env
+**/.env.*
+!**/.env.example
+
+# C++ / CMake generated files.
+/core/build*/
+/core/build-ninja/
+/core/.cache/
+/core/.deps/
+/core/artifacts/
+/core/compile_commands.json
+compile_commands.json
+*.profraw
+*.profdata
+/core/core
+/core/core.[0-9]*
+
+# Go generated files.
+/backend/build/
+/backend/bin/
+/backend/coverage/
+/backend/coverage.out
+/backend/*.test
+
+# Node / Next.js generated files.
+/web/node_modules/
+/web/.next/
+/web/out/
+/web/build/
+/web/coverage/
+/web/next-env.d.ts
+/web/*.tsbuildinfo
+
+# Logs, caches, temporary files, and editor state.
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.cache/
+.tmp/
+tmp/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+*~

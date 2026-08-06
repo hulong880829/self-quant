@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package funding.v1;
+
+option go_package = "selfquant/backend/gen/funding/v1;fundingv1";
+
+import "google/protobuf/timestamp.proto";
+
+service FundingService {
+  rpc ListFundingRates(ListFundingRatesRequest) returns (ListFundingRatesResponse);
+}
+
+message ListFundingRatesRequest {}
+
+message FundingRate {
+  string exchange = 1;
+  string exchange_symbol = 2;
+  string global_symbol = 3;
+  string base_asset = 4;
+  string quote_asset = 5;
+  string position_quantity = 6;
+  string position_notional_usd = 7;
+  string volume_24h_base = 8;
+  string turnover_24h_usd = 9;
+  string funding_rate = 10;
+  optional string next_funding_rate = 11;
+  string annualized_rate = 12;
+  int32 funding_interval_seconds = 13;
+  google.protobuf.Timestamp next_funding_at = 14;
+  string mark_price = 15;
+  string index_price = 16;
+  string last_price = 17;
+  string price_change_24h = 18;
+  string cumulative_24h = 19;
+  string cumulative_7d = 20;
+  google.protobuf.Timestamp source_updated_at = 21;
+  bool stale = 22;
+  repeated FundingHistoryPoint history = 23;
+}
+
+message FundingHistoryPoint {
+  string rate = 1;
+  google.protobuf.Timestamp settled_at = 2;
+}
+
+message ListFundingRatesResponse {
+  repeated FundingRate items = 1;
+  int32 total = 2;
+  string snapshot_version = 3;
+  google.protobuf.Timestamp server_time = 4;
+}

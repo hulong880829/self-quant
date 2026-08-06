@@ -1,0 +1,17 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+set(SELF_QUANT_WITH_MDS "@SELF_QUANT_ENABLE_MDS@")
+set(SELF_QUANT_WITH_SIMDJSON "@SELF_QUANT_HAS_SIMDJSON@")
+
+find_dependency(Threads)
+if(SELF_QUANT_WITH_MDS)
+  find_dependency(OpenSSL)
+  if(SELF_QUANT_WITH_SIMDJSON)
+    find_dependency(simdjson CONFIG)
+  endif()
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/self_quant-targets.cmake")
+check_required_components(self_quant)

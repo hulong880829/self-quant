@@ -1,0 +1,38 @@
+{
+  "exchangeFilters": [],
+  "rateLimits": [],
+  "serverTime": 1565613908500,
+  "timezone": "UTC",
+  "symbols": [
+    {
+      "symbol": "BTCUSDT",
+      "pair": "BTCUSDT",
+      "contractType": "PERPETUAL",
+      "deliveryDate": 4133404800000,
+      "onboardDate": 1569398400000,
+      "status": "TRADING",
+      "baseAsset": "BTC",
+      "quoteAsset": "USDT",
+      "marginAsset": "USDT",
+      "pricePrecision": 2,
+      "quantityPrecision": 3,
+      "baseAssetPrecision": 8,
+      "quotePrecision": 8,
+      "underlyingType": "COIN",
+      "filters": [
+        {
+          "filterType": "PRICE_FILTER",
+          "maxPrice": "4529764",
+          "minPrice": "0.1",
+          "tickSize": "0.1"
+        },
+        {
+          "filterType": "LOT_SIZE",
+          "maxQty": "1000",
+          "minQty": "0.001",
+          "stepSize": "0.001"
+        }
+      ]
+    }
+  ]
+}

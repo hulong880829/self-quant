@@ -1,0 +1,44 @@
+runtime:
+  mode: automatic                    # 运行时资源规划模式：automatic 自动，manual 手工指定
+  strictness: relaxed                # 硬件能力不满足时的策略：relaxed 降级，strict 拒绝启动
+  require_stable_tsc: false          # 是否强制要求稳定的 invariant TSC
+
+shared_memory:
+  backend: POSIX_SHM                 # POSIX_SHM 使用 /dev/shm；HUGETLBFS 使用大页文件系统
+  mode: OVERWRITE_OLDEST             # 默认覆盖最旧记录；可改为 LOSSLESS 对慢消费者施加背压
+  hugetlbfs_mount: /dev/hugepages    # HUGETLBFS 挂载点
+  ring_bytes: 8388608                # 每个共享内存 Ring 的有效数据区字节数，必须为 2 的幂
+  max_record_bytes: 65536            # 单条 Ring 记录最大字节数，默认 65536
+  max_readers: 32                    # 每个 Ring 最多同时注册的消费者数量
+  reader_lease_timeout_ns: 5000000000 # 消费者心跳租约超时，单位纳秒
+  allow_hugepage_fallback: false     # 大页不可用时是否回退到 POSIX_SHM
+
+order_book:
+  default_ladder_levels_per_side: 8192 # 每侧默认维护的 Ladder 档位容量
+  max_ladder_levels_per_side: 16384    # 每侧允许的最大 Ladder 档位容量
+
+venues:
+  - venue: binance                                      # 交易所统一名称
+    product: SPOT                                       # 产品类型：现货
+    websocket_endpoint: wss://stream.binance.com:9443/ws # WebSocket 行情端点
+    rest_endpoint: https://api.binance.com              # REST 元数据与深度快照端点
+    protocol: JSON                                      # 行情编码协议
+    redundant_ab: false                                 # 是否启用 A/B 双路冗余
+    allow_json_fallback: true                           # SBE 不可用时是否允许回退 JSON
+  - venue: binance                                      # 交易所统一名称
+    product: PERPETUAL                                  # 产品类型：USDⓈ-M 永续
+    websocket_endpoint: wss://fstream.binance.com/ws   # WebSocket 行情端点
+    rest_endpoint: https://fapi.binance.com             # REST 元数据与深度快照端点
+    protocol: JSON                                      # 行情编码协议
+    redundant_ab: false                                 # 是否启用 A/B 双路冗余
+
+subscriptions:
+  - stream: ticker                    # 订阅 BBO/ticker 流
+    symbol: BTCUSDT                   # 统一标准化标的代码
+    product: SPOT                     # 产品类型
+  - stream: orderbook                 # 订阅增量深度并维护本地 OrderBook
+    symbol: BTCUSDT                   # 统一标准化标的代码
+    product: SPOT                     # 产品类型
+    depth: 1000                       # REST 初始化快照请求档位
+    ladder_levels_per_side: 8192      # 每侧本地 Ladder 容量
+    update_interval_ms: 100           # WebSocket 深度更新周期，单位毫秒

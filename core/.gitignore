@@ -1,0 +1,9 @@
+/build*/
+/.cache/
+/.deps/
+/compile_commands.json
+*.log
+*.profraw
+*.profdata
+/core
+/core.[0-9]*
