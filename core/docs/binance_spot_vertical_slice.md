@@ -106,8 +106,8 @@ websocat 'wss://stream.binance.com:9443/ws/btcusdt@bookTicker'
 目标 segment 名：
 
 ```text
-/selfquant.mds.spot.btcusdt.ticker.1
-/selfquant.mds.spot.btcusdt.orderbook.1
+/selfquant.mds.spot.btcusdt.ticker.2
+/selfquant.mds.spot.btcusdt.orderbook.2
 ```
 
 其中末尾 `1` 是 market-data wire major；外层 ring 自身严格校验 major 4，并对有效 payload 计算/验证 Castagnoli CRC32C。现行命名与版本规则以 [`segment_and_schema_contract.md`](segment_and_schema_contract.md) 为准。目标 producer 必须：
@@ -123,7 +123,7 @@ producer 存在后，当前消费者可执行：
 
 ```bash
 ./build/mds/mds_shm_consumer \
-  /selfquant.mds.spot.btcusdt.orderbook.1
+  /selfquant.mds.spot.btcusdt.orderbook.2
 ```
 
 但该消费者只打印外层 epoch/sequence/type/bytes，不解码内层 wire，也不校验订单簿。当前仓库没有 producer，所以现在单独运行会 attach 失败，这是预期事实。

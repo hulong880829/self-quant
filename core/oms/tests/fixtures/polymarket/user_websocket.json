@@ -1,0 +1,71 @@
+{
+  "venue": "polymarket",
+  "product": "clob-user-websocket",
+  "verification_tier": "implementation-derived",
+  "sources": [
+    "backend/internal/polymarket/user_stream.go",
+    "backend/internal/polymarket/user_stream_test.go"
+  ],
+  "fixtures": [
+    {
+      "id": "polymarket.ws.user.order_update.v1",
+      "event": "order",
+      "payload": {
+        "event_type": "order",
+        "type": "UPDATE",
+        "id": "order-1",
+        "market": "condition-1",
+        "asset_id": "token-1",
+        "side": "BUY",
+        "original_size": "10",
+        "size_matched": "2.5",
+        "price": "0.54",
+        "outcome": "Yes",
+        "order_type": "GTC",
+        "status": "LIVE",
+        "created_at": "1786186200"
+      }
+    },
+    {
+      "id": "polymarket.ws.user.trade.v1",
+      "event": "trade",
+      "payload": {
+        "event_type": "trade",
+        "type": "TRADE",
+        "id": "trade-1",
+        "market": "condition-1",
+        "asset_id": "token-1",
+        "side": "BUY",
+        "price": "0.54",
+        "size_matched": "2.5",
+        "status": "MATCHED",
+        "created_at": "1786186201"
+      }
+    },
+    {
+      "id": "polymarket.ws.user.trade.multi_maker.v1",
+      "event": "trade",
+      "payload": {
+        "event_type": "trade",
+        "type": "TRADE",
+        "id": "trade-multi",
+        "taker_order_id": "taker-1",
+        "price": "0.54",
+        "size": "3.0",
+        "maker_orders": [
+          {
+            "order_id": "maker-1",
+            "price": "0.53",
+            "matched_amount": "1.0"
+          },
+          {
+            "order_id": "maker-2",
+            "price": "0.55",
+            "matched_amount": "2.0"
+          }
+        ],
+        "created_at": "1786186201.5"
+      }
+    }
+  ]
+}

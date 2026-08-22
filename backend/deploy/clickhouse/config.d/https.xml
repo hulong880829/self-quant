@@ -1,0 +1,14 @@
+<clickhouse>
+    <listen_host>0.0.0.0</listen_host>
+    <https_port>8443</https_port>
+    <openSSL>
+        <server>
+            <certificateFile>/etc/clickhouse-server/certs/server.crt</certificateFile>
+            <privateKeyFile>/etc/clickhouse-server/certs/server.key</privateKeyFile>
+            <verificationMode>none</verificationMode>
+            <cacheSessions>true</cacheSessions>
+            <disableProtocols>sslv2,sslv3</disableProtocols>
+            <preferServerCiphers>true</preferServerCiphers>
+        </server>
+    </openSSL>
+</clickhouse>

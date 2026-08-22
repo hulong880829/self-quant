@@ -1,4 +1,4 @@
-#include "mds/network/websocket_codec.h"
+#include "net/websocket_codec.h"
 #include "mds/service/binance_session.h"
 #include "mds/transport/shared_ring.h"
 #include "utils/md/wire_codec.h"
@@ -104,10 +104,10 @@ struct Certificate {
   }
 };
 
-mds::network::SharedSslContext client_context(const Certificate &identity) {
+net::SharedSslContext client_context(const Certificate &identity) {
   SSL_CTX *raw = SSL_CTX_new(TLS_client_method());
   require(raw != nullptr, "failed to create client TLS context");
-  mds::network::SharedSslContext context(raw, mds::network::SslCtxDeleter{});
+  net::SharedSslContext context(raw, net::SslCtxDeleter{});
   require(SSL_CTX_set_min_proto_version(raw, TLS1_2_VERSION) == 1,
           "failed to set client TLS version");
   SSL_CTX_set_verify(raw, SSL_VERIFY_PEER, nullptr);
@@ -488,7 +488,7 @@ private:
     const std::string_view key(request.data() + value_start,
                                value_end - value_start);
     std::array<char, 29> accept{};
-    if (!mds::network::websocket_accept_value(key, accept)) {
+    if (!net::websocket_accept_value(key, accept)) {
       fail("failed to compute WebSocket accept");
       return;
     }
@@ -670,8 +670,8 @@ void run_profile(Profile profile, LoopbackBinanceServer::Recovery recovery) {
   options.shm_prefix =
       "/mds.loopback." + std::to_string(::getpid()) +
       (profile == Profile::Spot ? ".spot" : ".usdm");
-  options.ladder_levels_per_side = 32;
-  options.max_ladder_levels_per_side = 32;
+  options.ladder_ticks_per_side = 32;
+  options.max_ladder_ticks_per_side = 32;
   options.connect_timeout = 1s;
   options.request_timeout = 1s;
   options.idle_timeout = 2s;
@@ -780,6 +780,38 @@ void run_profile(Profile profile, LoopbackBinanceServer::Recovery recovery) {
   manager.stop();
 }
 
+void verify_selective_segments(bool ticker_enabled, bool orderbook_enabled,
+                               std::string_view suffix) {
+  Certificate identity;
+  auto tls = client_context(identity);
+  LoopbackBinanceServer server(Profile::Spot,
+                               LoopbackBinanceServer::Recovery::Disconnect,
+                               identity);
+  mds::service::SessionManager manager(std::move(tls));
+  mds::service::BinanceSessionOptions options;
+  options.profile = Profile::Spot;
+  options.symbol = "BTCUSDT";
+  options.websocket_endpoint = server.endpoint("wss");
+  options.rest_endpoint = server.endpoint("https");
+  options.shm_prefix = "/mds.selective." + std::to_string(::getpid()) + "." +
+                       std::string(suffix);
+  options.subscribe_ticker = ticker_enabled;
+  options.subscribe_orderbook = orderbook_enabled;
+  options.ladder_ticks_per_side = 32;
+  options.max_ladder_ticks_per_side = 32;
+  options.ring.ring_bytes = 64U << 10U;
+  options.ring.max_record_bytes = 1024;
+  options.ring.max_readers = 4;
+  options.ring.unlink_on_close = true;
+  auto created = manager.create(std::move(options));
+  require(bool(created), created.message.c_str());
+  require(created.value->ticker_segment().empty() != ticker_enabled,
+          "ticker segment selectivity mismatch");
+  require(created.value->orderbook_segment().empty() != orderbook_enabled,
+          "orderbook segment selectivity mismatch");
+  manager.stop();
+}
+
 } // namespace
 
 int main() {
@@ -789,6 +821,8 @@ int main() {
                 LoopbackBinanceServer::Recovery::Disconnect);
     run_profile(Profile::UsdM,
                 LoopbackBinanceServer::Recovery::SequenceGap);
+    verify_selective_segments(true, false, "ticker");
+    verify_selective_segments(false, true, "orderbook");
     std::cout << "all Binance loopback integration tests passed\n";
     return 0;
   } catch (const std::exception &exception) {

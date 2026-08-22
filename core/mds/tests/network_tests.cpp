@@ -1,7 +1,7 @@
-#include "mds/network/http_client.h"
-#include "mds/network/epoll_loop.h"
-#include "mds/network/tcp_connector.h"
-#include "mds/network/websocket_codec.h"
+#include "net/http_client.h"
+#include "net/epoll_loop.h"
+#include "net/tcp_connector.h"
+#include "net/websocket_codec.h"
 
 #include <algorithm>
 #include <array>
@@ -42,7 +42,7 @@ std::span<const std::byte> bytes(std::string_view value) {
 }
 
 void test_upgrade_accept() {
-  using namespace mds::network;
+  using namespace net;
   constexpr std::string_view key = "dGhlIHNhbXBsZSBub25jZQ==";
   std::array<char, 29> accept{};
   require(websocket_accept_value(key, accept), "accept computation failed");
@@ -75,7 +75,7 @@ void test_upgrade_accept() {
 }
 
 void test_masked_frame_and_partial_write() {
-  using namespace mds::network;
+  using namespace net;
   WebSocketFrameWriter writer(64);
   constexpr std::string_view text = "hello";
   std::string_view error;
@@ -98,7 +98,7 @@ void test_masked_frame_and_partial_write() {
 }
 
 void test_http_incremental_parsing() {
-  using namespace mds::network;
+  using namespace net;
   HttpResponseParser fixed(256, 64);
   constexpr std::string_view response =
       "HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nhello world";
@@ -132,8 +132,175 @@ void test_http_incremental_parsing() {
           "HTTP status classification incorrect");
 }
 
+void test_http_request_encoding_and_limits() {
+  using namespace net;
+  std::array<std::byte, 1024> output{};
+  std::size_t output_size = 0;
+  constexpr std::array<HttpHeader, 2> headers{{
+      {"X-Request-Id", "42"},
+      {"Authorization", "Bearer private-value"},
+  }};
+  constexpr std::string_view payload = R"({"price":"1"})";
+
+  for (const auto method :
+       {HttpMethod::Get, HttpMethod::Post, HttpMethod::Put,
+        HttpMethod::Delete}) {
+    const bool has_body =
+        method == HttpMethod::Post || method == HttpMethod::Put;
+    const HttpRequest request{
+        method,
+        "/orders?symbol=BTCUSDT",
+        has_body ? "application/json" : std::string_view{},
+        has_body ? bytes(payload) : std::span<const std::byte>{},
+        headers,
+    };
+    require(encode_http_request("api.example.test", request, output,
+                                output_size),
+            "valid HTTP request was not encoded");
+    const std::string_view encoded(
+        reinterpret_cast<const char *>(output.data()), output_size);
+    require(encoded.starts_with(
+                method == HttpMethod::Get      ? "GET "
+                : method == HttpMethod::Post   ? "POST "
+                : method == HttpMethod::Put    ? "PUT "
+                                                : "DELETE ") &&
+                encoded.find("X-Request-Id: 42\r\n") !=
+                    std::string_view::npos &&
+                encoded.find("Authorization: Bearer private-value\r\n") !=
+                    std::string_view::npos,
+            "HTTP method or custom headers encoded incorrectly");
+    if (has_body) {
+      require(encoded.ends_with(payload),
+              "HTTP request body encoded incorrectly");
+    }
+  }
+
+  require(!encode_http_request(
+              "api.example.test",
+              {HttpMethod::Get, "/ok", {}, {}, headers}, output, output_size,
+              1),
+          "custom header count limit was not enforced");
+  constexpr std::array<HttpHeader, 1> injected{{
+      {"Authorization", "secret\r\nX-Injected: yes"},
+  }};
+  require(!encode_http_request(
+              "api.example.test",
+              {HttpMethod::Delete, "/orders/1", {}, {}, injected}, output,
+              output_size),
+          "header injection was accepted");
+  constexpr std::array<HttpHeader, 1> reserved{{
+      {"Content-Length", "100"},
+  }};
+  require(!encode_http_request(
+              "api.example.test",
+              {HttpMethod::Delete, "/orders/1", {}, {}, reserved}, output,
+              output_size),
+          "framing header override was accepted");
+
+  std::array<std::byte, 16> too_small{};
+  require(!encode_http_request(
+              "api.example.test", {HttpMethod::Get, "/ok"}, too_small,
+              output_size) &&
+              output_size == 0,
+          "request capacity limit was not enforced");
+
+  HttpResponseParser body_limited(128, 2);
+  std::string_view error;
+  require(!body_limited.feed(
+              bytes("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc"),
+              error) &&
+              body_limited.error_code() == HttpParseError::BodyTooLarge,
+          "response body limit was not classified");
+  HttpResponseParser header_limited(8, 8);
+  require(!header_limited.feed(bytes("HTTP/1.1 200 OK\r\n"), error) &&
+              header_limited.error_code() == HttpParseError::HeaderTooLarge,
+          "response header limit was not classified");
+}
+
+void test_http_protocol_hardening() {
+  using namespace net;
+  std::string_view error;
+
+  HttpResponseParser interim(256, 64);
+  constexpr std::string_view continued =
+      "HTTP/1.1 100 Continue\r\n\r\n"
+      "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+  require(interim.feed(bytes(continued), error) && interim.complete() &&
+              interim.status_code() == 200 && interim.body().size() == 2,
+          "interim HTTP response was treated as final");
+
+  HttpResponseParser close_delimited(256, 64);
+  require(close_delimited.feed(
+              bytes("HTTP/1.0 200 OK\r\nConnection: close\r\n\r\nbody"),
+              error) &&
+              !close_delimited.complete() &&
+              close_delimited.finish(error) && close_delimited.complete() &&
+              close_delimited.body().size() == 4,
+          "close-delimited HTTP response was rejected");
+
+  HttpResponseParser truncated(256, 64);
+  require(truncated.feed(
+              bytes("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nab"),
+              error) &&
+              !truncated.finish(error) &&
+              truncated.error_code() == HttpParseError::InvalidResponse,
+          "truncated Content-Length response was accepted");
+
+  const auto rejects = [&error](std::string_view response) {
+    HttpResponseParser parser(256, 64);
+    return !parser.feed(bytes(response), error) &&
+           parser.error_code() == HttpParseError::InvalidResponse;
+  };
+  require(rejects("HTTP/1.1 2000 Nope\r\nContent-Length: 0\r\n\r\n"),
+          "four-digit HTTP status code was accepted");
+  require(rejects(
+              "HTTP/1.1 200 OK\r\n Content-Length: 0\r\n\r\n"),
+          "whitespace-prefixed HTTP header was accepted");
+  require(rejects(
+              "HTTP/1.1 200 OK\r\n"
+              "Transfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n"),
+          "unsupported transfer coding was accepted");
+  require(rejects(
+              "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n"
+              "Transfer-Encoding: chunked\r\n\r\n"),
+          "ambiguous HTTP response framing was accepted");
+  require(rejects(
+              "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+              "0\r\nContent-Length: 1\r\n\r\n"),
+          "forbidden framing trailer was accepted");
+  require(rejects(
+              "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+              "0\r\nnot-a-header\r\n\r\n"),
+          "malformed HTTP trailer was accepted");
+
+  HttpResponseParser close_limited(256, 2);
+  require(!close_limited.feed(
+              bytes("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nabc"),
+              error) &&
+              close_limited.error_code() == HttpParseError::BodyTooLarge &&
+              !close_limited.finish(error),
+          "close-delimited body capacity was not enforced");
+  close_limited.reset();
+  require(close_limited.feed(
+              bytes("HTTP/1.1 204 No Content\r\n\r\n"), error) &&
+              close_limited.complete() &&
+              close_limited.error_code() == HttpParseError::None,
+          "HTTP parser reset did not clear failed state");
+
+  std::array<std::byte, 512> output{};
+  std::size_t output_size = 0;
+  require(!encode_http_request(
+              "api.example.test\tbad", {HttpMethod::Get, "/ok"}, output,
+              output_size),
+          "whitespace in HTTP host was accepted");
+  require(!encode_http_request(
+              "api.example.test", {HttpMethod::Get, "/bad\tpath"}, output,
+              output_size),
+          "whitespace in HTTP target was accepted");
+}
+
 void test_connector_states() {
-  using namespace mds::network;
+  using namespace net;
   const int listener = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   require(listener >= 0, "loopback listener creation failed");
   sockaddr_in address{};
@@ -179,7 +346,7 @@ void test_connector_states() {
 }
 
 void test_connector_fallback_reused_fd_registration() {
-  using namespace mds::network;
+  using namespace net;
 
   const int listener = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   const int refused_socket = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -276,6 +443,8 @@ int main() {
     test_upgrade_accept();
     test_masked_frame_and_partial_write();
     test_http_incremental_parsing();
+    test_http_request_encoding_and_limits();
+    test_http_protocol_hardening();
     test_connector_states();
     test_connector_fallback_reused_fd_registration();
     std::cout << "all network tests passed\n";

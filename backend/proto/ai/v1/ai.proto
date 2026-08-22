@@ -1,0 +1,134 @@
+syntax = "proto3";
+
+package ai.v1;
+
+option go_package = "selfquant/backend/gen/ai/v1;aiv1";
+
+import "google/protobuf/timestamp.proto";
+
+service AIService {
+  rpc GetCredentialStatus(GetCredentialStatusRequest) returns (CredentialStatusResponse);
+  rpc TestCredential(TestCredentialRequest) returns (CredentialStatusResponse);
+  rpc ListConversations(ListConversationsRequest) returns (ListConversationsResponse);
+  rpc CreateConversation(CreateConversationRequest) returns (ConversationResponse);
+  rpc RenameConversation(RenameConversationRequest) returns (ConversationResponse);
+  rpc DeleteConversation(DeleteConversationRequest) returns (DeleteConversationResponse);
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+  rpc StreamChat(StreamChatRequest) returns (stream StreamChatEvent);
+}
+
+message CredentialStatus {
+  string provider = 1;
+  string api_key_masked = 2;
+  string status = 3;
+  string last_error = 4;
+  google.protobuf.Timestamp last_tested_at = 5;
+}
+
+message GetCredentialStatusRequest {
+  string token = 1;
+  string provider = 2;
+}
+
+message TestCredentialRequest {
+  string token = 1;
+  string provider = 2;
+}
+
+message CredentialStatusResponse {
+  CredentialStatus credential = 1;
+}
+
+message Conversation {
+  string id = 1;
+  string title = 2;
+  string last_message_preview = 3;
+  int32 message_count = 4;
+  string model_alias = 5;
+  google.protobuf.Timestamp last_message_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+message ConversationMessage {
+  string id = 1;
+  string conversation_id = 2;
+  string turn_id = 3;
+  string client_message_id = 4;
+  string role = 5;
+  string status = 6;
+  string content = 7;
+  string tool = 8;
+  int32 input_tokens = 9;
+  int32 output_tokens = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+message ListConversationsRequest {
+  string token = 1;
+  int32 limit = 2;
+  string cursor = 3;
+}
+
+message ListConversationsResponse {
+  repeated Conversation items = 1;
+  string next_cursor = 2;
+}
+
+message CreateConversationRequest {
+  string token = 1;
+  string model_alias = 2;
+}
+
+message RenameConversationRequest {
+  string token = 1;
+  string conversation_id = 2;
+  string title = 3;
+}
+
+message DeleteConversationRequest {
+  string token = 1;
+  string conversation_id = 2;
+}
+
+message DeleteConversationResponse {}
+
+message ConversationResponse {
+  Conversation conversation = 1;
+}
+
+message ListMessagesRequest {
+  string token = 1;
+  string conversation_id = 2;
+  int32 limit = 3;
+  string cursor = 4;
+}
+
+message ListMessagesResponse {
+  repeated ConversationMessage items = 1;
+  string next_cursor = 2;
+}
+
+message StreamChatRequest {
+  string token = 1;
+  string model_alias = 2;
+  string conversation_id = 3;
+  string prompt = 4;
+  string client_message_id = 5;
+}
+
+message StreamChatEvent {
+  string type = 1;
+  string delta = 2;
+  string tool = 3;
+  string error = 4;
+  int32 input_tokens = 5;
+  int32 output_tokens = 6;
+  string conversation_id = 7;
+  string user_message_id = 8;
+  string assistant_message_id = 9;
+  string title = 10;
+  string status = 11;
+}

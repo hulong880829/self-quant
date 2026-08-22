@@ -15,6 +15,13 @@ namespace mds::exchange::binance {
 
 enum class Profile : std::uint8_t { Spot, UsdM };
 enum class Availability : std::uint8_t { Unavailable, Available };
+enum class DepthParseResult : std::uint8_t {
+  Ok,
+  CapacityExceeded,
+  Invalid,
+};
+enum class DepthSide : std::uint8_t { None, Bid, Ask };
+inline constexpr std::size_t kDefaultMaxDepthLevelsPerSide = 5000;
 
 struct Capability {
   Profile profile{};
@@ -43,10 +50,7 @@ struct SymbolMetadata {
   std::int8_t quantity_scale{};
 };
 
-struct PriceLevel {
-  std::int64_t price{};
-  std::int64_t quantity{};
-};
+using PriceLevel = utils::md::Level;
 
 struct BookTicker {
   std::uint64_t update_id{};
@@ -72,22 +76,31 @@ struct DepthUpdate {
   std::array<char, 32> symbol{};
   std::vector<PriceLevel> bids{};
   std::vector<PriceLevel> asks{};
+  DepthSide capacity_side{DepthSide::None};
+  std::size_t capacity_limit{};
 };
 
 class JsonParser {
 public:
-  JsonParser(std::int8_t price_scale, std::int8_t quantity_scale);
+  explicit JsonParser(std::size_t max_levels_per_side =
+                          kDefaultMaxDepthLevelsPerSide);
   ~JsonParser();
   JsonParser(const JsonParser &) = delete;
   JsonParser &operator=(const JsonParser &) = delete;
-  bool parse_book_ticker(std::string_view json, BookTicker &out,
+  bool parse_book_ticker(std::string_view json, std::int8_t price_scale,
+                         std::int8_t quantity_scale, BookTicker &out,
                          std::string &error);
-  bool parse_depth(std::string_view json, DepthUpdate &out,
+  bool parse_depth(std::string_view json, std::int8_t price_scale,
+                   std::int8_t quantity_scale, DepthUpdate &out,
                    std::string &error);
+  DepthParseResult parse_depth_classified(std::string_view json,
+                                          std::int8_t price_scale,
+                                          std::int8_t quantity_scale,
+                                          DepthUpdate &out,
+                                          std::string &error);
 
 private:
-  std::int8_t price_scale_{};
-  std::int8_t quantity_scale_{};
+  std::size_t max_levels_per_side_{};
 #ifdef MDS_HAS_SIMDJSON
   struct Impl;
   Impl *impl_{};

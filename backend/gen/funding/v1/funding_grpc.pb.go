@@ -19,7 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	FundingService_ListFundingRates_FullMethodName = "/funding.v1.FundingService/ListFundingRates"
+	FundingService_ListFundingRates_FullMethodName         = "/funding.v1.FundingService/ListFundingRates"
+	FundingService_ListFundingSpreads_FullMethodName       = "/funding.v1.FundingService/ListFundingSpreads"
+	FundingService_ListFundingOpportunities_FullMethodName = "/funding.v1.FundingService/ListFundingOpportunities"
+	FundingService_GetFundingHistory_FullMethodName        = "/funding.v1.FundingService/GetFundingHistory"
 )
 
 // FundingServiceClient is the client API for FundingService service.
@@ -27,6 +30,9 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type FundingServiceClient interface {
 	ListFundingRates(ctx context.Context, in *ListFundingRatesRequest, opts ...grpc.CallOption) (*ListFundingRatesResponse, error)
+	ListFundingSpreads(ctx context.Context, in *ListFundingSpreadsRequest, opts ...grpc.CallOption) (*ListFundingSpreadsResponse, error)
+	ListFundingOpportunities(ctx context.Context, in *ListFundingOpportunitiesRequest, opts ...grpc.CallOption) (*ListFundingOpportunitiesResponse, error)
+	GetFundingHistory(ctx context.Context, in *GetFundingHistoryRequest, opts ...grpc.CallOption) (*GetFundingHistoryResponse, error)
 }
 
 type fundingServiceClient struct {
@@ -47,11 +53,44 @@ func (c *fundingServiceClient) ListFundingRates(ctx context.Context, in *ListFun
 	return out, nil
 }
 
+func (c *fundingServiceClient) ListFundingSpreads(ctx context.Context, in *ListFundingSpreadsRequest, opts ...grpc.CallOption) (*ListFundingSpreadsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListFundingSpreadsResponse)
+	err := c.cc.Invoke(ctx, FundingService_ListFundingSpreads_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fundingServiceClient) ListFundingOpportunities(ctx context.Context, in *ListFundingOpportunitiesRequest, opts ...grpc.CallOption) (*ListFundingOpportunitiesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListFundingOpportunitiesResponse)
+	err := c.cc.Invoke(ctx, FundingService_ListFundingOpportunities_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fundingServiceClient) GetFundingHistory(ctx context.Context, in *GetFundingHistoryRequest, opts ...grpc.CallOption) (*GetFundingHistoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetFundingHistoryResponse)
+	err := c.cc.Invoke(ctx, FundingService_GetFundingHistory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // FundingServiceServer is the server API for FundingService service.
 // All implementations must embed UnimplementedFundingServiceServer
 // for forward compatibility.
 type FundingServiceServer interface {
 	ListFundingRates(context.Context, *ListFundingRatesRequest) (*ListFundingRatesResponse, error)
+	ListFundingSpreads(context.Context, *ListFundingSpreadsRequest) (*ListFundingSpreadsResponse, error)
+	ListFundingOpportunities(context.Context, *ListFundingOpportunitiesRequest) (*ListFundingOpportunitiesResponse, error)
+	GetFundingHistory(context.Context, *GetFundingHistoryRequest) (*GetFundingHistoryResponse, error)
 	mustEmbedUnimplementedFundingServiceServer()
 }
 
@@ -64,6 +103,15 @@ type UnimplementedFundingServiceServer struct{}
 
 func (UnimplementedFundingServiceServer) ListFundingRates(context.Context, *ListFundingRatesRequest) (*ListFundingRatesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListFundingRates not implemented")
+}
+func (UnimplementedFundingServiceServer) ListFundingSpreads(context.Context, *ListFundingSpreadsRequest) (*ListFundingSpreadsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListFundingSpreads not implemented")
+}
+func (UnimplementedFundingServiceServer) ListFundingOpportunities(context.Context, *ListFundingOpportunitiesRequest) (*ListFundingOpportunitiesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListFundingOpportunities not implemented")
+}
+func (UnimplementedFundingServiceServer) GetFundingHistory(context.Context, *GetFundingHistoryRequest) (*GetFundingHistoryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetFundingHistory not implemented")
 }
 func (UnimplementedFundingServiceServer) mustEmbedUnimplementedFundingServiceServer() {}
 func (UnimplementedFundingServiceServer) testEmbeddedByValue()                        {}
@@ -104,6 +152,60 @@ func _FundingService_ListFundingRates_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FundingService_ListFundingSpreads_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListFundingSpreadsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FundingServiceServer).ListFundingSpreads(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FundingService_ListFundingSpreads_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FundingServiceServer).ListFundingSpreads(ctx, req.(*ListFundingSpreadsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FundingService_ListFundingOpportunities_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListFundingOpportunitiesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FundingServiceServer).ListFundingOpportunities(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FundingService_ListFundingOpportunities_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FundingServiceServer).ListFundingOpportunities(ctx, req.(*ListFundingOpportunitiesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FundingService_GetFundingHistory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetFundingHistoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FundingServiceServer).GetFundingHistory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FundingService_GetFundingHistory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FundingServiceServer).GetFundingHistory(ctx, req.(*GetFundingHistoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // FundingService_ServiceDesc is the grpc.ServiceDesc for FundingService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -114,6 +216,18 @@ var FundingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListFundingRates",
 			Handler:    _FundingService_ListFundingRates_Handler,
+		},
+		{
+			MethodName: "ListFundingSpreads",
+			Handler:    _FundingService_ListFundingSpreads_Handler,
+		},
+		{
+			MethodName: "ListFundingOpportunities",
+			Handler:    _FundingService_ListFundingOpportunities_Handler,
+		},
+		{
+			MethodName: "GetFundingHistory",
+			Handler:    _FundingService_GetFundingHistory_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

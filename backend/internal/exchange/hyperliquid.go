@@ -31,6 +31,19 @@ type hyperliquidContext struct {
 	PrevDayPx    string `json:"prevDayPx"`
 }
 
+type hyperliquidSpotMeta struct {
+	Tokens []struct {
+		Name       string `json:"name"`
+		Index      int    `json:"index"`
+		SzDecimals int    `json:"szDecimals"`
+	} `json:"tokens"`
+	Universe []struct {
+		Name        string `json:"name"`
+		Tokens      []int  `json:"tokens"`
+		IsCanonical bool   `json:"isCanonical"`
+	} `json:"universe"`
+}
+
 func (h *Hyperliquid) metaAndContexts(ctx context.Context) (hyperliquidMeta, []hyperliquidContext, error) {
 	var raw []json.RawMessage
 	if err := h.client.post(ctx, "/info", `{"type":"metaAndAssetCtxs"}`, &raw); err != nil {
@@ -73,7 +86,66 @@ func parseHyperliquidInstruments(meta hyperliquidMeta) []Instrument {
 	return result
 }
 
-func (h *Hyperliquid) SyncInstruments(ctx context.Context) ([]Instrument, error) {
+func (h *Hyperliquid) syncSpotInstruments(ctx context.Context) ([]Instrument, error) {
+	var raw []json.RawMessage
+	if err := h.client.post(ctx, "/info", `{"type":"spotMetaAndAssetCtxs"}`, &raw); err != nil {
+		return nil, err
+	}
+	if len(raw) != 2 {
+		return nil, fmt.Errorf("hyperliquid spotMetaAndAssetCtxs: expected 2 elements")
+	}
+	var meta hyperliquidSpotMeta
+	if err := json.Unmarshal(raw[0], &meta); err != nil {
+		return nil, err
+	}
+	return parseHyperliquidSpotInstruments(meta), nil
+}
+
+func parseHyperliquidSpotInstruments(meta hyperliquidSpotMeta) []Instrument {
+	tokens := make(map[int]struct {
+		name string
+		step float64
+	}, len(meta.Tokens))
+	for _, token := range meta.Tokens {
+		step := 1.0
+		for range token.SzDecimals {
+			step /= 10
+		}
+		tokens[token.Index] = struct {
+			name string
+			step float64
+		}{name: token.Name, step: step}
+	}
+	result := make([]Instrument, 0, len(meta.Universe))
+	for _, pair := range meta.Universe {
+		if len(pair.Tokens) != 2 {
+			continue
+		}
+		base, baseOK := tokens[pair.Tokens[0]]
+		quote, quoteOK := tokens[pair.Tokens[1]]
+		if !baseOK || !quoteOK {
+			continue
+		}
+		metadata, _ := json.Marshal(pair)
+		result = append(result, Instrument{
+			Exchange: "hyperliquid", ExchangeSymbol: pair.Name,
+			BaseAsset: base.name, QuoteAsset: quote.name,
+			GlobalSymbol: GlobalSymbol(base.name, quote.name),
+			SettleAsset:  quote.name, ContractType: ContractTypeSpot,
+			Status: "active", ContractSize: 1, QuantityStep: base.step,
+			Metadata: metadata, SourceUpdatedAt: time.Now().UTC(),
+		})
+	}
+	return result
+}
+
+func (h *Hyperliquid) SyncInstruments(ctx context.Context, contractType string) ([]Instrument, error) {
+	if contractType == ContractTypeSpot {
+		return h.syncSpotInstruments(ctx)
+	}
+	if contractType != ContractTypePerpetual {
+		return nil, fmt.Errorf("hyperliquid: unsupported contract type %q", contractType)
+	}
 	meta, _, err := h.metaAndContexts(ctx)
 	if err != nil {
 		return nil, err
@@ -128,11 +200,11 @@ type hyperliquidHistory struct {
 }
 
 func (h *Hyperliquid) FetchHistory(ctx context.Context, instrument Instrument, since time.Time, limit int) ([]FundingRate, error) {
-	wanted := clampLimit(limit, 5000)
+	wanted := clampLimit(limit, 10000)
 	result := make([]FundingRate, 0, wanted)
 	start := since.UnixMilli()
 	if since.IsZero() {
-		start = time.Now().AddDate(0, -6, 0).UnixMilli()
+		start = time.Now().AddDate(-1, 0, 0).UnixMilli()
 	}
 	for len(result) < wanted {
 		body := fmt.Sprintf(`{"type":"fundingHistory","coin":%q,"startTime":%d,"endTime":%d}`, instrument.ExchangeSymbol, start, time.Now().UnixMilli())

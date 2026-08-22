@@ -1,0 +1,70 @@
+{
+  "venue": "binance",
+  "product": "spot",
+  "retrieval_date": "2026-08-14",
+  "status": "doc-derived-unverified-live",
+  "verification_tier": "doc-derived-unverified-live",
+  "fixtures": [
+    {
+      "id": "binance.spot.open_orders.v1",
+      "event": "open_orders",
+      "source_url": "https://developers.binance.com/docs/binance-spot-api-docs/rest-api/trading-endpoints",
+      "request": {
+        "method": "GET",
+        "path": "/api/v3/openOrders",
+        "parameters": {
+          "symbol": "LTCBTC",
+          "timestamp": 1499827319559
+        }
+      },
+      "response": [
+        {
+          "symbol": "LTCBTC",
+          "orderId": 1,
+          "orderListId": -1,
+          "clientOrderId": "myOrder1",
+          "price": "0.1",
+          "origQty": "1.0",
+          "executedQty": "0.0",
+          "cummulativeQuoteQty": "0.0",
+          "status": "NEW",
+          "timeInForce": "GTC",
+          "type": "LIMIT",
+          "side": "BUY",
+          "stopPrice": "0.0",
+          "icebergQty": "0.0",
+          "time": 1499827319559,
+          "updateTime": 1499827319559,
+          "isWorking": true,
+          "workingTime": 1499827319559,
+          "origQuoteOrderQty": "0.0",
+          "selfTradePreventionMode": "NONE"
+        }
+      ]
+    },
+    {
+      "id": "binance.spot.recent_trades.v1",
+      "event": "recent_trades",
+      "source_url": "https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints",
+      "request": {
+        "method": "GET",
+        "path": "/api/v3/trades",
+        "parameters": {
+          "symbol": "BNBBTC",
+          "limit": 1
+        }
+      },
+      "response": [
+        {
+          "id": 28457,
+          "price": "4.00000100",
+          "qty": "12.00000000",
+          "quoteQty": "48.000012",
+          "time": 1499865549590,
+          "isBuyerMaker": true,
+          "isBestMatch": true
+        }
+      ]
+    }
+  ]
+}

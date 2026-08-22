@@ -56,25 +56,36 @@ type bybitInstrument struct {
 	} `json:"lotSizeFilter"`
 }
 
-func parseBybitInstruments(items []bybitInstrument) []Instrument {
+func parseBybitInstruments(items []bybitInstrument, contractType string) []Instrument {
 	result := make([]Instrument, 0, len(items))
 	for _, item := range items {
-		if item.Status != "Trading" || item.ContractType != "LinearPerpetual" {
+		if item.Status != "Trading" ||
+			(contractType == ContractTypePerpetual &&
+				item.ContractType != "LinearPerpetual" &&
+				item.ContractType != "InversePerpetual") {
 			continue
 		}
 		minutes, _ := strconv.ParseFloat(string(item.FundingInterval), 64)
-		if minutes <= 0 {
+		if contractType == ContractTypePerpetual && minutes <= 0 {
 			minutes = 480
 		}
 		tick, _ := parseFloat(item.PriceFilter.TickSize)
 		step, _ := parseFloat(item.LotSizeFilter.QtyStep)
-		metadata, _ := json.Marshal(item)
+		settle := item.SettleCoin
+		if contractType == ContractTypeSpot {
+			settle = item.QuoteCoin
+		}
+		model, sizeUnit := "linear", "base"
+		if item.ContractType == "InversePerpetual" {
+			model, sizeUnit = "inverse", "quote"
+		}
+		metadata := instrumentMetadata(item, model, sizeUnit)
 		result = append(result, Instrument{
 			Exchange: "bybit", ExchangeSymbol: item.Symbol,
 			BaseAsset: item.BaseCoin, QuoteAsset: item.QuoteCoin,
 			GlobalSymbol:  GlobalSymbol(item.BaseCoin, item.QuoteCoin),
-			IntervalHours: minutes / 60, SettleAsset: item.SettleCoin,
-			ContractType: "perpetual", Status: "active", ContractSize: 1,
+			IntervalHours: minutes / 60, SettleAsset: settle,
+			ContractType: contractType, Status: "active", ContractSize: 1,
 			PriceTick: tick, QuantityStep: step, Metadata: metadata,
 			SourceUpdatedAt: time.Now().UTC(),
 		})
@@ -82,26 +93,36 @@ func parseBybitInstruments(items []bybitInstrument) []Instrument {
 	return result
 }
 
-func (b *Bybit) SyncInstruments(ctx context.Context) ([]Instrument, error) {
+func (b *Bybit) SyncInstruments(ctx context.Context, contractType string) ([]Instrument, error) {
+	categories := []string{"linear"}
+	if contractType == ContractTypeSpot {
+		categories = []string{"spot"}
+	} else if contractType != ContractTypePerpetual {
+		return nil, fmt.Errorf("bybit: unsupported contract type %q", contractType)
+	} else {
+		categories = []string{"linear", "inverse"}
+	}
 	var all []Instrument
-	cursor := ""
-	for {
-		query := url.Values{"category": {"linear"}, "limit": {"1000"}}
-		if cursor != "" {
-			query.Set("cursor", cursor)
+	for _, category := range categories {
+		cursor := ""
+		for {
+			query := url.Values{"category": {category}, "limit": {"1000"}}
+			if cursor != "" {
+				query.Set("cursor", cursor)
+			}
+			var payload bybitEnvelope[bybitInstrument]
+			if err := b.client.get(ctx, "/v5/market/instruments-info", query, &payload); err != nil {
+				return nil, err
+			}
+			if payload.RetCode != 0 {
+				return nil, fmt.Errorf("bybit: %s", payload.RetMsg)
+			}
+			all = append(all, parseBybitInstruments(payload.Result.List, contractType)...)
+			if payload.Result.NextPageCursor == "" || payload.Result.NextPageCursor == cursor {
+				break
+			}
+			cursor = payload.Result.NextPageCursor
 		}
-		var payload bybitEnvelope[bybitInstrument]
-		if err := b.client.get(ctx, "/v5/market/instruments-info", query, &payload); err != nil {
-			return nil, err
-		}
-		if payload.RetCode != 0 {
-			return nil, fmt.Errorf("bybit: %s", payload.RetMsg)
-		}
-		all = append(all, parseBybitInstruments(payload.Result.List)...)
-		if payload.Result.NextPageCursor == "" || payload.Result.NextPageCursor == cursor {
-			break
-		}
-		cursor = payload.Result.NextPageCursor
 	}
 	return all, nil
 }
@@ -175,7 +196,7 @@ type bybitHistory struct {
 }
 
 func (b *Bybit) FetchHistory(ctx context.Context, instrument Instrument, since time.Time, limit int) ([]FundingRate, error) {
-	wanted := clampLimit(limit, 1000)
+	wanted := clampLimit(limit, 10000)
 	result := make([]FundingRate, 0, wanted)
 	end := time.Now().UnixMilli()
 	for len(result) < wanted {

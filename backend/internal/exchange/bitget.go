@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,45 @@ type bitgetEnvelope[T any] struct {
 type bitgetInstrument struct {
 	Symbol, BaseCoin, QuoteCoin, SymbolStatus, SymbolType, FundingRateInterval string
 	SettleCoin, SizeMultiplier, PriceEndStep, MinTradeNum                      string
+	SupportMarginCoins                                                         []string
+}
+
+type bitgetSpotInstrument struct {
+	Symbol, BaseCoin, QuoteCoin, Status               string
+	PricePrecision, QuantityPrecision, MinTradeAmount string
+}
+
+func precisionStep(value string) float64 {
+	precision, err := strconv.Atoi(value)
+	if err != nil || precision < 0 {
+		return 0
+	}
+	step := 1.0
+	for range precision {
+		step /= 10
+	}
+	return step
+}
+
+func parseBitgetSpotInstruments(items []bitgetSpotInstrument) []Instrument {
+	result := make([]Instrument, 0, len(items))
+	for _, item := range items {
+		if !strings.EqualFold(item.Status, "online") {
+			continue
+		}
+		metadata, _ := json.Marshal(item)
+		result = append(result, Instrument{
+			Exchange: "bitget", ExchangeSymbol: item.Symbol,
+			BaseAsset: item.BaseCoin, QuoteAsset: item.QuoteCoin,
+			GlobalSymbol: GlobalSymbol(item.BaseCoin, item.QuoteCoin),
+			SettleAsset:  item.QuoteCoin, ContractType: ContractTypeSpot,
+			Status: "active", ContractSize: 1,
+			PriceTick:    precisionStep(item.PricePrecision),
+			QuantityStep: precisionStep(item.QuantityPrecision),
+			Metadata:     metadata, SourceUpdatedAt: time.Now().UTC(),
+		})
+	}
+	return result
 }
 
 func parseBitgetInstruments(items []bitgetInstrument) []Instrument {
@@ -39,12 +79,17 @@ func parseBitgetInstruments(items []bitgetInstrument) []Instrument {
 		size, _ := parseFloat(item.SizeMultiplier)
 		tick, _ := parseFloat(item.PriceEndStep)
 		step, _ := parseFloat(item.MinTradeNum)
-		metadata, _ := json.Marshal(item)
+		settle := bitgetSettleAsset(item)
+		model, sizeUnit := "linear", "base"
+		if strings.EqualFold(settle, item.BaseCoin) {
+			model, sizeUnit = "inverse", "quote"
+		}
+		metadata := instrumentMetadata(item, model, sizeUnit)
 		result = append(result, Instrument{
 			Exchange: "bitget", ExchangeSymbol: item.Symbol,
 			BaseAsset: item.BaseCoin, QuoteAsset: item.QuoteCoin,
 			GlobalSymbol:  GlobalSymbol(item.BaseCoin, item.QuoteCoin),
-			IntervalHours: hours, SettleAsset: item.SettleCoin,
+			IntervalHours: hours, SettleAsset: settle,
 			ContractType: "perpetual", Status: "active", ContractSize: size,
 			PriceTick: tick, QuantityStep: step, Metadata: metadata,
 			SourceUpdatedAt: time.Now().UTC(),
@@ -53,9 +98,22 @@ func parseBitgetInstruments(items []bitgetInstrument) []Instrument {
 	return result
 }
 
-func (b *Bitget) SyncInstruments(ctx context.Context) ([]Instrument, error) {
+func (b *Bitget) SyncInstruments(ctx context.Context, contractType string) ([]Instrument, error) {
+	if contractType == ContractTypeSpot {
+		var payload bitgetEnvelope[[]bitgetSpotInstrument]
+		if err := b.client.get(ctx, "/api/v2/spot/public/symbols", nil, &payload); err != nil {
+			return nil, err
+		}
+		if payload.Code != "00000" {
+			return nil, fmt.Errorf("bitget: %s", payload.Msg)
+		}
+		return parseBitgetSpotInstruments(payload.Data), nil
+	}
+	if contractType != ContractTypePerpetual {
+		return nil, fmt.Errorf("bitget: unsupported contract type %q", contractType)
+	}
 	var all []Instrument
-	for _, product := range []string{"USDT-FUTURES", "USDC-FUTURES"} {
+	for _, product := range []string{"USDT-FUTURES", "USDC-FUTURES", "COIN-FUTURES"} {
 		var payload bitgetEnvelope[[]bitgetInstrument]
 		if err := b.client.get(ctx, "/api/v2/mix/market/contracts", url.Values{"productType": {product}}, &payload); err != nil {
 			return nil, err
@@ -66,6 +124,18 @@ func (b *Bitget) SyncInstruments(ctx context.Context) ([]Instrument, error) {
 		all = append(all, parseBitgetInstruments(payload.Data)...)
 	}
 	return all, nil
+}
+
+func bitgetSettleAsset(item bitgetInstrument) string {
+	if settle := strings.TrimSpace(item.SettleCoin); settle != "" {
+		return settle
+	}
+	for _, coin := range item.SupportMarginCoins {
+		if settle := strings.TrimSpace(coin); settle != "" {
+			return settle
+		}
+	}
+	return strings.TrimSpace(item.QuoteCoin)
 }
 
 type bitgetTicker struct {
@@ -141,7 +211,7 @@ type bitgetHistory struct {
 }
 
 func (b *Bitget) FetchHistory(ctx context.Context, instrument Instrument, since time.Time, limit int) ([]FundingRate, error) {
-	wanted := clampLimit(limit, 500)
+	wanted := clampLimit(limit, 10000)
 	result := make([]FundingRate, 0, wanted)
 	page := 1
 	product := "USDT-FUTURES"

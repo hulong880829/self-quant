@@ -16,8 +16,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "Nuts Quant",
-    template: "%s · Nuts Quant",
+    default: "龙歪歪Quant",
+    template: "%s · 龙歪歪Quant",
   },
   description: "面向数字资产的专业量化交易工作台",
 };
@@ -26,10 +26,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="zh-CN"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full max-w-full overflow-x-clip antialiased`}
       suppressHydrationWarning
     >
-      <body className="min-h-full">
+      <body className="min-h-full min-w-0 max-w-full overflow-x-clip">
         <ThemeProvider>
           <AppShell>{children}</AppShell>
         </ThemeProvider>

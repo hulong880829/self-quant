@@ -58,7 +58,8 @@ class OrderBook {
   LadderResult Apply(Side side, std::int64_t price, std::int64_t quantity) noexcept;
   LadderResult ChangeTickSize(std::int64_t tick_size) noexcept;
   void SetLive() noexcept;
-  [[nodiscard]] std::optional<BboEvent> Bbo(std::uint32_t instrument_id) const noexcept;
+  [[nodiscard]] std::optional<BboEvent> Bbo(
+      InstrumentId instrument_id) const noexcept;
   [[nodiscard]] const Ladder& bids() const noexcept { return bids_; }
   [[nodiscard]] const Ladder& asks() const noexcept { return asks_; }
   [[nodiscard]] BookState state() const noexcept;

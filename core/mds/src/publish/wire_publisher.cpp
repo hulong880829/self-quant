@@ -6,8 +6,8 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <utility>
-#include <vector>
 
 namespace mds::publish {
 namespace {
@@ -90,7 +90,8 @@ std::string sanitize_name_part(std::string_view value) {
 } // namespace
 
 WirePublisher::WirePublisher(transport::SharedRing &ring) noexcept
-    : ring_(&ring), observed_registry_generation_(ring.registry_generation()) {}
+    : ring_(&ring),
+      observed_registry_generation_(ring.registry_generation()) {}
 
 WirePublisher::WirePublisher(transport::SharedRing &&ring) noexcept
     : owned_ring_(std::move(ring)), ring_(&*owned_ring_),
@@ -114,7 +115,10 @@ WirePublisher &WirePublisher::operator=(WirePublisher &&other) noexcept {
   observed_registry_generation_ = other.observed_registry_generation_;
   reader_change_context_ = other.reader_change_context_;
   reader_change_hook_ = other.reader_change_hook_;
+  aggregate_buffer_ = std::move(other.aggregate_buffer_);
+  mirror_ = other.mirror_;
   other.ring_ = nullptr;
+  other.mirror_ = nullptr;
   other.reader_change_context_ = nullptr;
   other.reader_change_hook_ = nullptr;
   return *this;
@@ -156,6 +160,21 @@ bool WirePublisher::poll_reader_change() noexcept {
     reader_change_hook_(reader_change_context_, *this);
   }
   return true;
+}
+
+api::Result<void> WirePublisher::prepare_aggregate_orderbook() noexcept {
+  if (aggregate_buffer_.size() ==
+      sizeof(utils::md::wire::AggOrderBookRecord)) {
+    return {};
+  }
+  try {
+    aggregate_buffer_.resize(
+        sizeof(utils::md::wire::AggOrderBookRecord));
+  } catch (const std::bad_alloc &) {
+    return {.error = api::ErrorCode::InternalError,
+            .message = "failed to allocate aggregate publisher buffer"};
+  }
+  return {};
 }
 
 bool WirePublisher::assign_bus_seq(
@@ -214,7 +233,36 @@ api::Result<std::uint64_t> WirePublisher::publish_instrument(
   }
   const auto encoded = utils::md::wire::EncodeInstrument(
       bytes, fields, instrument);
-  return publish_encoded(MessageType::InstrumentUpdate, encoded, bytes);
+  auto result =
+      publish_encoded(MessageType::InstrumentUpdate, encoded, bytes);
+  if (result && mirror_) {
+    const auto mirrored = mirror_->publish_instrument(header, instrument);
+    if (!mirrored) return mirrored;
+  }
+  return result;
+}
+
+api::Result<std::uint64_t> WirePublisher::publish_instrument_catalog(
+    const utils::md::EventHeader &header,
+    const utils::md::InstrumentCatalog &catalog) noexcept {
+  std::array<std::byte,
+             sizeof(utils::md::wire::InstrumentCatalogRecord)>
+      bytes{};
+  HeaderFields fields;
+  if (!assign_bus_seq(header, fields)) {
+    return {.error = api::ErrorCode::QuotaExceeded,
+            .message = "wire bus sequence is exhausted"};
+  }
+  const auto encoded = utils::md::wire::EncodeInstrumentCatalog(
+      bytes, fields, catalog);
+  auto result =
+      publish_encoded(MessageType::InstrumentCatalog, encoded, bytes);
+  if (result && mirror_) {
+    const auto mirrored =
+        mirror_->publish_instrument_catalog(header, catalog);
+    if (!mirrored) return mirrored;
+  }
+  return result;
 }
 
 api::Result<std::uint64_t>
@@ -227,7 +275,12 @@ WirePublisher::publish_bbo(const utils::md::BboEvent &event) noexcept {
   }
   const auto encoded = utils::md::wire::EncodeBbo(
       bytes, fields, event.bid, event.ask);
-  return publish_encoded(MessageType::Bbo, encoded, bytes);
+  auto result = publish_encoded(MessageType::Bbo, encoded, bytes);
+  if (result && mirror_) {
+    const auto mirrored = mirror_->publish_bbo(event);
+    if (!mirrored) return mirrored;
+  }
+  return result;
 }
 
 api::Result<std::uint64_t>
@@ -240,7 +293,12 @@ WirePublisher::publish_ticker(const utils::md::TickerEvent &event) noexcept {
   }
   const auto encoded =
       utils::md::wire::EncodeTicker(bytes, fields, event);
-  return publish_encoded(MessageType::Ticker, encoded, bytes);
+  auto result = publish_encoded(MessageType::Ticker, encoded, bytes);
+  if (result && mirror_) {
+    const auto mirrored = mirror_->publish_ticker(event);
+    if (!mirrored) return mirrored;
+  }
+  return result;
 }
 
 api::Result<std::uint64_t>
@@ -253,7 +311,47 @@ WirePublisher::publish_delta(const utils::md::BookDelta &event) noexcept {
   }
   const auto encoded = utils::md::wire::EncodeDelta(
       bytes, fields, event.side, event.level);
-  return publish_encoded(MessageType::BookDelta, encoded, bytes);
+  auto result = publish_encoded(MessageType::BookDelta, encoded, bytes);
+  if (result && mirror_) {
+    const auto mirrored = mirror_->publish_delta(event);
+    if (!mirrored) return mirrored;
+  }
+  return result;
+}
+
+api::Result<std::uint64_t> WirePublisher::publish_agg_bbo(
+    const utils::md::EventHeader &header,
+    const utils::md::wire::AggBboRecord &record,
+    std::uint16_t flags) noexcept {
+  std::array<std::byte, sizeof(utils::md::wire::AggBboRecord)> bytes{};
+  HeaderFields fields;
+  if (!assign_bus_seq(header, fields)) {
+    return {.error = api::ErrorCode::QuotaExceeded,
+            .message = "wire bus sequence is exhausted"};
+  }
+  fields.flags = flags;
+  const auto encoded =
+      utils::md::wire::EncodeAggBbo(bytes, fields, record);
+  return publish_encoded(MessageType::AggBbo, encoded, bytes);
+}
+
+api::Result<std::uint64_t> WirePublisher::publish_agg_orderbook(
+    const utils::md::EventHeader &header,
+    const utils::md::wire::AggOrderBookRecord &record) noexcept {
+  if (aggregate_buffer_.size() !=
+      sizeof(utils::md::wire::AggOrderBookRecord)) {
+    return {.error = api::ErrorCode::InternalError,
+            .message = "aggregate publisher buffer is unavailable"};
+  }
+  HeaderFields fields;
+  if (!assign_bus_seq(header, fields)) {
+    return {.error = api::ErrorCode::QuotaExceeded,
+            .message = "wire bus sequence is exhausted"};
+  }
+  const auto encoded = utils::md::wire::EncodeAggOrderBook(
+      aggregate_buffer_, fields, record);
+  return publish_encoded(MessageType::AggOrderBook, encoded,
+                         aggregate_buffer_);
 }
 
 api::Result<std::uint64_t> WirePublisher::publish_snapshot_begin(
@@ -267,7 +365,14 @@ api::Result<std::uint64_t> WirePublisher::publish_snapshot_begin(
   }
   const auto encoded = utils::md::wire::EncodeSnapshotBegin(
       bytes, fields, level_count, chunk_count);
-  return publish_encoded(MessageType::SnapshotBegin, encoded, bytes);
+  auto result =
+      publish_encoded(MessageType::SnapshotBegin, encoded, bytes);
+  if (result && mirror_) {
+    const auto mirrored =
+        mirror_->publish_snapshot_begin(header, level_count, chunk_count);
+    if (!mirrored) return mirrored;
+  }
+  return result;
 }
 
 api::Result<std::uint64_t> WirePublisher::publish_snapshot_chunk(
@@ -282,7 +387,14 @@ api::Result<std::uint64_t> WirePublisher::publish_snapshot_chunk(
   }
   const auto encoded = utils::md::wire::EncodeSnapshotChunk(
       bytes, fields, chunk_index, side, levels);
-  return publish_encoded(MessageType::SnapshotChunk, encoded, bytes);
+  auto result =
+      publish_encoded(MessageType::SnapshotChunk, encoded, bytes);
+  if (result && mirror_) {
+    const auto mirrored =
+        mirror_->publish_snapshot_chunk(header, chunk_index, side, levels);
+    if (!mirrored) return mirrored;
+  }
+  return result;
 }
 
 api::Result<std::uint64_t> WirePublisher::publish_snapshot_end(
@@ -296,7 +408,14 @@ api::Result<std::uint64_t> WirePublisher::publish_snapshot_end(
   }
   const auto encoded = utils::md::wire::EncodeSnapshotEnd(
       bytes, fields, received_levels, checksum);
-  return publish_encoded(MessageType::SnapshotEnd, encoded, bytes);
+  auto result =
+      publish_encoded(MessageType::SnapshotEnd, encoded, bytes);
+  if (result && mirror_) {
+    const auto mirrored =
+        mirror_->publish_snapshot_end(header, received_levels, checksum);
+    if (!mirrored) return mirrored;
+  }
+  return result;
 }
 
 api::Result<void> WirePublisher::publish_snapshot(
@@ -372,21 +491,87 @@ api::Result<void>
 WirePublisher::publish_snapshot(const utils::md::EventHeader &header,
                                 const utils::md::OrderBook &book,
                                 std::uint32_t checksum) {
-  std::vector<utils::md::Level> bids;
-  std::vector<utils::md::Level> asks;
-  bids.reserve(book.bids().capacity());
-  asks.reserve(book.asks().capacity());
+  std::size_t bid_count = 0;
+  std::size_t ask_count = 0;
   for (std::size_t index = book.bids().capacity(); index > 0; --index) {
-    if (const auto level = book.bids().At(index - 1)) {
-      bids.push_back(*level);
+    if (book.bids().At(index - 1)) {
+      ++bid_count;
     }
   }
   for (std::size_t index = 0; index < book.asks().capacity(); ++index) {
-    if (const auto level = book.asks().At(index)) {
-      asks.push_back(*level);
+    if (book.asks().At(index)) {
+      ++ask_count;
     }
   }
-  return publish_snapshot(header, bids, asks, checksum);
+  if (bid_count + ask_count > std::numeric_limits<std::uint32_t>::max()) {
+    return {.error = api::ErrorCode::InvalidConfig,
+            .message = "snapshot contains too many levels"};
+  }
+  const auto chunks = [](std::size_t count) noexcept {
+    return count / utils::md::kSnapshotLevelsPerChunk +
+           (count % utils::md::kSnapshotLevelsPerChunk != 0U ? 1U : 0U);
+  };
+  const auto total_chunks = chunks(bid_count) + chunks(ask_count);
+  if (total_chunks > std::numeric_limits<std::uint32_t>::max()) {
+    return {.error = api::ErrorCode::InvalidConfig,
+            .message = "snapshot contains too many chunks"};
+  }
+  const auto total_levels =
+      static_cast<std::uint32_t>(bid_count + ask_count);
+  auto published = publish_snapshot_begin(
+      header, total_levels, static_cast<std::uint32_t>(total_chunks));
+  if (!published) {
+    return void_error(published);
+  }
+
+  std::array<utils::md::Level, utils::md::kSnapshotLevelsPerChunk> chunk{};
+  std::size_t chunk_size = 0;
+  std::uint32_t chunk_index = 0;
+  const auto flush = [&](utils::md::Side side) -> api::Result<void> {
+    if (chunk_size == 0) {
+      return {};
+    }
+    const auto result = publish_snapshot_chunk(
+        header, chunk_index++, side,
+        std::span<const utils::md::Level>(chunk.data(), chunk_size));
+    chunk_size = 0;
+    return result ? api::Result<void>{} : void_error(result);
+  };
+
+  for (std::size_t index = book.bids().capacity(); index > 0; --index) {
+    if (const auto level = book.bids().At(index - 1)) {
+      chunk[chunk_size++] = *level;
+      if (chunk_size == chunk.size()) {
+        const auto result = flush(utils::md::Side::Bid);
+        if (!result) {
+          return result;
+        }
+      }
+    }
+  }
+  auto result = flush(utils::md::Side::Bid);
+  if (!result) {
+    return result;
+  }
+
+  chunk_index = 0;
+  for (std::size_t index = 0; index < book.asks().capacity(); ++index) {
+    if (const auto level = book.asks().At(index)) {
+      chunk[chunk_size++] = *level;
+      if (chunk_size == chunk.size()) {
+        result = flush(utils::md::Side::Ask);
+        if (!result) {
+          return result;
+        }
+      }
+    }
+  }
+  result = flush(utils::md::Side::Ask);
+  if (!result) {
+    return result;
+  }
+  published = publish_snapshot_end(header, total_levels, checksum);
+  return published ? api::Result<void>{} : void_error(published);
 }
 
 TickerOrderBookPublishers::TickerOrderBookPublishers(
@@ -446,11 +631,36 @@ std::string make_publisher_segment_name(std::string_view prefix,
     return {};
   }
   const auto canonical_stream = sanitize_name_part(stream);
-  if (canonical_stream != "ticker" && canonical_stream != "orderbook") {
+  if (canonical_stream != "ticker" && canonical_stream != "orderbook" &&
+      canonical_stream != "aggbbo" &&
+      canonical_stream != "aggorderbook") {
     return {};
   }
   auto name = std::string(prefix) + "." + sanitize_name_part(profile) + "." +
               sanitize_name_part(symbol) + "." + canonical_stream + "." +
+              std::to_string(utils::md::wire::kSchemaMajor);
+  return name.size() <= 240 ? name : std::string{};
+}
+
+std::string make_multiplex_segment_name(
+    std::string_view prefix, std::string_view venue,
+    std::string_view product, std::string_view stream, std::size_t shard) {
+  if (prefix.empty() || prefix.front() != '/' || venue.empty() ||
+      product.empty() || stream.empty()) {
+    return {};
+  }
+  while (prefix.size() > 1 && prefix.back() == '.') {
+    prefix.remove_suffix(1);
+  }
+  if (prefix == "/") return {};
+  const auto canonical_stream = sanitize_name_part(stream);
+  if (canonical_stream != "ticker" &&
+      canonical_stream != "orderbook") {
+    return {};
+  }
+  auto name = std::string(prefix) + "." + sanitize_name_part(venue) + "." +
+              sanitize_name_part(product) + "." + canonical_stream +
+              ".shard" + std::to_string(shard) + "." +
               std::to_string(utils::md::wire::kSchemaMajor);
   return name.size() <= 240 ? name : std::string{};
 }

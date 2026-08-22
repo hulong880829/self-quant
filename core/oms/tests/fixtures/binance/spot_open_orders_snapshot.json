@@ -1,0 +1,22 @@
+[
+  {
+    "symbol": "BTCUSDT",
+    "orderId": 12345,
+    "clientOrderId": "client-42",
+    "price": "10000.00000000",
+    "origQty": "0.10000000",
+    "executedQty": "0.00000000",
+    "status": "NEW",
+    "updateTime": 1500
+  },
+  {
+    "symbol": "ETHUSDT",
+    "orderId": 67890,
+    "clientOrderId": "unknown-venue-order",
+    "price": "2000.00000000",
+    "origQty": "0.20000000",
+    "executedQty": "0.20000000",
+    "status": "FILLED",
+    "updateTime": 1501
+  }
+]

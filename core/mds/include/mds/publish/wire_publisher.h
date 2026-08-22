@@ -11,8 +11,11 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace mds::publish {
+
+enum class RingLayout : std::uint8_t { PerSymbol, Multiplex, Both };
 
 class WirePublisher {
 public:
@@ -33,22 +36,39 @@ public:
     return current_bus_seq_;
   }
   [[nodiscard]] std::uint32_t reader_registry_generation() const noexcept;
+  void set_mirror(WirePublisher *mirror) noexcept { mirror_ = mirror; }
   std::size_t reclaim_stale_readers(std::uint64_t now_ns,
                                     std::uint64_t lease_timeout_ns) noexcept;
   void set_reader_change_hook(void *context, ReaderChangeHook hook) noexcept;
   // Returns true when the registry changed. The hook can republish the latest
   // Instrument and snapshot after a late reader attaches.
   bool poll_reader_change() noexcept;
+  // Call once during setup before publishing AggOrderBook records. This keeps
+  // the large encode buffer off ordinary ticker/orderbook publishers while
+  // preserving zero allocations on the aggregate hot path.
+  api::Result<void> prepare_aggregate_orderbook() noexcept;
 
   api::Result<std::uint64_t>
   publish_instrument(const utils::md::EventHeader &header,
                      const utils::md::Instrument &instrument) noexcept;
+  api::Result<std::uint64_t>
+  publish_instrument_catalog(
+      const utils::md::EventHeader &header,
+      const utils::md::InstrumentCatalog &catalog) noexcept;
   api::Result<std::uint64_t>
   publish_bbo(const utils::md::BboEvent &event) noexcept;
   api::Result<std::uint64_t>
   publish_ticker(const utils::md::TickerEvent &event) noexcept;
   api::Result<std::uint64_t>
   publish_delta(const utils::md::BookDelta &event) noexcept;
+  api::Result<std::uint64_t>
+  publish_agg_bbo(const utils::md::EventHeader &header,
+                  const utils::md::wire::AggBboRecord &record,
+                  std::uint16_t flags = 0) noexcept;
+  api::Result<std::uint64_t>
+  publish_agg_orderbook(
+      const utils::md::EventHeader &header,
+      const utils::md::wire::AggOrderBookRecord &record) noexcept;
   api::Result<std::uint64_t>
   publish_snapshot_begin(const utils::md::EventHeader &header,
                          std::uint32_t level_count,
@@ -96,6 +116,8 @@ private:
   std::uint32_t observed_registry_generation_{};
   void *reader_change_context_{};
   ReaderChangeHook reader_change_hook_{};
+  std::vector<std::byte> aggregate_buffer_{};
+  WirePublisher *mirror_{};
 };
 
 class TickerOrderBookPublishers {
@@ -134,5 +156,10 @@ std::string make_publisher_segment_name(std::string_view prefix,
                                         std::string_view profile,
                                         std::string_view symbol,
                                         std::string_view stream);
+std::string make_multiplex_segment_name(std::string_view prefix,
+                                        std::string_view venue,
+                                        std::string_view product,
+                                        std::string_view stream,
+                                        std::size_t shard);
 
 } // namespace mds::publish

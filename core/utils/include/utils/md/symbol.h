@@ -47,13 +47,13 @@ struct TransparentStringHash {
 class InstrumentRegistry {
  public:
   RegistryResult Register(const Instrument& instrument);
-  [[nodiscard]] const Instrument* Find(std::uint32_t id) const noexcept;
+  [[nodiscard]] const Instrument* Find(InstrumentId id) const noexcept;
   [[nodiscard]] const Instrument* Find(std::string_view key) const noexcept;
   [[nodiscard]] std::size_t size() const noexcept { return instruments_.size(); }
 
  private:
   std::deque<Instrument> instruments_;
-  std::unordered_map<std::uint32_t, std::size_t> by_id_;
+  std::unordered_map<InstrumentId, std::size_t> by_id_;
   std::unordered_map<std::string, std::size_t, TransparentStringHash, std::equal_to<>> by_key_;
 };
 

@@ -1,0 +1,63 @@
+mds:
+  source: external_shm
+  segments:
+    - name: /selfquant.mds.binance.spot.btcusdt.ticker.2
+      expected_reader_budget: 1
+      heartbeat_interval_ns: 500000000
+  required_instruments:
+    - {venue: binance, product: spot, symbol: BTCUSDT}
+
+oms:
+  threading: single_thread
+  idle_policy: busy_spin
+  strategy_cpu: -1
+  io_cpu: -1
+  numa_node: -1
+  session_epoch: 1
+  event_budget: 64
+  metric_sample_rate: 100
+  startup_timeout_ns: 10000000000
+  memory:
+    lock_pages: false
+    prefault: true
+    strict: false
+  socket:
+    tcp_nodelay: true
+    receive_buffer_bytes: 0
+    send_buffer_bytes: 0
+    busy_poll_us: 0
+  capacities:
+    command_queue: 1024
+    update_queue: 4096
+    market_data_queue: 4096
+    order_table: 4096
+    position_table: 1024
+    fill_dedup: 8192
+    timer_table: 1024
+  instruments:
+    - instrument_id: 1
+      venue: binance
+      product: perpetual
+      symbol: BTCUSDT
+      price_scale: 2
+      quantity_scale: 3
+      tick_size: 1
+      lot_size: 1
+  venues:
+    binance_usdm:
+      enabled: false
+      account_id: 1
+      rest: {host: testnet.binancefuture.com, port: "443"}
+      trading_websocket: {host: testnet.binancefuture.com, port: "443"}
+      user_websocket: {host: stream.binancefuture.com, port: "443"}
+      api_key_env: BINANCE_USDM_API_KEY
+      secret_env: BINANCE_USDM_SECRET
+
+strategy:
+  quote_spread_bps: 8
+  max_position: 500
+  legs:
+    - symbol: BTCUSDT
+      weight: 1.0
+    - symbol: ETHUSDT
+      weight: 0.5

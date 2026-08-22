@@ -143,7 +143,8 @@ fi
 if [[ "${CLEAN}" == true ]]; then
   [[ "${BUILD_CORE}" == false ]] ||
     rm -rf "${REPO_ROOT}/core/build/release-bootstrap" \
-           "${REPO_ROOT}/core/build/debug-bootstrap"
+           "${REPO_ROOT}/core/build/debug-bootstrap" \
+           "${REPO_ROOT}/strategys/poly-mm/build-bootstrap"
   [[ "${BUILD_BACKEND}" == false ]] ||
     rm -rf "${REPO_ROOT}/backend/build"
   [[ "${BUILD_WEB}" == false ]] ||
@@ -156,13 +157,28 @@ if [[ "${BUILD_CORE}" == true ]]; then
     core_build_name="debug-bootstrap"
   fi
   core_build_dir="${REPO_ROOT}/core/build/${core_build_name}"
+  core_install_dir="${core_build_dir}/install"
+  strategy_build_dir="${REPO_ROOT}/strategys/poly-mm/build-bootstrap"
   cmake -S "${REPO_ROOT}/core" -B "${core_build_dir}" -G Ninja \
     "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}" \
     -DSELF_QUANT_ENABLE_WERROR=ON \
+    -DSELF_QUANT_ENABLE_OMS=ON \
+    -DSELF_QUANT_ENABLE_STRATEGYFRAME=ON \
+    -DSELF_QUANT_INSTALL=ON \
+    "-DCMAKE_INSTALL_PREFIX=${core_install_dir}" \
     "${CORE_CMAKE_ARGS[@]}"
   cmake --build "${core_build_dir}" --parallel "${JOBS}"
   if [[ "${RUN_TESTS}" == true ]]; then
     ctest --test-dir "${core_build_dir}" --output-on-failure
+  fi
+  cmake --install "${core_build_dir}"
+  cmake -S "${REPO_ROOT}/strategys/poly-mm" -B "${strategy_build_dir}" \
+    -G Ninja \
+    "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}" \
+    "-DCMAKE_PREFIX_PATH=${core_install_dir}"
+  cmake --build "${strategy_build_dir}" --parallel "${JOBS}"
+  if [[ "${RUN_TESTS}" == true ]]; then
+    ctest --test-dir "${strategy_build_dir}" --output-on-failure
   fi
 fi
 
@@ -172,6 +188,13 @@ if [[ "${BUILD_BACKEND}" == true ]]; then
     go mod download
     mkdir -p build/bin
     go build -o build/bin/funding-service ./cmd/funding-service
+    go build -o build/bin/account-service ./cmd/account-service
+    go build -o build/bin/polymarket-service ./cmd/polymarket-service
+    go build -o build/bin/report-service ./cmd/report-service
+    go build -o build/bin/trader-service ./cmd/trader-service
+    go build -o build/bin/ai-service ./cmd/ai-service
+    go build -o build/bin/aggdata-service ./cmd/aggdata-service
+    go build -o build/bin/spread-service ./cmd/spread-service
     go build -o build/bin/api-gateway ./cmd/api-gateway
     if [[ "${RUN_TESTS}" == true ]]; then
       go test ./...

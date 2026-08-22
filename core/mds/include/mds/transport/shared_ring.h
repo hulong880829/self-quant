@@ -12,7 +12,7 @@
 namespace mds::transport {
 
 inline constexpr std::uint64_t kRingMagic = 0x5344514d44535247ULL;
-inline constexpr std::uint32_t kRingSchemaMajor = 4;
+inline constexpr std::uint32_t kRingSchemaMajor = 5;
 inline constexpr std::uint32_t kPaddingType = 0;
 inline constexpr std::size_t kMaxReaders = 64;
 
@@ -169,6 +169,8 @@ public:
   [[nodiscard]] api::RingMode mode() const noexcept;
   [[nodiscard]] std::uint32_t registry_generation() const noexcept;
   [[nodiscard]] std::uint32_t active_reader_count() const noexcept;
+  [[nodiscard]] std::uint64_t ring_bytes() const noexcept;
+  [[nodiscard]] std::uint64_t max_record_bytes() const noexcept;
   [[nodiscard]] std::string_view name() const noexcept { return name_; }
 
 private:

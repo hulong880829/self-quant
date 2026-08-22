@@ -1,0 +1,39 @@
+{
+  "venue": "binance",
+  "product": "usd-m",
+  "event": "listen_key_lifecycle",
+  "retrieval_date": "2026-08-14",
+  "status": "doc-derived-unverified-live",
+  "verification_tier": "doc-derived-unverified-live",
+  "fixtures": [
+    {
+      "id": "binance.usdm.listen_key.create.v1",
+      "source_url": "https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams/Start-a-New-User-Data-Stream",
+      "request": {
+        "method": "POST",
+        "path": "/fapi/v1/listenKey"
+      },
+      "response": {
+        "listenKey": "listen-key-fixture"
+      }
+    },
+    {
+      "id": "binance.usdm.listen_key.keepalive.v1",
+      "source_url": "https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams/Keepalive-a-User-Data-Stream",
+      "request": {
+        "method": "PUT",
+        "path": "/fapi/v1/listenKey"
+      },
+      "response": {}
+    },
+    {
+      "id": "binance.usdm.listen_key.close.v1",
+      "source_url": "https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams/Close-User-Data-Stream",
+      "request": {
+        "method": "DELETE",
+        "path": "/fapi/v1/listenKey"
+      },
+      "response": {}
+    }
+  ]
+}

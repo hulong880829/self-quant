@@ -1,0 +1,96 @@
+{
+  "venue": "binance",
+  "product": "usd-m",
+  "retrieval_date": "2026-08-14",
+  "status": "doc-derived-unverified-live",
+  "verification_tier": "doc-derived-unverified-live",
+  "fixtures": [
+    {
+      "id": "binance.usdm.place_order.ack.v1",
+      "event": "place_order",
+      "source_url": "https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Order",
+      "request": {
+        "method": "POST",
+        "path": "/fapi/v1/order",
+        "parameters": {
+          "symbol": "BTCUSDT",
+          "side": "BUY",
+          "type": "LIMIT",
+          "timeInForce": "GTC",
+          "quantity": "0.001",
+          "price": "30000",
+          "timestamp": 1591702613943
+        }
+      },
+      "response": {
+        "clientOrderId": "testOrder",
+        "cumQty": "0",
+        "cumQuote": "0",
+        "executedQty": "0",
+        "orderId": 22542179,
+        "avgPrice": "0.00000",
+        "origQty": "10",
+        "price": "0",
+        "reduceOnly": false,
+        "side": "BUY",
+        "positionSide": "SHORT",
+        "status": "NEW",
+        "stopPrice": "0",
+        "closePosition": false,
+        "symbol": "BTCUSDT",
+        "timeInForce": "GTC",
+        "type": "TRAILING_STOP_MARKET",
+        "origType": "TRAILING_STOP_MARKET",
+        "activatePrice": "9020",
+        "priceRate": "0.3",
+        "updateTime": 1566818724722,
+        "workingType": "CONTRACT_PRICE",
+        "priceProtect": false,
+        "priceMatch": "NONE",
+        "selfTradePreventionMode": "NONE",
+        "goodTillDate": 0
+      }
+    },
+    {
+      "id": "binance.usdm.cancel_order.v1",
+      "event": "cancel_order",
+      "source_url": "https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Cancel-Order",
+      "request": {
+        "method": "DELETE",
+        "path": "/fapi/v1/order",
+        "parameters": {
+          "symbol": "BTCUSDT",
+          "orderId": 283194212,
+          "timestamp": 1591702613943
+        }
+      },
+      "response": {
+        "clientOrderId": "myOrder1",
+        "cumQty": "0",
+        "cumQuote": "0",
+        "executedQty": "0",
+        "orderId": 283194212,
+        "origQty": "11",
+        "price": "0.089853",
+        "reduceOnly": false,
+        "side": "BUY",
+        "positionSide": "SHORT",
+        "status": "CANCELED",
+        "stopPrice": "0",
+        "closePosition": false,
+        "symbol": "BTCUSDT",
+        "timeInForce": "GTC",
+        "type": "TRAILING_STOP_MARKET",
+        "origType": "TRAILING_STOP_MARKET",
+        "activatePrice": "0.089838",
+        "priceRate": "0.3",
+        "updateTime": 1571110484038,
+        "workingType": "CONTRACT_PRICE",
+        "priceProtect": false,
+        "priceMatch": "NONE",
+        "selfTradePreventionMode": "NONE",
+        "goodTillDate": 0
+      }
+    }
+  ]
+}

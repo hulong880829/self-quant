@@ -1,0 +1,139 @@
+syntax = "proto3";
+
+package report.v1;
+
+option go_package = "selfquant/backend/gen/report/v1;reportv1";
+
+import "google/protobuf/timestamp.proto";
+
+service ReportService {
+  rpc ListProducts(ListProductsRequest) returns (ListProductsResponse);
+  rpc GetProductDetail(GetProductDetailRequest) returns (GetProductDetailResponse);
+  rpc ListDailySnapshots(ListDailySnapshotsRequest) returns (ListDailySnapshotsResponse);
+  rpc ListCashFlows(ListCashFlowsRequest) returns (ListCashFlowsResponse);
+  rpc CreateCashFlow(CreateCashFlowRequest) returns (CreateCashFlowResponse);
+  rpc RecomputeProduct(RecomputeProductRequest) returns (RecomputeProductResponse);
+}
+
+message Product {
+  int64 id = 1;
+  string name = 2;
+  string base_currency = 3;
+  string timezone = 4;
+  bool active = 5;
+  int32 account_count = 6;
+  string latest_equity_usd = 7;
+  string latest_pnl_usd = 8;
+  string latest_return_rate = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  string display_name = 11;
+  string category = 12;
+  string strategy = 13;
+  string inception_date = 14;
+}
+
+message DailySnapshot {
+  int64 id = 1;
+  int64 product_id = 2;
+  string report_date = 3;
+  string opening_equity_usd = 4;
+  string closing_equity_usd = 5;
+  string net_cash_flow_usd = 6;
+  string pnl_usd = 7;
+  string return_rate = 8;
+  int32 sample_count = 9;
+  string status = 10;
+  google.protobuf.Timestamp finalized_at = 11;
+  string absolute_return = 12;
+  string annualized_return = 13;
+  string annualized_7d = 14;
+  string annualized_30d = 15;
+  string max_drawdown = 16;
+  string sharpe = 17;
+  string volume_24h_usd = 18;
+}
+
+message CashFlow {
+  int64 id = 1;
+  int64 product_id = 2;
+  string flow_date = 3;
+  string amount_usd = 4;
+  string flow_type = 5;
+  string note = 6;
+  bool confirmed = 7;
+  string confirmed_by = 8;
+  google.protobuf.Timestamp confirmed_at = 9;
+  string created_by = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp occurred_at = 12;
+}
+
+message ListProductsRequest {
+  string token = 1;
+}
+
+message ListProductsResponse {
+  repeated Product items = 1;
+}
+
+message GetProductDetailRequest {
+  string token = 1;
+  int64 product_id = 2;
+}
+
+message GetProductDetailResponse {
+  Product product = 1;
+  DailySnapshot latest_snapshot = 2;
+  repeated CashFlow recent_cash_flows = 3;
+  repeated DailySnapshot daily = 4;
+}
+
+message ListDailySnapshotsRequest {
+  string token = 1;
+  int64 product_id = 2;
+  string from_date = 3;
+  string to_date = 4;
+  int32 limit = 5;
+}
+
+message ListDailySnapshotsResponse {
+  repeated DailySnapshot items = 1;
+}
+
+message ListCashFlowsRequest {
+  string token = 1;
+  int64 product_id = 2;
+  string from_date = 3;
+  string to_date = 4;
+  int32 limit = 5;
+}
+
+message ListCashFlowsResponse {
+  repeated CashFlow items = 1;
+}
+
+message CreateCashFlowRequest {
+  string token = 1;
+  int64 product_id = 2;
+  string flow_date = 3;
+  string amount_usd = 4;
+  string flow_type = 5;
+  string note = 6;
+  bool confirmed = 7;
+  google.protobuf.Timestamp occurred_at = 8;
+}
+
+message CreateCashFlowResponse {
+  CashFlow cash_flow = 1;
+}
+
+message RecomputeProductRequest {
+  string token = 1;
+  int64 product_id = 2;
+  string from_date = 3;
+  string to_date = 4;
+}
+
+message RecomputeProductResponse {
+  int32 snapshots_written = 1;
+}

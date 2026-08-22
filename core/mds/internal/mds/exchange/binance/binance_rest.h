@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -60,6 +61,10 @@ public:
   bool parse_exchange_info(Profile profile, std::string_view json,
                            std::string_view symbol, InstrumentMetadata &out,
                            std::string &error);
+  bool parse_exchange_info(
+      Profile profile, std::string_view json,
+      std::span<const std::string_view> symbols,
+      std::vector<InstrumentMetadata> &out, std::string &error);
   bool parse_depth(Profile profile, std::string_view json,
                    const InstrumentMetadata &metadata, DepthSnapshot &out,
                    std::string &error);

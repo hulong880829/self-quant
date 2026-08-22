@@ -1,0 +1,74 @@
+clickhouse_bbo:
+  host: 127.0.0.1
+  service: "8443"
+  database: market_data
+  table: crypto_bbo
+  user: bbo_writer
+  password_env: CLICKHOUSE_BBO_PASSWORD
+
+  # 必须与 Binance、OKX producer 的 shared_memory.prefix 一致
+  shm_prefix: /selfquant.mds.bbo
+
+  # 每个标的每秒保存一次最新 BBO
+  sample_interval_ms: 1000
+  # 允许短暂行情抖动，但停止重复写入超过 5 秒未更新的 BBO
+  stale_cutoff_ms: 5000
+  flush_interval_ms: 1000
+  request_timeout_ms: 5000
+
+  batch_rows: 2000
+  queue_rows: 20000
+  unresolved_rows: 2048
+
+  selectors:
+    - venue: binance
+      product: spot
+      shard: 0
+    - venue: binance
+      product: spot
+      shard: 1
+    - venue: binance
+      product: spot
+      shard: 2
+    - venue: binance
+      product: spot
+      shard: 3
+
+    - venue: binance
+      product: perpetual
+      shard: 0
+    - venue: binance
+      product: perpetual
+      shard: 1
+    - venue: binance
+      product: perpetual
+      shard: 2
+    - venue: binance
+      product: perpetual
+      shard: 3
+
+    - venue: okx
+      product: spot
+      shard: 0
+    - venue: okx
+      product: spot
+      shard: 1
+    - venue: okx
+      product: spot
+      shard: 2
+    - venue: okx
+      product: spot
+      shard: 3
+
+    - venue: okx
+      product: perpetual
+      shard: 0
+    - venue: okx
+      product: perpetual
+      shard: 1
+    - venue: okx
+      product: perpetual
+      shard: 2
+    - venue: okx
+      product: perpetual
+      shard: 3

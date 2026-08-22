@@ -4,6 +4,7 @@ project(self_quant_utils VERSION 1.0.0 LANGUAGES CXX)
 find_package(Threads REQUIRED)
 
 add_library(self_quant_utils STATIC
+  src/decimal.cpp
   src/hardware.cpp
   src/order_book.cpp
   src/symbol.cpp

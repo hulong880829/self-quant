@@ -45,13 +45,13 @@ class alignas(64) BboOverlay {
   std::uint64_t receive_tsc_{};
   std::uint32_t divergence_count_{};
   std::uint32_t generation_{};
-  std::uint32_t instrument_id_{};
+  utils::md::InstrumentId instrument_id_{};
   SequenceDomain domain_{SequenceDomain::Shared};
   std::uint8_t source_id_{};
   std::uint8_t valid_{};
 };
 
-static_assert(sizeof(BboOverlay) == 64);
+static_assert(sizeof(BboOverlay) == 128);
 static_assert(alignof(BboOverlay) == 64);
 
 }  // namespace mds::book

@@ -134,7 +134,8 @@ BookState OrderBook::state() const noexcept {
   return BookState::Building;
 }
 
-std::optional<BboEvent> OrderBook::Bbo(std::uint32_t instrument_id) const noexcept {
+std::optional<BboEvent> OrderBook::Bbo(
+    InstrumentId instrument_id) const noexcept {
   if (state() != BookState::Live) return std::nullopt;
   const auto bid = bids_.Best();
   const auto ask = asks_.Best();

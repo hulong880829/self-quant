@@ -79,7 +79,8 @@ export DEBIAN_FRONTEND=noninteractive
 "${SUDO[@]}" apt-get update
 "${SUDO[@]}" apt-get install -y --no-install-recommends \
   bash build-essential ca-certificates cmake coreutils curl git \
-  libsimdjson-dev libssl-dev ninja-build pkg-config python3
+  libsimdjson-dev libssl-dev libyaml-cpp-dev libzstd-dev ninja-build \
+  pkg-config python3
 
 version_ge() {
   [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]]
@@ -105,7 +106,7 @@ install_go() {
   curl --fail --location --retry 3 \
     "https://go.dev/dl/${archive}" -o "${TMP_DIR}/${archive}"
   curl --fail --location --retry 3 \
-    "https://go.dev/dl/${archive}.sha256" -o "${TMP_DIR}/${archive}.sha256"
+    "https://dl.google.com/go/${archive}.sha256" -o "${TMP_DIR}/${archive}.sha256"
   printf '%s  %s\n' "$(tr -d '[:space:]' < "${TMP_DIR}/${archive}.sha256")" \
     "${TMP_DIR}/${archive}" | sha256sum --check -
 

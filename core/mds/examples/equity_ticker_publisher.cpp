@@ -109,7 +109,7 @@ void copy_text(std::array<char, Size> &destination, std::string_view source) {
   destination[length] = '\0';
 }
 
-utils::md::EventHeader event_header(std::uint32_t instrument_id,
+utils::md::EventHeader event_header(utils::md::InstrumentId instrument_id,
                                     std::uint64_t source_sequence) {
   return {.instrument_id = instrument_id,
           .book_generation = 1,

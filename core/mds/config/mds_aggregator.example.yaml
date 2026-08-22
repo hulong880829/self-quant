@@ -1,0 +1,51 @@
+# 聚合器只消费现有行情 Ring，不建立交易所连接。
+shared_memory:
+  prefix: /selfquant.mds
+  output:
+    ring_bytes: 1048576
+    max_record_bytes: 32768
+    max_readers: 32
+    unlink_on_shutdown: false
+
+books:
+  - symbol: BTCUSDT
+    product: PERPETUAL
+    base_asset: BTC
+    quote_asset: USDT
+    outputs:
+      aggbbo: true
+      aggorderbook: true
+    members:
+      - venue: binance
+        source_quote_asset: USDT
+        # To consume producer multiplex rings instead:
+        # input_layout: multiplex
+        # shard_count: 4
+      - venue: okx
+        source_quote_asset: USDT
+        # 可选：显式 TTL 覆盖；不配置时仍按 venue capability 自动派生。
+        # bbo_ttl_ms: 300
+        # orderbook_ttl_ms: 300
+      - venue: bybit
+        source_quote_asset: USDT
+      - venue: bitget
+        source_quote_asset: USDT
+      - venue: gate
+        source_quote_asset: USDT
+      - venue: hyperliquid
+        source_quote_asset: USDC
+    cross_skew:
+      # 默认只观测并输出 skew/cross 证据，不自动删除可能真实的套利报价。
+      observe_only: true
+      threshold_us: 50000
+    # 成员 TTL 默认由各 venue 的 capability 推送周期自动派生，也可在
+    # members[] 中分别用 bbo_ttl_ms/orderbook_ttl_ms 覆盖。
+    # raw 窗口=max(TTL,min(10*TTL,5秒))，无需也不能在 YAML 单独配置。
+    # 开启后必须先由 mds_producer 发布 Binance Spot USDCUSDT ticker Ring。
+    quote_conversion:
+      enabled: true
+      from_quote: USDC
+      to_quote: USDT
+      source: BINANCE_SPOT_USDCUSDT
+      max_age_ms: 100
+      max_depeg_bps: 200

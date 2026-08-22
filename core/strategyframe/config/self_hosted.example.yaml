@@ -1,0 +1,45 @@
+mds:
+  source: self_hosted
+  producer:
+    config_path: core/mds/config/mds_producer.example.yaml
+  required_instruments:
+    - {venue: binance, product: spot, symbol: BTCUSDT}
+
+oms:
+  threading: multi_io_thread
+  idle_policy: adaptive
+  strictness: relaxed
+  session_epoch: 1
+  event_budget: 64
+  metric_sample_rate: 100
+  startup_timeout_ns: 10000000000
+  memory:
+    lock_pages: false
+    prefault: true
+    strict: false
+  capacities:
+    command_queue: 1024
+    update_queue: 4096
+    market_data_queue: 4096
+    order_table: 4096
+    position_table: 1024
+    fill_dedup: 8192
+    timer_table: 1024
+  instruments:
+    - instrument_id: 1
+      venue: binance
+      product: spot
+      symbol: BTCUSDT
+      price_scale: 2
+      quantity_scale: 6
+      tick_size: 1
+      lot_size: 1
+  venues:
+    binance_spot:
+      enabled: false
+      account_id: 1
+      api_key_env: BINANCE_SPOT_API_KEY
+      secret_env: BINANCE_SPOT_SECRET
+
+strategy:
+  name: self_hosted_smoke

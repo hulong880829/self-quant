@@ -7,14 +7,29 @@
 
 namespace utils::md {
 
-enum class Venue : std::uint16_t { Unknown = 0, Binance = 1, Okx = 2, Bybit = 3, Gate = 4, Bitget = 5, Polymarket = 6, Sse = 7 };
+using InstrumentId = std::uint64_t;
+
+enum class Venue : std::uint16_t {
+  Unknown = 0,
+  Binance = 1,
+  Okx = 2,
+  Bybit = 3,
+  Gate = 4,
+  Bitget = 5,
+  Polymarket = 6,
+  Sse = 7,
+  Hyperliquid = 8
+};
 enum class ProductType : std::uint8_t { Unknown = 0, Spot = 1, Perpetual = 2, Future = 3, BinaryOption = 4, Equity = 5 };
 enum class Side : std::uint8_t { Bid = 1, Ask = 2 };
 enum class BookState : std::uint8_t { Empty = 0, Building = 1, Live = 2, Invalid = 3, NeedsRestart = 4 };
 enum class MessageType : std::uint16_t {
   Bbo = 1, Ticker = 2, BookDelta = 3, SnapshotBegin = 4,
-  SnapshotChunk = 5, SnapshotEnd = 6, InstrumentUpdate = 7
+  SnapshotChunk = 5, SnapshotEnd = 6, InstrumentUpdate = 7,
+  AggBbo = 8, AggOrderBook = 9, InstrumentCatalog = 10
 };
+
+constexpr std::uint8_t kInstrumentRefineBookTick = 1U << 0U;
 
 struct Fixed {
   std::int64_t mantissa{};
@@ -25,12 +40,14 @@ using Price = Fixed;
 using Quantity = Fixed;
 
 struct Instrument {
-  std::uint32_t instrument_id{};
+  InstrumentId instrument_id{};
   Venue venue{};
   ProductType product_type{};
   std::uint8_t price_scale{};
   std::uint8_t quantity_scale{};
-  std::array<std::uint8_t, 3> reserved0{};
+  std::uint8_t contract_multiplier_scale{};
+  std::uint8_t flags{};
+  std::uint8_t reserved0{};
   std::int64_t tick_size{};
   std::int64_t lot_size{};
   std::int64_t contract_multiplier{};
@@ -44,7 +61,7 @@ struct Instrument {
 };
 
 struct EventHeader {
-  std::uint32_t instrument_id{};
+  InstrumentId instrument_id{};
   std::uint32_t book_generation{};
   std::uint64_t source_seq{};
   std::uint64_t bus_seq{};
@@ -87,8 +104,33 @@ struct BookSnapshotChunk {
 struct BookSnapshotEnd { EventHeader header{}; std::uint32_t received_levels{}; std::uint32_t checksum{}; };
 struct InstrumentUpdate { EventHeader header{}; Instrument instrument{}; };
 
+struct InstrumentCatalog {
+  InstrumentId instrument_id{};
+  Venue venue{};
+  ProductType product_type{};
+  std::uint8_t price_scale{};
+  std::uint8_t quantity_scale{};
+  std::uint8_t contract_multiplier_scale{};
+  std::uint8_t flags{};
+  std::uint8_t signature_type{};
+  std::uint8_t negative_risk{};
+  std::array<std::uint8_t, 5> reserved{};
+  std::int64_t tick_size{};
+  std::int64_t lot_size{};
+  std::int64_t contract_multiplier{};
+  std::uint64_t expiry_unix_ns{};
+  std::array<char, 16> base_asset{};
+  std::array<char, 16> quote_asset{};
+  std::array<char, 16> settle_asset{};
+  std::array<char, 64> canonical_symbol{};
+  std::array<char, 64> market_slug{};
+  std::array<char, 80> venue_symbol{};
+  std::array<char, 72> condition_id{};
+  std::array<char, 16> outcome{};
+};
+
 static_assert(sizeof(Fixed) == 16);
-static_assert(sizeof(EventHeader) == 56);
+static_assert(sizeof(EventHeader) == 64);
 static_assert(static_cast<std::uint16_t>(MessageType::Bbo) == 1);
 static_assert(static_cast<std::uint16_t>(MessageType::Ticker) == 2);
 static_assert(static_cast<std::uint16_t>(MessageType::BookDelta) == 3);
@@ -96,6 +138,7 @@ static_assert(static_cast<std::uint16_t>(MessageType::SnapshotBegin) == 4);
 static_assert(static_cast<std::uint16_t>(MessageType::SnapshotChunk) == 5);
 static_assert(static_cast<std::uint16_t>(MessageType::SnapshotEnd) == 6);
 static_assert(static_cast<std::uint16_t>(MessageType::InstrumentUpdate) == 7);
+static_assert(static_cast<std::uint16_t>(MessageType::InstrumentCatalog) == 10);
 static_assert(std::is_trivially_copyable_v<Instrument>);
 static_assert(std::is_trivially_copyable_v<BboEvent>);
 static_assert(std::is_trivially_copyable_v<TickerEvent>);
@@ -104,6 +147,7 @@ static_assert(std::is_trivially_copyable_v<BookSnapshotBegin>);
 static_assert(std::is_trivially_copyable_v<BookSnapshotChunk>);
 static_assert(std::is_trivially_copyable_v<BookSnapshotEnd>);
 static_assert(std::is_trivially_copyable_v<InstrumentUpdate>);
+static_assert(std::is_trivially_copyable_v<InstrumentCatalog>);
 static_assert(std::is_standard_layout_v<BookSnapshotChunk>);
 
 }  // namespace utils::md

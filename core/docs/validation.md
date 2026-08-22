@@ -84,6 +84,74 @@
 
 CRC、JSON/SBE symbol/exponent 与 buffer drain 覆盖曾由父代理在 Debug/Werror、ASan+UBSan/Werror 和 Release/Werror 三种构建中分别执行，均为 2/2 tests passed。新增 `SequenceArbiter::submit_each` 固定 callback 覆盖后，最新实际确认的是 Debug/Werror 2/2 PASS；不得把较早的 ASan/Release 记录外推为已覆盖这项新增测试。
 
+### 2.3 `oms_core_tests`
+
+源码：`oms/tests/oms_core_tests.cpp`。使用抛异常的 `REQUIRE`，Release 的
+`NDEBUG` 不会禁用检查。当前离线覆盖：
+
+1. 公共 POD：固定容量 client/venue/trade ID、request token、64-bit generation
+   order handle、request/event/order update/fill update 的
+   trivially-copyable、standard-layout、size 和 enum ABI 契约；
+2. immutable registry：底层 `utils::md::InstrumentRegistry`、duplicate/freeze、
+   无交易 side metadata 时 untradeable，以及 Polymarket 256-bit
+   condition/token、outcome、negative-risk、signature、minimum size 和 taker delay；
+3. `OrderTable`：固定 slab/free-list/generation、request/client/venue 三类
+   预分配 open-addressed index、容量、冲突、幂等 venue binding、erase 和 ABA；
+4. state engine：本地 submit/reject、venue new ack/reject、early cancel、
+   cancel ack/reject、expire、reconcile、fill-before-ack、terminal 后 late fill，
+   以及 handle/token/client/venue 多标识一致性和 venue-only/client-only 回报；
+5. fill：每笔独立 `FillUpdate`（含一次订单超过 4 笔成交）、fixed-capacity
+   trade dedup、相同 duplicate 忽略、冲突 duplicate、overfill、scale 和
+   精确累计 128-bit notional、checked weighted-average 边界和不同价格多笔成交；
+6. 固定 seed 的确定性随机状态序列；
+7. `oms/tests/fixtures/manifest/fixture_manifest.json` 的 schema、tier、Binance
+   与 Polymarket 条目结构检查，不引入 JSON 依赖；
+8. allocator instrumentation 下 submit/ack/fill/cancel 热路径为 0 次 heap
+   allocation。
+
+fixture tier 语义：`doc-derived-unverified-live` 只表示按官方文档采集，
+`implementation-derived` 表示来自既有实现/测试，
+`implementation-derived-deterministic` 表示可重复的签名向量；这些 tier
+均不自动等价于真实 venue 联调 PASS。
+
+### 2.4 OMS phase 3 runtime
+
+`oms_fixed_spsc_ring_tests`、`oms_runtime_primitives_tests`、
+`oms_runtime_tests` 和 `oms_dual_mode_tests` 覆盖：
+
+1. 固定容量 SPSC ring 的 reserve/cancel/commit、consumer peek cancel、
+   wrap、并发传输和 runtime POD payload；
+2. eventfd/timerfd flags、drain/arm、deadline 顺序、取消、容量与 ABA handle；
+3. Inline 与 Dedicated-I/O 的同 lane place/cancel FIFO、session
+   epoch/sequence、lane round-robin，以及某 lane 输出背压不阻塞其他 lane；
+4. 状态变更前预留最多两个 venue update，输出满时保留单个 pending venue
+   event；command 背压时保留 FIFO 头而不是消费丢弃；
+5. Inline `service_io` 的 poll/有限等待/无限等待和 owner-thread guard；
+   Dedicated-I/O 的 enqueue-only submit、`InvalidMode`、eventfd 唤醒和 shutdown；
+6. normalized replay 的 delay/disconnect/reconnect、decimal scale 解析，以及
+   Inline/Dedicated 完整 update byte parity。
+
+Release 测试目标显式取消 `NDEBUG` 对两个仍使用 `assert` 的 primitive test
+executables 的影响，避免检查及带副作用表达式被编译掉。Runtime/public API
+不暴露 internal headers；真实交易所 transport、鉴权、重连策略仍属于后续
+venue adapter 阶段，不由 fake replay PASS 外推。
+
+### 2.5 OMS StrategyFrame example 与 queue benchmark
+
+`oms_strategy_frame_example` 只使用公共 `ExecutionChannel` facade，覆盖
+lane 初始化、place、Inline `service_io`、策略线程 `drain_updates` 与显式
+shutdown 的最小集成形状。Dedicated-I/O 的等价契约是等待
+`notification_fd`，不调用 `service_io`。
+
+`oms_benchmark` 对 Inline 与 DedicatedIo 分别串行量测 place 调用开始到匹配
+`Submitted` update 被 drain 的耗时，输出 p50/p95/p99/p99.9/max、queue high
+water，以及短时 idle wall/process-CPU 观察。它明确标记
+`offline_fake_loopback` 与 `production_slo:false`；该结果包含虚拟机调度、时钟、
+poll 和 callback 成本，不接触 venue，也不替代第 7 节生产性能 Gate。
+
+Polymarket 公共构造路径只接受 signature type 0 与 type 3；type 1 被拒绝。
+无授权 credentials 时，外部 Binance/Polymarket acceptance 为 **PENDING**。
+
 ## 3. 当前本地执行命令
 
 ```bash
@@ -125,6 +193,22 @@ mkdir -p artifacts/validation
   >artifacts/validation/utils-tests.log 2>&1
 ./build/mds/mds_tests \
   >artifacts/validation/mds-tests.log 2>&1
+```
+
+OMS Release 双矩阵：
+
+```bash
+cmake -S . -B build-oms-off -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DSELF_QUANT_ENABLE_MDS=OFF -DSELF_QUANT_ENABLE_OMS=ON \
+  -DSELF_QUANT_ENABLE_WERROR=ON -DSELF_QUANT_INSTALL=OFF
+cmake --build build-oms-off -j2
+ctest --test-dir build-oms-off --output-on-failure
+
+cmake -S . -B build-oms-on -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DSELF_QUANT_ENABLE_MDS=ON -DSELF_QUANT_ENABLE_OMS=ON \
+  -DSELF_QUANT_ENABLE_WERROR=ON -DSELF_QUANT_INSTALL=OFF
+cmake --build build-oms-on -j2
+ctest --test-dir build-oms-on --output-on-failure
 ```
 
 注意：`assert` 在定义 `NDEBUG` 时会被编译掉。CMake 的 Release 通常定义 `NDEBUG`，因此 `utils_tests.cpp` 的大部分运行时断言可能失效。上线 Gate 应把测试改为不依赖 `assert` 的框架，或至少在未定义 `NDEBUG` 的配置运行；`mds_tests` 的 `require` 不受此影响。
@@ -195,6 +279,40 @@ mkdir -p artifacts/validation
 - REST 锚点逐档比对和确定性回放。
 
 每项必须保存 capture、REST 原文、日志、metrics、compare report。当前已有 JSON combined-stream daemon、REST snapshot orchestrator 和 wire consumer；capture/replay/REST compare、Spot 公网 SBE 与 24h 轮换证据仍未补齐，因此完整公网 Gate 仍未全部 PASS。
+
+### 5.3 Polymarket rolling MDS live smoke
+
+该 Gate 必须以隔离 producer 部署执行，不能与跨 venue aggregator 共进程，
+也不能把 alias 当作 OMS 可交易 symbol。运行期间固定消费 `BTC5MUP` 与
+`BTC5MDOWN` 的 ticker/orderbook SHM 段，至少跨越两个完整五分钟 rollover：
+
+- 保存每轮 Gamma exact-market/token 异步发现证据，但确认实时行情仅来自 WSS；
+- 覆盖 WSS `book` snapshot、`price_change`、BBO、tick-size 与 lifecycle；
+- 每次 slug 变化必须同时观察到 `book_generation` 递增、
+  `InstrumentUpdate(Building)`、旧 book 清空及新 snapshot 后恢复 Live；
+- 验证固定段名、稳定 alias/`instrument_id`，且 token ID 未进入 wire；
+- 注入或观察断连及 stale timeout，确认旧行情立即退出 Live、不会伪刷新，
+  重连后以新 generation 重建；
+- 对两次 rollover 前后 BBO/book 做有界新鲜度、单调 generation、无跨市场
+  档位残留检查，并保存日志、WSS capture/hash 与 SHM consumer 输出。
+
+2026-08-19 UTC 在隔离 prefix `/selfquant.mds.poly` 上完成 producer 侧
+650 秒公网验收（dirty worktree，Linux 6.17，GCC 13.3，RelWithDebInfo）：
+
+```bash
+./build/mds/mds_producer \
+  --config mds/config/mds_polymarket.example.yaml --duration 650
+```
+
+退出码为 0；期间 `discovery_requests=2`、`discovery_failures=0`、
+`market_rollovers=2`、`reconnects=0`、`parse_errors=0`、
+`publish_errors=0`、`heartbeat_timeouts=0`，共发布 497038 次 depth 与
+489068 次 ticker 更新。该结果确认异步 Gamma 预发现、WSS 行情、动态订退及
+两个连续 rollover 的 producer 路径可运行。
+
+完整 Gate 仍为 **PARTIAL**：本次未同时保存独立 SHM consumer 的逐记录输出、
+WSS capture/hash 和故障注入证据，因此不能把 producer 进程 PASS 外推为第
+289–297 行全部验收项均已完成。
 
 ## 6. 故障注入 Gate
 
@@ -270,7 +388,8 @@ OpenSSL/simdjson 等依赖版本和 sanitizer suppressions 必须随证据保存
 | USD-M 公网切片 | JSON `bookTicker` + `depth@100ms` 10 分钟 smoke PASS；完整 capture/compare 未完成 | PASS |
 | Capture/replay/REST compare | `BLOCKED`：executable 不存在 | PASS |
 | 故障注入 | 少量离线覆盖 | PASS |
-| 2×峰值性能 | benchmark 不存在 | PASS |
+| OMS queue microbenchmark | offline fake loopback，输出 p50/p95/p99/p99.9 与 idle 观察 | 仅回归证据；不作为生产 SLO |
+| 2×峰值性能 | OMS benchmark 不覆盖录制生产等价输入或 venue 网络 | PASS |
 | 24h | daemon/orchestrator 已存在；`NOT RUN` | PASS |
 | 7 天长稳 | `NOT RUN`；capture/compare/监控工具仍不完整 | PASS |
 | 监控/告警/runbook | 不存在 | 评审通过 |
@@ -464,7 +583,7 @@ commit/dirty: BLOCKED；/home/hulong/self-quant/core 不是 Git repository
 配置: 每只股票独立 next_deadline；默认均匀随机区间 1000..3000ms；
       测试 seed=20260805；SharedRing 与策略协议保持不变
 生产启动示例:
-  equity_ticker_publisher --segment /selfquant.mds.equity.ticker.1
+  equity_ticker_publisher --segment /selfquant.mds.equity.ticker.2
   （默认 --min-interval-ms 1000 --max-interval-ms 3000）
 可复现启动示例:
   equity_ticker_publisher --min-interval-ms 1000
@@ -533,4 +652,75 @@ Sanitizer:
 原始 after 样本: build/sdk-v3-benchmark-results/*.csv
 判定: PASS；吞吐与 p99 均未劣化超过 5%。虚拟机结果仅用于代码回归，
       不替代生产裸机 SLO Gate。
+```
+
+### 2026-08-15 OMS 第二阶段离线核心
+
+```text
+范围: protocol fixtures、POD API、immutable instrument side table、
+      fixed-capacity OrderTable、single-writer StateEngine
+
+Release / MDS OFF + OMS ON:
+  SELF_QUANT_ENABLE_WERROR=ON
+  结果: PASS；2/2 tests passed
+
+Release / MDS ON + OMS ON:
+  SELF_QUANT_ENABLE_WERROR=ON
+  结果: PASS；25/25 tests passed
+
+ASan+UBSan / MDS ON + OMS ON:
+  结果: PASS；25/25 tests passed
+  备注: 首次全量执行的既有 mds_inprocess_aggregation_tests 出现一次断言波动；
+        targeted rerun 与随后全量 rerun 均 PASS，oms_core_tests 始终 PASS。
+
+TSan / MDS OFF + OMS ON:
+  build: PASS
+  默认运行: 环境因 ASLR 报 ThreadSanitizer unexpected memory mapping
+  setarch x86_64 -R 后直接执行 utils 与 oms_core_tests: PASS
+
+Polymarket Go golden:
+  go test ./internal/polymarket
+  结果: PASS
+
+Fixture:
+  10 个 JSON 文件均可解析；manifest 20 个稳定 ID 的路径全部存在。
+
+判定: 第二阶段离线 Gate PASS。Binance doc-derived fixture 仍未经过真实
+      testnet/account stream 验证，不得标记为 live-verified。
+```
+
+### 2026-08-15 OMS phase 3 runtime
+
+```text
+时间: 2026-08-15T10:59Z
+commit/dirty: 2e5f906315ff395feb61b2bec693ae975f1fe7da；dirty（保留既有工作）
+主机: Linux 6.17.0-1017-aws x86_64
+工具链: GCC 13.3.0；CMake 3.28.3；Ninja；SELF_QUANT_ENABLE_WERROR=ON
+
+Release / MDS OFF + OMS ON:
+  cmake --build build/oms-phase3-off -j2
+  ctest --test-dir build/oms-phase3-off --output-on-failure --timeout 30
+  结果: PASS；6/6 tests passed
+
+Release / MDS ON + OMS ON:
+  cmake --build build/oms-phase3-on -j2
+  ctest --test-dir build/oms-phase3-on --output-on-failure --timeout 60
+  结果: PASS；29/29 tests passed
+
+ASan+UBSan / MDS OFF + OMS ON:
+  CXX flags: -fsanitize=address,undefined -fno-omit-frame-pointer
+  ASAN_OPTIONS=detect_leaks=1；UBSAN_OPTIONS=print_stacktrace=1
+  结果: PASS；6/6 tests passed
+
+TSan / MDS OFF + OMS ON:
+  CXX flags: -fsanitize=thread -fno-omit-frame-pointer
+  setarch x86_64 -R ctest --test-dir build/oms-phase3-tsan ...
+  结果: PASS；6/6 tests passed
+
+diff/lint:
+  git diff --check -- core/oms core/docs/validation.md core/CMakeLists.txt: PASS
+  IDE diagnostics for core/oms and validation.md: 0
+
+边界: normalized fake transport 只验证 deterministic runtime orchestration；
+      未实现真实 venue wire adapter/鉴权，本结果不构成 testnet/live trading PASS。
 ```

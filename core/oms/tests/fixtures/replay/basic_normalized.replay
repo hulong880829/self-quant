@@ -1,0 +1,6 @@
+# delay_ns operation lane epoch sequence [fill_id qty qty_scale price price_scale]
+0 ACK 1 77 1
+0 FILL 1 77 1 trade-1 4 2 50 2
+0 DISCONNECT
+1000 RECONNECT
+0 FILL 1 77 1 trade-2 6 2 51 2

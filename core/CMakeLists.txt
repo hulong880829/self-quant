@@ -15,6 +15,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(SELF_QUANT_ENABLE_WERROR "Treat compiler warnings as errors" OFF)
 option(SELF_QUANT_ENABLE_MDS "Build the market data service" ON)
+option(SELF_QUANT_ENABLE_OMS "Build the order management service" OFF)
+option(SELF_QUANT_ENABLE_STRATEGYFRAME "Build the strategy framework" OFF)
 option(SELF_QUANT_BUILD_BENCHMARKS "Build SDK hot-path benchmarks" OFF)
 option(SELF_QUANT_BUILD_PACKAGE_TESTS "Build installed-package smoke tests" OFF)
 option(SELF_QUANT_INSTALL "Install the self_quant SDK" ON)
@@ -33,8 +35,27 @@ target_compile_options(self_quant_warnings INTERFACE
 add_subdirectory(utils)
 
 set(SELF_QUANT_HAS_SIMDJSON OFF)
+set(SELF_QUANT_HAS_RECORDING OFF)
+if(SELF_QUANT_ENABLE_STRATEGYFRAME AND
+   (NOT SELF_QUANT_ENABLE_MDS OR NOT SELF_QUANT_ENABLE_OMS))
+  message(FATAL_ERROR
+    "SELF_QUANT_ENABLE_STRATEGYFRAME requires MDS and OMS")
+endif()
+
+set(SELF_QUANT_WITH_NET OFF)
+if(SELF_QUANT_ENABLE_MDS OR SELF_QUANT_ENABLE_OMS OR
+   SELF_QUANT_ENABLE_STRATEGYFRAME)
+  set(SELF_QUANT_WITH_NET ON)
+  add_subdirectory(net)
+endif()
 if(SELF_QUANT_ENABLE_MDS)
   add_subdirectory(mds)
+endif()
+if(SELF_QUANT_ENABLE_OMS)
+  add_subdirectory(oms)
+endif()
+if(SELF_QUANT_ENABLE_STRATEGYFRAME)
+  add_subdirectory(strategyframe)
 endif()
 
 if(SELF_QUANT_BUILD_BENCHMARKS)
@@ -50,13 +71,35 @@ if(SELF_QUANT_BUILD_PACKAGE_TESTS)
   add_test(NAME self_quant_install_package_smoke
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/install_package_smoke.sh
       ${CMAKE_CURRENT_SOURCE_DIR}
-      ${CMAKE_CURRENT_BINARY_DIR}/package-smoke)
+      ${CMAKE_CURRENT_BINARY_DIR}/package-smoke
+      $<IF:$<BOOL:${SELF_QUANT_ENABLE_MDS}>,ON,OFF>
+      $<IF:$<BOOL:${SELF_QUANT_ENABLE_OMS}>,ON,OFF>
+      $<IF:$<BOOL:${SELF_QUANT_ENABLE_STRATEGYFRAME}>,ON,OFF>)
 endif()
 
 if(SELF_QUANT_INSTALL)
   set(SELF_QUANT_EXPORT_TARGETS self_quant_warnings self_quant_utils)
+  if(SELF_QUANT_WITH_NET)
+    list(APPEND SELF_QUANT_EXPORT_TARGETS self_quant_net)
+  endif()
   if(SELF_QUANT_ENABLE_MDS)
-    list(APPEND SELF_QUANT_EXPORT_TARGETS mds)
+    list(APPEND SELF_QUANT_EXPORT_TARGETS
+      mds
+      mds_producer_runtime)
+    if(TARGET mds_record)
+      list(APPEND SELF_QUANT_EXPORT_TARGETS mds_record)
+    endif()
+    if(TARGET mds_recording_zstd)
+      list(APPEND SELF_QUANT_EXPORT_TARGETS mds_recording_zstd)
+    endif()
+  endif()
+  if(SELF_QUANT_ENABLE_OMS)
+    list(APPEND SELF_QUANT_EXPORT_TARGETS self_quant_oms)
+  endif()
+  if(SELF_QUANT_ENABLE_STRATEGYFRAME)
+    list(APPEND SELF_QUANT_EXPORT_TARGETS
+      self_quant_strategyframe_config
+      self_quant_strategyframe)
   endif()
 
   install(TARGETS ${SELF_QUANT_EXPORT_TARGETS}
@@ -64,8 +107,18 @@ if(SELF_QUANT_INSTALL)
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   install(DIRECTORY utils/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  if(SELF_QUANT_WITH_NET)
+    install(DIRECTORY net/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  endif()
   if(SELF_QUANT_ENABLE_MDS)
     install(DIRECTORY mds/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  endif()
+  if(SELF_QUANT_ENABLE_OMS)
+    install(DIRECTORY oms/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  endif()
+  if(SELF_QUANT_ENABLE_STRATEGYFRAME)
+    install(DIRECTORY strategyframe/include/
+      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   endif()
   install(EXPORT self_quantTargets
     NAMESPACE self_quant::

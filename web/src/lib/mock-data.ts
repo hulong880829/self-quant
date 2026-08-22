@@ -278,6 +278,7 @@ export const fundingOpportunities: FundingOpportunity[] = seeds.map(
     return {
       id: `${seed.exchange.toLowerCase()}-${baseAsset.toLowerCase()}`,
       exchange: seed.exchange,
+      exchangeSymbol: seed.symbol.replace("/", ""),
       symbol: seed.symbol,
       baseAsset,
       quoteAsset,

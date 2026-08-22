@@ -1,0 +1,107 @@
+{
+  "venue": "polymarket",
+  "product": "clob-v2",
+  "verification_tier": "implementation-derived",
+  "sources": [
+    "backend/internal/polymarket/clob_client.go",
+    "backend/internal/polymarket/clob_client_test.go",
+    "backend/internal/polymarket/clob_trades_test.go"
+  ],
+  "fixtures": [
+    {
+      "id": "polymarket.clob.place_order.v1",
+      "event": "place_order",
+      "request": {
+        "method": "POST",
+        "path": "/order",
+        "body": {
+          "order": {
+            "salt": 479249096354,
+            "maker": "0x90F8bf6A479f320ead074411a4B0e7944Ea8c9C1",
+            "signer": "0x90F8bf6A479f320ead074411a4B0e7944Ea8c9C1",
+            "tokenId": "102936000000000000000000000000000000000000000000000000000000000000000000",
+            "makerAmount": "5200000",
+            "takerAmount": "10000000",
+            "side": "BUY",
+            "signatureType": 0,
+            "timestamp": "1786186200000",
+            "metadata": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "builder": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "signature": "0xb4e4f24f0359309a623db25ea479da00057f3c16691606750ed36d837c24460b23e0e889c5740d38ae18f40afa6bd8e7f22c419b88ccd84c265956ea166f21a51b",
+            "expiration": "0"
+          },
+          "owner": "key",
+          "orderType": "GTC",
+          "deferExec": false,
+          "postOnly": false
+        }
+      },
+      "response": {
+        "success": true,
+        "orderID": "order-2",
+        "status": "live",
+        "makingAmount": "2450000",
+        "takingAmount": "5000000"
+      }
+    },
+    {
+      "id": "polymarket.clob.cancel_order.v1",
+      "event": "cancel_order",
+      "request": {
+        "method": "DELETE",
+        "path": "/order",
+        "body": {
+          "orderID": "order-1"
+        }
+      },
+      "response": {
+        "canceled": [
+          "order-1"
+        ],
+        "not_canceled": {}
+      }
+    },
+    {
+      "id": "polymarket.clob.list_orders.v1",
+      "event": "list_open_orders",
+      "response": {
+        "next_cursor": "MTAw",
+        "data": [
+          {
+            "id": "live",
+            "status": "ORDER_STATUS_LIVE",
+            "market": "condition-1",
+            "asset_id": "token-1",
+            "side": "BUY",
+            "original_size": "5",
+            "size_matched": "1.25",
+            "price": "0.55",
+            "outcome": "YES",
+            "order_type": "GTC",
+            "created_at": 1786186200
+          }
+        ]
+      }
+    },
+    {
+      "id": "polymarket.clob.list_trades.v1",
+      "event": "list_trades",
+      "response": {
+        "next_cursor": "",
+        "data": [
+          {
+            "trade_id": "trade-1",
+            "order_id": "order-1",
+            "market": "market-1",
+            "asset_id": "asset-1",
+            "side": "BUY",
+            "price": "0.4",
+            "size": "5",
+            "fee": "0.01",
+            "match_time": "2026-08-13T01:00:00Z"
+          }
+        ]
+      }
+    }
+  ]
+}

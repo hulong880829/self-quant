@@ -11,6 +11,7 @@
 #include <new>
 #include <random>
 #include <sstream>
+#include <utility>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -232,6 +233,13 @@ api::Result<SharedRing> SharedRing::open(const RingOptions &options) {
     result.header_->magic.store(kRingMagic, std::memory_order_release);
   } else {
     const auto magic = result.header_->magic.load(std::memory_order_acquire);
+    if (magic == kRingMagic &&
+        result.header_->schema_major != kRingSchemaMajor) {
+      return open_error(
+          api::ErrorCode::InvalidConfig,
+          "segment uses an incompatible ring schema; stop all C++ MDS "
+          "processes and remove the stale POSIX SHM segment before restart");
+    }
     const auto header_bytes = result.header_->header_bytes;
     const auto ring_bytes = result.header_->ring_bytes;
     const auto max_record_bytes = result.header_->max_record_bytes;
@@ -309,10 +317,11 @@ SharedRing::publish(std::uint32_t type,
   }
   if (remaining < length) {
     if (remaining >= sizeof(RecordHeader)) {
-      auto *padding = new (ring_data() + offset) RecordHeader();
+      auto *padding = new (ring_data() + offset) RecordHeader;
       padding->length = static_cast<std::uint32_t>(remaining);
       padding->type = kPaddingType;
       padding->payload_bytes = 0;
+      padding->payload_crc32c = 0;
       padding->epoch = header_->epoch;
       padding->sequence = 0;
       padding->commit_sequence.store(1, std::memory_order_release);
@@ -323,7 +332,7 @@ SharedRing::publish(std::uint32_t type,
 
   const std::uint64_t sequence =
       header_->next_sequence.fetch_add(1, std::memory_order_relaxed);
-  auto *record = new (ring_data() + offset) RecordHeader();
+  auto *record = new (ring_data() + offset) RecordHeader;
   record->length = static_cast<std::uint32_t>(length);
   record->type = type;
   record->payload_bytes = static_cast<std::uint32_t>(payload.size());
@@ -331,7 +340,7 @@ SharedRing::publish(std::uint32_t type,
   record->epoch = header_->epoch;
   record->sequence = sequence;
   record->commit_sequence.store(0, std::memory_order_relaxed);
-  std::memcpy(record + 1, payload.data(), payload.size());
+  std::memcpy(static_cast<void *>(record + 1), payload.data(), payload.size());
   if (length > sizeof(RecordHeader) + payload.size()) {
     std::memset(reinterpret_cast<std::byte *>(record + 1) + payload.size(), 0,
                 length - sizeof(RecordHeader) - payload.size());
@@ -632,6 +641,14 @@ std::uint32_t SharedRing::active_reader_count() const noexcept {
     }
   }
   return count;
+}
+
+std::uint64_t SharedRing::ring_bytes() const noexcept {
+  return header_ ? header_->ring_bytes : 0;
+}
+
+std::uint64_t SharedRing::max_record_bytes() const noexcept {
+  return header_ ? header_->max_record_bytes : 0;
 }
 
 std::byte *SharedRing::ring_data() const noexcept {

@@ -81,9 +81,11 @@ bool read_little_endian(std::span<const std::byte> message,
   }
   Unsigned value = 0;
   for (std::size_t index = 0; index < sizeof(T); ++index) {
-    value |= static_cast<Unsigned>(
-                 std::to_integer<unsigned char>(message[offset + index]))
-             << (index * 8U);
+    value = static_cast<Unsigned>(
+        value |
+        (static_cast<Unsigned>(
+             std::to_integer<unsigned char>(message[offset + index]))
+         << (index * 8U)));
   }
   if constexpr (std::is_signed_v<T>) {
     out = std::bit_cast<T>(value);
@@ -151,7 +153,12 @@ struct JsonParser::Impl {
   simdjson::ondemand::parser parser{};
   std::vector<char> buffer;
   explicit Impl(std::size_t capacity = 1U << 20U)
-      : buffer(capacity + simdjson::SIMDJSON_PADDING) {}
+      : buffer(capacity + simdjson::SIMDJSON_PADDING) {
+    const auto allocated = parser.allocate(capacity);
+    if (allocated) {
+      throw simdjson::simdjson_error(allocated);
+    }
+  }
 
   simdjson::ondemand::document parse(std::string_view json) {
     if (json.size() + simdjson::SIMDJSON_PADDING > buffer.size()) {
@@ -164,8 +171,8 @@ struct JsonParser::Impl {
 };
 #endif
 
-JsonParser::JsonParser(std::int8_t price_scale, std::int8_t quantity_scale)
-    : price_scale_(price_scale), quantity_scale_(quantity_scale)
+JsonParser::JsonParser(std::size_t max_levels_per_side)
+    : max_levels_per_side_(max_levels_per_side)
 #ifdef MDS_HAS_SIMDJSON
       ,
       impl_(new Impl())
@@ -179,10 +186,14 @@ JsonParser::~JsonParser() {
 #endif
 }
 
-bool JsonParser::parse_book_ticker(std::string_view json, BookTicker &out,
+bool JsonParser::parse_book_ticker(std::string_view json,
+                                   std::int8_t price_scale,
+                                   std::int8_t quantity_scale, BookTicker &out,
                                    std::string &error) {
 #ifndef MDS_HAS_SIMDJSON
   (void)json;
+  (void)price_scale;
+  (void)quantity_scale;
   (void)out;
   error = "simdjson support was not compiled";
   return false;
@@ -191,15 +202,15 @@ bool JsonParser::parse_book_ticker(std::string_view json, BookTicker &out,
     auto document = impl_->parse(json);
     out.update_id = std::uint64_t(document["u"]);
     const auto bid = std::string_view(document["b"].get_string().value());
-    if (!decimal_to_fixed(bid, price_scale_, out.bid_price)) {
+    if (!decimal_to_fixed(bid, price_scale, out.bid_price)) {
       throw simdjson::simdjson_error(simdjson::NUMBER_ERROR);
     }
     const auto bid_qty = std::string_view(document["B"].get_string().value());
     const auto ask = std::string_view(document["a"].get_string().value());
     const auto ask_qty = std::string_view(document["A"].get_string().value());
-    if (!decimal_to_fixed(bid_qty, quantity_scale_, out.bid_quantity) ||
-        !decimal_to_fixed(ask, price_scale_, out.ask_price) ||
-        !decimal_to_fixed(ask_qty, quantity_scale_, out.ask_quantity)) {
+    if (!decimal_to_fixed(bid_qty, quantity_scale, out.bid_quantity) ||
+        !decimal_to_fixed(ask, price_scale, out.ask_price) ||
+        !decimal_to_fixed(ask_qty, quantity_scale, out.ask_quantity)) {
       throw simdjson::simdjson_error(simdjson::NUMBER_ERROR);
     }
     auto event_time = document["E"].get_uint64();
@@ -211,8 +222,8 @@ bool JsonParser::parse_book_ticker(std::string_view json, BookTicker &out,
     if (!copy_symbol(symbol, out.symbol, error)) {
       return false;
     }
-    out.price_exponent = static_cast<std::int8_t>(-price_scale_);
-    out.quantity_exponent = static_cast<std::int8_t>(-quantity_scale_);
+    out.price_exponent = static_cast<std::int8_t>(-price_scale);
+    out.quantity_exponent = static_cast<std::int8_t>(-quantity_scale);
     return true;
   } catch (const simdjson::simdjson_error &exception) {
     error = exception.what();
@@ -221,13 +232,23 @@ bool JsonParser::parse_book_ticker(std::string_view json, BookTicker &out,
 #endif
 }
 
-bool JsonParser::parse_depth(std::string_view json, DepthUpdate &out,
+bool JsonParser::parse_depth(std::string_view json, std::int8_t price_scale,
+                             std::int8_t quantity_scale, DepthUpdate &out,
                              std::string &error) {
+  return parse_depth_classified(json, price_scale, quantity_scale, out,
+                                error) == DepthParseResult::Ok;
+}
+
+DepthParseResult JsonParser::parse_depth_classified(
+    std::string_view json, std::int8_t price_scale,
+    std::int8_t quantity_scale, DepthUpdate &out, std::string &error) {
 #ifndef MDS_HAS_SIMDJSON
   (void)json;
+  (void)price_scale;
+  (void)quantity_scale;
   (void)out;
   error = "simdjson support was not compiled";
-  return false;
+  return DepthParseResult::Invalid;
 #else
   try {
     auto document = impl_->parse(json);
@@ -240,15 +261,29 @@ bool JsonParser::parse_depth(std::string_view json, DepthUpdate &out,
     auto transaction_time = document["T"].get_uint64();
     out.transaction_time_ms =
         transaction_time.error() ? 0 : transaction_time.value();
-    out.price_exponent = static_cast<std::int8_t>(-price_scale_);
-    out.quantity_exponent = static_cast<std::int8_t>(-quantity_scale_);
+    out.price_exponent = static_cast<std::int8_t>(-price_scale);
+    out.quantity_exponent = static_cast<std::int8_t>(-quantity_scale);
     const auto symbol = std::string_view(document["s"].get_string().value());
     if (!copy_symbol(symbol, out.symbol, error)) {
-      return false;
+      return DepthParseResult::Invalid;
     }
     out.bids.clear();
     out.asks.clear();
+    out.capacity_side = DepthSide::None;
+    out.capacity_limit = max_levels_per_side_;
     for (auto level : document["b"].get_array()) {
+      if (out.bids.size() >= max_levels_per_side_) {
+        out.bids.clear();
+        out.asks.clear();
+        out.capacity_side = DepthSide::Bid;
+        error = "Binance bid depth exceeds configured capacity symbol=";
+        error.append(symbol);
+        error.append(" capacity=");
+        error.append(std::to_string(max_levels_per_side_));
+        error.append(" observed_at_least=");
+        error.append(std::to_string(max_levels_per_side_ + 1));
+        return DepthParseResult::CapacityExceeded;
+      }
       auto values = level.get_array();
       auto iterator = values.begin();
       const auto price = std::string_view((*iterator).get_string().value());
@@ -256,13 +291,25 @@ bool JsonParser::parse_depth(std::string_view json, DepthUpdate &out,
       const auto quantity =
           std::string_view((*iterator).get_string().value());
       PriceLevel parsed{};
-      if (!decimal_to_fixed(price, price_scale_, parsed.price) ||
-          !decimal_to_fixed(quantity, quantity_scale_, parsed.quantity)) {
+      if (!decimal_to_fixed(price, price_scale, parsed.price) ||
+          !decimal_to_fixed(quantity, quantity_scale, parsed.quantity)) {
         throw simdjson::simdjson_error(simdjson::NUMBER_ERROR);
       }
       out.bids.push_back(parsed);
     }
     for (auto level : document["a"].get_array()) {
+      if (out.asks.size() >= max_levels_per_side_) {
+        out.bids.clear();
+        out.asks.clear();
+        out.capacity_side = DepthSide::Ask;
+        error = "Binance ask depth exceeds configured capacity symbol=";
+        error.append(symbol);
+        error.append(" capacity=");
+        error.append(std::to_string(max_levels_per_side_));
+        error.append(" observed_at_least=");
+        error.append(std::to_string(max_levels_per_side_ + 1));
+        return DepthParseResult::CapacityExceeded;
+      }
       auto values = level.get_array();
       auto iterator = values.begin();
       const auto price = std::string_view((*iterator).get_string().value());
@@ -270,16 +317,16 @@ bool JsonParser::parse_depth(std::string_view json, DepthUpdate &out,
       const auto quantity =
           std::string_view((*iterator).get_string().value());
       PriceLevel parsed{};
-      if (!decimal_to_fixed(price, price_scale_, parsed.price) ||
-          !decimal_to_fixed(quantity, quantity_scale_, parsed.quantity)) {
+      if (!decimal_to_fixed(price, price_scale, parsed.price) ||
+          !decimal_to_fixed(quantity, quantity_scale, parsed.quantity)) {
         throw simdjson::simdjson_error(simdjson::NUMBER_ERROR);
       }
       out.asks.push_back(parsed);
     }
-    return true;
+    return DepthParseResult::Ok;
   } catch (const simdjson::simdjson_error &exception) {
     error = exception.what();
-    return false;
+    return DepthParseResult::Invalid;
   }
 #endif
 }
@@ -348,7 +395,8 @@ bool SpotSbeDecoder::decode_depth(std::span<const std::byte> message,
   constexpr std::uint16_t kRootBlockLength = 26;
   constexpr std::size_t kGroupDimensionsBytes = 4;
   constexpr std::uint16_t kLevelBlockLength = 16;
-  constexpr std::uint16_t kMaxLevelsPerSide = 5000;
+  constexpr auto kMaxLevelsPerSide =
+      static_cast<std::uint16_t>(kDefaultMaxDepthLevelsPerSide);
 
   SbeHeader header;
   if (!read_sbe_header(message, header, error)) {

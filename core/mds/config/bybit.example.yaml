@@ -1,0 +1,47 @@
+# Bybit 独立生产者示例。ticker 使用最快 orderbook.1 BBO。
+shared_memory:
+  prefix: /selfquant.mds
+  backend: POSIX_SHM
+  mode: OVERWRITE_OLDEST
+  hugetlbfs_mount: /dev/hugepages
+  ring_bytes: 8388608
+  max_record_bytes: 65536
+  max_readers: 32
+  reader_lease_timeout_ns: 5000000000
+  allow_hugepage_fallback: false
+  unlink_on_shutdown: false
+
+order_book:
+  default_ladder_ticks_per_side: 8192    # 价格 tick 格数，不是行情档位数
+  max_ladder_ticks_per_side: 16384
+  default_price_band_bps: 10
+
+venues:
+  - venue: bybit
+    product: SPOT
+    websocket_endpoint: wss://stream.bybit.com/v5/public/spot
+    rest_endpoint: https://api.bybit.com
+    protocol: JSON
+    redundant_ab: false
+
+  - venue: bybit
+    product: PERPETUAL                   # USDT Linear Perpetual
+    websocket_endpoint: wss://stream.bybit.com/v5/public/linear
+    rest_endpoint: https://api.bybit.com
+    protocol: JSON
+    redundant_ab: false
+
+subscriptions:
+  - venue: bybit
+    stream: ticker                       # 来源 orderbook.1，约 10ms
+    symbol: BTCUSDT
+    product: PERPETUAL
+
+  - venue: bybit
+    stream: orderbook                    # 默认 orderbook.50，约 20ms/50档
+    symbol: BTCUSDT
+    product: PERPETUAL
+    ladder_ticks_per_side: 8192
+
+# 如需现货，将两个 subscription 的 product 改为 SPOT。
+# 可显式配置 orderbook_channel: orderbook.200 使用更深但更慢的频道。

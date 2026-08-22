@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "utils/md/decimal.h"
 #include "utils/md/order_book.h"
 #include "utils/md/symbol.h"
 #include "utils/md/wire.h"
@@ -60,14 +61,14 @@ static_assert(!CanEmplaceInt<queue::BoundedMpscQueue<ThrowingQueueValue, 4>>);
 static_assert(CanEmplaceInt<queue::BoundedMpscQueue<QueueValue, 4>>);
 
 void TestLayout() {
-  static_assert(sizeof(md::wire::RecordHeader) == 64);
-  static_assert(sizeof(md::wire::TickerRecord) == 168);
-  static_assert(offsetof(md::wire::TickerRecord, open_price) == 136);
-  static_assert(offsetof(md::wire::TickerRecord, close_price) == 160);
+  static_assert(sizeof(md::wire::RecordHeader) == 72);
+  static_assert(sizeof(md::wire::TickerRecord) == 176);
+  static_assert(offsetof(md::wire::TickerRecord, open_price) == 144);
+  static_assert(offsetof(md::wire::TickerRecord, close_price) == 168);
   const auto header = md::wire::MakeHeader(md::MessageType::Bbo, sizeof(md::wire::BboRecord));
   assert(header.magic == md::wire::kMagic);
-  assert(header.schema_major == 1);
-  assert(header.schema_minor == 1);
+  assert(header.schema_major == 2);
+  assert(header.schema_minor == 0);
   assert(header.record_length == sizeof(md::wire::BboRecord));
   const auto instrument_header = md::wire::MakeHeader(
       md::MessageType::InstrumentUpdate, sizeof(md::wire::InstrumentUpdateRecord));
@@ -146,6 +147,7 @@ void TestLadder() {
 
 struct WireVisitor final : md::wire::RecordVisitor {
   int instruments{};
+  int catalogs{};
   int bbos{};
   int tickers{};
   int deltas{};
@@ -156,6 +158,11 @@ struct WireVisitor final : md::wire::RecordVisitor {
 
   bool OnInstrument(const md::wire::InstrumentUpdateRecord &) noexcept override {
     ++instruments;
+    return true;
+  }
+  bool OnInstrumentCatalog(
+      const md::wire::InstrumentCatalogRecord &) noexcept override {
+    ++catalogs;
     return true;
   }
   bool OnBbo(const md::wire::BboRecord &record) noexcept override {
@@ -206,22 +213,51 @@ void TestWireCodec() {
       .source_id = 1,
   };
   WireVisitor visitor;
-  std::array<std::byte, sizeof(md::wire::SnapshotChunkRecord)> buffer{};
+  std::array<std::byte, sizeof(md::wire::InstrumentCatalogRecord)> buffer{};
 
   md::Instrument instrument{};
   instrument.instrument_id = 7;
   auto encoded =
       md::wire::EncodeInstrument(buffer, header, instrument);
   assert(encoded && encoded.size == sizeof(md::wire::InstrumentUpdateRecord));
+  md::wire::InstrumentUpdateRecord instrument_record{};
+  assert(md::wire::DecodeInstrument(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             instrument_record) == md::wire::CodecError::Ok);
+  assert(instrument_record.instrument.instrument_id == 7);
+  assert(md::wire::Decode(
+             std::span<const std::byte>(buffer.data(), encoded.size), visitor) ==
+         md::wire::CodecError::Ok);
+
+  md::InstrumentCatalog catalog{};
+  catalog.instrument_id = header.instrument_id;
+  encoded = md::wire::EncodeInstrumentCatalog(buffer, header, catalog);
+  assert(encoded &&
+         encoded.size == sizeof(md::wire::InstrumentCatalogRecord));
+  md::wire::InstrumentCatalogRecord catalog_record{};
+  assert(md::wire::DecodeInstrumentCatalog(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             catalog_record) == md::wire::CodecError::Ok);
   assert(md::wire::Decode(
              std::span<const std::byte>(buffer.data(), encoded.size), visitor) ==
          md::wire::CodecError::Ok);
 
   encoded = md::wire::EncodeBbo(buffer, header, {100, 2}, {101, 3});
   assert(encoded);
+  md::wire::BboRecord bbo_record{};
+  assert(md::wire::DecodeBbo(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             bbo_record) == md::wire::CodecError::Ok);
+  assert(bbo_record.bid_price == 100 && bbo_record.ask_price == 101);
   assert(md::wire::Decode(
              std::span<const std::byte>(buffer.data(), encoded.size), visitor) ==
          md::wire::CodecError::Ok);
+  auto future_minor = bbo_record.header;
+  ++future_minor.schema_minor;
+  std::memcpy(buffer.data(), &future_minor, sizeof(future_minor));
+  assert(md::wire::DecodeBbo(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             bbo_record) == md::wire::CodecError::Ok);
   md::TickerEvent ticker{};
   ticker.bid = {100, 2};
   ticker.ask = {101, 3};
@@ -236,6 +272,11 @@ void TestWireCodec() {
   ticker.close_price = 105;
   encoded = md::wire::EncodeTicker(buffer, header, ticker);
   assert(encoded && encoded.size == sizeof(md::wire::TickerRecord));
+  md::wire::TickerRecord ticker_record{};
+  assert(md::wire::DecodeTicker(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             ticker_record) == md::wire::CodecError::Ok);
+  assert(ticker_record.close_price == 105);
   assert(md::wire::Decode(
              std::span<const std::byte>(buffer.data(), encoded.size), visitor) ==
          md::wire::CodecError::Ok);
@@ -250,6 +291,11 @@ void TestWireCodec() {
 
   encoded = md::wire::EncodeDelta(buffer, header, md::Side::Bid, {100, 4});
   assert(encoded);
+  md::wire::DeltaRecord delta_record{};
+  assert(md::wire::DecodeDelta(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             delta_record) == md::wire::CodecError::Ok);
+  assert(delta_record.price == 100 && delta_record.quantity == 4);
   assert(md::wire::Decode(
              std::span<const std::byte>(buffer.data(), encoded.size), visitor) ==
          md::wire::CodecError::Ok);
@@ -260,6 +306,11 @@ void TestWireCodec() {
   }
   encoded = md::wire::EncodeSnapshotBegin(buffer, header, 25, 2);
   assert(encoded);
+  md::wire::SnapshotBeginRecord begin_record{};
+  assert(md::wire::DecodeSnapshotBegin(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             begin_record) == md::wire::CodecError::Ok);
+  assert(begin_record.item_count == 25);
   assert(md::wire::Decode(
              std::span<const std::byte>(buffer.data(), encoded.size), visitor) ==
          md::wire::CodecError::Ok);
@@ -267,6 +318,11 @@ void TestWireCodec() {
       buffer, header, 0, md::Side::Bid,
       std::span<const md::Level>(levels.data(), 24));
   assert(encoded);
+  md::wire::SnapshotChunkRecord chunk_record{};
+  assert(md::wire::DecodeSnapshotChunk(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             chunk_record) == md::wire::CodecError::Ok);
+  assert(chunk_record.level_count == 24);
   assert(md::wire::Decode(
              std::span<const std::byte>(buffer.data(), encoded.size), visitor) ==
          md::wire::CodecError::Ok);
@@ -279,10 +335,16 @@ void TestWireCodec() {
          md::wire::CodecError::Ok);
   encoded = md::wire::EncodeSnapshotEnd(buffer, header, 25, 0x1234);
   assert(encoded);
+  md::wire::SnapshotEndRecord end_record{};
+  assert(md::wire::DecodeSnapshotEnd(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             end_record) == md::wire::CodecError::Ok);
+  assert(end_record.chunk_count_or_checksum == 0x1234);
   assert(md::wire::Decode(
              std::span<const std::byte>(buffer.data(), encoded.size), visitor) ==
          md::wire::CodecError::Ok);
-  assert(visitor.instruments == 1 && visitor.bbos == 1 &&
+  assert(visitor.instruments == 1 && visitor.catalogs == 1 &&
+         visitor.bbos == 1 &&
          visitor.tickers == 1 &&
          visitor.deltas == 1 && visitor.begins == 1 &&
          visitor.chunks == 2 && visitor.levels == 25 && visitor.ends == 1);
@@ -298,7 +360,8 @@ void TestWireCodec() {
   assert(encoded);
   md::wire::RecordHeader wire_header{};
   std::memcpy(&wire_header, buffer.data(), sizeof(wire_header));
-  wire_header.schema_major = 2;
+  wire_header.schema_major =
+      static_cast<std::uint16_t>(md::wire::kSchemaMajor + 1);
   std::memcpy(buffer.data(), &wire_header, sizeof(wire_header));
   assert(md::wire::ValidateHeader(
              std::span<const std::byte>(buffer.data(), encoded.size)) ==
@@ -309,6 +372,17 @@ void TestWireCodec() {
   assert(md::wire::ValidateHeader(
              std::span<const std::byte>(buffer.data(), encoded.size)) ==
          md::wire::CodecError::LengthMismatch);
+
+  constexpr std::size_t kUnknownLength =
+      sizeof(md::wire::RecordHeader) + alignof(md::wire::RecordHeader);
+  std::array<std::byte, kUnknownLength> unknown{};
+  auto unknown_header = md::wire::MakeHeader(
+      static_cast<md::MessageType>(9999), kUnknownLength);
+  unknown_header.schema_minor =
+      static_cast<std::uint16_t>(md::wire::kSchemaMinor + 1);
+  std::memcpy(unknown.data(), &unknown_header, sizeof(unknown_header));
+  assert(md::wire::ValidateHeader(unknown) ==
+         md::wire::CodecError::UnknownMessageType);
 }
 
 void TestSpsc() {
@@ -359,6 +433,37 @@ void TestMpsc() {
   assert(QueueValue::live == 0);
 }
 
+void TestDecimal() {
+  std::uint8_t scale = 99;
+  std::int64_t value = 0;
+
+  assert(md::decimal_scale("123", scale) && scale == 0);
+  assert(md::decimal_scale("001.2300", scale) && scale == 4);
+  assert(md::decimal_scale("1.25e-2", scale) && scale == 4);
+  assert(!md::decimal_scale("125e2", scale));
+
+  assert(md::decimal_to_fixed("123.45", 2, value) && value == 12'345);
+  assert(md::decimal_to_fixed("001.2300", 4, value) && value == 12'300);
+  assert(md::decimal_to_fixed("-0.125", 3, value) && value == -125);
+  assert(md::decimal_to_fixed("+42", 0, value) && value == 42);
+  assert(md::decimal_to_fixed("1.230000000000000000", 2, value) &&
+         value == 123);
+  assert(md::decimal_to_fixed("125e2", 0, value) && value == 12'500);
+  assert(md::decimal_to_fixed("1e3", 2, value) && value == 100'000);
+  assert(md::decimal_to_fixed("9223372036854775807", 0, value) &&
+         value == 9'223'372'036'854'775'807LL);
+  assert(md::decimal_to_fixed("-9223372036854775808", 0, value) &&
+         value == (-9'223'372'036'854'775'807LL - 1));
+
+  assert(!md::decimal_to_fixed("", 0, value));
+  assert(!md::decimal_to_fixed(".", 0, value));
+  assert(!md::decimal_to_fixed("12x", 0, value));
+  assert(!md::decimal_to_fixed("1.234", 2, value));
+  assert(!md::decimal_to_fixed("9223372036854775808", 0, value));
+  assert(!md::decimal_to_fixed("-9223372036854775809", 0, value));
+  assert(!md::decimal_scale("0.0000000000000000001", scale));
+}
+
 void TestTimestampAndHardware() {
   const auto before = runtime::Timestamp::NowMono();
   const auto sample = runtime::Timestamp::NowTSC();
@@ -401,5 +506,6 @@ int main() {
   TestWireCodec();
   TestSpsc();
   TestMpsc();
+  TestDecimal();
   TestTimestampAndHardware();
 }

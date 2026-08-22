@@ -28,7 +28,41 @@ type gateContract struct {
 	OrderSizeMin     float64 `json:"order_size_min"`
 }
 
+type gateSpotPair struct {
+	ID              string `json:"id"`
+	Base            string `json:"base"`
+	Quote           string `json:"quote"`
+	TradeStatus     string `json:"trade_status"`
+	Precision       int    `json:"precision"`
+	AmountPrecision int    `json:"amount_precision"`
+}
+
+func parseGateSpotInstruments(items []gateSpotPair) []Instrument {
+	result := make([]Instrument, 0, len(items))
+	for _, item := range items {
+		if item.TradeStatus != "tradable" {
+			continue
+		}
+		metadata, _ := json.Marshal(item)
+		result = append(result, Instrument{
+			Exchange: "gate", ExchangeSymbol: item.ID,
+			BaseAsset: item.Base, QuoteAsset: item.Quote,
+			GlobalSymbol: GlobalSymbol(item.Base, item.Quote),
+			SettleAsset:  item.Quote, ContractType: ContractTypeSpot,
+			Status: "active", ContractSize: 1,
+			PriceTick:    precisionStep(strconv.Itoa(item.Precision)),
+			QuantityStep: precisionStep(strconv.Itoa(item.AmountPrecision)),
+			Metadata:     metadata, SourceUpdatedAt: time.Now().UTC(),
+		})
+	}
+	return result
+}
+
 func parseGateInstruments(items []gateContract) []Instrument {
+	return parseGateSettlementInstruments(items, "USDT")
+}
+
+func parseGateSettlementInstruments(items []gateContract, settle string) []Instrument {
 	result := make([]Instrument, 0, len(items))
 	for _, item := range items {
 		parts := strings.Split(item.Name, "_")
@@ -42,11 +76,15 @@ func parseGateInstruments(items []gateContract) []Instrument {
 		}
 		size, _ := parseFloat(item.QuantoMultiplier)
 		tick, _ := parseFloat(item.OrderPriceRound)
-		metadata, _ := json.Marshal(item)
+		model := "linear"
+		if !strings.EqualFold(settle, "USDT") {
+			model = "inverse"
+		}
+		metadata := instrumentMetadata(item, model, "contracts")
 		result = append(result, Instrument{
 			Exchange: "gate", ExchangeSymbol: item.Name,
 			BaseAsset: base, QuoteAsset: quote, GlobalSymbol: GlobalSymbol(base, quote),
-			IntervalHours: interval, SettleAsset: "USDT",
+			IntervalHours: interval, SettleAsset: strings.ToUpper(settle),
 			ContractType: "perpetual", Status: "active", ContractSize: size,
 			PriceTick: tick, QuantityStep: item.OrderSizeMin,
 			Metadata: metadata, SourceUpdatedAt: time.Now().UTC(),
@@ -55,12 +93,26 @@ func parseGateInstruments(items []gateContract) []Instrument {
 	return result
 }
 
-func (g *Gate) SyncInstruments(ctx context.Context) ([]Instrument, error) {
-	var payload []gateContract
-	if err := g.client.get(ctx, "/api/v4/futures/usdt/contracts", nil, &payload); err != nil {
-		return nil, err
+func (g *Gate) SyncInstruments(ctx context.Context, contractType string) ([]Instrument, error) {
+	if contractType == ContractTypeSpot {
+		var payload []gateSpotPair
+		if err := g.client.get(ctx, "/api/v4/spot/currency_pairs", nil, &payload); err != nil {
+			return nil, err
+		}
+		return parseGateSpotInstruments(payload), nil
 	}
-	return parseGateInstruments(payload), nil
+	if contractType != ContractTypePerpetual {
+		return nil, fmt.Errorf("gate: unsupported contract type %q", contractType)
+	}
+	var all []Instrument
+	for _, settle := range []string{"usdt", "btc"} {
+		var payload []gateContract
+		if err := g.client.get(ctx, "/api/v4/futures/"+settle+"/contracts", nil, &payload); err != nil {
+			return nil, err
+		}
+		all = append(all, parseGateSettlementInstruments(payload, settle)...)
+	}
+	return all, nil
 }
 
 type gateTicker struct {
@@ -106,6 +158,12 @@ func parseGateCurrent(items []gateContract, tickers map[string]gateTicker) ([]Fu
 		markPrice, _ := parseFloat(ticker.MarkPrice)
 		indexPrice, _ := parseFloat(ticker.IndexPrice)
 		oi, _ := parseFloat(ticker.TotalSize)
+		contractSize, _ := parseFloat(item.QuantoMultiplier)
+		var oiBase, oiNotional float64
+		if contractSize > 0 {
+			oiBase = oi * contractSize
+			oiNotional = oiBase * markPrice
+		}
 		volume, _ := parseFloat(ticker.Volume24hBase)
 		turnover, _ := parseFloat(ticker.Volume24hQuote)
 		change, _ := parseFloat(ticker.ChangePercentage)
@@ -114,7 +172,7 @@ func parseGateCurrent(items []gateContract, tickers map[string]gateTicker) ([]Fu
 			FundingTime: seconds(item.FundingNextApply), IntervalHours: interval,
 			NextRate: nextRate, MarkPrice: markPrice, IndexPrice: indexPrice,
 			LastPrice: lastPrice, OpenInterestContracts: oi,
-			OpenInterestBase: oi, OpenInterestNotionalUSD: oi * markPrice,
+			OpenInterestBase: oiBase, OpenInterestNotionalUSD: oiNotional,
 			Volume24hBase: volume, Turnover24hUSD: turnover,
 			PriceChange24h: change / 100, SourceUpdatedAt: time.Now().UTC(),
 		})
@@ -144,15 +202,34 @@ type gateHistory struct {
 }
 
 func (g *Gate) FetchHistory(ctx context.Context, instrument Instrument, since time.Time, limit int) ([]FundingRate, error) {
-	wanted := clampLimit(limit, 5000)
+	wanted := clampLimit(limit, 10000)
 	result := make([]FundingRate, 0, wanted)
 	from := since.Unix()
 	if since.IsZero() {
-		from = time.Now().AddDate(0, -6, 0).Unix()
+		from = time.Now().AddDate(-1, 0, 0).Unix()
 	}
-	for len(result) < wanted {
-		pageSize := min(1000, wanted-len(result))
-		query := url.Values{"contract": {instrument.ExchangeSymbol}, "limit": {strconv.Itoa(pageSize)}, "from": {strconv.FormatInt(from, 10)}}
+	now := time.Now().UTC()
+	// Gate rejects a start time at or beyond its 180-day boundary. Keep one
+	// day of margin so request latency cannot move the boundary past `from`.
+	earliest := now.Add(-179 * 24 * time.Hour).Unix()
+	if from < earliest {
+		from = earliest
+	}
+	interval := time.Duration(instrument.IntervalHours * float64(time.Hour))
+	if interval <= 0 {
+		interval = 8 * time.Hour
+	}
+	// Gate rejects broad from/to ranges and caps a page at 100 records.
+	// Keep each time window below 90 expected settlements.
+	window := 90 * interval
+	for len(result) < wanted && from < now.Unix() {
+		to := min(from+int64(window/time.Second), now.Unix())
+		query := url.Values{
+			"contract": {instrument.ExchangeSymbol},
+			"limit":    {"100"},
+			"from":     {strconv.FormatInt(from, 10)},
+			"to":       {strconv.FormatInt(to, 10)},
+		}
 		var page []gateHistory
 		if err := g.client.get(ctx, "/api/v4/futures/usdt/funding_rate", query, &page); err != nil {
 			return nil, fmt.Errorf("gate history: %w", err)
@@ -167,11 +244,11 @@ func (g *Gate) FetchHistory(ctx context.Context, instrument Instrument, since ti
 				Rate: rate, FundingTime: seconds(item.Time), Settled: true,
 				IntervalHours: instrument.IntervalHours, SourceUpdatedAt: seconds(item.Time),
 			})
+			if len(result) == wanted {
+				break
+			}
 		}
-		if len(page) < pageSize {
-			break
-		}
-		from = page[len(page)-1].Time + 1
+		from = to + 1
 	}
 	return result, nil
 }

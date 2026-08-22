@@ -1,0 +1,15 @@
+---
+description: Go development rules
+globs: backend/**/*.go
+alwaysApply: false
+---
+
+# Go Rules
+
+- Format modified Go code with `gofmt`.
+- Keep changes minimal and preserve package boundaries.
+- Accept `context.Context` as the first parameter and propagate cancellation.
+- Wrap errors with `%w`; use `errors.Is` or `errors.As`; do not swallow errors or use panic for normal flow.
+- Give goroutines a defined owner and exit path.
+- Apply explicit timeouts to I/O and use parameterized database queries.
+- Run relevant tests, `go test ./...`, and `go vet ./...`.

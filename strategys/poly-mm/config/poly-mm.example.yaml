@@ -1,0 +1,142 @@
+# poly-mm 策略示例配置
+# 顶层结构由 StrategyFrame 解析：mds / oms / strategy
+
+# ---------------------------------------------------------------------------
+# 行情数据源（StrategyFrame MDS）
+# ---------------------------------------------------------------------------
+mds:
+  # 行情接入模式
+  # 可选值: external_shm | self_hosted | replay
+  # - external_shm: 连接外部 mds_producer 写入的共享内存（本策略默认）
+  # - self_hosted: 策略进程内复用完整 ProducerRuntime；配置示例：
+  #     producer:
+  #       config_path: core/mds/config/mds_polymarket.example.yaml
+  # - replay: 回放模式
+  source: external_shm
+
+  # 共享内存 segment 列表；external_shm 模式下至少配置一个
+  segments:
+    # BTC 5 分钟 UP 合约 BBO ticker
+    - name: /selfquant.mds.poly.polymarket_binary_option.btc5mup.ticker.2
+      ring_bytes: 8388608          # ring 缓冲区大小（字节），需与 producer 一致
+      max_record_bytes: 65536      # 单条记录最大字节数
+      expected_reader_budget: 1    # 预期 reader 数量，用于启动时 slot 预算校验
+      heartbeat_interval_ns: 500000000  # 心跳间隔（纳秒），500ms
+
+    # BTC 5 分钟 DOWN 合约 BBO ticker
+    - name: /selfquant.mds.poly.polymarket_binary_option.btc5mdown.ticker.2
+      ring_bytes: 8388608
+      max_record_bytes: 65536
+      expected_reader_budget: 1
+      heartbeat_interval_ns: 500000000
+  required_instruments:
+    - {venue: polymarket, product: binary_option, symbol: btc5mup}
+    - {venue: polymarket, product: binary_option, symbol: btc5mdown}
+
+# ---------------------------------------------------------------------------
+# 订单执行（StrategyFrame OMS）
+# ---------------------------------------------------------------------------
+oms:
+  # 运行时线程模型
+  # 可选值: single_thread | multi_io_thread
+  # - single_thread: 策略与 OMS I/O 同线程，延迟最低
+  # - multi_io_thread: 策略与 OMS I/O 分离，适合多 venue 并发
+  threading: single_thread
+
+  # 主循环空闲策略
+  # 可选值: busy_spin | adaptive | low_cpu
+  # - busy_spin: 忙等，CPU 占用高、延迟最低
+  # - adaptive: 自适应等待（推荐）
+  # - low_cpu: 低 CPU 占用，延迟较高
+  idle_policy: adaptive
+
+  strategy_cpu: -1   # 策略线程 CPU 亲和性，-1 表示不绑定
+  io_cpu: -1         # OMS I/O 线程 CPU 亲和性，-1 表示不绑定
+  numa_node: -1      # NUMA 节点，-1 表示不指定
+  session_epoch: 1   # 会话 epoch，用于区分不同启动周期
+  event_budget: 128  # 单次 poll 最大处理事件数
+  metric_sample_rate: 100  # 指标采样率（每 N 次采样 1 次）
+  startup_timeout_ns: 10000000000  # OMS 启动超时（纳秒），10s
+
+  memory: {lock_pages: false, prefault: true, strict: false}
+  # memory.lock_pages: 是否 mlock 锁定内存页
+  # memory.prefault: 是否预 fault 内存
+  # memory.strict: 严格模式，分配失败时直接报错
+
+  socket:
+    {tcp_nodelay: true, receive_buffer_bytes: 0, send_buffer_bytes: 0, busy_poll_us: 0}
+  # socket.tcp_nodelay: 禁用 Nagle 算法
+  # socket.receive_buffer_bytes / send_buffer_bytes: SO_RCVBUF/SO_SNDBUF，0 表示系统默认
+  # socket.busy_poll_us: SO_BUSY_POLL 微秒数，0 表示关闭
+
+  capacities:
+    command_queue: 1024       # 下单/撤单命令队列容量（须为 2 的幂）
+    update_queue: 4096        # 订单回报队列容量
+    market_data_queue: 4096   # 行情事件队列容量
+    order_table: 4096         # 活跃订单表容量
+    position_table: 1024      # 持仓表容量
+    fill_dedup: 8192          # 成交去重表容量
+    timer_table: 1024         # 定时器表容量
+
+  # instruments is intentionally omitted. MDS InstrumentCatalog is the
+  # execution-routing source; a legacy instruments list, when present, is
+  # retained only as a startup consistency check/fallback.
+
+  # 交易所执行通道；enabled=false 时仅空跑（不接真实下单）
+  venues:
+    polymarket:                 # OMS venue key，可选值: binance_spot | binance_usdm | polymarket
+      enabled: false            # true=启用真实下单；false=离线/shadow 模式
+      account_id: 1             # 须与 strategy.account_id 一致
+      rest: {host: clob.polymarket.com, port: "443"}
+      user_websocket:
+        {host: ws-subscriptions-clob.polymarket.com, port: "443"}
+      api_key_env: POLY_API_KEY           # 环境变量名，存放 API Key
+      secret_env: POLY_API_SECRET         # 环境变量名，存放 API Secret
+      passphrase_env: POLY_PASSPHRASE     # 环境变量名，存放 Passphrase
+      signer_address_env: POLY_SIGNER_ADDRESS   # 签名地址
+      funder_address_env: POLY_FUNDER_ADDRESS # 资金地址
+      private_key_env: POLY_PRIVATE_KEY   # 私钥（signature_type=3 时用于 POLY_PROXY 签名）
+
+# ---------------------------------------------------------------------------
+# poly-mm 策略参数
+# ---------------------------------------------------------------------------
+strategy:
+  account_id: 1               # 交易账户 ID，须与 oms.venues.polymarket.account_id 一致
+  # BTC5MUP/BTC5MDOWN are resolved from StrategyFrame InstrumentCatalog.
+
+  # --- 信号层 ---
+  vol_lookback_ms: 30000      # 波动率回看窗口（毫秒），用于计算 fair price 对数收益标准差
+  signal_horizon_ms: 250      # 信号 horizon（毫秒），fair price 变动 = 最新价 - horizon 前价格
+  vol_threshold: 0.20         # 年化波动率下限；低于此值不触发开仓
+  min_market_price: 0.15      # 平值过滤：市场中间价下限（仅在此区间内交易）
+  max_market_price: 0.85      # 平值过滤：市场中间价上限
+  min_edge_ticks: 1.0         # taker 开仓安全边际（tick）；要求 edge >= spread + min_edge_ticks
+
+  # --- 下单与持仓 ---
+  order_shares: 1.0           # 每笔订单 shares 数量
+  max_single_side_shares: 10.0        # 单腿（Yes 或 No）最大持仓；超限仅允许配平方向下单
+  imbalance_tolerance_shares: 0.1     # Yes/No 配平容差（shares）；在此误差内视为已配平
+  profit_spread_ticks: 1              # maker 平仓目标利润（相对开仓均价的 tick 数）
+  close_improve_ticks: 0              # maker 平仓额外改善 tick（在目标价基础上再让价）
+
+  # --- 订单生命周期 ---
+  max_order_resting_ms: 1000          # maker 挂单最大驻留时间（毫秒），超时撤单重挂
+  requote_deviation_ticks: 1          # 挂单价格偏离目标超过此 tick 数时撤单重挂
+
+  # --- 风控 ---
+  no_trade_before_expiry_ms: 30000    # 距 5 分钟窗口到期前 N 毫秒停止新开仓并撤单
+  stop_loss_ticks: 5.0                # 单边浮亏止损阈值（tick * 持仓量）
+
+  # --- 运行时 ---
+  fairprice_timer_us: 200             # fairprice sidecar 事件轮询间隔（微秒）
+
+  # --- fairprice sidecar（连接 Go aggdata 服务）---
+  fairprice:
+    host: 127.0.0.1                   # fairprice WebSocket 主机
+    service: "9093"                   # fairprice WebSocket 端口
+    target: /v1/stream                # WebSocket 路径
+    origin: http://127.0.0.1:3000     # WebSocket Origin 头（部分网关校验需要）
+    secure: false                     # true=wss | false=ws
+    profile: ""                       # 可选 profile 参数，空字符串表示默认
+    symbol: BTCUSDT                   # fairprice 订阅 symbol
+

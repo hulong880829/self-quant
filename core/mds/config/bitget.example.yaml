@@ -1,0 +1,48 @@
+# Bitget 独立生产者示例。ticker 使用 books1 一档快照。
+shared_memory:
+  prefix: /selfquant.mds
+  backend: POSIX_SHM
+  mode: OVERWRITE_OLDEST
+  hugetlbfs_mount: /dev/hugepages
+  ring_bytes: 8388608
+  max_record_bytes: 65536
+  max_readers: 32
+  reader_lease_timeout_ns: 5000000000
+  allow_hugepage_fallback: false
+  unlink_on_shutdown: false
+
+order_book:
+  default_ladder_ticks_per_side: 8192
+  max_ladder_ticks_per_side: 16384
+  default_price_band_bps: 10
+
+venues:
+  - venue: bitget
+    product: SPOT
+    websocket_endpoint: wss://ws.bitget.com/v2/ws/public
+    rest_endpoint: https://api.bitget.com
+    protocol: JSON
+    redundant_ab: false
+
+  - venue: bitget
+    product: PERPETUAL                   # USDT Futures
+    websocket_endpoint: wss://ws.bitget.com/v2/ws/public
+    rest_endpoint: https://api.bitget.com
+    protocol: JSON
+    redundant_ab: false
+
+subscriptions:
+  - venue: bitget
+    stream: ticker                       # books1，约 10ms 的一档 BBO snapshot
+    symbol: BTCUSDT
+    product: PERPETUAL
+
+  - venue: bitget
+    stream: orderbook                    # 默认 books：首次快照，随后增量
+    symbol: BTCUSDT
+    product: PERPETUAL
+    ladder_ticks_per_side: 8192
+
+# USDT Futures books 约 150ms；Spot books 约 200ms。
+# 如需现货，将两个 subscription 的 product 改为 SPOT。
+# 可显式配置 orderbook_channel: books15 使用同频率的 15 档 image 频道。

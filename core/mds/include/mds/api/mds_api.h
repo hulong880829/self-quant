@@ -2,6 +2,7 @@
 
 #include "utils/md/types.h"
 #include "utils/md/order_book.h"
+#include "utils/md/wire.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -13,20 +14,24 @@ namespace mds::api {
 
 enum class ErrorCode : std::uint16_t {
   Ok = 0,
-  AlreadyInitialized,
-  NotInitialized,
-  InvalidConfig,
-  UnsupportedVenueProduct,
-  InstrumentNotFound,
-  ShmCreateFailed,
-  HugepageUnavailable,
-  TscUnstable,
-  CpuBindFailed,
-  QuotaExceeded,
-  SubscriptionRejected,
-  RecordOverwritten,
-  InvalidHandle,
-  InternalError,
+  AlreadyInitialized = 1,
+  NotInitialized = 2,
+  InvalidConfig = 3,
+  UnsupportedVenueProduct = 4,
+  InstrumentNotFound = 5,
+  ShmCreateFailed = 6,
+  HugepageUnavailable = 7,
+  TscUnstable = 8,
+  CpuBindFailed = 9,
+  QuotaExceeded = 10,
+  SubscriptionRejected = 11,
+  RecordOverwritten = 12,
+  InvalidHandle = 13,
+  InternalError = 14,
+  AlreadyStarted = 15,
+  AggregateNotReady = 16,
+  SubscriptionTypeMismatch = 17,
+  InstrumentMismatch = 18,
 };
 
 template <typename T> struct Result {
@@ -92,9 +97,14 @@ struct VenueProfile {
   ProductType product{ProductType::Spot};
   std::string websocket_endpoint{};
   std::string rest_endpoint{};
+  std::string api_key_env{};
+  std::string secret_env{};
+  std::string passphrase_env{};
+  std::string shm_prefix{"/selfquant.mds"};
   WireProtocol protocol{WireProtocol::Json};
   std::uint32_t max_streams_per_connection{200};
   std::uint32_t messages_per_second{5};
+  std::uint32_t snapshot_pacing_ms{100};
   bool redundant_ab{false};
   bool allow_json_fallback{false};
 };
@@ -104,6 +114,8 @@ struct MdsConfig {
   ShmConfig shm{};
   std::vector<VenueProfile> venues{};
   std::size_t max_subscriptions{4096};
+  // Deprecated field names retained for source compatibility. Values are
+  // price-tick window widths, not populated order-book level counts.
   std::uint32_t default_ladder_levels_per_side{8192};
   std::uint32_t max_ladder_levels_per_side{16384};
 };
@@ -116,17 +128,48 @@ struct TickerSubscription {
 
 struct OrderBookSubscription : TickerSubscription {
   std::uint32_t depth{1000};
+  // Deprecated field name retained for ABI/source compatibility; unit=ticks.
   std::uint32_t ladder_levels_per_side{8192};
   SlowConsumerPolicy slow_consumer{SlowConsumerPolicy::Latest};
-  std::uint32_t update_interval_ms{100};
+  // Zero selects the venue/channel default. Non-zero is only accepted when
+  // the selected native channel supports a configurable interval.
+  std::uint32_t update_interval_ms{};
+  std::string orderbook_channel{};
+  std::uint32_t ladder_price_band_bps{10};
 };
+
+struct AggregateSubscription {
+  std::vector<std::string> venues{};
+  ProductType product{ProductType::Spot};
+  std::string symbol{};
+  // Zero derives a per-member TTL from the selected venue capability.
+  std::uint64_t ttl_us{};
+  bool cross_skew_observe_only{true};
+  std::uint32_t cross_skew_threshold_us{50'000};
+  std::uint64_t fx_ttl_us{100'000};
+  std::uint32_t fx_max_depeg_bps{200};
+};
+
+using AggBboRecord = utils::md::wire::AggBboRecord;
+using AggOrderBookRecord = utils::md::wire::AggOrderBookRecord;
 
 Result<void> init(const MdsConfig &config);
 Result<SubscriptionHandle> subticker(const TickerSubscription &subscription);
 Result<SubscriptionHandle>
 suborderbook(const OrderBookSubscription &subscription);
+Result<SubscriptionHandle>
+register_agg_bbo(const AggregateSubscription &subscription);
+Result<SubscriptionHandle>
+register_agg_orderbook(const AggregateSubscription &subscription);
+Result<void> start();
 Result<void> unsubscribe(SubscriptionHandle handle);
 SubscriptionState query_state(SubscriptionHandle handle) noexcept;
+// Copies the newest in-process aggregate image. Successful calls do not
+// allocate; AggregateNotReady means no complete image has been built yet.
+ErrorCode try_read_agg_bbo(SubscriptionHandle handle,
+                           AggBboRecord &record) noexcept;
+ErrorCode try_read_agg_orderbook(SubscriptionHandle handle,
+                                 AggOrderBookRecord &record) noexcept;
 void shutdown() noexcept;
 
 } // namespace mds::api

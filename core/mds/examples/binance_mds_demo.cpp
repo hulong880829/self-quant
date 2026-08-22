@@ -111,8 +111,8 @@ int main(int argc, char **argv) {
     options.shm_prefix = cli.shm_prefix;
     options.websocket_endpoint = cli.websocket_endpoint;
     options.rest_endpoint = cli.rest_endpoint;
-    options.ladder_levels_per_side = cli.ladder;
-    options.max_ladder_levels_per_side = utils::md::kMaxLadderLevels;
+    options.ladder_ticks_per_side = cli.ladder;
+    options.max_ladder_ticks_per_side = utils::md::kMaxLadderLevels;
     auto created = manager.create(std::move(options));
     if (!created) {
       std::cerr << "session start failed: " << created.message << '\n';

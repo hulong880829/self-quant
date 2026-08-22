@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,28 +14,259 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
+	accountv1 "selfquant/backend/gen/account/v1"
+	aiv1 "selfquant/backend/gen/ai/v1"
 	fundingv1 "selfquant/backend/gen/funding/v1"
+	polymarketv1 "selfquant/backend/gen/polymarket/v1"
+	reportv1 "selfquant/backend/gen/report/v1"
+	spreadv1 "selfquant/backend/gen/spread/v1"
+	traderv1 "selfquant/backend/gen/trader/v1"
 )
 
-type Handler struct {
-	funding fundingv1.FundingServiceClient
-	health  grpc_health_v1.HealthClient
+type Options struct {
+	SessionCookieName   string
+	SessionCookieSecure bool
+	SessionCookieMaxAge time.Duration
+	Polymarket          polymarketv1.PolymarketServiceClient
+	Report              reportv1.ReportServiceClient
+	Trader              traderv1.TraderServiceClient
+	AI                  aiv1.AIServiceClient
+	Spread              spreadv1.SpreadServiceClient
+	AccountHealth       grpc_health_v1.HealthClient
+	PolymarketHealth    grpc_health_v1.HealthClient
+	ReportHealth        grpc_health_v1.HealthClient
+	TraderHealth        grpc_health_v1.HealthClient
+	AIHealth            grpc_health_v1.HealthClient
+	SpreadHealth        grpc_health_v1.HealthClient
 }
 
-func NewRouter(funding fundingv1.FundingServiceClient, health grpc_health_v1.HealthClient) http.Handler {
-	handler := &Handler{funding: funding, health: health}
+type Handler struct {
+	funding             fundingv1.FundingServiceClient
+	account             accountv1.AccountServiceClient
+	polymarket          polymarketv1.PolymarketServiceClient
+	report              reportv1.ReportServiceClient
+	trader              traderv1.TraderServiceClient
+	ai                  aiv1.AIServiceClient
+	spread              spreadv1.SpreadServiceClient
+	health              grpc_health_v1.HealthClient
+	accountHealth       grpc_health_v1.HealthClient
+	polymarketHealth    grpc_health_v1.HealthClient
+	reportHealth        grpc_health_v1.HealthClient
+	traderHealth        grpc_health_v1.HealthClient
+	aiHealth            grpc_health_v1.HealthClient
+	spreadHealth        grpc_health_v1.HealthClient
+	sessionCookieName   string
+	sessionCookieSecure bool
+	sessionCookieMaxAge time.Duration
+}
+
+func NewRouter(
+	funding fundingv1.FundingServiceClient,
+	account accountv1.AccountServiceClient,
+	health grpc_health_v1.HealthClient,
+	options Options,
+) http.Handler {
+	cookieName := strings.TrimSpace(options.SessionCookieName)
+	if cookieName == "" {
+		cookieName = "sq_session"
+	}
+	maxAge := options.SessionCookieMaxAge
+	if maxAge <= 0 {
+		maxAge = 12 * time.Hour
+	}
+	handler := &Handler{
+		funding:             funding,
+		account:             account,
+		health:              health,
+		polymarket:          options.Polymarket,
+		report:              options.Report,
+		trader:              options.Trader,
+		ai:                  options.AI,
+		spread:              options.Spread,
+		accountHealth:       options.AccountHealth,
+		polymarketHealth:    options.PolymarketHealth,
+		reportHealth:        options.ReportHealth,
+		traderHealth:        options.TraderHealth,
+		aiHealth:            options.AIHealth,
+		spreadHealth:        options.SpreadHealth,
+		sessionCookieName:   cookieName,
+		sessionCookieSecure: options.SessionCookieSecure,
+		sessionCookieMaxAge: maxAge,
+	}
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
 	router.Use(middleware.RealIP)
 	router.Use(middleware.Recoverer)
-	router.Use(middleware.Timeout(5 * time.Second))
+	router.Use(middleware.Compress(5))
 	router.Use(corsMiddleware(os.Getenv("GATEWAY_CORS_ORIGIN")))
 	router.Get("/health/live", func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	router.Get("/health/ready", handler.healthCheck)
+	router.Post("/api/v1/auth/login", handler.login)
+	router.Get("/api/v1/auth/session", handler.session)
+	router.Post("/api/v1/auth/logout", handler.logout)
+	router.Get("/api/v1/trading-accounts", handler.listTradingAccounts)
+	router.Post("/api/v1/trading-accounts", handler.createTradingAccount)
+	router.Get("/api/v1/trading-accounts/{id}/snapshot", handler.getTradingAccountSnapshot)
+	router.Get("/api/v1/trading-account-products/{productName}/snapshot", handler.getProductGroupSnapshot)
+	router.Delete("/api/v1/trading-accounts/{id}", handler.deleteTradingAccount)
 	router.Get("/api/v1/funding-rates", handler.listFundingRates)
+	router.Get("/api/v1/funding-spreads", handler.listFundingSpreads)
+	router.Get("/api/v1/funding-opportunities", handler.listFundingOpportunities)
+	router.Get(
+		"/api/v1/funding-rates/{exchange}/{exchangeSymbol}/history",
+		handler.getFundingHistory,
+	)
+	if handler.spread != nil {
+		router.Get(
+			"/api/v1/basis-spreads/{venue}/{baseAsset}/{quoteAsset}/history",
+			handler.getBasisSpreadHistory,
+		)
+	}
+	if handler.polymarket != nil {
+		router.Get("/api/v1/polymarket/markets", handler.listPolymarketMarkets)
+		router.Get("/api/v1/polymarket/markets/{id}", handler.getPolymarketSnapshot)
+		router.Get("/api/v1/polymarket/stream", handler.streamPolymarketSnapshots)
+		router.Get("/api/v1/polymarket/accounts/{accountId}/summary", handler.getPolymarketAccountSummary)
+		router.Get("/api/v1/polymarket/accounts/{accountId}/positions", handler.listPolymarketPositions)
+		router.Get("/api/v1/polymarket/accounts/{accountId}/open-orders", handler.listPolymarketOpenOrders)
+		router.Get("/api/v1/polymarket/accounts/{accountId}/events", handler.streamPolymarketAccountEvents)
+		router.Delete("/api/v1/polymarket/accounts/{accountId}/orders/{id}", handler.cancelPolymarketOrder)
+		router.Post("/api/v1/polymarket/orders", handler.placePolymarketOrder)
+		router.Get("/api/v1/polymarket/orders/{id}", handler.getPolymarketOrder)
+	}
+	if handler.trader != nil {
+		router.Get("/api/v1/trader/accounts/{accountId}/instruments", handler.listTraderInstruments)
+		router.Post("/api/v1/trader/orders", handler.placeTraderOrder)
+		router.Get("/api/v1/trader/orders", handler.listTraderOrders)
+		router.Get("/api/v1/trader/orders/{id}", handler.getTraderOrder)
+		router.Delete("/api/v1/trader/orders/{id}", handler.cancelTraderOrder)
+		router.Post("/api/v1/trader/twaps", handler.createTraderTwap)
+		router.Get("/api/v1/trader/twaps", handler.listTraderTwaps)
+		router.Get("/api/v1/trader/twaps/{id}", handler.getTraderTwap)
+		router.Get("/api/v1/trader/twaps/{id}/orders", handler.listTraderTwapOrders)
+		router.Delete("/api/v1/trader/twaps/{id}", handler.cancelTraderTwap)
+		router.Post("/api/v1/trader/arbitrage-combinations", handler.createArbitrageCombination)
+		router.Get("/api/v1/trader/arbitrage-combinations", handler.listArbitrageCombinations)
+		router.Get("/api/v1/trader/arbitrage-combinations/{id}", handler.getArbitrageCombination)
+		router.Delete("/api/v1/trader/arbitrage-combinations/{id}", handler.closeArbitrageCombination)
+	}
+	if handler.report != nil {
+		router.Get("/api/v1/reports/products", handler.listReportProducts)
+		router.Get("/api/v1/reports/products/{id}", handler.getReportProduct)
+		router.Get("/api/v1/reports/products/{id}/daily", handler.listReportDaily)
+		router.Get("/api/v1/reports/products/{id}/cash-flows", handler.listReportCashFlows)
+		router.Post("/api/v1/reports/products/{id}/cash-flows", handler.createReportCashFlow)
+		router.Post("/api/v1/reports/products/{id}/recompute", handler.recomputeReportProduct)
+	}
+	if handler.ai != nil {
+		router.Get("/api/v1/ai/credentials/openrouter", handler.getAICredential)
+		router.Post("/api/v1/ai/credentials/openrouter", handler.upsertAICredential)
+		router.Delete("/api/v1/ai/credentials/openrouter", handler.deleteAICredential)
+		router.Post("/api/v1/ai/credentials/openrouter/test", handler.testAICredential)
+		router.Get("/api/v1/ai/conversations", handler.listAIConversations)
+		router.Post("/api/v1/ai/conversations", handler.createAIConversation)
+		router.Post("/api/v1/ai/conversations/{id}/rename", handler.renameAIConversation)
+		router.Delete("/api/v1/ai/conversations/{id}", handler.deleteAIConversation)
+		router.Get("/api/v1/ai/conversations/{id}/messages", handler.listAIConversationMessages)
+		router.Post("/api/v1/ai/chat", handler.streamAIChat)
+	}
 	return router
+}
+
+func (h *Handler) getTradingAccountSnapshot(writer http.ResponseWriter, request *http.Request) {
+	token, ok := h.sessionToken(request)
+	if !ok {
+		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+		return
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(request, "id")), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid trading account id"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 12*time.Second)
+	defer cancel()
+	response, err := h.account.GetTradingAccountSnapshot(ctx, &accountv1.GetTradingAccountSnapshotRequest{Token: token, TradingAccountId: id})
+	if err != nil {
+		h.writeAccountError(writer, err, "account snapshot unavailable")
+		return
+	}
+	writer.Header().Set("Cache-Control", "no-store")
+	writeJSON(writer, http.StatusOK, tradingAccountSnapshotJSON(response))
+}
+
+func (h *Handler) getProductGroupSnapshot(writer http.ResponseWriter, request *http.Request) {
+	token, ok := h.sessionToken(request)
+	if !ok {
+		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+		return
+	}
+	product := strings.TrimSpace(chi.URLParam(request, "productName"))
+	if product == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "product name is required"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 15*time.Second)
+	defer cancel()
+	response, err := h.account.GetProductGroupSnapshot(ctx, &accountv1.GetProductGroupSnapshotRequest{Token: token, ProductName: product})
+	if err != nil {
+		h.writeAccountError(writer, err, "product snapshot unavailable")
+		return
+	}
+	writer.Header().Set("Cache-Control", "no-store")
+	snapshot := response.GetSnapshot()
+	positions := make([]map[string]any, 0, len(snapshot.GetPositions()))
+	for _, item := range snapshot.GetPositions() {
+		positions = append(positions, map[string]any{
+			"symbol": item.GetSymbol(), "side": item.GetSide(),
+			"totalNotionalUsd": item.GetTotalNotionalUsd(),
+			"spotSize":         item.GetSpotSize(), "contractSize": item.GetContractSize(),
+		})
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"productName": snapshot.GetProductName(), "accountCount": snapshot.GetAccountCount(),
+		"accountEquityUsd": snapshot.GetAccountEquityUsd(), "availableFundsUsd": snapshot.GetAvailableFundsUsd(),
+		"positions": positions, "sourceUpdatedAt": protoTimeJSON(snapshot.GetSourceUpdatedAt()),
+		"serverTime": protoTimeJSON(response.GetServerTime()), "stale": snapshot.GetStale(),
+		"partial": snapshot.GetPartial(), "errors": snapshot.GetErrors(),
+	})
+}
+
+func tradingAccountSnapshotJSON(response *accountv1.GetTradingAccountSnapshotResponse) map[string]any {
+	snapshot := response.GetSnapshot()
+	positions := make([]map[string]any, 0, len(snapshot.GetPositions()))
+	for _, item := range snapshot.GetPositions() {
+		positions = append(positions, map[string]any{
+			"key": item.GetKey(), "kind": item.GetKind(), "exchange": item.GetExchange(),
+			"symbol": item.GetSymbol(), "side": item.GetSide(), "notionalUsd": item.GetNotionalUsd(),
+			"size": item.GetSize(), "spotSize": item.GetSpotSize(),
+			"signedContractSize": item.GetSignedContractSize(),
+			"entryPrice":         item.GetEntryPrice(), "markPrice": item.GetMarkPrice(),
+			"unrealizedPnl": item.GetUnrealizedPnl(), "marketTitle": item.GetMarketTitle(),
+			"outcome": item.GetOutcome(), "initialValue": item.GetInitialValue(),
+			"currentValue": item.GetCurrentValue(), "cashPnl": item.GetCashPnl(),
+			"conditionId": item.GetConditionId(), "tokenId": item.GetTokenId(), "endTime": protoTimeJSON(item.GetEndTime()),
+		})
+	}
+	return map[string]any{
+		"tradingAccountId": snapshot.GetTradingAccountId(), "productName": snapshot.GetProductName(),
+		"exchange": snapshot.GetExchange(), "accountName": snapshot.GetAccountName(),
+		"accountEquityUsd":  snapshot.GetAccountEquityUsd(),
+		"availableFundsUsd": snapshot.GetAvailableFundsUsd(), "riskPercent": snapshot.GetRiskPercent(),
+		"positions": positions, "sourceUpdatedAt": protoTimeJSON(snapshot.GetSourceUpdatedAt()),
+		"serverTime": protoTimeJSON(response.GetServerTime()), "stale": snapshot.GetStale(),
+		"lastError": snapshot.GetLastError(),
+	}
+}
+
+func protoTimeJSON(value *timestamppb.Timestamp) string {
+	if value == nil || !value.IsValid() {
+		return ""
+	}
+	return value.AsTime().UTC().Format(time.RFC3339Nano)
 }
 
 func corsMiddleware(origin string) func(http.Handler) http.Handler {
@@ -42,9 +274,17 @@ func corsMiddleware(origin string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			if origin != "" {
 				writer.Header().Set("Access-Control-Allow-Origin", origin)
-				writer.Header().Set("Vary", "Origin")
-				writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept")
-				writer.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+				writer.Header().Add("Vary", "Origin")
+				writer.Header().Set("Access-Control-Allow-Credentials", "true")
+				writer.Header().Set(
+					"Access-Control-Allow-Headers",
+					"Content-Type, Accept, If-None-Match, Idempotency-Key",
+				)
+				writer.Header().Set("Access-Control-Expose-Headers", "ETag")
+				writer.Header().Set(
+					"Access-Control-Allow-Methods",
+					"GET, POST, DELETE, OPTIONS",
+				)
 			}
 			if request.Method == http.MethodOptions {
 				writer.WriteHeader(http.StatusNoContent)
@@ -58,12 +298,327 @@ func corsMiddleware(origin string) func(http.Handler) http.Handler {
 func (h *Handler) healthCheck(writer http.ResponseWriter, request *http.Request) {
 	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
 	defer cancel()
-	response, err := h.health.Check(ctx, &grpc_health_v1.HealthCheckRequest{})
-	if err != nil || response.GetStatus() != grpc_health_v1.HealthCheckResponse_SERVING {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"status": "unavailable"})
+	checks := map[string]grpc_health_v1.HealthClient{"funding": h.health}
+	if h.accountHealth != nil {
+		checks["account"] = h.accountHealth
+	}
+	if h.polymarketHealth != nil {
+		checks["polymarket"] = h.polymarketHealth
+	}
+	if h.reportHealth != nil {
+		checks["report"] = h.reportHealth
+	}
+	if h.traderHealth != nil {
+		checks["trader"] = h.traderHealth
+	}
+	if h.aiHealth != nil {
+		checks["ai"] = h.aiHealth
+	}
+	if h.spreadHealth != nil {
+		checks["spread"] = h.spreadHealth
+	}
+	dependencies := make(map[string]string, len(checks))
+	ready := true
+	for name, client := range checks {
+		response, err := client.Check(ctx, &grpc_health_v1.HealthCheckRequest{})
+		if err != nil || response.GetStatus() != grpc_health_v1.HealthCheckResponse_SERVING {
+			dependencies[name] = "unavailable"
+			ready = false
+		} else {
+			dependencies[name] = "ok"
+		}
+	}
+	if !ready {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
+			"status": "unavailable", "dependencies": dependencies,
+		})
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"status": "ok"})
+	writeJSON(writer, http.StatusOK, map[string]any{"status": "ok", "dependencies": dependencies})
+}
+
+type loginRequestBody struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
+	var body loginRequestBody
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{
+			"error": "invalid login payload",
+		})
+		return
+	}
+	username := strings.TrimSpace(body.Username)
+	if username == "" || body.Password == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{
+			"error": "username and password are required",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	defer cancel()
+	response, err := h.account.Login(ctx, &accountv1.LoginRequest{
+		Username: username, Password: body.Password,
+	})
+	if err != nil {
+		switch status.Code(err) {
+		case codes.Unauthenticated, codes.InvalidArgument:
+			writeJSON(writer, http.StatusUnauthorized, map[string]string{
+				"error": "invalid credentials",
+			})
+		case codes.DeadlineExceeded:
+			writeJSON(writer, http.StatusGatewayTimeout, map[string]string{
+				"error": "login timed out",
+			})
+		default:
+			writeJSON(writer, http.StatusBadGateway, map[string]string{
+				"error": "account service unavailable",
+			})
+		}
+		return
+	}
+	http.SetCookie(writer, &http.Cookie{
+		Name:     h.sessionCookieName,
+		Value:    response.GetToken(),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.sessionCookieSecure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(h.sessionCookieMaxAge.Seconds()),
+	})
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"username":      response.GetUsername(),
+		"permission":    response.GetPermission(),
+	})
+}
+
+func (h *Handler) session(writer http.ResponseWriter, request *http.Request) {
+	cookie, err := request.Cookie(h.sessionCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		writeJSON(writer, http.StatusOK, map[string]any{
+			"authenticated": false,
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	defer cancel()
+	response, err := h.account.ValidateSession(ctx, &accountv1.ValidateSessionRequest{
+		Token: cookie.Value,
+	})
+	if err != nil {
+		if status.Code(err) == codes.Unauthenticated {
+			h.clearSessionCookie(writer)
+			writeJSON(writer, http.StatusOK, map[string]any{
+				"authenticated": false,
+			})
+			return
+		}
+		writeJSON(writer, http.StatusBadGateway, map[string]string{
+			"error": "account service unavailable",
+		})
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"username":      response.GetUsername(),
+		"permission":    response.GetPermission(),
+	})
+}
+
+func (h *Handler) logout(writer http.ResponseWriter, _ *http.Request) {
+	h.clearSessionCookie(writer)
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"authenticated": false,
+	})
+}
+
+func (h *Handler) clearSessionCookie(writer http.ResponseWriter) {
+	http.SetCookie(writer, &http.Cookie{
+		Name:     h.sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.sessionCookieSecure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+func (h *Handler) sessionToken(request *http.Request) (string, bool) {
+	cookie, err := request.Cookie(h.sessionCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return "", false
+	}
+	return cookie.Value, true
+}
+
+type createTradingAccountBody struct {
+	ProductName   string `json:"productName"`
+	Exchange      string `json:"exchange"`
+	AccountName   string `json:"accountName"`
+	APIKey        string `json:"apiKey"`
+	APISecret     string `json:"apiSecret"`
+	Passphrase    string `json:"passphrase"`
+	PrivateKey    string `json:"privateKey"`
+	WalletType    string `json:"walletType"`
+	FunderAddress string `json:"funderAddress"`
+}
+
+func tradingAccountJSON(item *accountv1.TradingAccount) map[string]any {
+	return map[string]any{
+		"id":            item.GetId(),
+		"productName":   item.GetProductName(),
+		"exchange":      displayExchange(item.GetExchange()),
+		"exchangeSlug":  strings.ToLower(item.GetExchange()),
+		"accountName":   item.GetAccountName(),
+		"apiKeyMasked":  item.GetApiKeyMasked(),
+		"hasPassphrase": item.GetHasPassphrase(),
+		"walletAddress": item.GetWalletAddress(),
+		"walletType":    item.GetWalletType(),
+		"bindingStatus": item.GetBindingStatus(),
+		"createdAt":     item.GetCreatedAt().AsTime().UTC().Format(time.RFC3339Nano),
+		"updatedAt":     item.GetUpdatedAt().AsTime().UTC().Format(time.RFC3339Nano),
+	}
+}
+
+func (h *Handler) writeAccountError(writer http.ResponseWriter, err error, fallback string) {
+	httpStatus := http.StatusBadGateway
+	message := fallback
+	switch status.Code(err) {
+	case codes.Unauthenticated:
+		httpStatus = http.StatusUnauthorized
+		message = "authentication required"
+	case codes.InvalidArgument:
+		httpStatus = http.StatusBadRequest
+		message = status.Convert(err).Message()
+	case codes.AlreadyExists:
+		httpStatus = http.StatusConflict
+		message = "trading account already exists"
+	case codes.NotFound:
+		httpStatus = http.StatusNotFound
+		message = "trading account not found"
+	case codes.DeadlineExceeded:
+		httpStatus = http.StatusGatewayTimeout
+		message = "account service timed out"
+	}
+	writeJSON(writer, httpStatus, map[string]string{"error": message})
+}
+
+func (h *Handler) listTradingAccounts(writer http.ResponseWriter, request *http.Request) {
+	token, ok := h.sessionToken(request)
+	if !ok {
+		writeJSON(writer, http.StatusUnauthorized, map[string]string{
+			"error": "authentication required",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	defer cancel()
+	response, err := h.account.ListTradingAccounts(ctx, &accountv1.ListTradingAccountsRequest{
+		Token: token,
+	})
+	if err != nil {
+		h.writeAccountError(writer, err, "trading accounts unavailable")
+		return
+	}
+	data := make([]map[string]any, 0, len(response.GetItems()))
+	for _, item := range response.GetItems() {
+		data = append(data, tradingAccountJSON(item))
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"data": data,
+		"meta": map[string]any{"total": len(data)},
+	})
+}
+
+func (h *Handler) createTradingAccount(writer http.ResponseWriter, request *http.Request) {
+	token, ok := h.sessionToken(request)
+	if !ok {
+		writeJSON(writer, http.StatusUnauthorized, map[string]string{
+			"error": "authentication required",
+		})
+		return
+	}
+	var body createTradingAccountBody
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{
+			"error": "invalid trading account payload",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	defer cancel()
+	var created *accountv1.TradingAccount
+	var err error
+	if strings.EqualFold(strings.TrimSpace(body.Exchange), "polymarket") {
+		response, createErr := h.account.CreatePolymarketTradingAccount(
+			ctx,
+			&accountv1.CreatePolymarketTradingAccountRequest{
+				Token: token, ProductName: body.ProductName,
+				AccountName: body.AccountName, PrivateKey: body.PrivateKey,
+				WalletType: body.WalletType, FunderAddress: body.FunderAddress,
+			},
+		)
+		err = createErr
+		if response != nil {
+			created = response.GetAccount()
+		}
+	} else {
+		response, createErr := h.account.CreateTradingAccount(ctx, &accountv1.CreateTradingAccountRequest{
+			Token:       token,
+			ProductName: body.ProductName,
+			Exchange:    body.Exchange,
+			AccountName: body.AccountName,
+			ApiKey:      body.APIKey,
+			ApiSecret:   body.APISecret,
+			Passphrase:  body.Passphrase,
+		})
+		err = createErr
+		if response != nil {
+			created = response.GetAccount()
+		}
+	}
+	if err != nil {
+		h.writeAccountError(writer, err, "create trading account failed")
+		return
+	}
+	writeJSON(writer, http.StatusCreated, map[string]any{
+		"data": tradingAccountJSON(created),
+	})
+}
+
+func (h *Handler) deleteTradingAccount(writer http.ResponseWriter, request *http.Request) {
+	token, ok := h.sessionToken(request)
+	if !ok {
+		writeJSON(writer, http.StatusUnauthorized, map[string]string{
+			"error": "authentication required",
+		})
+		return
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(request, "id")), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{
+			"error": "trading account id is required",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	defer cancel()
+	_, err = h.account.DeleteTradingAccount(ctx, &accountv1.DeleteTradingAccountRequest{
+		Token: token, Id: id,
+	})
+	if err != nil {
+		h.writeAccountError(writer, err, "delete trading account failed")
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"deleted": true})
 }
 
 func (h *Handler) listFundingRates(writer http.ResponseWriter, request *http.Request) {
@@ -87,15 +642,15 @@ func (h *Handler) listFundingRates(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	serverTime := response.GetServerTime().AsTime().UTC()
+	etag := `"` + response.GetSnapshotVersion() + `"`
+	writer.Header().Set("ETag", etag)
+	writer.Header().Set("Cache-Control", "no-cache")
+	if request.Header.Get("If-None-Match") == etag {
+		writer.WriteHeader(http.StatusNotModified)
+		return
+	}
 	data := make([]map[string]any, 0, len(response.GetItems()))
 	for _, item := range response.GetItems() {
-		history := make([]map[string]any, 0, len(item.GetHistory()))
-		for _, point := range item.GetHistory() {
-			history = append(history, map[string]any{
-				"rate":      point.GetRate(),
-				"settledAt": point.GetSettledAt().AsTime().UTC().Format(time.RFC3339Nano),
-			})
-		}
 		nextFundingAt := item.GetNextFundingAt().AsTime().UTC()
 		sourceUpdatedAt := item.GetSourceUpdatedAt().AsTime().UTC()
 		var nextFundingRate any
@@ -127,7 +682,6 @@ func (h *Handler) listFundingRates(writer http.ResponseWriter, request *http.Req
 			"priceChange24h":          item.GetPriceChange_24H(),
 			"sourceUpdatedAt":         sourceUpdatedAt.Format(time.RFC3339Nano),
 			"stale":                   item.GetStale(),
-			"fundingHistory":          history,
 			"index": map[string]any{
 				"name":   strings.ToUpper(item.GetExchange()) + "_INDEX",
 				"value":  item.GetIndexPrice(),
@@ -142,6 +696,226 @@ func (h *Handler) listFundingRates(writer http.ResponseWriter, request *http.Req
 			"availableTotal":  response.GetTotal(),
 			"snapshotVersion": response.GetSnapshotVersion(),
 			"serverTime":      serverTime.Format(time.RFC3339Nano),
+		},
+	})
+}
+
+func (h *Handler) listFundingSpreads(writer http.ResponseWriter, request *http.Request) {
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	defer cancel()
+	response, err := h.funding.ListFundingSpreads(
+		ctx, &fundingv1.ListFundingSpreadsRequest{},
+	)
+	if err != nil {
+		httpStatus := http.StatusBadGateway
+		switch status.Code(err) {
+		case codes.DeadlineExceeded:
+			httpStatus = http.StatusGatewayTimeout
+		case codes.Unavailable:
+			httpStatus = http.StatusServiceUnavailable
+		}
+		writeJSON(writer, httpStatus, map[string]any{
+			"error":     "funding service unavailable",
+			"requestId": middleware.GetReqID(request.Context()),
+		})
+		return
+	}
+	serverTime := response.GetServerTime().AsTime().UTC()
+	etag := `"` + response.GetSnapshotVersion() + `"`
+	writer.Header().Set("ETag", etag)
+	writer.Header().Set("Cache-Control", "no-cache")
+	if request.Header.Get("If-None-Match") == etag {
+		writer.WriteHeader(http.StatusNotModified)
+		return
+	}
+	data := make([]map[string]any, 0, len(response.GetItems()))
+	for _, item := range response.GetItems() {
+		longLeg := fundingSpreadLegJSON(item.GetLongLeg())
+		shortLeg := fundingSpreadLegJSON(item.GetShortLeg())
+		data = append(data, map[string]any{
+			"id": item.GetGlobalSymbol() + "-" +
+				item.GetLongLeg().GetExchange() + "-" + item.GetShortLeg().GetExchange(),
+			"symbol":              item.GetGlobalSymbol(),
+			"baseAsset":           item.GetBaseAsset(),
+			"quoteAsset":          item.GetQuoteAsset(),
+			"longLeg":             longLeg,
+			"shortLeg":            shortLeg,
+			"spreadAnnualized":    item.GetSingleSpreadAnnualized(),
+			"spread24hAnnualized": item.GetSpread_24HAnnualized(),
+			"spread7dAnnualized":  item.GetSpread_7DAnnualized(),
+			"minPositionNotional": item.GetMinPositionNotionalUsd(),
+			"minDailyVolume":      item.GetMinTurnover_24HUsd(),
+			"sourceUpdatedAt":     item.GetUpdatedAt().AsTime().UTC().Format(time.RFC3339Nano),
+			"stale":               item.GetStale(),
+		})
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"data": data,
+		"meta": map[string]any{
+			"total":           len(data),
+			"snapshotVersion": response.GetSnapshotVersion(),
+			"serverTime":      serverTime.Format(time.RFC3339Nano),
+		},
+	})
+}
+
+func fundingSpreadLegJSON(item *fundingv1.FundingSpreadLeg) map[string]any {
+	return map[string]any{
+		"exchange":                displayExchange(item.GetExchange()),
+		"exchangeSymbol":          item.GetExchangeSymbol(),
+		"fundingRate":             item.GetEffectiveFundingRate(),
+		"settlementIntervalHours": item.GetFundingIntervalSeconds() / 3600,
+		"nextFundingAt":           item.GetNextFundingAt().AsTime().UTC().Format(time.RFC3339Nano),
+		"positionNotional":        item.GetPositionNotionalUsd(),
+		"dailyVolume":             item.GetTurnover_24HUsd(),
+		"latestPrice":             item.GetLastPrice(),
+		"sourceUpdatedAt":         item.GetSourceUpdatedAt().AsTime().UTC().Format(time.RFC3339Nano),
+		"stale":                   item.GetStale(),
+	}
+}
+
+func (h *Handler) listFundingOpportunities(writer http.ResponseWriter, request *http.Request) {
+	query := request.URL.Query()
+	period := strings.ToLower(strings.TrimSpace(query.Get("period")))
+	if period == "" {
+		period = "1h"
+	}
+	limit := 200
+	if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "limit must be positive"})
+			return
+		}
+		limit = min(parsed, 1000)
+	}
+	requestMessage := &fundingv1.ListFundingOpportunitiesRequest{
+		Period: period, MinLegNotionalUsd: strings.TrimSpace(query.Get("minLegNotionalUsd")),
+		MinLegVolume_24HUsd: strings.TrimSpace(query.Get("minLegVolume24hUsd")),
+		Limit:               int32(limit),
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	defer cancel()
+	response, err := h.funding.ListFundingOpportunities(ctx, requestMessage)
+	if err != nil {
+		if status.Code(err) == codes.InvalidArgument {
+			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": status.Convert(err).Message()})
+			return
+		}
+		httpStatus := http.StatusBadGateway
+		if status.Code(err) == codes.DeadlineExceeded {
+			httpStatus = http.StatusGatewayTimeout
+		} else if status.Code(err) == codes.Unavailable {
+			httpStatus = http.StatusServiceUnavailable
+		}
+		writeJSON(writer, httpStatus, map[string]any{
+			"error":     "funding opportunity service unavailable",
+			"requestId": middleware.GetReqID(request.Context()),
+		})
+		return
+	}
+	etag := `"` + response.GetSnapshotVersion() + "-" + period + "-" +
+		requestMessage.GetMinLegNotionalUsd() + "-" + requestMessage.GetMinLegVolume_24HUsd() +
+		"-" + strconv.Itoa(limit) + `"`
+	writer.Header().Set("ETag", etag)
+	writer.Header().Set("Cache-Control", "no-cache")
+	if request.Header.Get("If-None-Match") == etag {
+		writer.WriteHeader(http.StatusNotModified)
+		return
+	}
+	data := make([]map[string]any, 0, len(response.GetItems()))
+	for _, item := range response.GetItems() {
+		data = append(data, map[string]any{
+			"id": item.GetGlobalSymbol() + "-" + item.GetLongLeg().GetExchange() + "-" +
+				item.GetShortLeg().GetExchange() + "-" + item.GetPeriod(),
+			"rank": item.GetRank(), "symbol": item.GetGlobalSymbol(),
+			"baseAsset": item.GetBaseAsset(), "quoteAsset": item.GetQuoteAsset(),
+			"period": item.GetPeriod(), "longLeg": fundingSpreadLegJSON(item.GetLongLeg()),
+			"shortLeg":                   fundingSpreadLegJSON(item.GetShortLeg()),
+			"currentMidSpreadBps":        item.GetCurrentMidSpreadBps(),
+			"currentExecutableSpreadBps": item.GetCurrentExecutableSpreadBps(),
+			"targetSpreadBps":            item.GetTargetSpreadBps(),
+			"periodExpectedReturn":       item.GetPeriodExpectedReturn(),
+			"fundingExpectedAnnualized":  item.GetFundingExpectedAnnualized(),
+			"spreadExpectedAnnualized":   item.GetSpreadExpectedAnnualized(),
+			"combinedExpectedAnnualized": item.GetCombinedExpectedAnnualized(),
+			"firstPassageProbability":    item.GetFirstPassageProbability(),
+			"profitProbability":          item.GetProfitProbability(),
+			"expectedExitMinutes":        item.GetExpectedExitMinutes(),
+			"p5Return":                   item.GetP5Return(),
+			"minPositionNotional":        item.GetMinPositionNotionalUsd(),
+			"minDailyVolume":             item.GetMinTurnover_24HUsd(),
+			"coverage":                   item.GetCoverage(), "confidence": item.GetConfidence(),
+			"modelState":      item.GetModelState(),
+			"sourceUpdatedAt": item.GetUpdatedAt().AsTime().UTC().Format(time.RFC3339Nano),
+			"stale":           item.GetStale(),
+		})
+	}
+	calculatedAt := ""
+	if response.GetCalculatedAt() != nil {
+		calculatedAt = response.GetCalculatedAt().AsTime().UTC().Format(time.RFC3339Nano)
+	}
+	serverTime := time.Now().UTC().Format(time.RFC3339Nano)
+	if response.GetServerTime() != nil {
+		serverTime = response.GetServerTime().AsTime().UTC().Format(time.RFC3339Nano)
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"data": data,
+		"meta": map[string]any{
+			"total": response.GetTotal(), "snapshotVersion": response.GetSnapshotVersion(),
+			"serverTime": serverTime, "calculatedAt": calculatedAt, "stale": response.GetStale(),
+		},
+	})
+}
+
+func (h *Handler) getFundingHistory(writer http.ResponseWriter, request *http.Request) {
+	limit := 10
+	if value := request.URL.Query().Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed <= 0 {
+			writeJSON(writer, http.StatusBadRequest, map[string]string{
+				"error": "limit must be a positive integer",
+			})
+			return
+		}
+		limit = min(parsed, 100)
+	}
+	exchangeName := strings.ToLower(strings.TrimSpace(chi.URLParam(request, "exchange")))
+	exchangeSymbol := strings.TrimSpace(chi.URLParam(request, "exchangeSymbol"))
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	defer cancel()
+	response, err := h.funding.GetFundingHistory(
+		ctx,
+		&fundingv1.GetFundingHistoryRequest{
+			Exchange: exchangeName, ExchangeSymbol: exchangeSymbol, Limit: int32(limit),
+		},
+	)
+	if err != nil {
+		httpStatus := http.StatusBadGateway
+		switch status.Code(err) {
+		case codes.InvalidArgument:
+			httpStatus = http.StatusBadRequest
+		case codes.DeadlineExceeded:
+			httpStatus = http.StatusGatewayTimeout
+		case codes.Unavailable:
+			httpStatus = http.StatusServiceUnavailable
+		}
+		writeJSON(writer, httpStatus, map[string]any{
+			"error": "funding history unavailable",
+		})
+		return
+	}
+	data := make([]map[string]any, 0, len(response.GetItems()))
+	for _, point := range response.GetItems() {
+		data = append(data, map[string]any{
+			"rate":      point.GetRate(),
+			"settledAt": point.GetSettledAt().AsTime().UTC().Format(time.RFC3339Nano),
+		})
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"data": data,
+		"meta": map[string]any{
+			"exchange": exchangeName, "exchangeSymbol": exchangeSymbol, "total": len(data),
 		},
 	})
 }

@@ -1,0 +1,47 @@
+# Hyperliquid 独立生产者示例。l2Book 为 20 档全量 image。
+shared_memory:
+  prefix: /selfquant.mds
+  backend: POSIX_SHM
+  mode: OVERWRITE_OLDEST
+  hugetlbfs_mount: /dev/hugepages
+  ring_bytes: 8388608
+  max_record_bytes: 65536
+  max_readers: 32
+  reader_lease_timeout_ns: 5000000000
+  allow_hugepage_fallback: false
+  unlink_on_shutdown: false
+
+order_book:
+  default_ladder_ticks_per_side: 8192
+  max_ladder_ticks_per_side: 16384
+  default_price_band_bps: 10
+
+venues:
+  - venue: hyperliquid
+    product: SPOT
+    websocket_endpoint: wss://api.hyperliquid.xyz/ws
+    rest_endpoint: https://api.hyperliquid.xyz
+    protocol: JSON
+    redundant_ab: false
+
+  - venue: hyperliquid
+    product: PERPETUAL
+    websocket_endpoint: wss://api.hyperliquid.xyz/ws
+    rest_endpoint: https://api.hyperliquid.xyz
+    protocol: JSON
+    redundant_ab: false
+
+subscriptions:
+  - venue: hyperliquid
+    stream: ticker                       # 原生 bbo
+    symbol: BTCUSDC                     # Perp 会映射为 Hyperliquid BTC
+    product: PERPETUAL
+
+  - venue: hyperliquid
+    stream: orderbook                    # 原生 l2Book，20档全量 image
+    symbol: BTCUSDC
+    product: PERPETUAL
+    ladder_ticks_per_side: 8192
+
+# Spot 示例：把 product 改为 SPOT，并使用 BTCUSDC 等标准化 symbol。
+# metadata 加载后会自动映射为 Hyperliquid 的 @index 市场标识。

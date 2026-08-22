@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "id": "binance.spot.place_order.ack.v1",
+      "venue": "binance",
+      "product": "spot",
+      "event": "place_order",
+      "source": "https://developers.binance.com/docs/binance-spot-api-docs/rest-api/trading-endpoints",
+      "verification_tier": "doc-derived-unverified-live",
+      "path": "binance/spot_trading.json",
+      "expected_normalized_event": "order_acknowledged"
+    },
+    {
+      "id": "binance.spot.cancel_order.v1",
+      "venue": "binance",
+      "product": "spot",
+      "event": "cancel_order",
+      "source": "https://developers.binance.com/docs/binance-spot-api-docs/rest-api/trading-endpoints",
+      "verification_tier": "doc-derived-unverified-live",
+      "path": "binance/spot_trading.json",
+      "expected_normalized_event": "order_canceled"
+    },
+    {
+      "id": "binance.spot.execution_report.trade.v1",
+      "venue": "binance",
+      "product": "spot",
+      "event": "executionReport",
+      "source": "https://developers.binance.com/docs/binance-spot-api-docs/user-data-stream",
+      "verification_tier": "doc-derived-unverified-live",
+      "path": "binance/spot_execution_report.json",
+      "expected_normalized_event": "order_partially_filled"
+    },
+    {
+      "id": "binance.spot.open_orders.v1",
+      "venue": "binance",
+      "product": "spot",
+      "event": "open_orders",
+      "source": "https://developers.binance.com/docs/binance-spot-api-docs/rest-api/trading-endpoints",
+      "verification_tier": "doc-derived-unverified-live",
+      "path": "binance/spot_queries.json",
+      "expected_normalized_event": "open_orders_snapshot"
+    },
+    {
+      "id": "binance.spot.recent_trades.v1",
+      "venue": "binance",
+      "product": "spot",
+      "event": "recent_trades",
+      "source": "https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints",
+      "verification_tier": "doc-derived-unverified-live",
+      "path": "binance/spot_queries.json",
+      "expected_normalized_event": "public_trade"
+    },
+    {
+      "id": "binance.usdm.place_order.ack.v1",
+      "venue": "binance",
+      "product": "usd-m",
+      "event": "place_order",
+      "source": "https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Order",
+      "verification_tier": "doc-derived-unverified-live",
+      "path": "binance/usdm_trading.json",
+      "expected_normalized_event": "order_acknowledged"
+    },
+    {
+      "id": "binance.usdm.cancel_order.v1",
+      "venue": "binance",
+      "product": "usd-m",
+      "event": "cancel_order",
+      "source": "https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Cancel-Order",
+      "verification_tier": "doc-derived-unverified-live",
+      "path": "binance/usdm_trading.json",
+      "expected_normalized_event": "order_canceled"
+    },
+    {
+      "id": "binance.usdm.order_trade_update.trade.v1",
+      "venue": "binance",
+      "product": "usd-m",
+      "event": "ORDER_TRADE_UPDATE",
+      "source": "https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams/Event-Order-Update",
+      "verification_tier": "doc-derived-unverified-live",
+      "path": "binance/usdm_order_trade_update.json",
+      "expected_normalized_event": "order_opened"
+    },
+    {
+      "id": "binance.usdm.listen_key.create.v1",
+      "venue": "binance",
+      "product": "usd-m",
+      "event": "listen_key_create",
+      "source": "https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams/Start-a-New-User-Data-Stream",
+      "verification_tier": "doc-derived-unverified-live",
+      "path": "binance/usdm_listen_key_lifecycle.json"
+    },
+    {
+      "id": "binance.usdm.listen_key.keepalive.v1",
+      "venue": "binance",
+      "product": "usd-m",
+      "event": "listen_key_keepalive",
+      "source": "https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams/Keepalive-a-User-Data-Stream",
+      "verification_tier": "doc-derived-unverified-live",
+      "path": "binance/usdm_listen_key_lifecycle.json"
+    },
+    {
+      "id": "binance.usdm.listen_key.close.v1",
+      "venue": "binance",
+      "product": "usd-m",
+      "event": "listen_key_close",
+      "source": "https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams/Close-User-Data-Stream",
+      "verification_tier": "doc-derived-unverified-live",
+      "path": "binance/usdm_listen_key_lifecycle.json"
+    },
+    {
+      "id": "polymarket.clob.place_order.v1",
+      "venue": "polymarket",
+      "product": "clob-v2",
+      "event": "place_order",
+      "source": "backend/internal/polymarket/clob_client.go; backend/internal/polymarket/clob_client_test.go",
+      "verification_tier": "implementation-derived",
+      "path": "polymarket/clob_rest.json",
+      "expected_normalized_event": "order_opened"
+    },
+    {
+      "id": "polymarket.clob.cancel_order.v1",
+      "venue": "polymarket",
+      "product": "clob-v2",
+      "event": "cancel_order",
+      "source": "backend/internal/polymarket/clob_client_test.go",
+      "verification_tier": "implementation-derived",
+      "path": "polymarket/clob_rest.json",
+      "expected_normalized_event": "order_canceled"
+    },
+    {
+      "id": "polymarket.clob.list_orders.v1",
+      "venue": "polymarket",
+      "product": "clob-v2",
+      "event": "list_open_orders",
+      "source": "backend/internal/polymarket/clob_client_test.go",
+      "verification_tier": "implementation-derived",
+      "path": "polymarket/clob_rest.json",
+      "expected_normalized_event": "open_orders_snapshot"
+    },
+    {
+      "id": "polymarket.clob.list_trades.v1",
+      "venue": "polymarket",
+      "product": "clob-v2",
+      "event": "list_trades",
+      "source": "backend/internal/polymarket/clob_trades_test.go",
+      "verification_tier": "implementation-derived",
+      "path": "polymarket/clob_rest.json",
+      "expected_normalized_event": "account_trade"
+    },
+    {
+      "id": "polymarket.ws.user.order_update.v1",
+      "venue": "polymarket",
+      "product": "clob-user-websocket",
+      "event": "order",
+      "source": "backend/internal/polymarket/user_stream_test.go",
+      "verification_tier": "implementation-derived",
+      "path": "polymarket/user_websocket.json",
+      "expected_normalized_event": "order_partially_filled"
+    },
+    {
+      "id": "polymarket.ws.user.trade.v1",
+      "venue": "polymarket",
+      "product": "clob-user-websocket",
+      "event": "trade",
+      "source": "backend/internal/polymarket/user_stream.go",
+      "verification_tier": "implementation-derived",
+      "path": "polymarket/user_websocket.json",
+      "expected_normalized_event": "portfolio_changed"
+    },
+    {
+      "id": "polymarket.signing.l2_hmac.v1",
+      "venue": "polymarket",
+      "product": "clob-v2",
+      "event": "l2_hmac_signature",
+      "source": "backend/internal/polymarket/clob_client_test.go",
+      "verification_tier": "implementation-derived-deterministic",
+      "path": "polymarket/signing_vectors.json"
+    },
+    {
+      "id": "polymarket.signing.v2_eip712.v1",
+      "venue": "polymarket",
+      "product": "clob-v2",
+      "event": "v2_order_signature",
+      "source": "backend/internal/polymarket/clob_client_test.go",
+      "verification_tier": "implementation-derived-deterministic",
+      "path": "polymarket/signing_vectors.json"
+    },
+    {
+      "id": "polymarket.signing.deposit_wallet_erc7739.v1",
+      "venue": "polymarket",
+      "product": "clob-v2",
+      "event": "deposit_wallet_wrapped_signature",
+      "source": "backend/internal/polymarket/clob_client_test.go",
+      "verification_tier": "implementation-derived-deterministic",
+      "path": "polymarket/signing_vectors.json"
+    }
+  ]
+}

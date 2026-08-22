@@ -2,6 +2,8 @@ import type {
   Exchange,
   FundingHistoryPoint,
   FundingOpportunity,
+  FundingSpread,
+  FundingSpreadLeg,
 } from "@/types/market";
 
 export type DecimalWire = string | number;
@@ -22,7 +24,7 @@ export interface FundingWireDTO {
   positionNotional: DecimalWire;
   dailyVolume: DecimalWire;
   annualizedRate: DecimalWire;
-  currentFundingRate: DecimalWire;
+  currentFundingRate: DecimalWire | null;
   nextFundingRate: DecimalWire | null;
   settlementIntervalHours: DecimalWire;
   nextFundingAt: string;
@@ -32,7 +34,7 @@ export interface FundingWireDTO {
   priceChange24h: DecimalWire;
   sourceUpdatedAt: string;
   stale?: boolean;
-  fundingHistory: FundingHistoryWireDTO[];
+  fundingHistory?: FundingHistoryWireDTO[];
   index?: {
     name: string;
     value: DecimalWire;
@@ -49,6 +51,44 @@ export interface FundingRatesWireResponse {
   };
 }
 
+export interface FundingHistoryWireResponse {
+  data: FundingHistoryWireDTO[];
+  meta: {
+    exchange: string;
+    exchangeSymbol: string;
+    total: number;
+  };
+}
+
+export interface FundingSpreadLegWireDTO {
+  exchange: string;
+  exchangeSymbol: string;
+  fundingRate: DecimalWire;
+  settlementIntervalHours: DecimalWire;
+  nextFundingAt: string;
+  positionNotional: DecimalWire;
+  dailyVolume: DecimalWire;
+  latestPrice: DecimalWire;
+  sourceUpdatedAt: string;
+  stale: boolean;
+}
+
+export interface FundingSpreadWireDTO {
+  id: string;
+  symbol: string;
+  baseAsset: string;
+  quoteAsset: string;
+  longLeg: FundingSpreadLegWireDTO;
+  shortLeg: FundingSpreadLegWireDTO;
+  spreadAnnualized: DecimalWire;
+  spread24hAnnualized: DecimalWire;
+  spread7dAnnualized: DecimalWire;
+  minPositionNotional: DecimalWire;
+  minDailyVolume: DecimalWire;
+  sourceUpdatedAt: string;
+  stale: boolean;
+}
+
 export interface FundingSnapshot {
   data: FundingOpportunity[];
   meta: {
@@ -58,6 +98,20 @@ export interface FundingSnapshot {
   };
   hasStaleSources: boolean;
 }
+
+export type FundingRatesFetchResult =
+  | { status: "updated"; snapshot: FundingSnapshot; etag: string | null }
+  | { status: "unchanged"; etag: string | null };
+
+export interface FundingSpreadSnapshot {
+  data: FundingSpread[];
+  meta: FundingSnapshot["meta"];
+  hasStaleSources: boolean;
+}
+
+export type FundingSpreadsFetchResult =
+  | { status: "updated"; snapshot: FundingSpreadSnapshot; etag: string | null }
+  | { status: "unchanged"; etag: string | null };
 
 const exchanges = new Set<Exchange>([
   "Binance",
@@ -128,6 +182,13 @@ function exchange(value: unknown, path: string): Exchange {
   return parsed;
 }
 
+function boolean(value: unknown, path: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`${path} 必须是 boolean`);
+  }
+  return value;
+}
+
 function percentageRatio(value: unknown, path: string): number {
   return decimal(value, path) * 100;
 }
@@ -162,7 +223,11 @@ export function mapFundingDto(
     item.nextFundingRate === null
       ? null
       : percentageRatio(item.nextFundingRate, `${path}.nextFundingRate`);
-  const rawHistory = item.fundingHistory;
+  const currentFundingRate =
+    item.currentFundingRate === null
+      ? null
+      : percentageRatio(item.currentFundingRate, `${path}.currentFundingRate`);
+  const rawHistory = item.fundingHistory ?? [];
   if (!Array.isArray(rawHistory)) {
     throw new Error(`${path}.fundingHistory 必须是数组`);
   }
@@ -176,6 +241,7 @@ export function mapFundingDto(
         ? `${venue.toLowerCase()}-${exchangeSymbol.toLowerCase()}`
         : text(item.id, `${path}.id`),
     exchange: venue,
+    exchangeSymbol,
     symbol: text(item.symbol, `${path}.symbol`),
     baseAsset: text(item.baseAsset, `${path}.baseAsset`),
     quoteAsset: text(item.quoteAsset, `${path}.quoteAsset`),
@@ -183,10 +249,7 @@ export function mapFundingDto(
     positionNotional: decimal(item.positionNotional, `${path}.positionNotional`),
     dailyVolume: decimal(item.dailyVolume, `${path}.dailyVolume`),
     annualizedRate: percentageRatio(item.annualizedRate, `${path}.annualizedRate`),
-    currentFundingRate: percentageRatio(
-      item.currentFundingRate,
-      `${path}.currentFundingRate`,
-    ),
+    currentFundingRate,
     nextFundingRate,
     settlementIntervalHours: integer(
       item.settlementIntervalHours,
@@ -250,22 +313,180 @@ export function mapFundingRatesResponse(value: unknown): FundingSnapshot {
   };
 }
 
+function mapFundingSpreadLeg(value: unknown, path: string): FundingSpreadLeg {
+  const item = record(value, path);
+  return {
+    exchange: exchange(item.exchange, `${path}.exchange`),
+    exchangeSymbol: text(item.exchangeSymbol, `${path}.exchangeSymbol`),
+    fundingRate: percentageRatio(item.fundingRate, `${path}.fundingRate`),
+    settlementIntervalHours: integer(
+      item.settlementIntervalHours,
+      `${path}.settlementIntervalHours`,
+    ),
+    nextSettlementAt: isoTime(item.nextFundingAt, `${path}.nextFundingAt`),
+    positionNotional: decimal(item.positionNotional, `${path}.positionNotional`),
+    dailyVolume: decimal(item.dailyVolume, `${path}.dailyVolume`),
+    latestPrice: decimal(item.latestPrice, `${path}.latestPrice`),
+    updatedAt: isoTime(item.sourceUpdatedAt, `${path}.sourceUpdatedAt`),
+    stale: boolean(item.stale, `${path}.stale`),
+  };
+}
+
+export function mapFundingSpreadDto(value: unknown, index: number): FundingSpread {
+  const path = `data[${index}]`;
+  const item = record(value, path);
+  return {
+    id: text(item.id, `${path}.id`),
+    symbol: text(item.symbol, `${path}.symbol`),
+    baseAsset: text(item.baseAsset, `${path}.baseAsset`),
+    quoteAsset: text(item.quoteAsset, `${path}.quoteAsset`),
+    longLeg: mapFundingSpreadLeg(item.longLeg, `${path}.longLeg`),
+    shortLeg: mapFundingSpreadLeg(item.shortLeg, `${path}.shortLeg`),
+    spreadAnnualized: percentageRatio(
+      item.spreadAnnualized,
+      `${path}.spreadAnnualized`,
+    ),
+    spread24hAnnualized: percentageRatio(
+      item.spread24hAnnualized,
+      `${path}.spread24hAnnualized`,
+    ),
+    spread7dAnnualized: percentageRatio(
+      item.spread7dAnnualized,
+      `${path}.spread7dAnnualized`,
+    ),
+    minPositionNotional: decimal(
+      item.minPositionNotional,
+      `${path}.minPositionNotional`,
+    ),
+    minDailyVolume: decimal(item.minDailyVolume, `${path}.minDailyVolume`),
+    updatedAt: isoTime(item.sourceUpdatedAt, `${path}.sourceUpdatedAt`),
+    stale: boolean(item.stale, `${path}.stale`),
+  };
+}
+
+export function mapFundingSpreadsResponse(value: unknown): FundingSpreadSnapshot {
+  const response = record(value, "response");
+  if (!Array.isArray(response.data)) {
+    throw new Error("response.data 必须是数组");
+  }
+  const meta = record(response.meta, "response.meta");
+  const total = nonNegativeInteger(meta.total, "response.meta.total");
+  const data = response.data.map(mapFundingSpreadDto);
+  if (total !== data.length) {
+    throw new Error(`response.meta.total (${total}) 与 data 长度不一致`);
+  }
+  return {
+    data,
+    meta: {
+      total,
+      snapshotVersion: version(
+        meta.snapshotVersion,
+        "response.meta.snapshotVersion",
+      ),
+      serverTime: isoTime(meta.serverTime, "response.meta.serverTime"),
+    },
+    hasStaleSources: data.some((item) => item.stale),
+  };
+}
+
+export function mapFundingHistoryResponse(value: unknown): FundingHistoryPoint[] {
+  const response = record(value, "response");
+  if (!Array.isArray(response.data)) {
+    throw new Error("response.data 必须是数组");
+  }
+  const meta = record(response.meta, "response.meta");
+  const total = nonNegativeInteger(meta.total, "response.meta.total");
+  const data = response.data.map((point, index) =>
+    historyPoint(point, `data[${index}]`),
+  );
+  if (total !== data.length) {
+    throw new Error(`response.meta.total (${total}) 与 data 长度不一致`);
+  }
+  return data;
+}
+
 function fundingRatesUrl() {
   const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(/\/+$/, "");
   return `${baseUrl}/api/v1/funding-rates`;
 }
 
+function fundingSpreadsUrl() {
+  const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(/\/+$/, "");
+  return `${baseUrl}/api/v1/funding-spreads`;
+}
+
 export async function fetchFundingRates(
+  etag?: string | null,
   signal?: AbortSignal,
-): Promise<FundingSnapshot> {
+): Promise<FundingRatesFetchResult> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (etag) {
+    headers["If-None-Match"] = etag;
+  }
   const response = await fetch(fundingRatesUrl(), {
+    method: "GET",
+    headers,
+    cache: "no-store",
+    signal,
+  });
+  if (response.status === 304) {
+    return {
+      status: "unchanged",
+      etag: response.headers.get("ETag") ?? etag ?? null,
+    };
+  }
+  if (!response.ok) {
+    throw new Error(`资金费 API 请求失败 (${response.status})`);
+  }
+  return {
+    status: "updated",
+    snapshot: mapFundingRatesResponse(await response.json()),
+    etag: response.headers.get("ETag"),
+  };
+}
+
+export async function fetchFundingSpreads(
+  etag?: string | null,
+  signal?: AbortSignal,
+): Promise<FundingSpreadsFetchResult> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (etag) headers["If-None-Match"] = etag;
+  const response = await fetch(fundingSpreadsUrl(), {
+    method: "GET",
+    headers,
+    cache: "no-store",
+    signal,
+  });
+  if (response.status === 304) {
+    return {
+      status: "unchanged",
+      etag: response.headers.get("ETag") ?? etag ?? null,
+    };
+  }
+  if (!response.ok) {
+    throw new Error(`跨所资金费 API 请求失败 (${response.status})`);
+  }
+  return {
+    status: "updated",
+    snapshot: mapFundingSpreadsResponse(await response.json()),
+    etag: response.headers.get("ETag"),
+  };
+}
+
+export async function fetchFundingHistory(
+  exchangeName: string,
+  exchangeSymbol: string,
+  signal?: AbortSignal,
+): Promise<FundingHistoryPoint[]> {
+  const url = `${fundingRatesUrl()}/${encodeURIComponent(exchangeName)}/${encodeURIComponent(exchangeSymbol)}/history?limit=10`;
+  const response = await fetch(url, {
     method: "GET",
     headers: { Accept: "application/json" },
     cache: "no-store",
     signal,
   });
   if (!response.ok) {
-    throw new Error(`资金费 API 请求失败 (${response.status})`);
+    throw new Error(`历史资金费 API 请求失败 (${response.status})`);
   }
-  return mapFundingRatesResponse(await response.json());
+  return mapFundingHistoryResponse(await response.json());
 }

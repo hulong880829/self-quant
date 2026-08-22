@@ -1,18 +1,41 @@
+const compactNumberFormatters = new Map<number, Intl.NumberFormat>();
+const currencyFormatters = new Map<string, Intl.NumberFormat>();
+const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+
 export function formatCompactNumber(value: number, digits = 1) {
-  return new Intl.NumberFormat("zh-CN", {
-    notation: "compact",
-    maximumFractionDigits: digits,
-  }).format(value);
+  let formatter = compactNumberFormatters.get(digits);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat("zh-CN", {
+      notation: "compact",
+      maximumFractionDigits: digits,
+    });
+    compactNumberFormatters.set(digits, formatter);
+  }
+  return formatter.format(value);
 }
 
 export function formatCurrency(value: number, compact = false) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    notation: compact ? "compact" : "standard",
-    minimumFractionDigits: value >= 1000 ? 2 : value >= 1 ? 4 : 6,
-    maximumFractionDigits: value >= 1000 ? 2 : value >= 1 ? 4 : 6,
-  }).format(value);
+  const digits = value >= 1000 ? 2 : value >= 1 ? 4 : 6;
+  const key = `${compact}:${digits}`;
+  let formatter = currencyFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      notation: compact ? "compact" : "standard",
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    });
+    currencyFormatters.set(key, formatter);
+  }
+  return formatter.format(value);
 }
 
 export function formatPercent(value: number, digits = 2) {
@@ -21,9 +44,24 @@ export function formatPercent(value: number, digits = 2) {
 }
 
 export function formatFundingRate(value: number | null) {
-  if (value === null) return "暂无";
+  if (value === null) return "无";
   const sign = value > 0 ? "+" : "";
   return `${sign}${value.toFixed(4)}%`;
+}
+
+export function resolveFundingRate(
+  nextFundingRate: number | null,
+  currentFundingRate: number | null,
+) {
+  return nextFundingRate ?? currentFundingRate;
+}
+
+export function annualize24h(cumulative24h: number) {
+  return cumulative24h * 365;
+}
+
+export function annualize7d(cumulative7d: number) {
+  return (cumulative7d * 365) / 7;
 }
 
 export function rateColor(value: number | null) {
@@ -36,14 +74,7 @@ export function rateColor(value: number | null) {
 export function formatDateTime(value: string) {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(date);
+  return dateTimeFormatter.format(date);
 }
 
 export function formatSettlementCountdown(value: string, now: number) {

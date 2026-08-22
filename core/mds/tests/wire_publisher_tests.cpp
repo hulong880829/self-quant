@@ -1,16 +1,62 @@
 #include "mds/publish/wire_publisher.h"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
+
+namespace {
+std::atomic_bool track_allocations{};
+std::atomic<std::size_t> tracked_allocations{};
+}
+
+void *operator new(std::size_t size) {
+  if (track_allocations.load(std::memory_order_relaxed)) {
+    tracked_allocations.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (void *memory = std::malloc(size)) {
+    return memory;
+  }
+  throw std::bad_alloc();
+}
+void *operator new[](std::size_t size) { return ::operator new(size); }
+void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
+  try {
+    return ::operator new(size);
+  } catch (...) {
+    return nullptr;
+  }
+}
+void *operator new[](std::size_t size,
+                     const std::nothrow_t &) noexcept {
+  return ::operator new(size, std::nothrow);
+}
+void operator delete(void *memory) noexcept { std::free(memory); }
+void operator delete[](void *memory) noexcept { std::free(memory); }
+void operator delete(void *memory, std::size_t) noexcept {
+  std::free(memory);
+}
+void operator delete[](void *memory, std::size_t) noexcept {
+  std::free(memory);
+}
+void operator delete(void *memory,
+                     const std::nothrow_t &) noexcept {
+  std::free(memory);
+}
+void operator delete[](void *memory,
+                       const std::nothrow_t &) noexcept {
+  std::free(memory);
+}
 
 namespace {
 
@@ -306,11 +352,11 @@ void test_crc_and_backpressure() {
 void test_dual_segment_factory() {
   using namespace mds;
   require(publish::make_publisher_segment_name("SPOT", "BTCUSDT", "TICKER") ==
-              "/selfquant.mds.spot.btcusdt.ticker.1",
+              "/selfquant.mds.spot.btcusdt.ticker.2",
           "default publisher segment name was not canonical");
   require(publish::make_publisher_segment_name(
               "/Custom.Namespace...", "Binance Spot", "BTC/USDT", "ORDERBOOK") ==
-              "/Custom.Namespace.binance_spot.btc_usdt.orderbook.1",
+              "/Custom.Namespace.binance_spot.btc_usdt.orderbook.2",
           "custom prefix or component sanitization changed unexpectedly");
   require(publish::make_publisher_segment_name("", "spot", "BTCUSDT",
                                                "ticker")
@@ -351,6 +397,68 @@ void test_dual_segment_factory() {
           "dual publisher factory created incorrect segments");
 }
 
+void test_aggregate_orderbook_preallocated_publish() {
+  using namespace mds;
+  auto options = ring_options(
+      "/mds.publisher-aggregate." + std::to_string(::getpid()),
+      1U << 20U);
+  options.max_record_bytes = 32U << 10U;
+  auto opened = transport::SharedRing::open(options);
+  require(bool(opened), opened.message.c_str());
+  auto ring = std::move(opened.value);
+  auto registered = ring.register_reader(
+      transport::process_start_marker(::getpid()), now_ns());
+  require(bool(registered), registered.message.c_str());
+  auto reader = registered.value;
+  publish::WirePublisher publisher(ring);
+
+  utils::md::wire::AggOrderBookRecord record{};
+  record.member_count = 1;
+  record.member_mask = 1;
+  record.active_mask = 1;
+  record.venue_slot_ids[0] =
+      static_cast<std::uint8_t>(utils::md::Venue::Binance);
+  record.bid_count = 1;
+  record.ask_count = 1;
+  record.bids[0].price = 100;
+  record.bids[0].quantity = 2;
+  record.bids[0].venue_quantity[0] = 2;
+  record.bids[0].venue_mask = 1;
+  record.bids[0].contributor_count = 1;
+  record.asks[0].price = 101;
+  record.asks[0].quantity = 3;
+  record.asks[0].venue_quantity[0] = 3;
+  record.asks[0].venue_mask = 1;
+  record.asks[0].contributor_count = 1;
+
+  const auto unavailable =
+      publisher.publish_agg_orderbook(event_header(), record);
+  require(!unavailable &&
+              unavailable.error == api::ErrorCode::InternalError,
+          "aggregate orderbook published without a prepared buffer");
+  require(bool(publisher.prepare_aggregate_orderbook()),
+          "aggregate orderbook buffer preparation failed");
+  tracked_allocations.store(0, std::memory_order_relaxed);
+  track_allocations.store(true, std::memory_order_release);
+  const auto published =
+      publisher.publish_agg_orderbook(event_header(), record);
+  track_allocations.store(false, std::memory_order_release);
+  require(bool(published),
+          "aggregate orderbook publish failed");
+  require(tracked_allocations.load(std::memory_order_relaxed) == 0,
+          "aggregate orderbook publish allocated on the hot path");
+
+  auto read = ring.read(reader);
+  require(bool(read), read.message.c_str());
+  utils::md::wire::AggOrderBookRecord decoded{};
+  require(utils::md::wire::DecodeAggOrderBook(
+              read.value->payload, decoded) ==
+              utils::md::wire::CodecError::Ok &&
+              decoded.bids[0].venue_quantity[0] == 2 &&
+              decoded.asks[0].venue_quantity[0] == 3,
+          "aggregate orderbook did not round-trip through the ring");
+}
+
 } // namespace
 
 int main() {
@@ -359,6 +467,7 @@ int main() {
     test_late_reader_detection();
     test_crc_and_backpressure();
     test_dual_segment_factory();
+    test_aggregate_orderbook_preallocated_publish();
     std::cout << "all wire publisher tests passed\n";
     return 0;
   } catch (const std::exception &exception) {

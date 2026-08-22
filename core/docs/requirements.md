@@ -62,7 +62,7 @@
 ### 4.3 发布
 
 - 共享环为单生产者、多 reader registry；慢 reader 采用背压，不覆盖未消费记录。
-- market-data payload 使用 `utils::md::wire` schema 1.1（magic `0x444d5153`，内存字节 `"SQMD"`）；共享环外层使用 ring schema major 4，并对每条正常记录的有效 payload 计算/验证 Castagnoli CRC32C。二者是独立版本域，消费方规则以 `segment_and_schema_contract.md` 为准。
+- market-data payload 使用 `utils::md::wire` schema 2.0（magic `0x444d5153`，内存字节 `"SQMD"`）；共享环外层使用 ring schema major 5，并对每条正常记录的有效 payload 计算/验证 Castagnoli CRC32C。二者是独立版本域，消费方规则以 `segment_and_schema_contract.md` 为准。
 - `bus_seq` 在发布总线上单调；`source_seq` 保存交易所更新号；`book_generation` 每次重建递增。
 - 快照超过单记录上限时必须按 Begin/Chunk/End 分片；每个 Chunk 最多 24 档。
 - `mds::api::ProductType` 与 `utils::md::ProductType` 是同一类型 alias；订单簿 ladder 默认 4096 档/侧，公共订阅 API 拒绝 0 或超过 4096 的配置。

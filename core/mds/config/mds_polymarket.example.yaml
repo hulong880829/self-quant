@@ -1,0 +1,48 @@
+shared_memory:
+  prefix: /selfquant.mds.poly
+  backend: POSIX_SHM
+  mode: OVERWRITE_OLDEST
+  ring_bytes: 8388608
+  max_record_bytes: 65536
+  max_readers: 16
+  reader_lease_timeout_ns: 5000000000
+  allow_hugepage_fallback: false
+  unlink_on_shutdown: false
+
+order_book:
+  default_ladder_ticks_per_side: 1024
+  max_ladder_ticks_per_side: 4096
+  default_price_band_bps: 10000
+
+venues:
+  - venue: polymarket
+    product: BINARY_OPTION
+    websocket_endpoint: wss://ws-subscriptions-clob.polymarket.com/ws/market
+    discovery_endpoint: https://gamma-api.polymarket.com
+    protocol: JSON
+    redundant_ab: false
+    max_symbols_per_connection: 16
+
+subscriptions:
+  - venue: polymarket
+    stream: ticker
+    symbol: BTC5M
+    product: BINARY_OPTION
+    polymarket:
+      asset: BTC
+      period: 5m
+      outcomes: BOTH
+      prediscovery_seconds: 30
+      rollover_grace_seconds: 2
+      resolver_timeout_ms: 3000
+
+  - venue: polymarket
+    stream: orderbook
+    symbol: BTC5M
+    product: BINARY_OPTION
+    ladder_ticks_per_side: 1024
+    price_band_bps: 10000
+    polymarket:
+      asset: BTC
+      period: 5m
+      outcomes: BOTH

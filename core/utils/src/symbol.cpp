@@ -87,7 +87,7 @@ RegistryResult InstrumentRegistry::Register(const Instrument& instrument) {
   return RegistryResult::Ok;
 }
 
-const Instrument* InstrumentRegistry::Find(std::uint32_t id) const noexcept {
+const Instrument* InstrumentRegistry::Find(InstrumentId id) const noexcept {
   const auto it = by_id_.find(id);
   return it == by_id_.end() ? nullptr : &instruments_[it->second];
 }

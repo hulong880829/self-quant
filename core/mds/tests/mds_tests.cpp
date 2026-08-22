@@ -3,7 +3,7 @@
 #include "mds/exchange/binance/binance_adapter.h"
 #include "mds/exchange/binance/binance_rest.h"
 #include "mds/exchange/binance/binance_streams.h"
-#include "mds/network/tls_websocket.h"
+#include "net/tls_websocket.h"
 #include "mds/publish/wire_publisher.h"
 #include "mds/redundancy/sequence_arbiter.h"
 #include "mds/service/binance_session.h"
@@ -48,10 +48,28 @@ void *operator new[](std::size_t size) {
   return ::operator new(size);
 }
 
+void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
+  try {
+    return ::operator new(size);
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void *operator new[](std::size_t size, const std::nothrow_t &) noexcept {
+  return ::operator new(size, std::nothrow);
+}
+
 void operator delete(void *memory) noexcept { std::free(memory); }
 void operator delete[](void *memory) noexcept { std::free(memory); }
 void operator delete(void *memory, std::size_t) noexcept { std::free(memory); }
 void operator delete[](void *memory, std::size_t) noexcept {
+  std::free(memory);
+}
+void operator delete(void *memory, const std::nothrow_t &) noexcept {
+  std::free(memory);
+}
+void operator delete[](void *memory, const std::nothrow_t &) noexcept {
   std::free(memory);
 }
 
@@ -462,9 +480,11 @@ void test_snapshot_bridge() {
   require(bbo && bbo->bid.price == 99 && bbo->ask.price == 101,
           "ignored remote ask changed the maintained BBO");
 
-  const std::array<utils::md::Level, 1> outside_better{{{101, 1}}};
+  const std::array<utils::md::Level, 1> outside_better{{{102, 1}}};
   require(bridge.Apply({13, 13, outside_better, {}}) ==
-              BridgeAction::Resync,
+                  BridgeAction::Resync &&
+              bridge.last_resync_reason() ==
+                  BridgeResyncReason::OutsideImproving,
           "outside improving bid did not request resync");
 
   utils::md::OrderBook narrow_book(2);
@@ -478,8 +498,112 @@ void test_snapshot_bridge() {
           "narrow snapshot failed to load");
   const std::array<utils::md::Level, 1> delete_best{{{100, 0}}};
   require(narrow_bridge.Apply({21, 21, delete_best, {}}) ==
-              BridgeAction::Resync,
+                  BridgeAction::Resync &&
+              narrow_bridge.last_resync_reason() ==
+                  BridgeResyncReason::BoundaryExhausted,
           "deletion exposing a ladder boundary did not resync");
+
+  utils::md::OrderBook unloaded_book(8);
+  BookBridge unloaded_bridge(unloaded_book, 1);
+  require(unloaded_bridge.Apply({1, 1, {}, {}}) ==
+                  BridgeAction::Resync &&
+              unloaded_bridge.last_resync_reason() ==
+                  BridgeResyncReason::NotLoaded,
+          "unloaded bridge resync reason was not preserved");
+
+  DepthSnapshot one_sided_snapshot;
+  one_sided_snapshot.last_update_id = 1;
+  one_sided_snapshot.bids = {{50, 2}};
+  utils::md::OrderBook strict_one_sided_book(128);
+  BookBridge strict_one_sided(strict_one_sided_book, 1);
+  require(strict_one_sided.LoadSnapshot(one_sided_snapshot, 1).action ==
+              BridgeAction::InvalidSnapshot,
+          "default bridge accepted a one-sided image");
+  utils::md::OrderBook binary_one_sided_book(128);
+  BookBridge binary_one_sided(binary_one_sided_book, 1, false, true);
+  require(binary_one_sided.LoadSnapshot(one_sided_snapshot, 1).action ==
+              BridgeAction::Applied,
+          "binary-option bridge rejected a one-sided image");
+  const std::array<utils::md::Level, 1> restored_ask{{{60, 3}}};
+  require(binary_one_sided.Apply({2, 2, {}, restored_ask}) ==
+              BridgeAction::Applied,
+          "binary-option bridge failed to restore an empty side");
+
+  utils::md::OrderBook invalid_range_book(8);
+  BookBridge invalid_range_bridge(invalid_range_book, 1);
+  require(invalid_range_bridge.LoadSnapshot(snapshot, 4).action ==
+              BridgeAction::Applied,
+          "invalid-range test snapshot failed to load");
+  require(invalid_range_bridge.Apply({15, 14, {}, {}}) ==
+                  BridgeAction::Resync &&
+              invalid_range_bridge.last_resync_reason() ==
+                  BridgeResyncReason::InvalidRange,
+          "invalid update range resync reason was not preserved");
+
+  utils::md::OrderBook invalid_level_book(8);
+  BookBridge invalid_level_bridge(invalid_level_book, 10);
+  DepthSnapshot coarse_snapshot;
+  coarse_snapshot.last_update_id = 50;
+  coarse_snapshot.bids = {{100, 5}, {90, 4}};
+  coarse_snapshot.asks = {{110, 6}, {120, 7}};
+  require(invalid_level_bridge.LoadSnapshot(coarse_snapshot, 5).action ==
+              BridgeAction::Applied,
+          "invalid-level test snapshot failed to load");
+  const std::array<utils::md::Level, 1> invalid_level{{{105, 1}}};
+  require(invalid_level_bridge.Apply({51, 51, invalid_level, {}}) ==
+                  BridgeAction::Resync &&
+              invalid_level_bridge.last_resync_reason() ==
+                  BridgeResyncReason::InvalidLevel,
+          "invalid level resync reason was not preserved");
+
+  utils::md::OrderBook crossed_book(8);
+  BookBridge crossed_bridge(crossed_book, 1);
+  DepthSnapshot crossed_snapshot;
+  crossed_snapshot.last_update_id = 60;
+  crossed_snapshot.bids = {{100, 5}, {99, 4}};
+  crossed_snapshot.asks = {{101, 6}, {102, 7}};
+  require(crossed_bridge.LoadSnapshot(crossed_snapshot, 6).action ==
+              BridgeAction::Applied,
+          "crossed-book test snapshot failed to load");
+  const std::array<utils::md::Level, 1> crossing_ask{{{100, 8}}};
+  require(crossed_bridge.Apply({61, 61, {}, crossing_ask}) ==
+                  BridgeAction::Resync &&
+              crossed_bridge.last_resync_reason() ==
+                  BridgeResyncReason::CrossedBook,
+          "crossed book resync reason was not preserved");
+
+  utils::md::OrderBook refined_book(64);
+  BookBridge refined_bridge(refined_book, 10, true);
+  DepthSnapshot refined_snapshot;
+  refined_snapshot.last_update_id = 30;
+  refined_snapshot.bids = {{26'413, 5}, {26'410, 4}};
+  refined_snapshot.asks = {{26'420, 6}, {26'430, 7}};
+  require(refined_bridge.SnapshotTickSize(
+              refined_snapshot.bids, refined_snapshot.asks) == 1 &&
+              refined_bridge.LoadSnapshot(refined_snapshot, 4).action ==
+                  BridgeAction::Applied,
+          "historical off-tick snapshot did not refine the book grid");
+  refined_bridge.SetLive();
+  const std::array<utils::md::Level, 1> refined_bid{{{26'414, 8}}};
+  require(refined_bridge.Apply({31, 31, refined_bid, {}}) ==
+              BridgeAction::Applied,
+          "delta on the refined book grid was rejected");
+
+  utils::md::OrderBook deletion_book(64);
+  BookBridge deletion_bridge(deletion_book, 10, true);
+  DepthSnapshot deletion_snapshot;
+  deletion_snapshot.last_update_id = 40;
+  deletion_snapshot.bids = {{26'410, 5}, {26'400, 4}};
+  deletion_snapshot.asks = {{26'420, 6}, {26'430, 7}};
+  require(deletion_bridge.LoadSnapshot(deletion_snapshot, 5).action ==
+              BridgeAction::Applied,
+          "on-tick snapshot failed to load");
+  deletion_bridge.SetLive();
+  const std::array<utils::md::Level, 1> stale_off_tick_delete{{
+      {26'413, 0}}};
+  require(deletion_bridge.Apply({41, 41, stale_off_tick_delete, {}}) ==
+              BridgeAction::Applied,
+          "deletion outside the active refined grid caused a resync");
 }
 
 utils::md::BboEvent make_bbo(std::uint64_t sequence, std::int64_t bid,
@@ -595,12 +719,12 @@ void test_binance_sync_and_sbe() {
           "depth buffer bound was not enforced");
 
 #ifdef MDS_HAS_SIMDJSON
-  JsonParser json_parser(2, 3);
+  JsonParser json_parser;
   BookTicker json_ticker;
   std::string error;
   require(json_parser.parse_book_ticker(
               R"({"u":42,"s":"BTCUSDT","b":"123.45","B":"1.000","a":"123.46","A":"2.000","E":1234})",
-              json_ticker, error),
+              2, 3, json_ticker, error),
           error.c_str());
   require(json_ticker.price_exponent == -2 &&
               json_ticker.quantity_exponent == -3 &&
@@ -612,13 +736,43 @@ void test_binance_sync_and_sbe() {
   DepthUpdate json_depth;
   require(json_parser.parse_depth(
               R"({"U":100,"u":101,"s":"BTCUSDT","b":[["123.45","1.000"]],"a":[["123.46","2.000"]],"E":2000})",
-              json_depth, error),
+              2, 3, json_depth, error),
           error.c_str());
   require(json_depth.price_exponent == -2 &&
               json_depth.quantity_exponent == -3 &&
               std::string_view(json_depth.symbol.data()) == "BTCUSDT" &&
               json_depth.bids.size() == 1 && json_depth.asks.size() == 1,
           "JSON depth normalization failed");
+  json_depth.bids.reserve(8);
+  json_depth.asks.reserve(8);
+  const auto bid_capacity = json_depth.bids.capacity();
+  const auto ask_capacity = json_depth.asks.capacity();
+  for (int iteration = 0; iteration < 32; ++iteration) {
+    require(json_parser.parse_depth(
+                R"({"U":100,"u":101,"s":"BTCUSDT","b":[["123.45","1.000"]],"a":[["123.46","2.000"]],"E":2000})",
+                2, 3, json_depth, error),
+            error.c_str());
+  }
+  require(json_depth.bids.capacity() == bid_capacity &&
+              json_depth.asks.capacity() == ask_capacity,
+          "JSON depth parser grew preallocated level storage");
+  JsonParser bounded_json_parser(1);
+  require(
+      bounded_json_parser.parse_depth_classified(
+          R"({"U":100,"u":101,"pu":99,"s":"BTCUSDT","b":[["123.45","1.000"],["123.44","2.000"]],"a":[]})",
+          2, 3, json_depth, error) == DepthParseResult::CapacityExceeded,
+      "oversized JSON depth was not classified");
+  require(json_depth.capacity_side == DepthSide::Bid &&
+              json_depth.capacity_limit == 1 &&
+              json_depth.first_update_id == 100 &&
+              json_depth.final_update_id == 101 &&
+              json_depth.previous_final_update_id == 99 &&
+              json_depth.bids.empty() && json_depth.asks.empty(),
+          "oversized JSON depth metadata was not preserved safely");
+  require(bounded_json_parser.parse_depth(
+              R"({"U":102,"u":102,"pu":101,"s":"BTCUSDT","b":[["123.45","1.000"]],"a":[]})",
+              2, 3, json_depth, error),
+          "parser did not recover after oversized JSON depth");
 #else
   std::string error;
 #endif
@@ -730,8 +884,10 @@ void test_binance_rest_and_stream_profiles() {
               read_fixture("binance_usdm_exchange_info.json"), "BTCUSDT",
               usdm, error),
           error.c_str());
-  require(usdm.profile == Profile::UsdM && usdm.price_scale == 1 &&
+  require(usdm.profile == Profile::UsdM && usdm.price_scale == 2 &&
               usdm.quantity_scale == 3 &&
+              usdm.price_filter.tick_size == 10 &&
+              usdm.lot_size.step_size == 1 &&
               usdm.contract_type == "PERPETUAL" &&
               usdm.onboard_time_ms == 1'569'398'400'000ULL &&
               usdm.delivery_time_ms == 4'133'404'800'000ULL &&
@@ -744,7 +900,7 @@ void test_binance_rest_and_stream_profiles() {
                            usdm_snapshot, error),
           error.c_str());
   require(usdm_snapshot.last_update_id == 160 &&
-              usdm_snapshot.bids[0].price == 1 &&
+              usdm_snapshot.bids[0].price == 10 &&
               usdm_snapshot.bids[0].quantity == 10'000,
           "USD-M depth snapshot normalization failed");
 
@@ -752,11 +908,39 @@ void test_binance_rest_and_stream_profiles() {
                             read_fixture("binance_overflow_depth.json"), usdm,
                             usdm_snapshot, error),
           "overflowing fixed-point depth was accepted");
-  require(!rest.parse_depth(
+  require(rest.parse_depth(
               Profile::UsdM,
               R"({"lastUpdateId":162,"bids":[["0.11","1.000"]],"asks":[]})",
+              usdm, usdm_snapshot, error) &&
+              usdm_snapshot.bids[0].price == 11,
+          "representable off-tick historical depth was rejected");
+  require(!rest.parse_depth(
+              Profile::UsdM,
+              R"({"lastUpdateId":163,"bids":[["0.111","1.000"]],"asks":[]})",
               usdm, usdm_snapshot, error),
-          "depth finer than PRICE_FILTER tick precision was accepted");
+          "depth finer than pricePrecision was accepted");
+  InstrumentMetadata beat;
+  require(rest.parse_exchange_info(
+              Profile::UsdM,
+              R"({"symbols":[{"symbol":"BEATUSDT","pair":"BEATUSDT","contractType":"PERPETUAL","deliveryDate":4133404800000,"onboardDate":1760000000000,"status":"TRADING","baseAsset":"BEAT","quoteAsset":"USDT","marginAsset":"USDT","pricePrecision":4,"quantityPrecision":2,"underlyingType":"COIN","filters":[{"filterType":"PRICE_FILTER","maxPrice":"1000","minPrice":"0.001","tickSize":"0.001"},{"filterType":"LOT_SIZE","maxQty":"100000","minQty":"1","stepSize":"1"}]}]})",
+              "BEATUSDT", beat, error),
+          error.c_str());
+  require(beat.price_scale == 4 && beat.quantity_scale == 2 &&
+              beat.price_filter.tick_size == 10 &&
+              beat.lot_size.step_size == 100,
+          "USD-M representation and trading increments were conflated");
+  require(rest.parse_depth(
+              Profile::UsdM,
+              R"({"lastUpdateId":164,"bids":[["2.6413","10.25"]],"asks":[]})",
+              beat, usdm_snapshot, error) &&
+              usdm_snapshot.bids[0].price == 26'413 &&
+              usdm_snapshot.bids[0].quantity == 1'025,
+          "USD-M high-precision historical level was rejected");
+  require(!rest.parse_exchange_info(
+              Profile::UsdM,
+              R"({"symbols":[{"symbol":"BADUSDT","pair":"BADUSDT","contractType":"PERPETUAL","deliveryDate":1,"onboardDate":1,"status":"TRADING","baseAsset":"BAD","quoteAsset":"USDT","marginAsset":"USDT","pricePrecision":19,"quantityPrecision":0,"underlyingType":"COIN","filters":[{"filterType":"PRICE_FILTER","maxPrice":"1000","minPrice":"0.1","tickSize":"0.1"},{"filterType":"LOT_SIZE","maxQty":"1000","minQty":"1","stepSize":"1"}]}]})",
+              "BADUSDT", beat, error),
+          "USD-M precision above fixed-point capacity was accepted");
   InstrumentMetadata invalid;
   require(!rest.parse_exchange_info(
               Profile::Spot,
@@ -805,8 +989,62 @@ void test_binance_rest_and_stream_profiles() {
           "Binance profile endpoint/capability declaration is incorrect");
 }
 
+void test_binance_large_exchange_info_batch() {
+  using namespace mds::exchange::binance;
+#ifdef MDS_HAS_SIMDJSON
+  const auto spot_entry = [](std::string_view symbol,
+                             std::string_view base) {
+    return std::string(R"({"symbol":")") + std::string(symbol) +
+           R"(","status":"TRADING","baseAsset":")" + std::string(base) +
+           R"(","quoteAsset":"USDT","filters":[{"filterType":"PRICE_FILTER","minPrice":"0.01","maxPrice":"1000000.00","tickSize":"0.01"},{"filterType":"LOT_SIZE","minQty":"0.00001","maxQty":"9000.00000","stepSize":"0.00001"}]})";
+  };
+  std::string large_json = R"({"symbols":[)";
+  large_json.append((8U << 20U) + 1024U, ' ');
+  large_json += spot_entry("BTCUSDT", "BTC");
+  large_json += ',';
+  large_json += spot_entry("ETHUSDT", "ETH");
+  large_json += "]}";
+
+  std::string error;
+  RestParser small(8U << 20U);
+  InstrumentMetadata one;
+  require(!small.parse_exchange_info(Profile::Spot, large_json, "BTCUSDT",
+                                     one, error) &&
+              error.find("CAPACITY") != std::string::npos,
+          "oversized exchangeInfo did not report parser capacity");
+
+  RestParser metadata_parser(32U << 20U);
+  const std::array<std::string_view, 2> requested{"ETHUSDT", "BTCUSDT"};
+  std::vector<InstrumentMetadata> parsed;
+  require(metadata_parser.parse_exchange_info(
+              Profile::Spot, large_json, requested, parsed, error),
+          error.c_str());
+  require(parsed.size() == 2 && parsed[0].venue_symbol == "ETHUSDT" &&
+              parsed[0].base_asset == "ETH" &&
+              parsed[1].venue_symbol == "BTCUSDT" &&
+              parsed[1].price_scale == 2 &&
+              parsed[1].quantity_scale == 5,
+          "large exchangeInfo batch did not preserve request order");
+
+  const std::array<std::string_view, 1> missing{"MISSINGUSDT"};
+  require(!metadata_parser.parse_exchange_info(
+              Profile::Spot, large_json, missing, parsed, error) &&
+              error == "Binance symbol was not found in exchangeInfo",
+          "large exchangeInfo batch accepted a missing symbol");
+
+  const std::array<std::string_view, 1> perpetual{"BTCUSDT"};
+  require(metadata_parser.parse_exchange_info(
+              Profile::UsdM,
+              read_fixture("binance_usdm_exchange_info.json"), perpetual,
+              parsed, error) &&
+              parsed.size() == 1 && parsed[0].contract_type == "PERPETUAL" &&
+              parsed[0].settle_asset == "USDT",
+          "USD-M exchangeInfo batch normalization failed");
+#endif
+}
+
 void test_websocket() {
-  using namespace mds::network;
+  using namespace net;
   std::string error;
   require(!validate_websocket_extensions(
               "HTTP/1.1 101\r\nSec-WebSocket-Extensions: "
@@ -896,6 +1134,10 @@ void test_service_readiness_and_sbe_rejection() {
                            .product = ProductType::Spot,
                            .symbol = symbol});
   require(bool(ticker), ticker.message.c_str());
+  auto cancelled_ticker = subticker({.venue = "binance",
+                                     .product = ProductType::Spot,
+                                     .symbol = symbol});
+  require(bool(cancelled_ticker), cancelled_ticker.message.c_str());
   OrderBookSubscription book_request;
   book_request.venue = "binance";
   book_request.product = ProductType::Spot;
@@ -904,25 +1146,32 @@ void test_service_readiness_and_sbe_rejection() {
   book_request.ladder_levels_per_side = 64;
   auto book = suborderbook(book_request);
   require(bool(book), book.message.c_str());
+  require(bool(unsubscribe(cancelled_ticker.value)) &&
+              query_state(cancelled_ticker.value) ==
+                  SubscriptionState::Stopped &&
+              query_state(ticker.value) == SubscriptionState::Pending &&
+              query_state(book.value) == SubscriptionState::Pending,
+          "unsubscribing one pending handle affected reused subscriptions");
+  const auto started = start();
+  require(bool(started), started.message.c_str());
   mds::transport::RingOptions attach;
   attach.name = mds::publish::make_publisher_segment_name(
       "/selfquant.mds", "spot", symbol, "ticker");
   attach.create = false;
-  require(bool(mds::transport::SharedRing::open(attach)),
+  auto attached = mds::transport::SharedRing::open(attach);
+  require(bool(attached),
           "public API did not start a publishing session");
   require(query_state(ticker.value) != SubscriptionState::Stopped &&
               query_state(book.value) != SubscriptionState::Stopped,
           "started public subscriptions were unexpectedly stopped");
-  require(bool(unsubscribe(ticker.value)) &&
-              query_state(ticker.value) == SubscriptionState::Stopped &&
-              query_state(book.value) != SubscriptionState::Stopped,
-          "unsubscribing one handle stopped a reused session");
+  require(unsubscribe(ticker.value).error == ErrorCode::AlreadyStarted,
+          "running unsubscribe did not report AlreadyStarted");
   shutdown();
 }
 
 void test_binance_session_offline_bridge() {
 #ifdef MDS_HAS_SIMDJSON
-  using mds::network::WebSocketClientState;
+  using net::WebSocketClientState;
   require(!mds::service::BinanceSession::snapshot_allowed(
               WebSocketClientState::SendingUpgrade) &&
               !mds::service::BinanceSession::snapshot_allowed(
@@ -1049,8 +1298,8 @@ void test_session_publish_failure_and_late_reader() {
   options.shm_prefix = "/mds.session." + std::to_string(::getpid());
   options.websocket_endpoint = "wss://127.0.0.1:1/ws";
   options.rest_endpoint = "https://127.0.0.1:1";
-  options.ladder_levels_per_side = 16;
-  options.max_ladder_levels_per_side = 16;
+  options.ladder_ticks_per_side = 16;
+  options.max_ladder_ticks_per_side = 16;
   options.ring.mode = mds::api::RingMode::Lossless;
   options.ring.ring_bytes = 4096;
   options.ring.max_record_bytes = 512;
@@ -1102,6 +1351,14 @@ void test_session_publish_failure_and_late_reader() {
 
   require(session->poll_reader_changes(),
           "late-reader image republish failed");
+  auto ticker_catalog = ticker_ring.read(ticker_reader);
+  require(bool(ticker_catalog) &&
+              ticker_catalog.value->type ==
+                  static_cast<std::uint32_t>(
+                      utils::md::MessageType::InstrumentCatalog),
+          "late ticker reader did not receive Catalog first");
+  require(bool(ticker_catalog.value.commit()),
+          "late ticker Catalog commit failed");
   auto ticker_instrument = ticker_ring.read(ticker_reader);
   require(bool(ticker_instrument) &&
               ticker_instrument.value->type ==
@@ -1117,6 +1374,14 @@ void test_session_publish_failure_and_late_reader() {
           "late ticker reader did not receive BBO");
   require(bool(ticker_bbo.value.commit()), "late ticker BBO commit failed");
 
+  auto book_catalog = book_ring.read(book_reader);
+  require(bool(book_catalog) &&
+              book_catalog.value->type ==
+                  static_cast<std::uint32_t>(
+                      utils::md::MessageType::InstrumentCatalog),
+          "late order-book reader did not receive Catalog first");
+  require(bool(book_catalog.value.commit()),
+          "late order-book Catalog commit failed");
   auto book_instrument = book_ring.read(book_reader);
   require(bool(book_instrument) &&
               book_instrument.value->type ==
@@ -1163,6 +1428,7 @@ int main() {
     test_bbo_overlay();
     test_binance_sync_and_sbe();
     test_binance_rest_and_stream_profiles();
+    test_binance_large_exchange_info_batch();
     test_websocket();
     test_service_readiness_and_sbe_rejection();
     test_binance_session_offline_bridge();

@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source_dir=${1:?usage: install_package_smoke.sh SOURCE_DIR WORK_DIR [MDS_ON_OR_OFF]}
-work_dir=${2:?usage: install_package_smoke.sh SOURCE_DIR WORK_DIR [MDS_ON_OR_OFF]}
+source_dir=${1:?usage: install_package_smoke.sh SOURCE_DIR WORK_DIR [MDS_ON_OR_OFF] [OMS_ON_OR_OFF] [STRATEGYFRAME_ON_OR_OFF]}
+work_dir=${2:?usage: install_package_smoke.sh SOURCE_DIR WORK_DIR [MDS_ON_OR_OFF] [OMS_ON_OR_OFF] [STRATEGYFRAME_ON_OR_OFF]}
 mds_mode=${3:-ON}
+oms_mode=${4:-OFF}
+strategyframe_mode=${5:-OFF}
 
-case "${mds_mode}" in
-  ON|OFF) ;;
-  *) echo "MDS mode must be ON or OFF" >&2; exit 2 ;;
-esac
+for mode in "${mds_mode}" "${oms_mode}" "${strategyframe_mode}"; do
+  case "${mode}" in
+    ON|OFF) ;;
+    *) echo "MDS, OMS, and StrategyFrame modes must be ON or OFF" >&2; exit 2 ;;
+  esac
+done
 
-build_dir="${work_dir}/producer-${mds_mode}"
-prefix_dir="${work_dir}/prefix-${mds_mode}"
-consumer_dir="${work_dir}/consumer-${mds_mode}"
+build_dir="${work_dir}/producer-${mds_mode}-${oms_mode}-${strategyframe_mode}"
+prefix_dir="${work_dir}/prefix-${mds_mode}-${oms_mode}-${strategyframe_mode}"
+consumer_dir="${work_dir}/consumer-${mds_mode}-${oms_mode}-${strategyframe_mode}"
 cmake -E remove_directory "${build_dir}"
 cmake -E remove_directory "${prefix_dir}"
 cmake -E remove_directory "${consumer_dir}"
@@ -46,6 +50,8 @@ fi
 cmake -S "${source_dir}" -B "${build_dir}" "${cmake_args[@]}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DSELF_QUANT_ENABLE_MDS="${mds_mode}" \
+  -DSELF_QUANT_ENABLE_OMS="${oms_mode}" \
+  -DSELF_QUANT_ENABLE_STRATEGYFRAME="${strategyframe_mode}" \
   -DSELF_QUANT_UTILS_BUILD_TESTS=OFF \
   -DMDS_BUILD_TESTS=OFF \
   -DMDS_BUILD_EXAMPLES=OFF \
@@ -59,6 +65,18 @@ cmake -S "${source_dir}/tests/package_smoke" -B "${consumer_dir}" \
   "-DCMAKE_PREFIX_PATH=${prefix_dir}"
 cmake --build "${consumer_dir}" --parallel 2
 "${consumer_dir}/utils_package_consumer"
+if [[ -x "${consumer_dir}/net_package_consumer" ]]; then
+  "${consumer_dir}/net_package_consumer"
+fi
 if [[ "${mds_mode}" == ON ]]; then
   "${consumer_dir}/mds_package_consumer"
+  if [[ -x "${consumer_dir}/mds_record_package_consumer" ]]; then
+    "${consumer_dir}/mds_record_package_consumer"
+  fi
+fi
+if [[ "${oms_mode}" == ON ]]; then
+  "${consumer_dir}/oms_package_consumer"
+fi
+if [[ "${strategyframe_mode}" == ON ]]; then
+  "${consumer_dir}/strategyframe_package_consumer"
 fi

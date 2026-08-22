@@ -1,0 +1,55 @@
+# OKX 独立生产者示例。可直接交给 mds_producer 启动。
+shared_memory:
+  prefix: /selfquant.mds                 # SHM 名称前缀
+  backend: POSIX_SHM                     # 使用 /dev/shm
+  mode: OVERWRITE_OLDEST                 # 慢消费者不会阻塞生产者
+  hugetlbfs_mount: /dev/hugepages
+  ring_bytes: 8388608                    # 必须是 2 的幂
+  max_record_bytes: 65536
+  max_readers: 32
+  reader_lease_timeout_ns: 5000000000
+  allow_hugepage_fallback: false
+  unlink_on_shutdown: false              # 正常退出后保留 Segment
+
+order_book:
+  default_ladder_ticks_per_side: 8192    # 价格 tick 格数，不是行情档位数
+  max_ladder_ticks_per_side: 16384
+  default_price_band_bps: 10             # 参考价每侧至少覆盖 10bp
+
+venues:
+  - venue: okx
+    product: SPOT
+    websocket_endpoint: wss://ws.okx.com:8443/ws/v5/public
+    rest_endpoint: https://www.okx.com
+    protocol: JSON
+    redundant_ab: false
+    # 默认最快 books-l2-tbt(10ms) 需要 OKX 登录及对应 VIP 权限。
+    # auth:
+    #   api_key_env: OKX_MDS_API_KEY
+    #   secret_env: OKX_MDS_SECRET
+    #   passphrase_env: OKX_MDS_PASSPHRASE
+
+  - venue: okx
+    product: PERPETUAL                   # USDT Linear Swap
+    websocket_endpoint: wss://ws.okx.com:8443/ws/v5/public
+    rest_endpoint: https://www.okx.com
+    protocol: JSON
+    redundant_ab: false
+
+subscriptions:
+  - venue: okx
+    stream: ticker                       # bbo-tbt 低延迟 BBO
+    symbol: BTCUSDT
+    product: SPOT
+
+  - venue: okx
+    stream: orderbook
+    symbol: BTCUSDT
+    product: SPOT
+    orderbook_channel: books             # 无需登录的 100ms/400档频道
+    ladder_ticks_per_side: 8192
+
+# 使用最快 books-l2-tbt：
+# 1. 删除上面的 orderbook_channel: books；
+# 2. 取消 auth 配置注释；
+# 3. 启动前设置三个 OKX_MDS_* 环境变量。

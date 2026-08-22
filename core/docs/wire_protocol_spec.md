@@ -4,10 +4,31 @@
 
 当前共享内存记录由两层组成：
 
-1. `mds::transport` 外层 ring record：定位、并发提交、payload CRC32C、reader cursor，`kRingSchemaMajor=3`；
-2. payload 可承载 `utils::md::wire` 记录：行情语义，magic `0x444d5153`、schema `1.0`。
+1. `mds::transport` 外层 ring record：定位、并发提交、payload CRC32C、reader cursor，`kRingSchemaMajor=5`；
+2. payload 可承载 `utils::md::wire` 记录：行情语义，magic `0x444d5153`、schema `2.0`。
 
 外层 `RecordHeader::type` 与内层 `utils::md::wire::RecordHeader::message_type` 当前没有代码级一致性校验，生产者必须写成相同语义值，消费者必须同时验证两层长度和类型。
+
+wire major 必须精确相等。消费者接受不低于自身支持值的 minor；
+遇到未知 `message_type` 时，在 magic、major、对齐和长度均合法的前提下
+提交并跳过该记录，只推进 ring/bus 序列，不推进 instrument source 序列。
+损坏记录仍触发 gap/resync。v2 进程必须拒绝旧 ring schema segment。
+
+### 1.1 `instrument_id` 确定性契约
+
+`instrument_id` 是 canonical key 的 FNV-1a 64 位结果，禁止使用
+`std::hash`。序列化固定为 UTF-8 原始字节：
+
+```
+<canonical venue>|<canonical product>|<MDS canonical symbol>
+```
+
+venue/product 使用本规范的小写全名，分隔符固定为 `|`，symbol 不允许
+展示别名、locale 大小写转换或临时缩写。Polymarket 固定拼写为
+`polymarket|binary_option|btc5mup`，禁止 `poly`。ID 0 保留；若首轮 hash
+为 0，依次对 `<key>|1`、`<key>|2` 进行域分离重哈希，直到非零。MDS
+InstrumentManager 建 catalog 时维护 `id -> key` 并检测碰撞；同一 ID
+对应不同 key 必须打印双方 key 后硬失败，不允许重映射或线性探测。
 
 ## 2. ABI、字节序和基本约束
 
@@ -26,7 +47,7 @@
 - `ProductType:uint8_t`：Unknown=0, Spot=1, Perpetual=2, Future=3, BinaryOption=4, Equity=5。
 - `Side:uint8_t`：Bid=1, Ask=2；0 未定义，必须拒绝。
 - `BookState:uint8_t`：Empty=0, Building=1, Live=2, Invalid=3, NeedsRestart=4。
-- `MessageType:uint16_t`：Bbo=1, Ticker=2, BookDelta=3, SnapshotBegin=4, SnapshotChunk=5, SnapshotEnd=6, InstrumentUpdate=7。
+- `MessageType:uint16_t`：Bbo=1, Ticker=2, BookDelta=3, SnapshotBegin=4, SnapshotChunk=5, SnapshotEnd=6, InstrumentUpdate=7, AggBbo=8, AggOrderBook=9, InstrumentCatalog=10。
 
 ### 3.2 reader 枚举
 
@@ -51,33 +72,33 @@
 | 0 | 8 | `int64_t` | `price` | 按 instrument price scale |
 | 8 | 8 | `int64_t` | `quantity` | 按 instrument quantity scale；delta 中 0 表示删除 |
 
-### 4.3 `EventHeader`（56 字节，仅进程内）
+### 4.3 `EventHeader`（64 字节，仅进程内）
 
 | offset | size | 类型 | 字段 |
 |---:|---:|---|---|
-| 0 | 4 | `uint32_t` | `instrument_id` |
-| 4 | 4 | `uint32_t` | `book_generation` |
-| 8 | 8 | `uint64_t` | `source_seq` |
-| 16 | 8 | `uint64_t` | `bus_seq` |
-| 24 | 8 | `uint64_t` | `exchange_ts_ns` |
-| 32 | 8 | `uint64_t` | `receive_tsc` |
-| 40 | 8 | `uint64_t` | `publish_tsc` |
-| 48 | 1 | `BookState:uint8_t` | `state` |
-| 49 | 1 | `uint8_t` | `source_id` |
-| 50 | 2 | `uint16_t` | `validity` |
-| 52 | 4 | `uint8_t[4]` | `reserved`，写零 |
+| 0 | 8 | `uint64_t` | `instrument_id` |
+| 8 | 4 | `uint32_t` | `book_generation` |
+| 12 | 4 | padding | 写零 |
+| 16 | 8 | `uint64_t` | `source_seq` |
+| 24 | 8 | `uint64_t` | `bus_seq` |
+| 32 | 8 | `uint64_t` | `exchange_ts_ns` |
+| 40 | 8 | `uint64_t` | `receive_tsc` |
+| 48 | 8 | `uint64_t` | `publish_tsc` |
+| 56 | 1 | `BookState:uint8_t` | `state` |
+| 57 | 1 | `uint8_t` | `source_id` |
+| 58 | 2 | `uint16_t` | `validity` |
+| 60 | 4 | `uint8_t[4]` | `reserved`，写零 |
 
 ### 4.4 `Instrument`（224 字节，对齐 8）
 
 | offset | size | 类型 | 字段 | 语义 |
 |---:|---:|---|---|---|
-| 0 | 4 | `uint32_t` | `instrument_id` | 稳定内部 ID，0 预留 |
-| 4 | 2 | `Venue` | `venue` | venue 枚举 |
-| 6 | 1 | `ProductType` | `product_type` | 产品枚举 |
-| 7 | 1 | `uint8_t` | `price_scale` | 价格 scale |
-| 8 | 1 | `uint8_t` | `quantity_scale` | 数量 scale |
-| 9 | 3 | `uint8_t[3]` | `reserved0` | 写零 |
-| 12 | 4 | 隐式 padding | — | 写零 |
+| 0 | 8 | `uint64_t` | `instrument_id` | 稳定内部 ID，0 预留 |
+| 8 | 2 | `Venue` | `venue` | venue 枚举 |
+| 10 | 1 | `ProductType` | `product_type` | 产品枚举 |
+| 11 | 1 | `uint8_t` | `price_scale` | 价格 scale |
+| 12 | 1 | `uint8_t` | `quantity_scale` | 数量 scale |
+| 13 | 3 | scale/flags/reserved | 见 `types.h`，未使用位写零 |
 | 16 | 8 | `int64_t` | `tick_size` | price mantissa 单位 |
 | 24 | 8 | `int64_t` | `lot_size` | quantity mantissa 单位 |
 | 32 | 8 | `int64_t` | `contract_multiplier` | 合约乘数；Spot 的约定需由上层冻结 |
@@ -104,99 +125,107 @@
 
 ## 5. `utils::md::wire` 记录
 
-### 5.1 公共 `RecordHeader`（64 字节，对齐 8）
+### 5.1 公共 `RecordHeader`（72 字节，对齐 8）
 
 | offset | size | 类型 | 字段 | 语义 |
 |---:|---:|---|---|---|
 | 0 | 4 | `uint32_t` | `magic` | 固定 `0x444d5153`；little-endian 内存字节为 `53 51 4d 44`，ASCII `"SQMD"` |
-| 4 | 2 | `uint16_t` | `schema_major` | 当前 1 |
+| 4 | 2 | `uint16_t` | `schema_major` | 当前 2 |
 | 6 | 2 | `uint16_t` | `schema_minor` | 当前 0 |
 | 8 | 2 | `uint16_t` | `message_type` | `MessageType` |
 | 10 | 2 | `uint16_t` | `record_length` | 完整内层 wire struct 长度 |
-| 12 | 4 | `uint32_t` | `instrument_id` | instrument ID |
-| 16 | 8 | `uint64_t` | `bus_seq` | 总线序列 |
-| 24 | 8 | `uint64_t` | `source_seq` | 交易所序列 |
-| 32 | 8 | `uint64_t` | `exchange_ts_ns` | Unix epoch ns；源仅有 ms 时乘 1,000,000 |
-| 40 | 8 | `uint64_t` | `receive_tsc` | 接收 TSC；不可用为 0 |
-| 48 | 8 | `uint64_t` | `publish_tsc` | 发布 TSC；不可用为 0 |
-| 56 | 4 | `uint32_t` | `book_generation` | 每次重建递增 |
-| 60 | 1 | `uint8_t` | `state` | `BookState` 数值 |
-| 61 | 1 | `uint8_t` | `source_id` | A/B 或连接来源，由部署约定 |
-| 62 | 2 | `uint16_t` | `flags` | 当前未定义；写零 |
+| 12 | 4 | `uint32_t` | `reserved` | 写方写零，读方忽略 |
+| 16 | 8 | `uint64_t` | `instrument_id` | instrument ID |
+| 24 | 8 | `uint64_t` | `bus_seq` | 总线序列 |
+| 32 | 8 | `uint64_t` | `source_seq` | 交易所序列 |
+| 40 | 8 | `uint64_t` | `exchange_ts_ns` | Unix epoch ns；源仅有 ms 时乘 1,000,000 |
+| 48 | 8 | `uint64_t` | `receive_tsc` | 接收 TSC；不可用为 0 |
+| 56 | 8 | `uint64_t` | `publish_tsc` | 发布 TSC；不可用为 0 |
+| 64 | 4 | `uint32_t` | `book_generation` | 每次重建递增 |
+| 68 | 1 | `uint8_t` | `state` | `BookState` 数值 |
+| 69 | 1 | `uint8_t` | `source_id` | A/B 或连接来源，由部署约定 |
+| 70 | 2 | `uint16_t` | `flags` | 当前未定义；写零 |
 
 `MakeHeader(type,length)` 只填 magic/schema/type/length，其余字段均为 0。
 
-### 5.2 `BboRecord`（96 字节）
+### 5.2 `BboRecord`（104 字节）
 
-公共 header 位于 0..63。
-
-| offset | size | 类型 | 字段 |
-|---:|---:|---|---|
-| 64 | 8 | `int64_t` | `bid_price` |
-| 72 | 8 | `int64_t` | `bid_quantity` |
-| 80 | 8 | `int64_t` | `ask_price` |
-| 88 | 8 | `int64_t` | `ask_quantity` |
-
-### 5.3 `TickerRecord`（136 字节）
+公共 header 位于 0..71。
 
 | offset | size | 类型 | 字段 |
 |---:|---:|---|---|
-| 0 | 64 | `RecordHeader` | `header` |
-| 64 | 8 | `int64_t` | `bid_price` |
-| 72 | 8 | `int64_t` | `bid_quantity` |
-| 80 | 8 | `int64_t` | `ask_price` |
-| 88 | 8 | `int64_t` | `ask_quantity` |
-| 96 | 8 | `int64_t` | `last_price` |
-| 104 | 8 | `int64_t` | `last_quantity` |
-| 112 | 8 | `int64_t` | `mark_price` |
-| 120 | 8 | `int64_t` | `index_price` |
-| 128 | 8 | `int64_t` | `funding_rate` |
+| 72 | 8 | `int64_t` | `bid_price` |
+| 80 | 8 | `int64_t` | `bid_quantity` |
+| 88 | 8 | `int64_t` | `ask_price` |
+| 96 | 8 | `int64_t` | `ask_quantity` |
+
+### 5.3 `TickerRecord`（176 字节）
+
+| offset | size | 类型 | 字段 |
+|---:|---:|---|---|
+| 0 | 72 | `RecordHeader` | `header` |
+| 72 | 8 | `int64_t` | `bid_price` |
+| 80 | 8 | `int64_t` | `bid_quantity` |
+| 88 | 8 | `int64_t` | `ask_price` |
+| 96 | 8 | `int64_t` | `ask_quantity` |
+| 104 | 8 | `int64_t` | `last_price` |
+| 112 | 8 | `int64_t` | `last_quantity` |
+| 120 | 8 | `int64_t` | `mark_price` |
+| 128 | 8 | `int64_t` | `index_price` |
+| 136 | 8 | `int64_t` | `funding_rate` |
+| 144 | 8 | `int64_t` | `open_price` |
+| 152 | 8 | `int64_t` | `high_price` |
+| 160 | 8 | `int64_t` | `low_price` |
+| 168 | 8 | `int64_t` | `close_price` |
 
 当前 adapter 只解析 book ticker/depth，没有填充完整 `TickerRecord` 所需的 last/mark/index/funding 数据流。
 
-### 5.4 `DeltaRecord`（88 字节）
+### 5.4 `DeltaRecord`（96 字节）
 
 | offset | size | 类型 | 字段 | 语义 |
 |---:|---:|---|---|---|
-| 0 | 64 | `RecordHeader` | `header` | type=BookDelta |
-| 64 | 1 | `uint8_t` | `side` | Bid=1/Ask=2 |
-| 65 | 7 | `uint8_t[7]` | `reserved` | 写零 |
-| 72 | 8 | `int64_t` | `price` | price mantissa |
-| 80 | 8 | `int64_t` | `quantity` | 0 删除 |
+| 0 | 72 | `RecordHeader` | `header` | type=BookDelta |
+| 72 | 1 | `uint8_t` | `side` | Bid=1/Ask=2 |
+| 73 | 7 | `uint8_t[7]` | `reserved` | 写零 |
+| 80 | 8 | `int64_t` | `price` | price mantissa |
+| 88 | 8 | `int64_t` | `quantity` | 0 删除 |
 
-### 5.5 `SnapshotControlRecord`（72 字节）
+### 5.5 `SnapshotControlRecord`（80 字节）
 
 `SnapshotBeginRecord` 与 `SnapshotEndRecord` 都是该结构的 alias，字段名不随 alias 改变。
 
 | offset | size | 类型 | Begin 语义 | End 语义 |
 |---:|---:|---|---|---|
-| 0 | 64 | `RecordHeader` | type=SnapshotBegin | type=SnapshotEnd |
-| 64 | 4 | `uint32_t item_count` | 总 level 数 | 已接收/发布 level 数 |
-| 68 | 4 | `uint32_t chunk_count_or_checksum` | chunk 总数 | checksum |
+| 0 | 72 | `RecordHeader` | type=SnapshotBegin | type=SnapshotEnd |
+| 72 | 4 | `uint32_t item_count` | 总 level 数 | 已接收/发布 level 数 |
+| 76 | 4 | `uint32_t chunk_count_or_checksum` | chunk 总数 | checksum |
 
 当前代码没有构建或验证快照 control 记录，也没有定义 checksum 算法；End 的 32 位值不能被称为 CRC。
 
-### 5.6 `SnapshotChunkRecord`（456 字节）
+### 5.6 `SnapshotChunkRecord`（464 字节）
 
 | offset | size | 类型 | 字段 | 语义 |
 |---:|---:|---|---|---|
-| 0 | 64 | `RecordHeader` | `header` | type=SnapshotChunk |
-| 64 | 4 | `uint32_t` | `chunk_index` | 每个 side 独立从 0 开始的 chunk 序号 |
-| 68 | 2 | `uint16_t` | `level_count` | 本 chunk 有效档数，必须 ≤24 |
-| 70 | 1 | `uint8_t` | `side` | `Bid=1`、`Ask=2` |
-| 71 | 1 | `uint8_t` | `reserved` | 写零 |
-| 72 | 384 | `Level[24]` | `levels` | 每项 16 字节；第 i 项 price 在 `72+16i`，quantity 在 `80+16i`；未用项写零 |
+| 0 | 72 | `RecordHeader` | `header` | type=SnapshotChunk |
+| 72 | 4 | `uint32_t` | `chunk_index` | 每个 side 独立从 0 开始的 chunk 序号 |
+| 76 | 2 | `uint16_t` | `level_count` | 本 chunk 有效档数，必须 ≤24 |
+| 78 | 1 | `uint8_t` | `side` | `Bid=1`、`Ask=2` |
+| 79 | 1 | `uint8_t` | `reserved` | 写零 |
+| 80 | 384 | `Level[24]` | `levels` | 每项 16 字节；未用项写零 |
 
-offset 70 原为两字节 reserved；本版本在不改变记录大小、对齐、后续字段 offset 或 schema 号的前提下，将其拆为显式 side 与一字节 reserved。
-
-### 5.7 `InstrumentUpdateRecord`（288 字节）
+### 5.7 `InstrumentUpdateRecord`（296 字节）
 
 | offset | size | 类型 | 字段 |
 |---:|---:|---|---|
-| 0 | 64 | `RecordHeader` | `header` |
-| 64 | 224 | `Instrument` | `instrument`；其子字段 offset 为本规范 4.4 中 offset +64 |
+| 0 | 72 | `RecordHeader` | `header` |
+| 72 | 224 | `Instrument` | `instrument`；其子字段 offset 为本规范 4.4 中 offset +72 |
 
-例如 `instrument.tick_size` 的记录 offset=80，`instrument.instrument_key` offset=220。
+### 5.8 `InstrumentCatalogRecord`（472 字节）
+
+header 后携带 400 字节定长 catalog：canonical identity、tick/lot/scale、
+64 字节 market slug、80 字节 venue symbol/token ID、72 字节 condition ID、
+outcome 与到期时间。Polymarket rollover 必须先发布同 generation 的 catalog，
+再发布 `InstrumentUpdate`，最后才允许 BBO/OrderBook。
 
 ## 6. 共享段布局
 
@@ -205,7 +234,7 @@ offset 70 原为两字节 reserved；本版本在不改变记录大小、对齐�
 | offset | size | 类型 | 字段 | 语义/并发 |
 |---:|---:|---|---|---|
 | 0 | 8 | `atomic<uint64_t>` | `magic` | `0x5344514d44535247`；创建者最后 release-store，attach 者 acquire-load |
-| 8 | 4 | `uint32_t` | `schema_major` | 当前 3 |
+| 8 | 4 | `uint32_t` | `schema_major` | 当前 5 |
 | 12 | 4 | `uint32_t` | `header_bytes` | 当前 `align8(sizeof)=4160` |
 | 16 | 8 | `uint64_t` | `ring_bytes` | 2 的幂 |
 | 24 | 8 | `uint64_t` | `max_record_bytes` | ≥40 且 ≤ ring/8 |
@@ -306,3 +335,21 @@ reader acquire-load writer cursor；按 cursor 定位并跳过尾部/padding；�
 - `mds/src/transport/shared_ring.cpp`
 
 本规范记录当前 ABI；任何编译器、标准库或字段改动后都必须重新运行 `sizeof/offsetof` 静态校验。
+
+## 11. Polymarket rolling MDS 映射
+
+Polymarket 行情使用 `Venue::Polymarket` 与 `ProductType::BinaryOption`。MDS
+为 BTC 五分钟方向市场暴露稳定 alias `BTC5MUP`、`BTC5MDOWN`；alias 是
+MDS-only 标识，不是 Polymarket token，也不能直接作为 OMS 下单标的。
+Gamma REST 仅异步发现当前精确市场及 token；token ID 保留在 adapter
+内部，不加入共享 wire。
+
+滚动到下一市场时，`instrument_id`、`canonical_symbol`、`instrument_key`
+及共享段保持 alias 身份稳定；`venue_symbol` 可携带当前 Gamma slug。slug
+只能伴随 `book_generation` 递增及 `InstrumentUpdate`（`state=Building`）
+一起变化，消费者必须清空旧 book，等待新一代快照恢复 Live。
+
+Polymarket 的 BBO、BookDelta、Snapshot 和 InstrumentUpdate 继续使用本规范
+既有记录；不增加 token、slug 或 lifecycle 专用 wire 字段，BBO/Book wire
+schema 与大小不变。WSS 的 `book` snapshot、`price_change`、BBO、tick-size
+及 lifecycle 事件映射到既有状态机和记录。

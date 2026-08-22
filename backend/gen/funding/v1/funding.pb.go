@@ -398,6 +398,850 @@ func (x *ListFundingRatesResponse) GetServerTime() *timestamppb.Timestamp {
 	return nil
 }
 
+type ListFundingSpreadsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListFundingSpreadsRequest) Reset() {
+	*x = ListFundingSpreadsRequest{}
+	mi := &file_funding_v1_funding_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListFundingSpreadsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListFundingSpreadsRequest) ProtoMessage() {}
+
+func (x *ListFundingSpreadsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_funding_v1_funding_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListFundingSpreadsRequest.ProtoReflect.Descriptor instead.
+func (*ListFundingSpreadsRequest) Descriptor() ([]byte, []int) {
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{4}
+}
+
+type FundingSpreadLeg struct {
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	Exchange               string                 `protobuf:"bytes,1,opt,name=exchange,proto3" json:"exchange,omitempty"`
+	ExchangeSymbol         string                 `protobuf:"bytes,2,opt,name=exchange_symbol,json=exchangeSymbol,proto3" json:"exchange_symbol,omitempty"`
+	EffectiveFundingRate   string                 `protobuf:"bytes,3,opt,name=effective_funding_rate,json=effectiveFundingRate,proto3" json:"effective_funding_rate,omitempty"`
+	FundingIntervalSeconds int32                  `protobuf:"varint,4,opt,name=funding_interval_seconds,json=fundingIntervalSeconds,proto3" json:"funding_interval_seconds,omitempty"`
+	NextFundingAt          *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=next_funding_at,json=nextFundingAt,proto3" json:"next_funding_at,omitempty"`
+	PositionNotionalUsd    string                 `protobuf:"bytes,6,opt,name=position_notional_usd,json=positionNotionalUsd,proto3" json:"position_notional_usd,omitempty"`
+	Turnover_24HUsd        string                 `protobuf:"bytes,7,opt,name=turnover_24h_usd,json=turnover24hUsd,proto3" json:"turnover_24h_usd,omitempty"`
+	SourceUpdatedAt        *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=source_updated_at,json=sourceUpdatedAt,proto3" json:"source_updated_at,omitempty"`
+	LastPrice              string                 `protobuf:"bytes,9,opt,name=last_price,json=lastPrice,proto3" json:"last_price,omitempty"`
+	Stale                  bool                   `protobuf:"varint,10,opt,name=stale,proto3" json:"stale,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *FundingSpreadLeg) Reset() {
+	*x = FundingSpreadLeg{}
+	mi := &file_funding_v1_funding_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FundingSpreadLeg) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FundingSpreadLeg) ProtoMessage() {}
+
+func (x *FundingSpreadLeg) ProtoReflect() protoreflect.Message {
+	mi := &file_funding_v1_funding_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FundingSpreadLeg.ProtoReflect.Descriptor instead.
+func (*FundingSpreadLeg) Descriptor() ([]byte, []int) {
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *FundingSpreadLeg) GetExchange() string {
+	if x != nil {
+		return x.Exchange
+	}
+	return ""
+}
+
+func (x *FundingSpreadLeg) GetExchangeSymbol() string {
+	if x != nil {
+		return x.ExchangeSymbol
+	}
+	return ""
+}
+
+func (x *FundingSpreadLeg) GetEffectiveFundingRate() string {
+	if x != nil {
+		return x.EffectiveFundingRate
+	}
+	return ""
+}
+
+func (x *FundingSpreadLeg) GetFundingIntervalSeconds() int32 {
+	if x != nil {
+		return x.FundingIntervalSeconds
+	}
+	return 0
+}
+
+func (x *FundingSpreadLeg) GetNextFundingAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.NextFundingAt
+	}
+	return nil
+}
+
+func (x *FundingSpreadLeg) GetPositionNotionalUsd() string {
+	if x != nil {
+		return x.PositionNotionalUsd
+	}
+	return ""
+}
+
+func (x *FundingSpreadLeg) GetTurnover_24HUsd() string {
+	if x != nil {
+		return x.Turnover_24HUsd
+	}
+	return ""
+}
+
+func (x *FundingSpreadLeg) GetSourceUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.SourceUpdatedAt
+	}
+	return nil
+}
+
+func (x *FundingSpreadLeg) GetLastPrice() string {
+	if x != nil {
+		return x.LastPrice
+	}
+	return ""
+}
+
+func (x *FundingSpreadLeg) GetStale() bool {
+	if x != nil {
+		return x.Stale
+	}
+	return false
+}
+
+type FundingSpread struct {
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	GlobalSymbol           string                 `protobuf:"bytes,1,opt,name=global_symbol,json=globalSymbol,proto3" json:"global_symbol,omitempty"`
+	LongLeg                *FundingSpreadLeg      `protobuf:"bytes,2,opt,name=long_leg,json=longLeg,proto3" json:"long_leg,omitempty"`
+	ShortLeg               *FundingSpreadLeg      `protobuf:"bytes,3,opt,name=short_leg,json=shortLeg,proto3" json:"short_leg,omitempty"`
+	SingleSpreadAnnualized string                 `protobuf:"bytes,4,opt,name=single_spread_annualized,json=singleSpreadAnnualized,proto3" json:"single_spread_annualized,omitempty"`
+	Spread_24HAnnualized   string                 `protobuf:"bytes,5,opt,name=spread_24h_annualized,json=spread24hAnnualized,proto3" json:"spread_24h_annualized,omitempty"`
+	Spread_7DAnnualized    string                 `protobuf:"bytes,6,opt,name=spread_7d_annualized,json=spread7dAnnualized,proto3" json:"spread_7d_annualized,omitempty"`
+	MinPositionNotionalUsd string                 `protobuf:"bytes,7,opt,name=min_position_notional_usd,json=minPositionNotionalUsd,proto3" json:"min_position_notional_usd,omitempty"`
+	MinTurnover_24HUsd     string                 `protobuf:"bytes,8,opt,name=min_turnover_24h_usd,json=minTurnover24hUsd,proto3" json:"min_turnover_24h_usd,omitempty"`
+	UpdatedAt              *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	Stale                  bool                   `protobuf:"varint,10,opt,name=stale,proto3" json:"stale,omitempty"`
+	BaseAsset              string                 `protobuf:"bytes,11,opt,name=base_asset,json=baseAsset,proto3" json:"base_asset,omitempty"`
+	QuoteAsset             string                 `protobuf:"bytes,12,opt,name=quote_asset,json=quoteAsset,proto3" json:"quote_asset,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *FundingSpread) Reset() {
+	*x = FundingSpread{}
+	mi := &file_funding_v1_funding_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FundingSpread) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FundingSpread) ProtoMessage() {}
+
+func (x *FundingSpread) ProtoReflect() protoreflect.Message {
+	mi := &file_funding_v1_funding_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FundingSpread.ProtoReflect.Descriptor instead.
+func (*FundingSpread) Descriptor() ([]byte, []int) {
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *FundingSpread) GetGlobalSymbol() string {
+	if x != nil {
+		return x.GlobalSymbol
+	}
+	return ""
+}
+
+func (x *FundingSpread) GetLongLeg() *FundingSpreadLeg {
+	if x != nil {
+		return x.LongLeg
+	}
+	return nil
+}
+
+func (x *FundingSpread) GetShortLeg() *FundingSpreadLeg {
+	if x != nil {
+		return x.ShortLeg
+	}
+	return nil
+}
+
+func (x *FundingSpread) GetSingleSpreadAnnualized() string {
+	if x != nil {
+		return x.SingleSpreadAnnualized
+	}
+	return ""
+}
+
+func (x *FundingSpread) GetSpread_24HAnnualized() string {
+	if x != nil {
+		return x.Spread_24HAnnualized
+	}
+	return ""
+}
+
+func (x *FundingSpread) GetSpread_7DAnnualized() string {
+	if x != nil {
+		return x.Spread_7DAnnualized
+	}
+	return ""
+}
+
+func (x *FundingSpread) GetMinPositionNotionalUsd() string {
+	if x != nil {
+		return x.MinPositionNotionalUsd
+	}
+	return ""
+}
+
+func (x *FundingSpread) GetMinTurnover_24HUsd() string {
+	if x != nil {
+		return x.MinTurnover_24HUsd
+	}
+	return ""
+}
+
+func (x *FundingSpread) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
+func (x *FundingSpread) GetStale() bool {
+	if x != nil {
+		return x.Stale
+	}
+	return false
+}
+
+func (x *FundingSpread) GetBaseAsset() string {
+	if x != nil {
+		return x.BaseAsset
+	}
+	return ""
+}
+
+func (x *FundingSpread) GetQuoteAsset() string {
+	if x != nil {
+		return x.QuoteAsset
+	}
+	return ""
+}
+
+type ListFundingSpreadsResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Items           []*FundingSpread       `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	Total           int32                  `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	SnapshotVersion string                 `protobuf:"bytes,3,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
+	ServerTime      *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=server_time,json=serverTime,proto3" json:"server_time,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ListFundingSpreadsResponse) Reset() {
+	*x = ListFundingSpreadsResponse{}
+	mi := &file_funding_v1_funding_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListFundingSpreadsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListFundingSpreadsResponse) ProtoMessage() {}
+
+func (x *ListFundingSpreadsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_funding_v1_funding_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListFundingSpreadsResponse.ProtoReflect.Descriptor instead.
+func (*ListFundingSpreadsResponse) Descriptor() ([]byte, []int) {
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ListFundingSpreadsResponse) GetItems() []*FundingSpread {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *ListFundingSpreadsResponse) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+func (x *ListFundingSpreadsResponse) GetSnapshotVersion() string {
+	if x != nil {
+		return x.SnapshotVersion
+	}
+	return ""
+}
+
+func (x *ListFundingSpreadsResponse) GetServerTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ServerTime
+	}
+	return nil
+}
+
+type ListFundingOpportunitiesRequest struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Period              string                 `protobuf:"bytes,1,opt,name=period,proto3" json:"period,omitempty"`
+	MinLegNotionalUsd   string                 `protobuf:"bytes,2,opt,name=min_leg_notional_usd,json=minLegNotionalUsd,proto3" json:"min_leg_notional_usd,omitempty"`
+	MinLegVolume_24HUsd string                 `protobuf:"bytes,3,opt,name=min_leg_volume_24h_usd,json=minLegVolume24hUsd,proto3" json:"min_leg_volume_24h_usd,omitempty"`
+	Limit               int32                  `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *ListFundingOpportunitiesRequest) Reset() {
+	*x = ListFundingOpportunitiesRequest{}
+	mi := &file_funding_v1_funding_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListFundingOpportunitiesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListFundingOpportunitiesRequest) ProtoMessage() {}
+
+func (x *ListFundingOpportunitiesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_funding_v1_funding_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListFundingOpportunitiesRequest.ProtoReflect.Descriptor instead.
+func (*ListFundingOpportunitiesRequest) Descriptor() ([]byte, []int) {
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ListFundingOpportunitiesRequest) GetPeriod() string {
+	if x != nil {
+		return x.Period
+	}
+	return ""
+}
+
+func (x *ListFundingOpportunitiesRequest) GetMinLegNotionalUsd() string {
+	if x != nil {
+		return x.MinLegNotionalUsd
+	}
+	return ""
+}
+
+func (x *ListFundingOpportunitiesRequest) GetMinLegVolume_24HUsd() string {
+	if x != nil {
+		return x.MinLegVolume_24HUsd
+	}
+	return ""
+}
+
+func (x *ListFundingOpportunitiesRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type FundingOpportunityRanking struct {
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	Rank                       int32                  `protobuf:"varint,1,opt,name=rank,proto3" json:"rank,omitempty"`
+	GlobalSymbol               string                 `protobuf:"bytes,2,opt,name=global_symbol,json=globalSymbol,proto3" json:"global_symbol,omitempty"`
+	BaseAsset                  string                 `protobuf:"bytes,3,opt,name=base_asset,json=baseAsset,proto3" json:"base_asset,omitempty"`
+	QuoteAsset                 string                 `protobuf:"bytes,4,opt,name=quote_asset,json=quoteAsset,proto3" json:"quote_asset,omitempty"`
+	Period                     string                 `protobuf:"bytes,5,opt,name=period,proto3" json:"period,omitempty"`
+	LongLeg                    *FundingSpreadLeg      `protobuf:"bytes,6,opt,name=long_leg,json=longLeg,proto3" json:"long_leg,omitempty"`
+	ShortLeg                   *FundingSpreadLeg      `protobuf:"bytes,7,opt,name=short_leg,json=shortLeg,proto3" json:"short_leg,omitempty"`
+	CurrentMidSpreadBps        string                 `protobuf:"bytes,8,opt,name=current_mid_spread_bps,json=currentMidSpreadBps,proto3" json:"current_mid_spread_bps,omitempty"`
+	CurrentExecutableSpreadBps string                 `protobuf:"bytes,9,opt,name=current_executable_spread_bps,json=currentExecutableSpreadBps,proto3" json:"current_executable_spread_bps,omitempty"`
+	TargetSpreadBps            string                 `protobuf:"bytes,10,opt,name=target_spread_bps,json=targetSpreadBps,proto3" json:"target_spread_bps,omitempty"`
+	PeriodExpectedReturn       string                 `protobuf:"bytes,11,opt,name=period_expected_return,json=periodExpectedReturn,proto3" json:"period_expected_return,omitempty"`
+	FundingExpectedAnnualized  string                 `protobuf:"bytes,12,opt,name=funding_expected_annualized,json=fundingExpectedAnnualized,proto3" json:"funding_expected_annualized,omitempty"`
+	SpreadExpectedAnnualized   string                 `protobuf:"bytes,13,opt,name=spread_expected_annualized,json=spreadExpectedAnnualized,proto3" json:"spread_expected_annualized,omitempty"`
+	CombinedExpectedAnnualized string                 `protobuf:"bytes,14,opt,name=combined_expected_annualized,json=combinedExpectedAnnualized,proto3" json:"combined_expected_annualized,omitempty"`
+	FirstPassageProbability    string                 `protobuf:"bytes,15,opt,name=first_passage_probability,json=firstPassageProbability,proto3" json:"first_passage_probability,omitempty"`
+	ProfitProbability          string                 `protobuf:"bytes,16,opt,name=profit_probability,json=profitProbability,proto3" json:"profit_probability,omitempty"`
+	ExpectedExitMinutes        string                 `protobuf:"bytes,17,opt,name=expected_exit_minutes,json=expectedExitMinutes,proto3" json:"expected_exit_minutes,omitempty"`
+	P5Return                   string                 `protobuf:"bytes,18,opt,name=p5_return,json=p5Return,proto3" json:"p5_return,omitempty"`
+	MinPositionNotionalUsd     string                 `protobuf:"bytes,19,opt,name=min_position_notional_usd,json=minPositionNotionalUsd,proto3" json:"min_position_notional_usd,omitempty"`
+	MinTurnover_24HUsd         string                 `protobuf:"bytes,20,opt,name=min_turnover_24h_usd,json=minTurnover24hUsd,proto3" json:"min_turnover_24h_usd,omitempty"`
+	Coverage                   string                 `protobuf:"bytes,21,opt,name=coverage,proto3" json:"coverage,omitempty"`
+	Confidence                 string                 `protobuf:"bytes,22,opt,name=confidence,proto3" json:"confidence,omitempty"`
+	ModelState                 string                 `protobuf:"bytes,23,opt,name=model_state,json=modelState,proto3" json:"model_state,omitempty"`
+	UpdatedAt                  *timestamppb.Timestamp `protobuf:"bytes,24,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	Stale                      bool                   `protobuf:"varint,25,opt,name=stale,proto3" json:"stale,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
+}
+
+func (x *FundingOpportunityRanking) Reset() {
+	*x = FundingOpportunityRanking{}
+	mi := &file_funding_v1_funding_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FundingOpportunityRanking) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FundingOpportunityRanking) ProtoMessage() {}
+
+func (x *FundingOpportunityRanking) ProtoReflect() protoreflect.Message {
+	mi := &file_funding_v1_funding_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FundingOpportunityRanking.ProtoReflect.Descriptor instead.
+func (*FundingOpportunityRanking) Descriptor() ([]byte, []int) {
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *FundingOpportunityRanking) GetRank() int32 {
+	if x != nil {
+		return x.Rank
+	}
+	return 0
+}
+
+func (x *FundingOpportunityRanking) GetGlobalSymbol() string {
+	if x != nil {
+		return x.GlobalSymbol
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetBaseAsset() string {
+	if x != nil {
+		return x.BaseAsset
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetQuoteAsset() string {
+	if x != nil {
+		return x.QuoteAsset
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetPeriod() string {
+	if x != nil {
+		return x.Period
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetLongLeg() *FundingSpreadLeg {
+	if x != nil {
+		return x.LongLeg
+	}
+	return nil
+}
+
+func (x *FundingOpportunityRanking) GetShortLeg() *FundingSpreadLeg {
+	if x != nil {
+		return x.ShortLeg
+	}
+	return nil
+}
+
+func (x *FundingOpportunityRanking) GetCurrentMidSpreadBps() string {
+	if x != nil {
+		return x.CurrentMidSpreadBps
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetCurrentExecutableSpreadBps() string {
+	if x != nil {
+		return x.CurrentExecutableSpreadBps
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetTargetSpreadBps() string {
+	if x != nil {
+		return x.TargetSpreadBps
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetPeriodExpectedReturn() string {
+	if x != nil {
+		return x.PeriodExpectedReturn
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetFundingExpectedAnnualized() string {
+	if x != nil {
+		return x.FundingExpectedAnnualized
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetSpreadExpectedAnnualized() string {
+	if x != nil {
+		return x.SpreadExpectedAnnualized
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetCombinedExpectedAnnualized() string {
+	if x != nil {
+		return x.CombinedExpectedAnnualized
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetFirstPassageProbability() string {
+	if x != nil {
+		return x.FirstPassageProbability
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetProfitProbability() string {
+	if x != nil {
+		return x.ProfitProbability
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetExpectedExitMinutes() string {
+	if x != nil {
+		return x.ExpectedExitMinutes
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetP5Return() string {
+	if x != nil {
+		return x.P5Return
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetMinPositionNotionalUsd() string {
+	if x != nil {
+		return x.MinPositionNotionalUsd
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetMinTurnover_24HUsd() string {
+	if x != nil {
+		return x.MinTurnover_24HUsd
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetCoverage() string {
+	if x != nil {
+		return x.Coverage
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetConfidence() string {
+	if x != nil {
+		return x.Confidence
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetModelState() string {
+	if x != nil {
+		return x.ModelState
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
+func (x *FundingOpportunityRanking) GetStale() bool {
+	if x != nil {
+		return x.Stale
+	}
+	return false
+}
+
+type ListFundingOpportunitiesResponse struct {
+	state           protoimpl.MessageState       `protogen:"open.v1"`
+	Items           []*FundingOpportunityRanking `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	Total           int32                        `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	SnapshotVersion string                       `protobuf:"bytes,3,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
+	ServerTime      *timestamppb.Timestamp       `protobuf:"bytes,4,opt,name=server_time,json=serverTime,proto3" json:"server_time,omitempty"`
+	CalculatedAt    *timestamppb.Timestamp       `protobuf:"bytes,5,opt,name=calculated_at,json=calculatedAt,proto3" json:"calculated_at,omitempty"`
+	Stale           bool                         `protobuf:"varint,6,opt,name=stale,proto3" json:"stale,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ListFundingOpportunitiesResponse) Reset() {
+	*x = ListFundingOpportunitiesResponse{}
+	mi := &file_funding_v1_funding_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListFundingOpportunitiesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListFundingOpportunitiesResponse) ProtoMessage() {}
+
+func (x *ListFundingOpportunitiesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_funding_v1_funding_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListFundingOpportunitiesResponse.ProtoReflect.Descriptor instead.
+func (*ListFundingOpportunitiesResponse) Descriptor() ([]byte, []int) {
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ListFundingOpportunitiesResponse) GetItems() []*FundingOpportunityRanking {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *ListFundingOpportunitiesResponse) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+func (x *ListFundingOpportunitiesResponse) GetSnapshotVersion() string {
+	if x != nil {
+		return x.SnapshotVersion
+	}
+	return ""
+}
+
+func (x *ListFundingOpportunitiesResponse) GetServerTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ServerTime
+	}
+	return nil
+}
+
+func (x *ListFundingOpportunitiesResponse) GetCalculatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CalculatedAt
+	}
+	return nil
+}
+
+func (x *ListFundingOpportunitiesResponse) GetStale() bool {
+	if x != nil {
+		return x.Stale
+	}
+	return false
+}
+
+type GetFundingHistoryRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Exchange       string                 `protobuf:"bytes,1,opt,name=exchange,proto3" json:"exchange,omitempty"`
+	ExchangeSymbol string                 `protobuf:"bytes,2,opt,name=exchange_symbol,json=exchangeSymbol,proto3" json:"exchange_symbol,omitempty"`
+	Limit          int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *GetFundingHistoryRequest) Reset() {
+	*x = GetFundingHistoryRequest{}
+	mi := &file_funding_v1_funding_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetFundingHistoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetFundingHistoryRequest) ProtoMessage() {}
+
+func (x *GetFundingHistoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_funding_v1_funding_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetFundingHistoryRequest.ProtoReflect.Descriptor instead.
+func (*GetFundingHistoryRequest) Descriptor() ([]byte, []int) {
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *GetFundingHistoryRequest) GetExchange() string {
+	if x != nil {
+		return x.Exchange
+	}
+	return ""
+}
+
+func (x *GetFundingHistoryRequest) GetExchangeSymbol() string {
+	if x != nil {
+		return x.ExchangeSymbol
+	}
+	return ""
+}
+
+func (x *GetFundingHistoryRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type GetFundingHistoryResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Items         []*FundingHistoryPoint `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetFundingHistoryResponse) Reset() {
+	*x = GetFundingHistoryResponse{}
+	mi := &file_funding_v1_funding_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetFundingHistoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetFundingHistoryResponse) ProtoMessage() {}
+
+func (x *GetFundingHistoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_funding_v1_funding_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetFundingHistoryResponse.ProtoReflect.Descriptor instead.
+func (*GetFundingHistoryResponse) Descriptor() ([]byte, []int) {
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *GetFundingHistoryResponse) GetItems() []*FundingHistoryPoint {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
 var File_funding_v1_funding_proto protoreflect.FileDescriptor
 
 const file_funding_v1_funding_proto_rawDesc = "" +
@@ -445,9 +1289,101 @@ const file_funding_v1_funding_proto_rawDesc = "" +
 	"\x05total\x18\x02 \x01(\x05R\x05total\x12)\n" +
 	"\x10snapshot_version\x18\x03 \x01(\tR\x0fsnapshotVersion\x12;\n" +
 	"\vserver_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"serverTime2o\n" +
+	"serverTime\"\x1b\n" +
+	"\x19ListFundingSpreadsRequest\"\xe6\x03\n" +
+	"\x10FundingSpreadLeg\x12\x1a\n" +
+	"\bexchange\x18\x01 \x01(\tR\bexchange\x12'\n" +
+	"\x0fexchange_symbol\x18\x02 \x01(\tR\x0eexchangeSymbol\x124\n" +
+	"\x16effective_funding_rate\x18\x03 \x01(\tR\x14effectiveFundingRate\x128\n" +
+	"\x18funding_interval_seconds\x18\x04 \x01(\x05R\x16fundingIntervalSeconds\x12B\n" +
+	"\x0fnext_funding_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\rnextFundingAt\x122\n" +
+	"\x15position_notional_usd\x18\x06 \x01(\tR\x13positionNotionalUsd\x12(\n" +
+	"\x10turnover_24h_usd\x18\a \x01(\tR\x0eturnover24hUsd\x12F\n" +
+	"\x11source_updated_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x0fsourceUpdatedAt\x12\x1d\n" +
+	"\n" +
+	"last_price\x18\t \x01(\tR\tlastPrice\x12\x14\n" +
+	"\x05stale\x18\n" +
+	" \x01(\bR\x05stale\"\xc5\x04\n" +
+	"\rFundingSpread\x12#\n" +
+	"\rglobal_symbol\x18\x01 \x01(\tR\fglobalSymbol\x127\n" +
+	"\blong_leg\x18\x02 \x01(\v2\x1c.funding.v1.FundingSpreadLegR\alongLeg\x129\n" +
+	"\tshort_leg\x18\x03 \x01(\v2\x1c.funding.v1.FundingSpreadLegR\bshortLeg\x128\n" +
+	"\x18single_spread_annualized\x18\x04 \x01(\tR\x16singleSpreadAnnualized\x122\n" +
+	"\x15spread_24h_annualized\x18\x05 \x01(\tR\x13spread24hAnnualized\x120\n" +
+	"\x14spread_7d_annualized\x18\x06 \x01(\tR\x12spread7dAnnualized\x129\n" +
+	"\x19min_position_notional_usd\x18\a \x01(\tR\x16minPositionNotionalUsd\x12/\n" +
+	"\x14min_turnover_24h_usd\x18\b \x01(\tR\x11minTurnover24hUsd\x129\n" +
+	"\n" +
+	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x14\n" +
+	"\x05stale\x18\n" +
+	" \x01(\bR\x05stale\x12\x1d\n" +
+	"\n" +
+	"base_asset\x18\v \x01(\tR\tbaseAsset\x12\x1f\n" +
+	"\vquote_asset\x18\f \x01(\tR\n" +
+	"quoteAsset\"\xcb\x01\n" +
+	"\x1aListFundingSpreadsResponse\x12/\n" +
+	"\x05items\x18\x01 \x03(\v2\x19.funding.v1.FundingSpreadR\x05items\x12\x14\n" +
+	"\x05total\x18\x02 \x01(\x05R\x05total\x12)\n" +
+	"\x10snapshot_version\x18\x03 \x01(\tR\x0fsnapshotVersion\x12;\n" +
+	"\vserver_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"serverTime\"\xb4\x01\n" +
+	"\x1fListFundingOpportunitiesRequest\x12\x16\n" +
+	"\x06period\x18\x01 \x01(\tR\x06period\x12/\n" +
+	"\x14min_leg_notional_usd\x18\x02 \x01(\tR\x11minLegNotionalUsd\x122\n" +
+	"\x16min_leg_volume_24h_usd\x18\x03 \x01(\tR\x12minLegVolume24hUsd\x12\x14\n" +
+	"\x05limit\x18\x04 \x01(\x05R\x05limit\"\x90\t\n" +
+	"\x19FundingOpportunityRanking\x12\x12\n" +
+	"\x04rank\x18\x01 \x01(\x05R\x04rank\x12#\n" +
+	"\rglobal_symbol\x18\x02 \x01(\tR\fglobalSymbol\x12\x1d\n" +
+	"\n" +
+	"base_asset\x18\x03 \x01(\tR\tbaseAsset\x12\x1f\n" +
+	"\vquote_asset\x18\x04 \x01(\tR\n" +
+	"quoteAsset\x12\x16\n" +
+	"\x06period\x18\x05 \x01(\tR\x06period\x127\n" +
+	"\blong_leg\x18\x06 \x01(\v2\x1c.funding.v1.FundingSpreadLegR\alongLeg\x129\n" +
+	"\tshort_leg\x18\a \x01(\v2\x1c.funding.v1.FundingSpreadLegR\bshortLeg\x123\n" +
+	"\x16current_mid_spread_bps\x18\b \x01(\tR\x13currentMidSpreadBps\x12A\n" +
+	"\x1dcurrent_executable_spread_bps\x18\t \x01(\tR\x1acurrentExecutableSpreadBps\x12*\n" +
+	"\x11target_spread_bps\x18\n" +
+	" \x01(\tR\x0ftargetSpreadBps\x124\n" +
+	"\x16period_expected_return\x18\v \x01(\tR\x14periodExpectedReturn\x12>\n" +
+	"\x1bfunding_expected_annualized\x18\f \x01(\tR\x19fundingExpectedAnnualized\x12<\n" +
+	"\x1aspread_expected_annualized\x18\r \x01(\tR\x18spreadExpectedAnnualized\x12@\n" +
+	"\x1ccombined_expected_annualized\x18\x0e \x01(\tR\x1acombinedExpectedAnnualized\x12:\n" +
+	"\x19first_passage_probability\x18\x0f \x01(\tR\x17firstPassageProbability\x12-\n" +
+	"\x12profit_probability\x18\x10 \x01(\tR\x11profitProbability\x122\n" +
+	"\x15expected_exit_minutes\x18\x11 \x01(\tR\x13expectedExitMinutes\x12\x1b\n" +
+	"\tp5_return\x18\x12 \x01(\tR\bp5Return\x129\n" +
+	"\x19min_position_notional_usd\x18\x13 \x01(\tR\x16minPositionNotionalUsd\x12/\n" +
+	"\x14min_turnover_24h_usd\x18\x14 \x01(\tR\x11minTurnover24hUsd\x12\x1a\n" +
+	"\bcoverage\x18\x15 \x01(\tR\bcoverage\x12\x1e\n" +
+	"\n" +
+	"confidence\x18\x16 \x01(\tR\n" +
+	"confidence\x12\x1f\n" +
+	"\vmodel_state\x18\x17 \x01(\tR\n" +
+	"modelState\x129\n" +
+	"\n" +
+	"updated_at\x18\x18 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x14\n" +
+	"\x05stale\x18\x19 \x01(\bR\x05stale\"\xb4\x02\n" +
+	" ListFundingOpportunitiesResponse\x12;\n" +
+	"\x05items\x18\x01 \x03(\v2%.funding.v1.FundingOpportunityRankingR\x05items\x12\x14\n" +
+	"\x05total\x18\x02 \x01(\x05R\x05total\x12)\n" +
+	"\x10snapshot_version\x18\x03 \x01(\tR\x0fsnapshotVersion\x12;\n" +
+	"\vserver_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"serverTime\x12?\n" +
+	"\rcalculated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\fcalculatedAt\x12\x14\n" +
+	"\x05stale\x18\x06 \x01(\bR\x05stale\"u\n" +
+	"\x18GetFundingHistoryRequest\x12\x1a\n" +
+	"\bexchange\x18\x01 \x01(\tR\bexchange\x12'\n" +
+	"\x0fexchange_symbol\x18\x02 \x01(\tR\x0eexchangeSymbol\x12\x14\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\"R\n" +
+	"\x19GetFundingHistoryResponse\x125\n" +
+	"\x05items\x18\x01 \x03(\v2\x1f.funding.v1.FundingHistoryPointR\x05items2\xad\x03\n" +
 	"\x0eFundingService\x12]\n" +
-	"\x10ListFundingRates\x12#.funding.v1.ListFundingRatesRequest\x1a$.funding.v1.ListFundingRatesResponseB,Z*selfquant/backend/gen/funding/v1;fundingv1b\x06proto3"
+	"\x10ListFundingRates\x12#.funding.v1.ListFundingRatesRequest\x1a$.funding.v1.ListFundingRatesResponse\x12c\n" +
+	"\x12ListFundingSpreads\x12%.funding.v1.ListFundingSpreadsRequest\x1a&.funding.v1.ListFundingSpreadsResponse\x12u\n" +
+	"\x18ListFundingOpportunities\x12+.funding.v1.ListFundingOpportunitiesRequest\x1a,.funding.v1.ListFundingOpportunitiesResponse\x12`\n" +
+	"\x11GetFundingHistory\x12$.funding.v1.GetFundingHistoryRequest\x1a%.funding.v1.GetFundingHistoryResponseB,Z*selfquant/backend/gen/funding/v1;fundingv1b\x06proto3"
 
 var (
 	file_funding_v1_funding_proto_rawDescOnce sync.Once
@@ -461,28 +1397,57 @@ func file_funding_v1_funding_proto_rawDescGZIP() []byte {
 	return file_funding_v1_funding_proto_rawDescData
 }
 
-var file_funding_v1_funding_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_funding_v1_funding_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_funding_v1_funding_proto_goTypes = []any{
-	(*ListFundingRatesRequest)(nil),  // 0: funding.v1.ListFundingRatesRequest
-	(*FundingRate)(nil),              // 1: funding.v1.FundingRate
-	(*FundingHistoryPoint)(nil),      // 2: funding.v1.FundingHistoryPoint
-	(*ListFundingRatesResponse)(nil), // 3: funding.v1.ListFundingRatesResponse
-	(*timestamppb.Timestamp)(nil),    // 4: google.protobuf.Timestamp
+	(*ListFundingRatesRequest)(nil),          // 0: funding.v1.ListFundingRatesRequest
+	(*FundingRate)(nil),                      // 1: funding.v1.FundingRate
+	(*FundingHistoryPoint)(nil),              // 2: funding.v1.FundingHistoryPoint
+	(*ListFundingRatesResponse)(nil),         // 3: funding.v1.ListFundingRatesResponse
+	(*ListFundingSpreadsRequest)(nil),        // 4: funding.v1.ListFundingSpreadsRequest
+	(*FundingSpreadLeg)(nil),                 // 5: funding.v1.FundingSpreadLeg
+	(*FundingSpread)(nil),                    // 6: funding.v1.FundingSpread
+	(*ListFundingSpreadsResponse)(nil),       // 7: funding.v1.ListFundingSpreadsResponse
+	(*ListFundingOpportunitiesRequest)(nil),  // 8: funding.v1.ListFundingOpportunitiesRequest
+	(*FundingOpportunityRanking)(nil),        // 9: funding.v1.FundingOpportunityRanking
+	(*ListFundingOpportunitiesResponse)(nil), // 10: funding.v1.ListFundingOpportunitiesResponse
+	(*GetFundingHistoryRequest)(nil),         // 11: funding.v1.GetFundingHistoryRequest
+	(*GetFundingHistoryResponse)(nil),        // 12: funding.v1.GetFundingHistoryResponse
+	(*timestamppb.Timestamp)(nil),            // 13: google.protobuf.Timestamp
 }
 var file_funding_v1_funding_proto_depIdxs = []int32{
-	4, // 0: funding.v1.FundingRate.next_funding_at:type_name -> google.protobuf.Timestamp
-	4, // 1: funding.v1.FundingRate.source_updated_at:type_name -> google.protobuf.Timestamp
-	2, // 2: funding.v1.FundingRate.history:type_name -> funding.v1.FundingHistoryPoint
-	4, // 3: funding.v1.FundingHistoryPoint.settled_at:type_name -> google.protobuf.Timestamp
-	1, // 4: funding.v1.ListFundingRatesResponse.items:type_name -> funding.v1.FundingRate
-	4, // 5: funding.v1.ListFundingRatesResponse.server_time:type_name -> google.protobuf.Timestamp
-	0, // 6: funding.v1.FundingService.ListFundingRates:input_type -> funding.v1.ListFundingRatesRequest
-	3, // 7: funding.v1.FundingService.ListFundingRates:output_type -> funding.v1.ListFundingRatesResponse
-	7, // [7:8] is the sub-list for method output_type
-	6, // [6:7] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	13, // 0: funding.v1.FundingRate.next_funding_at:type_name -> google.protobuf.Timestamp
+	13, // 1: funding.v1.FundingRate.source_updated_at:type_name -> google.protobuf.Timestamp
+	2,  // 2: funding.v1.FundingRate.history:type_name -> funding.v1.FundingHistoryPoint
+	13, // 3: funding.v1.FundingHistoryPoint.settled_at:type_name -> google.protobuf.Timestamp
+	1,  // 4: funding.v1.ListFundingRatesResponse.items:type_name -> funding.v1.FundingRate
+	13, // 5: funding.v1.ListFundingRatesResponse.server_time:type_name -> google.protobuf.Timestamp
+	13, // 6: funding.v1.FundingSpreadLeg.next_funding_at:type_name -> google.protobuf.Timestamp
+	13, // 7: funding.v1.FundingSpreadLeg.source_updated_at:type_name -> google.protobuf.Timestamp
+	5,  // 8: funding.v1.FundingSpread.long_leg:type_name -> funding.v1.FundingSpreadLeg
+	5,  // 9: funding.v1.FundingSpread.short_leg:type_name -> funding.v1.FundingSpreadLeg
+	13, // 10: funding.v1.FundingSpread.updated_at:type_name -> google.protobuf.Timestamp
+	6,  // 11: funding.v1.ListFundingSpreadsResponse.items:type_name -> funding.v1.FundingSpread
+	13, // 12: funding.v1.ListFundingSpreadsResponse.server_time:type_name -> google.protobuf.Timestamp
+	5,  // 13: funding.v1.FundingOpportunityRanking.long_leg:type_name -> funding.v1.FundingSpreadLeg
+	5,  // 14: funding.v1.FundingOpportunityRanking.short_leg:type_name -> funding.v1.FundingSpreadLeg
+	13, // 15: funding.v1.FundingOpportunityRanking.updated_at:type_name -> google.protobuf.Timestamp
+	9,  // 16: funding.v1.ListFundingOpportunitiesResponse.items:type_name -> funding.v1.FundingOpportunityRanking
+	13, // 17: funding.v1.ListFundingOpportunitiesResponse.server_time:type_name -> google.protobuf.Timestamp
+	13, // 18: funding.v1.ListFundingOpportunitiesResponse.calculated_at:type_name -> google.protobuf.Timestamp
+	2,  // 19: funding.v1.GetFundingHistoryResponse.items:type_name -> funding.v1.FundingHistoryPoint
+	0,  // 20: funding.v1.FundingService.ListFundingRates:input_type -> funding.v1.ListFundingRatesRequest
+	4,  // 21: funding.v1.FundingService.ListFundingSpreads:input_type -> funding.v1.ListFundingSpreadsRequest
+	8,  // 22: funding.v1.FundingService.ListFundingOpportunities:input_type -> funding.v1.ListFundingOpportunitiesRequest
+	11, // 23: funding.v1.FundingService.GetFundingHistory:input_type -> funding.v1.GetFundingHistoryRequest
+	3,  // 24: funding.v1.FundingService.ListFundingRates:output_type -> funding.v1.ListFundingRatesResponse
+	7,  // 25: funding.v1.FundingService.ListFundingSpreads:output_type -> funding.v1.ListFundingSpreadsResponse
+	10, // 26: funding.v1.FundingService.ListFundingOpportunities:output_type -> funding.v1.ListFundingOpportunitiesResponse
+	12, // 27: funding.v1.FundingService.GetFundingHistory:output_type -> funding.v1.GetFundingHistoryResponse
+	24, // [24:28] is the sub-list for method output_type
+	20, // [20:24] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_funding_v1_funding_proto_init() }
@@ -497,7 +1462,7 @@ func file_funding_v1_funding_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_funding_v1_funding_proto_rawDesc), len(file_funding_v1_funding_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

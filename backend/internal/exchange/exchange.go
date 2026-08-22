@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,6 +29,11 @@ type Instrument struct {
 	Metadata        json.RawMessage
 	SourceUpdatedAt time.Time
 }
+
+const (
+	ContractTypeSpot      = "spot"
+	ContractTypePerpetual = "perpetual"
+)
 
 type FundingRate struct {
 	Exchange                string
@@ -50,7 +57,7 @@ type FundingRate struct {
 
 type Adapter interface {
 	Name() string
-	SyncInstruments(context.Context) ([]Instrument, error)
+	SyncInstruments(context.Context, string) ([]Instrument, error)
 	FetchCurrent(context.Context, []Instrument) ([]FundingRate, error)
 	FetchHistory(context.Context, Instrument, time.Time, int) ([]FundingRate, error)
 }
@@ -58,10 +65,47 @@ type Adapter interface {
 type client struct {
 	baseURL string
 	http    *http.Client
+	limiter *requestLimiter
 }
 
 func newClient(baseURL string, timeout time.Duration) client {
-	return client{baseURL: strings.TrimRight(baseURL, "/"), http: &http.Client{Timeout: timeout}}
+	interval := 100 * time.Millisecond
+	if strings.Contains(baseURL, "hyperliquid") {
+		interval = 1200 * time.Millisecond
+	}
+	return client{
+		baseURL: strings.TrimRight(baseURL, "/"),
+		http:    &http.Client{Timeout: timeout},
+		limiter: &requestLimiter{interval: interval},
+	}
+}
+
+type requestLimiter struct {
+	mu       sync.Mutex
+	interval time.Duration
+	next     time.Time
+}
+
+func (l *requestLimiter) wait(ctx context.Context) error {
+	l.mu.Lock()
+	now := time.Now()
+	wait := l.next.Sub(now)
+	if wait < 0 {
+		wait = 0
+	}
+	l.next = now.Add(wait).Add(l.interval)
+	l.mu.Unlock()
+	if wait == 0 {
+		return nil
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (c client) get(ctx context.Context, path string, query url.Values, out any) error {
@@ -88,6 +132,10 @@ func (c client) post(ctx context.Context, path string, body string, out any) err
 func (c client) do(req *http.Request, out any) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
+		var retryAfter time.Duration
+		if err := c.limiter.wait(req.Context()); err != nil {
+			return err
+		}
 		attemptRequest := req.Clone(req.Context())
 		if attempt > 0 && req.GetBody != nil {
 			body, err := req.GetBody()
@@ -108,6 +156,7 @@ func (c client) do(req *http.Request, out any) error {
 			return nil
 		} else {
 			body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+			retryAfter = parseRetryAfter(res.Header.Get("Retry-After"))
 			res.Body.Close()
 			lastErr = fmt.Errorf(
 				"%s: HTTP %d: %s",
@@ -120,6 +169,9 @@ func (c client) do(req *http.Request, out any) error {
 		if attempt < 2 {
 			backoff := time.Duration(1<<attempt)*200*time.Millisecond +
 				time.Duration(time.Now().UnixNano()%int64(100*time.Millisecond))
+			if retryAfter > backoff {
+				backoff = retryAfter
+			}
 			timer := time.NewTimer(backoff)
 			select {
 			case <-req.Context().Done():
@@ -132,12 +184,48 @@ func (c client) do(req *http.Request, out any) error {
 	return lastErr
 }
 
+func parseRetryAfter(value string) time.Duration {
+	if seconds, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if deadline, err := http.ParseTime(value); err == nil {
+		if duration := time.Until(deadline); duration > 0 {
+			return duration
+		}
+	}
+	return 0
+}
+
+func waitAfterBatch(ctx context.Context, processed int) error {
+	if processed == 0 || processed%100 != 0 {
+		return nil
+	}
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func GlobalSymbol(base, quote string) string {
 	clean := func(value string) string {
 		r := strings.NewReplacer("-", "", "_", "", "/", "", ":", "")
 		return strings.ToUpper(r.Replace(value))
 	}
 	return clean(base) + clean(quote)
+}
+
+func instrumentMetadata(value any, model, sizeUnit string) json.RawMessage {
+	raw, _ := json.Marshal(value)
+	metadata := make(map[string]any)
+	_ = json.Unmarshal(raw, &metadata)
+	metadata["contractModel"] = model
+	metadata["positionSizeUnit"] = sizeUnit
+	result, _ := json.Marshal(metadata)
+	return result
 }
 
 func parseFloat(value string) (float64, error) {

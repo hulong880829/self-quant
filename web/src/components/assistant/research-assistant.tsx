@@ -1,13 +1,18 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import {
   Bot,
   BrainCircuit,
   ChevronRight,
+  LoaderCircle,
   MessageCircle,
   PanelRightClose,
   PanelRightOpen,
+  Pencil,
+  Plus,
+  RotateCcw,
   Send,
   ShieldAlert,
   Sparkles,
@@ -16,7 +21,8 @@ import {
   Wrench,
 } from "lucide-react";
 
-import { useFundingSnapshot } from "@/components/funding/funding-provider";
+import { useAssistant } from "@/components/assistant/assistant-provider";
+import { useAIStatus } from "@/components/assistant/ai-status-provider";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -25,29 +31,10 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import {
-  formatCurrency,
-  formatFundingRate,
-  formatPercent,
-} from "@/lib/market-format";
 import { cn } from "@/lib/utils";
-import type { FundingOpportunity } from "@/types/market";
 
-type MessageRole = "assistant" | "user";
-
-interface AssistantMessage {
-  id: string;
-  role: MessageRole;
-  content: string;
-  tool?: string;
-}
-
-const welcomeMessage: AssistantMessage = {
-  id: "welcome",
-  role: "assistant",
-  content:
-    "你好，我是 Nuts Quant 投研助手。我可以基于当前资金费快照，帮助你筛选机会、解释指标和梳理风险。",
-};
+const welcomeContent =
+  "你好，我是龙歪歪Quant投研助手。我可以基于当前资金费快照，帮助你筛选机会、解释指标和梳理风险。";
 
 const suggestedPrompts = [
   "当前最高资金费机会",
@@ -55,190 +42,196 @@ const suggestedPrompts = [
   "负费率有什么风险",
 ];
 
-function buildAnswer(
-  question: string,
-  fundingOpportunities: FundingOpportunity[],
-) {
-  const normalized = question.toLowerCase();
-  if (fundingOpportunities.length === 0) {
-    return {
-      tool: "当前无可用资金费快照",
-      content:
-        "资金费实时快照尚未加载成功，暂时无法给出基于市场数据的排名或币种分析。请稍后重试；在数据恢复前，我不会使用旧的模拟数据替代实时结果。",
-    };
-  }
-  const ranked = [...fundingOpportunities].sort(
-    (left, right) => right.annualizedRate - left.annualizedRate,
-  );
-  const best = ranked[0]!;
-  const btc = fundingOpportunities.find((item) => item.baseAsset === "BTC");
-  const negative = fundingOpportunities.filter(
-    (item) => item.nextFundingRate !== null && item.nextFundingRate < 0,
-  );
+function ConversationRail() {
+  const {
+    conversations,
+    currentConversationId,
+    currentConversation,
+    selectConversation,
+    renameConversation,
+    removeConversation,
+  } = useAssistant();
 
-  if (normalized.includes("btc") || normalized.includes("比特币")) {
-    if (!btc) {
-      return {
-        tool: "已读取当前资金费快照",
-        content:
-          "当前实时快照中没有 BTC 合约，因此无法生成 BTC 费率分析。你可以询问当前最高资金费机会，或等待下一次快照刷新。",
-      };
-    }
-    return {
-      tool: "已读取 BTC/USDT 资金费快照",
-      content: `${btc.symbol} 当前价格为 ${formatCurrency(btc.latestPrice)}，预计下次资金费率 ${formatFundingRate(btc.nextFundingRate)}，折算年化约 ${formatPercent(btc.annualizedRate, 1)}。\n\n单看费率收益并不足以构成交易依据，还需要扣除双边手续费、滑点并关注现货与永续基差。`,
-    };
-  }
-
-  if (
-    normalized.includes("负") ||
-    normalized.includes("风险") ||
-    normalized.includes("做多")
-  ) {
-    const symbols = negative.map((item) => item.symbol).join("、");
-    return {
-      tool: `已筛选 ${negative.length} 个负费率合约`,
-      content: `当前快照中的负费率合约包括 ${symbols || "暂无"}。负费率意味着空头向多头支付资金费，但不等于直接做多就能获利。\n\n主要风险包括价格单边下跌、费率在结算前反转、盘口深度不足，以及跨所对冲时出现单腿暴露。建议先检查成交深度和下一结算周期预测。`,
-    };
-  }
-
-  if (
-    normalized.includes("最高") ||
-    normalized.includes("机会") ||
-    normalized.includes("排名")
-  ) {
-    return {
-      tool: "已调用资金费机会排行",
-      content: `当前快照中，${best.exchange} 的 ${best.symbol} 年化资金费率最高，约为 ${formatPercent(best.annualizedRate, 1)}；预计下次费率为 ${formatFundingRate(best.nextFundingRate)}，持仓名义价值约 ${formatCurrency(best.positionNotional, true)}。\n\n高年化可能由短时拥挤造成。执行前应重点核对盘口深度、费率持续性和可用保证金。`,
-    };
-  }
-
-  return {
-    tool: "已读取当前资金费市场快照",
-    content:
-      "我已分析当前实时快照。你可以进一步指定交易所、币种或费率方向，例如“筛选 Hyperliquid 正费率机会”或“分析 BTC 资金费风险”。\n\n助手只读取市场快照，不读取账户，也不会提交任何交易。",
+  const renameCurrent = () => {
+    if (!currentConversation) return;
+    const title = window.prompt("输入新对话名称", currentConversation.title);
+    if (title?.trim()) void renameConversation(currentConversation.id, title);
   };
+
+  const deleteCurrent = () => {
+    if (!currentConversation) return;
+    if (window.confirm(`删除“${currentConversation.title || "新对话"}”？`)) {
+      void removeConversation(currentConversation.id);
+    }
+  };
+
+  return (
+    <aside
+      aria-label="AI 会话列表"
+      className="flex w-12 shrink-0 flex-col items-center gap-2 border-r bg-muted/15 py-3"
+    >
+      {conversations.slice(0, 5).map((conversation, index) => (
+        <button
+          type="button"
+          key={conversation.id}
+          title={`会话 ${index + 1}：${conversation.title || "新对话"}`}
+          aria-label={`切换到会话 ${index + 1}：${conversation.title || "新对话"}`}
+          aria-current={
+            conversation.id === currentConversationId ? "true" : undefined
+          }
+          onClick={() => void selectConversation(conversation.id)}
+          className={cn(
+            "flex size-8 shrink-0 items-center justify-center rounded-lg border text-xs font-medium transition-colors",
+            conversation.id === currentConversationId
+              ? "border-primary bg-primary text-primary-foreground"
+              : "bg-background text-muted-foreground hover:border-primary/40 hover:text-foreground",
+          )}
+        >
+          {index + 1}
+        </button>
+      ))}
+      {currentConversation && (
+        <div className="mt-auto flex flex-col gap-1 border-t pt-2">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="重命名当前对话"
+            title="重命名当前对话"
+            onClick={renameCurrent}
+          >
+            <Pencil className="size-3" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="删除当前对话"
+            title="删除当前对话"
+            onClick={deleteCurrent}
+          >
+            <Trash2 className="size-3 text-destructive" />
+          </Button>
+        </div>
+      )}
+    </aside>
+  );
 }
 
 function AssistantBody({
   onCollapse,
   showCollapse,
+  reserveCloseSpace,
 }: {
   onCollapse?: () => void;
   showCollapse?: boolean;
+  reserveCloseSpace?: boolean;
 }) {
-  const { snapshot, loading, error } = useFundingSnapshot();
-  const fundingOpportunities = snapshot?.data ?? [];
-  const [messages, setMessages] = React.useState<AssistantMessage[]>([
-    welcomeMessage,
-  ]);
-  const [input, setInput] = React.useState("");
-  const [streaming, setStreaming] = React.useState(false);
-  const streamTimer = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const { availability } = useAIStatus();
+  const {
+    messages,
+    draft,
+    setDraft,
+    loadingMessages,
+    loadingMore,
+    hasMoreMessages,
+    streaming,
+    error,
+    currentConversation,
+    loadingConversations,
+    startNewConversation,
+    loadMoreMessages,
+    sendMessage,
+    retryMessage,
+    stopStreaming,
+  } = useAssistant();
+  const assistantReady = availability === "valid";
   const messageEnd = React.useRef<HTMLDivElement>(null);
-  const messageCounter = React.useRef(0);
+  const messageScroll = React.useRef<HTMLDivElement>(null);
+  const preservingHistoryScroll = React.useRef(false);
+  const previousMessageCount = React.useRef(0);
 
-  const stopStreaming = React.useCallback(() => {
-    if (streamTimer.current) {
-      clearInterval(streamTimer.current);
-      streamTimer.current = null;
-    }
-    setStreaming(false);
-  }, []);
-
-  React.useEffect(() => stopStreaming, [stopStreaming]);
+  const statusText =
+    availability === "loading"
+      ? "Loading"
+      : assistantReady
+        ? "Ready"
+        : availability === "anonymous"
+          ? "Login"
+          : availability === "unconfigured"
+            ? "No Key"
+            : availability === "invalid"
+              ? "Invalid Key"
+              : "Unavailable";
 
   React.useEffect(() => {
-    messageEnd.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    if (
+      messages.length >= previousMessageCount.current &&
+      !preservingHistoryScroll.current
+    ) {
+      messageEnd.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+    previousMessageCount.current = messages.length;
   }, [messages]);
 
-  const ask = (rawQuestion: string) => {
-    const question = rawQuestion.trim();
-    if (!question || streaming) return;
-
-    const response = buildAnswer(question, fundingOpportunities);
-    messageCounter.current += 1;
-    const messageId = messageCounter.current;
-    const userMessage: AssistantMessage = {
-      id: `user-${messageId}`,
-      role: "user",
-      content: question,
-    };
-    const assistantId = `assistant-${messageId}`;
-
-    setInput("");
-    setStreaming(true);
-    setMessages((current) => [
-      ...current,
-      userMessage,
-      {
-        id: assistantId,
-        role: "assistant",
-        content: "",
-        tool: response.tool,
-      },
-    ]);
-
-    const chunks = Array.from(
-      { length: Math.ceil(response.content.length / 8) },
-      (_, index) => response.content.slice(index * 8, index * 8 + 8),
-    );
-    let chunkIndex = 0;
-    streamTimer.current = setInterval(() => {
-      const chunk = chunks[chunkIndex];
-      if (chunk === undefined) {
-        stopStreaming();
-        return;
+  const handleLoadMore = React.useCallback(async () => {
+    const element = messageScroll.current;
+    const previousHeight = element?.scrollHeight ?? 0;
+    const previousTop = element?.scrollTop ?? 0;
+    preservingHistoryScroll.current = true;
+    await loadMoreMessages();
+    requestAnimationFrame(() => {
+      if (element) {
+        element.scrollTop =
+          previousTop + Math.max(0, element.scrollHeight - previousHeight);
       }
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === assistantId
-            ? { ...message, content: message.content + chunk }
-            : message,
-        ),
-      );
-      chunkIndex += 1;
-    }, 45);
-  };
-
-  const clearConversation = () => {
-    stopStreaming();
-    setMessages([welcomeMessage]);
-  };
+      preservingHistoryScroll.current = false;
+    });
+  }, [loadMoreMessages]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-card">
-      <div className="flex h-16 shrink-0 items-center justify-between border-b px-4">
-        <div className="flex min-w-0 items-center gap-2.5">
+      <div className="flex h-16 shrink-0 items-center justify-between border-b px-3">
+        <div className="flex min-w-0 items-center gap-2">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary">
             <BrainCircuit className="size-4" />
           </span>
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="truncate text-sm font-semibold">AI 投研助手</span>
-              <span className="flex items-center gap-1 text-[10px] text-positive">
+            <div className="flex items-center gap-1">
+              <span className="max-w-[100px] truncate text-sm font-medium sm:max-w-[140px]">
+                {currentConversation?.title || "新对话"}
+              </span>
+              {loadingConversations && (
+                <LoaderCircle className="size-3 animate-spin text-muted-foreground" />
+              )}
+              <span className="flex shrink-0 items-center gap-1 text-[10px] text-positive">
                 <span
                   className={cn(
                     "size-1.5 rounded-full",
-                    error ? "bg-amber-500" : "bg-emerald-500",
+                    assistantReady ? "bg-emerald-500" : "bg-amber-500",
                   )}
                 />
-                {loading ? "Loading" : error ? "Stale" : "Ready"}
+                {statusText}
               </span>
             </div>
-            <div className="mt-0.5 text-[10px] text-muted-foreground">
-              实时快照 · 只读模式
+            <div className="ml-2 text-[10px] text-muted-foreground">
+              实时快照 · 对话自动保存
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-1">
+        <div
+          className={cn(
+            "flex items-center gap-1",
+            reserveCloseSpace && "mr-9",
+          )}
+        >
           <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="清空对话"
-            onClick={clearConversation}
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1 px-2 text-xs"
+            aria-label="新建对话"
+            onClick={startNewConversation}
           >
-            <Trash2 className="size-3.5" />
+            <Plus className="size-3.5" />
+            新建
           </Button>
           {showCollapse && (
             <Button
@@ -253,60 +246,83 @@ function AssistantBody({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        <div className="space-y-4">
-          {messages.map((message, index) => {
-            const isLast = index === messages.length - 1;
-            return (
-              <div
+      <div className="flex min-h-0 flex-1">
+        <ConversationRail />
+        <div ref={messageScroll} className="min-w-0 flex-1 overflow-y-auto p-3">
+        {hasMoreMessages && (
+          <div className="mb-3 flex justify-center">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={loadingMore}
+              onClick={() => void handleLoadMore()}
+              className="h-7 text-[10px]"
+            >
+              {loadingMore && <LoaderCircle className="size-3 animate-spin" />}
+              加载更早消息
+            </Button>
+          </div>
+        )}
+        {loadingMessages ? (
+          <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+            <LoaderCircle className="mr-2 size-4 animate-spin" />
+            加载对话…
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {messages.length === 0 && (
+              <MessageBubble role="assistant" content={welcomeContent} />
+            )}
+            {messages.map((message, index) => (
+              <MessageBubble
                 key={message.id}
-                className={cn(
-                  "flex gap-2",
-                  message.role === "user" && "justify-end",
-                )}
-              >
-                {message.role === "assistant" && (
-                  <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                    <Bot className="size-3.5" />
-                  </span>
-                )}
-                <div
-                  className={cn(
-                    "max-w-[88%]",
-                    message.role === "user" && "order-first",
-                  )}
-                >
-                  {message.tool && (
-                    <div className="mb-1.5 inline-flex items-center gap-1 rounded border bg-muted/60 px-2 py-1 text-[9px] text-muted-foreground">
-                      <Wrench className="size-2.5" />
-                      {message.tool}
-                    </div>
-                  )}
-                  <div
-                    className={cn(
-                      "whitespace-pre-wrap rounded-xl px-3 py-2.5 text-xs leading-5",
-                      message.role === "assistant"
-                        ? "rounded-tl-sm border bg-background"
-                        : "rounded-tr-sm bg-primary text-primary-foreground",
-                    )}
-                  >
-                    {message.content}
-                    {streaming &&
-                      isLast &&
-                      message.role === "assistant" && (
-                        <span className="ml-0.5 inline-block h-3 w-0.5 animate-pulse bg-primary align-middle" />
-                      )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-          <div ref={messageEnd} />
+                role={message.role}
+                content={message.content}
+                tool={message.tool}
+                streaming={
+                  streaming &&
+                  index === messages.length - 1 &&
+                  message.role === "assistant"
+                }
+                onRetry={
+                  message.role === "assistant" &&
+                  (message.status === "failed" || message.status === "stopped") &&
+                  message.clientMessageId
+                    ? () => void retryMessage(message.clientMessageId)
+                    : undefined
+                }
+              />
+            ))}
+            <div ref={messageEnd} />
+          </div>
+        )}
         </div>
       </div>
 
       <div className="shrink-0 border-t p-3">
-        {messages.length === 1 && (
+        {error && (
+          <div className="mb-2 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-[10px] text-destructive">
+            {error}
+          </div>
+        )}
+        {!assistantReady && (
+          <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-5">
+            <div className="font-medium">
+              {availability === "anonymous"
+                ? "登录并绑定 AI Key 后可使用投研助手"
+                : availability === "invalid"
+                  ? "当前 AI Key 不可用"
+                  : "请先配置可用的 AI Key"}
+            </div>
+            <Link
+              href="/ai-settings"
+              className="mt-2 inline-flex font-medium text-primary hover:underline"
+            >
+              前往 AI 设置
+            </Link>
+          </div>
+        )}
+        {messages.length === 0 && assistantReady && !loadingMessages && (
           <div className="mb-3 space-y-1.5">
             <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
               <Sparkles className="size-3" />
@@ -316,8 +332,9 @@ function AssistantBody({
               <button
                 type="button"
                 key={prompt}
-                onClick={() => ask(prompt)}
-                className="flex w-full items-center justify-between rounded-md border bg-background px-2.5 py-2 text-left text-[11px] transition-colors hover:border-primary/35 hover:bg-primary/5"
+                onClick={() => void sendMessage(prompt)}
+                disabled={streaming}
+                className="flex w-full items-center justify-between rounded-md border bg-background px-2.5 py-2 text-left text-[11px] transition-colors hover:border-primary/35 hover:bg-primary/5 disabled:pointer-events-none disabled:opacity-50"
               >
                 {prompt}
                 <ChevronRight className="size-3 text-muted-foreground" />
@@ -328,15 +345,16 @@ function AssistantBody({
 
         <div className="relative rounded-lg border bg-background focus-within:border-primary/45 focus-within:ring-2 focus-within:ring-primary/10">
           <textarea
-            value={input}
+            value={draft}
             rows={2}
-            disabled={streaming}
+            maxLength={4000}
+            disabled={streaming || !assistantReady}
             placeholder="询问资金费、市场机会或风险..."
-            onChange={(event) => setInput(event.target.value)}
+            onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                ask(input);
+                void sendMessage(draft);
               }
             }}
             className="block w-full resize-none bg-transparent px-3 py-2.5 pr-11 text-xs leading-5 outline-none placeholder:text-muted-foreground disabled:opacity-60"
@@ -345,8 +363,10 @@ function AssistantBody({
             size="icon-sm"
             className="absolute right-2 bottom-2"
             aria-label={streaming ? "停止生成" : "发送消息"}
-            onClick={() => (streaming ? stopStreaming() : ask(input))}
-            disabled={!streaming && !input.trim()}
+            onClick={() =>
+              streaming ? stopStreaming() : void sendMessage(draft)
+            }
+            disabled={!streaming && (!draft.trim() || !assistantReady)}
           >
             {streaming ? (
               <Square className="size-3 fill-current" />
@@ -364,6 +384,61 @@ function AssistantBody({
   );
 }
 
+function MessageBubble({
+  role,
+  content,
+  tool,
+  streaming,
+  onRetry,
+}: {
+  role: "user" | "assistant";
+  content: string;
+  tool?: string;
+  streaming?: boolean;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className={cn("flex gap-2", role === "user" && "justify-end")}>
+      {role === "assistant" && (
+        <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+          <Bot className="size-3.5" />
+        </span>
+      )}
+      <div className={cn("max-w-[88%]", role === "user" && "order-first")}>
+        {tool && (
+          <div className="mb-1.5 inline-flex items-center gap-1 rounded border bg-muted/60 px-2 py-1 text-[9px] text-muted-foreground">
+            <Wrench className="size-2.5" />
+            {tool === "funding" ? "已读取资金费快照" : tool}
+          </div>
+        )}
+        <div
+          className={cn(
+            "whitespace-pre-wrap rounded-xl px-3 py-2.5 text-xs leading-5",
+            role === "assistant"
+              ? "rounded-tl-sm border bg-background"
+              : "rounded-tr-sm bg-primary text-primary-foreground",
+          )}
+        >
+          {content}
+          {streaming && (
+            <span className="ml-0.5 inline-block h-3 w-0.5 animate-pulse bg-primary align-middle" />
+          )}
+        </div>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="mt-1 inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+          >
+            <RotateCcw className="size-2.5" />
+            重试
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ResearchAssistant({
   desktopOpen,
   onDesktopOpenChange,
@@ -376,14 +451,14 @@ export function ResearchAssistant({
   return (
     <>
       {desktopOpen ? (
-        <aside className="fixed top-16 right-0 bottom-0 z-30 hidden w-[350px] border-l shadow-[-10px_0_30px_-24px_rgba(0,0,0,0.5)] 2xl:block">
+        <aside className="fixed top-16 right-0 bottom-0 z-30 hidden w-[350px] border-l shadow-[-10px_0_30px_-24px_rgba(0,0,0,0.5)] assistant-dock:block">
           <AssistantBody
             showCollapse
             onCollapse={() => onDesktopOpenChange(false)}
           />
         </aside>
       ) : (
-        <aside className="fixed top-16 right-0 bottom-0 z-30 hidden w-14 border-l bg-card 2xl:flex 2xl:flex-col 2xl:items-center">
+        <aside className="fixed top-16 right-0 bottom-0 z-30 hidden w-14 border-l bg-card assistant-dock:flex assistant-dock:flex-col assistant-dock:items-center">
           <Button
             variant="ghost"
             size="icon"
@@ -404,7 +479,7 @@ export function ResearchAssistant({
 
       <Button
         size="lg"
-        className="fixed right-4 bottom-4 z-40 gap-2 rounded-full shadow-lg 2xl:hidden"
+        className="fixed z-40 gap-2 rounded-full shadow-lg assistant-dock:hidden right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))]"
         onClick={() => setMobileOpen(true)}
       >
         <MessageCircle className="size-4" />
@@ -412,12 +487,15 @@ export function ResearchAssistant({
       </Button>
 
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-        <SheetContent className="w-full gap-0 p-0 sm:max-w-[420px] 2xl:hidden">
+        <SheetContent
+          className="w-full gap-0 p-0 sm:max-w-[420px] assistant-dock:hidden"
+          overlayClassName="supports-backdrop-filter:backdrop-blur-none"
+        >
           <SheetHeader className="sr-only">
             <SheetTitle>AI 投研助手</SheetTitle>
-            <SheetDescription>静态可交互的量化投研助手</SheetDescription>
+            <SheetDescription>基于实时资金费快照的流式量化投研助手</SheetDescription>
           </SheetHeader>
-          <AssistantBody />
+          <AssistantBody reserveCloseSpace />
         </SheetContent>
       </Sheet>
     </>

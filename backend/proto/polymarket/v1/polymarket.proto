@@ -1,0 +1,235 @@
+syntax = "proto3";
+
+package polymarket.v1;
+
+option go_package = "selfquant/backend/gen/polymarket/v1;polymarketv1";
+
+import "google/protobuf/timestamp.proto";
+
+service PolymarketService {
+  rpc ListMarkets(ListMarketsRequest) returns (ListMarketsResponse);
+  rpc GetMarketSnapshot(GetMarketSnapshotRequest) returns (GetMarketSnapshotResponse);
+  rpc StreamMarketSnapshots(StreamMarketSnapshotsRequest) returns (stream StreamMarketSnapshotsResponse);
+  rpc GetAccountSummary(GetAccountSummaryRequest) returns (GetAccountSummaryResponse);
+  rpc ListPositions(ListPositionsRequest) returns (ListPositionsResponse);
+  rpc ListOpenOrders(ListOpenOrdersRequest) returns (ListOpenOrdersResponse);
+  rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+  rpc StreamAccountEvents(StreamAccountEventsRequest) returns (stream AccountEvent);
+}
+
+message Market {
+  string id = 1;
+  string condition_id = 2;
+  string slug = 3;
+  string asset = 4;
+  string period = 5;
+  string title = 6;
+  google.protobuf.Timestamp window_start = 7;
+  google.protobuf.Timestamp window_end = 8;
+  string up_token_id = 9;
+  string down_token_id = 10;
+  string tick_size = 11;
+  bool negative_risk = 12;
+  bool active = 13;
+}
+
+message PricePoint {
+  google.protobuf.Timestamp timestamp = 1;
+  string open_price = 2;
+  string chainlink_price = 3;
+}
+
+message MarketSnapshot {
+  Market market = 1;
+  string open_price = 2;
+  string chainlink_price = 3;
+  string up_bid = 4;
+  string up_ask = 5;
+  string down_bid = 6;
+  string down_ask = 7;
+  repeated PricePoint price_series = 8;
+  google.protobuf.Timestamp source_updated_at = 9;
+  bool stale = 10;
+  string version = 11;
+}
+
+message ListMarketsRequest {
+  string asset = 1;
+  string period = 2;
+  bool active_only = 3;
+}
+
+message ListMarketsResponse {
+  repeated Market items = 1;
+  google.protobuf.Timestamp server_time = 2;
+  string snapshot_version = 3;
+}
+
+message GetMarketSnapshotRequest {
+  string market_id = 1;
+}
+
+message GetMarketSnapshotResponse {
+  MarketSnapshot snapshot = 1;
+  google.protobuf.Timestamp server_time = 2;
+}
+
+message StreamMarketSnapshotsRequest {
+  string market_id = 1;
+}
+
+message StreamMarketSnapshotsResponse {
+  MarketSnapshot snapshot = 1;
+  google.protobuf.Timestamp server_time = 2;
+}
+
+message AccountSummary {
+  int64 trading_account_id = 1;
+  string account_name = 2;
+  string wallet_address = 3;
+  string available_balance = 4;
+  string position_value = 5;
+  string total_assets = 6;
+  google.protobuf.Timestamp source_updated_at = 7;
+  bool stale = 8;
+}
+
+message GetAccountSummaryRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+}
+
+message GetAccountSummaryResponse {
+  AccountSummary summary = 1;
+}
+
+message Position {
+  string id = 1;
+  int64 trading_account_id = 2;
+  string condition_id = 3;
+  string token_id = 4;
+  string market = 5;
+  string outcome = 6;
+  string size = 7;
+  string average_price = 8;
+  string current_price = 9;
+  string initial_value = 10;
+  string current_value = 11;
+  string cash_pnl = 12;
+  string percent_pnl = 13;
+  bool redeemable = 14;
+  google.protobuf.Timestamp source_updated_at = 15;
+}
+
+message ListPositionsRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+}
+
+message ListPositionsResponse {
+  repeated Position items = 1;
+  google.protobuf.Timestamp server_time = 2;
+  bool stale = 3;
+}
+
+message OpenOrder {
+  string id = 1;
+  string condition_id = 2;
+  string token_id = 3;
+  string market_title = 4;
+  string outcome = 5;
+  string side = 6;
+  string price = 7;
+  string original_size = 8;
+  string matched_size = 9;
+  string remaining_size = 10;
+  string status = 11;
+  string order_type = 12;
+  google.protobuf.Timestamp created_at = 13;
+}
+
+message ListOpenOrdersRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+}
+
+message ListOpenOrdersResponse {
+  repeated OpenOrder items = 1;
+  google.protobuf.Timestamp server_time = 2;
+  bool stale = 3;
+}
+
+message PlaceOrderRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+  string market_id = 3;
+  string outcome = 4;
+  string side = 5;
+  string amount = 6;
+  string amount_unit = 7;
+  string idempotency_key = 8;
+  string execution_type = 9;
+  string limit_price = 10;
+}
+
+message Order {
+  string id = 1;
+  string clob_order_id = 2;
+  int64 trading_account_id = 3;
+  string market_id = 4;
+  string token_id = 5;
+  string outcome = 6;
+  string side = 7;
+  string requested_amount = 8;
+  string amount_unit = 9;
+  string filled_size = 10;
+  string average_price = 11;
+  string status = 12;
+  string error_code = 13;
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp updated_at = 15;
+  string execution_type = 16;
+  string limit_price = 17;
+  string clob_order_type = 18;
+  string error_message = 19;
+}
+
+message PlaceOrderResponse {
+  Order order = 1;
+}
+
+message CancelOrderRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+  string order_id = 3;
+}
+
+message CancelOrderResponse {
+  string order_id = 1;
+  string status = 2;
+  string message = 3;
+}
+
+message GetOrderRequest {
+  string token = 1;
+  string order_id = 2;
+}
+
+message GetOrderResponse {
+  Order order = 1;
+}
+
+message StreamAccountEventsRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+}
+
+message AccountEvent {
+  string type = 1;
+  OpenOrder order = 2;
+  repeated OpenOrder open_orders = 3;
+  bool portfolio_changed = 4;
+  google.protobuf.Timestamp server_time = 5;
+}

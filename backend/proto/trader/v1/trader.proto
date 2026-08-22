@@ -1,0 +1,337 @@
+syntax = "proto3";
+
+package trader.v1;
+
+option go_package = "selfquant/backend/gen/trader/v1;traderv1";
+
+import "google/protobuf/timestamp.proto";
+
+service TraderService {
+  rpc ListInstruments(ListInstrumentsRequest) returns (ListInstrumentsResponse);
+  rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse);
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+  rpc CreateTwap(CreateTwapRequest) returns (CreateTwapResponse);
+  rpc GetTwap(GetTwapRequest) returns (GetTwapResponse);
+  rpc ListTwaps(ListTwapsRequest) returns (ListTwapsResponse);
+  rpc ListTwapOrders(ListTwapOrdersRequest) returns (ListTwapOrdersResponse);
+  rpc CancelTwap(CancelTwapRequest) returns (CancelTwapResponse);
+  rpc CreateArbitrageCombination(CreateArbitrageCombinationRequest) returns (CreateArbitrageCombinationResponse);
+  rpc GetArbitrageCombination(GetArbitrageCombinationRequest) returns (GetArbitrageCombinationResponse);
+  rpc ListArbitrageCombinations(ListArbitrageCombinationsRequest) returns (ListArbitrageCombinationsResponse);
+  rpc CloseArbitrageCombination(CloseArbitrageCombinationRequest) returns (CloseArbitrageCombinationResponse);
+}
+
+message Instrument {
+  int64 id = 1;
+  string exchange = 2;
+  string contract_type = 3;
+  string exchange_symbol = 4;
+  string base_asset = 5;
+  string quote_asset = 6;
+  string settle_asset = 7;
+  string contract_size = 8;
+  string price_tick = 9;
+  string quantity_step = 10;
+}
+
+message Order {
+  string id = 1;
+  string idempotency_key = 2;
+  int64 trading_account_id = 3;
+  string product_name = 4;
+  string exchange = 5;
+  int64 instrument_id = 6;
+  string contract_type = 7;
+  string exchange_symbol = 8;
+  string client_order_id = 9;
+  string venue_order_id = 10;
+  string side = 11;
+  string order_type = 12;
+  string quantity = 13;
+  string price = 14;
+  string filled_quantity = 15;
+  string average_price = 16;
+  string status = 17;
+  string error_code = 18;
+  string error_message = 19;
+  google.protobuf.Timestamp created_at = 20;
+  google.protobuf.Timestamp updated_at = 21;
+  google.protobuf.Timestamp last_reconciled_at = 22;
+  string sync_state = 23;
+  string base_asset = 24;
+  string quote_asset = 25;
+  string twap_job_id = 26;
+  int32 twap_slice_index = 27;
+  int32 twap_attempt_index = 28;
+  string arbitrage_execution_id = 29;
+  string arbitrage_leg = 30;
+  string arbitrage_role = 31;
+}
+
+message TwapJob {
+  string id = 1;
+  string idempotency_key = 2;
+  int64 trading_account_id = 3;
+  string product_name = 4;
+  string exchange = 5;
+  int64 instrument_id = 6;
+  string contract_type = 7;
+  string exchange_symbol = 8;
+  string base_asset = 9;
+  string quote_asset = 10;
+  string side = 11;
+  string total_quantity = 12;
+  string filled_quantity = 13;
+  string average_price = 14;
+  google.protobuf.Timestamp start_at = 15;
+  google.protobuf.Timestamp end_at = 16;
+  int32 interval_seconds = 17;
+  string limit_price = 18;
+  string max_quantity = 19;
+  string execution_type = 20;
+  int32 order_timeout_seconds = 21;
+  string status = 22;
+  int32 current_slice = 23;
+  google.protobuf.Timestamp next_action_at = 24;
+  string active_order_id = 25;
+  string error_message = 26;
+  google.protobuf.Timestamp created_at = 27;
+  google.protobuf.Timestamp updated_at = 28;
+  google.protobuf.Timestamp started_at = 29;
+  google.protobuf.Timestamp closed_at = 30;
+  string progress = 31;
+  int32 current_attempt = 32;
+}
+
+message ListInstrumentsRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+  string contract_type = 3;
+}
+
+message ListInstrumentsResponse {
+  repeated Instrument items = 1;
+  google.protobuf.Timestamp server_time = 2;
+}
+
+message PlaceOrderRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+  int64 instrument_id = 3;
+  string side = 4;
+  string order_type = 5;
+  string quantity = 6;
+  string price = 7;
+  string idempotency_key = 8;
+}
+
+message PlaceOrderResponse {
+  Order order = 1;
+}
+
+message GetOrderRequest {
+  string token = 1;
+  string order_id = 2;
+}
+
+message GetOrderResponse {
+  Order order = 1;
+}
+
+message ListOrdersRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+  int32 limit = 3;
+  string view = 4;
+  string cursor = 5;
+}
+
+message ListOrdersResponse {
+  repeated Order items = 1;
+  google.protobuf.Timestamp server_time = 2;
+  string next_cursor = 3;
+}
+
+message CancelOrderRequest {
+  string token = 1;
+  string order_id = 2;
+}
+
+message CancelOrderResponse {
+  Order order = 1;
+}
+
+message CreateTwapRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+  int64 instrument_id = 3;
+  string side = 4;
+  string total_quantity = 5;
+  google.protobuf.Timestamp start_at = 6;
+  google.protobuf.Timestamp end_at = 7;
+  int32 interval_seconds = 8;
+  string limit_price = 9;
+  string max_quantity = 10;
+  string execution_type = 11;
+  int32 order_timeout_seconds = 12;
+  string idempotency_key = 13;
+}
+
+message CreateTwapResponse {
+  TwapJob job = 1;
+}
+
+message GetTwapRequest {
+  string token = 1;
+  string twap_id = 2;
+}
+
+message GetTwapResponse {
+  TwapJob job = 1;
+}
+
+message ListTwapsRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+  string view = 3;
+  string status = 4;
+  int32 limit = 5;
+  string cursor = 6;
+}
+
+message ListTwapsResponse {
+  repeated TwapJob items = 1;
+  google.protobuf.Timestamp server_time = 2;
+  string next_cursor = 3;
+}
+
+message ListTwapOrdersRequest {
+  string token = 1;
+  string twap_id = 2;
+}
+
+message ListTwapOrdersResponse {
+  repeated Order items = 1;
+  google.protobuf.Timestamp server_time = 2;
+}
+
+message CancelTwapRequest {
+  string token = 1;
+  string twap_id = 2;
+}
+
+message CancelTwapResponse {
+  TwapJob job = 1;
+}
+
+message ArbitrageLeg {
+  int64 trading_account_id = 1;
+  int64 instrument_id = 2;
+  string product_name = 3;
+  string account_name = 4;
+  string exchange = 5;
+  string contract_type = 6;
+  string exchange_symbol = 7;
+  string base_asset = 8;
+  string quote_asset = 9;
+}
+
+message ArbitrageCombination {
+  string id = 1;
+  string idempotency_key = 2;
+  ArbitrageLeg leg_a = 3;
+  ArbitrageLeg leg_b = 4;
+  string ask_threshold_bps = 5;
+  string bid_threshold_bps = 6;
+  string target_notional = 7;
+  string order_notional = 8;
+  string max_delta_notional = 9;
+  string execution_mode = 10;
+  string maker_leg = 11;
+  string status = 12;
+  string completed_notional = 13;
+  string current_ask_spread_bps = 14;
+  string current_bid_spread_bps = 15;
+  bool market_data_stale = 16;
+  string error_message = 17;
+  google.protobuf.Timestamp created_at = 18;
+  google.protobuf.Timestamp updated_at = 19;
+  google.protobuf.Timestamp closed_at = 20;
+}
+
+message CreateArbitrageCombinationRequest {
+  string token = 1;
+  int64 leg_a_trading_account_id = 2;
+  int64 leg_a_instrument_id = 3;
+  int64 leg_b_trading_account_id = 4;
+  int64 leg_b_instrument_id = 5;
+  string ask_threshold_bps = 6;
+  string bid_threshold_bps = 7;
+  string target_notional = 8;
+  string order_notional = 9;
+  string max_delta_notional = 10;
+  string execution_mode = 11;
+  string maker_leg = 12;
+  string idempotency_key = 13;
+}
+
+message CreateArbitrageCombinationResponse {
+  ArbitrageCombination combination = 1;
+}
+
+message GetArbitrageCombinationRequest {
+  string token = 1;
+  string combination_id = 2;
+}
+
+message GetArbitrageCombinationResponse {
+  ArbitrageCombination combination = 1;
+  repeated Order orders = 2;
+  repeated ArbitrageExecution recent_executions = 3;
+  repeated ArbitrageEvent recent_events = 4;
+}
+
+message ArbitrageExecution {
+  string id = 1;
+  string direction = 2;
+  string status = 3;
+  string trigger_spread_bps = 4;
+  string target_base_quantity = 5;
+  string filled_base_quantity = 6;
+  string delta_notional = 7;
+  string error_message = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+message ArbitrageEvent {
+  string id = 1;
+  string type = 2;
+  string message = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message ListArbitrageCombinationsRequest {
+  string token = 1;
+  string view = 2;
+  int32 limit = 3;
+  string cursor = 4;
+}
+
+message ListArbitrageCombinationsResponse {
+  repeated ArbitrageCombination items = 1;
+  google.protobuf.Timestamp server_time = 2;
+  string next_cursor = 3;
+  int64 total = 4;
+}
+
+message CloseArbitrageCombinationRequest {
+  string token = 1;
+  string combination_id = 2;
+}
+
+message CloseArbitrageCombinationResponse {
+  ArbitrageCombination combination = 1;
+}

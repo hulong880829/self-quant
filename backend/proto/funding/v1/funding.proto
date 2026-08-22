@@ -8,6 +8,9 @@ import "google/protobuf/timestamp.proto";
 
 service FundingService {
   rpc ListFundingRates(ListFundingRatesRequest) returns (ListFundingRatesResponse);
+  rpc ListFundingSpreads(ListFundingSpreadsRequest) returns (ListFundingSpreadsResponse);
+  rpc ListFundingOpportunities(ListFundingOpportunitiesRequest) returns (ListFundingOpportunitiesResponse);
+  rpc GetFundingHistory(GetFundingHistoryRequest) returns (GetFundingHistoryResponse);
 }
 
 message ListFundingRatesRequest {}
@@ -48,4 +51,95 @@ message ListFundingRatesResponse {
   int32 total = 2;
   string snapshot_version = 3;
   google.protobuf.Timestamp server_time = 4;
+}
+
+message ListFundingSpreadsRequest {}
+
+message FundingSpreadLeg {
+  string exchange = 1;
+  string exchange_symbol = 2;
+  string effective_funding_rate = 3;
+  int32 funding_interval_seconds = 4;
+  google.protobuf.Timestamp next_funding_at = 5;
+  string position_notional_usd = 6;
+  string turnover_24h_usd = 7;
+  google.protobuf.Timestamp source_updated_at = 8;
+  string last_price = 9;
+  bool stale = 10;
+}
+
+message FundingSpread {
+  string global_symbol = 1;
+  FundingSpreadLeg long_leg = 2;
+  FundingSpreadLeg short_leg = 3;
+  string single_spread_annualized = 4;
+  string spread_24h_annualized = 5;
+  string spread_7d_annualized = 6;
+  string min_position_notional_usd = 7;
+  string min_turnover_24h_usd = 8;
+  google.protobuf.Timestamp updated_at = 9;
+  bool stale = 10;
+  string base_asset = 11;
+  string quote_asset = 12;
+}
+
+message ListFundingSpreadsResponse {
+  repeated FundingSpread items = 1;
+  int32 total = 2;
+  string snapshot_version = 3;
+  google.protobuf.Timestamp server_time = 4;
+}
+
+message ListFundingOpportunitiesRequest {
+  string period = 1;
+  string min_leg_notional_usd = 2;
+  string min_leg_volume_24h_usd = 3;
+  int32 limit = 4;
+}
+
+message FundingOpportunityRanking {
+  int32 rank = 1;
+  string global_symbol = 2;
+  string base_asset = 3;
+  string quote_asset = 4;
+  string period = 5;
+  FundingSpreadLeg long_leg = 6;
+  FundingSpreadLeg short_leg = 7;
+  string current_mid_spread_bps = 8;
+  string current_executable_spread_bps = 9;
+  string target_spread_bps = 10;
+  string period_expected_return = 11;
+  string funding_expected_annualized = 12;
+  string spread_expected_annualized = 13;
+  string combined_expected_annualized = 14;
+  string first_passage_probability = 15;
+  string profit_probability = 16;
+  string expected_exit_minutes = 17;
+  string p5_return = 18;
+  string min_position_notional_usd = 19;
+  string min_turnover_24h_usd = 20;
+  string coverage = 21;
+  string confidence = 22;
+  string model_state = 23;
+  google.protobuf.Timestamp updated_at = 24;
+  bool stale = 25;
+}
+
+message ListFundingOpportunitiesResponse {
+  repeated FundingOpportunityRanking items = 1;
+  int32 total = 2;
+  string snapshot_version = 3;
+  google.protobuf.Timestamp server_time = 4;
+  google.protobuf.Timestamp calculated_at = 5;
+  bool stale = 6;
+}
+
+message GetFundingHistoryRequest {
+  string exchange = 1;
+  string exchange_symbol = 2;
+  int32 limit = 3;
+}
+
+message GetFundingHistoryResponse {
+  repeated FundingHistoryPoint items = 1;
 }

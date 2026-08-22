@@ -1,0 +1,48 @@
+# Gate 独立生产者示例。ticker 语义为 book_ticker BBO。
+shared_memory:
+  prefix: /selfquant.mds
+  backend: POSIX_SHM
+  mode: OVERWRITE_OLDEST
+  hugetlbfs_mount: /dev/hugepages
+  ring_bytes: 8388608
+  max_record_bytes: 65536
+  max_readers: 32
+  reader_lease_timeout_ns: 5000000000
+  allow_hugepage_fallback: false
+  unlink_on_shutdown: false
+
+order_book:
+  default_ladder_ticks_per_side: 8192
+  max_ladder_ticks_per_side: 16384
+  default_price_band_bps: 10
+
+venues:
+  - venue: gate
+    product: SPOT
+    websocket_endpoint: wss://api.gateio.ws/ws/v4/
+    rest_endpoint: https://api.gateio.ws
+    protocol: JSON
+    redundant_ab: false
+
+  - venue: gate
+    product: PERPETUAL                   # USDT Linear Perpetual
+    websocket_endpoint: wss://fx-ws.gateio.ws/v4/ws/usdt
+    rest_endpoint: https://api.gateio.ws
+    protocol: JSON
+    redundant_ab: false
+
+subscriptions:
+  - venue: gate
+    stream: ticker                       # spot.book_ticker，约 10ms
+    symbol: BTCUSDT
+    product: SPOT
+
+  - venue: gate
+    stream: orderbook                    # spot.order_book_update
+    symbol: BTCUSDT
+    product: SPOT
+    ladder_ticks_per_side: 8192
+    update_interval_ms: 20               # 最快 20ms；也可显式设为 100
+
+# 如需永续，将两个 subscription 的 product 改为 PERPETUAL。
+# Gate 是除 Binance 外允许配置 update_interval_ms 的交易所。

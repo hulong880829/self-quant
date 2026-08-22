@@ -1,0 +1,44 @@
+# Aggregate streams may be configured independently. Remove either entry when
+# only aggregate BBO or aggregate order book is needed.
+segments:
+  - /selfquant.mds.agg_perp_usdt_binance-bitget-bybit-gate-hyperliquid-okx.btcusdt.aggbbo.2
+  - /selfquant.mds.agg_perp_usdt_binance-bitget-bybit-gate-hyperliquid-okx.btcusdt.aggorderbook.2
+  # Multiplex input can be resolved from identity and expanded across shards.
+  # selector accepts exactly one of symbol, product, venue, or all. `all` is
+  # intended for diagnostics; services should use an explicit selector.
+  # - multiplex:
+  #     prefix: /selfquant.mds
+  #     venue: binance
+  #     product: PERPETUAL
+  #     stream: orderbook
+  #     shard_count: 4
+  #   selector:
+  #     symbol: BTCUSDT
+
+gateway:
+  listen_address: 127.0.0.1
+  port: 9443
+  # 明文 WebSocket 仍强制 Bearer Token；这里只保存环境变量名。
+  auth_token_env: MDS_GATEWAY_TOKEN
+  max_clients: 128
+  max_subscriptions_per_client: 32
+  send_queue_slots: 1
+  # 实时发布允许 10ms 及以上，与下面的录制采样周期相互独立。
+  publish_interval_ms: 50
+  ping_interval_ms: 15000
+  pong_timeout_ms: 5000
+  slow_client_timeout_ms: 5000
+  depth: 50
+  reuse_port: false
+
+recording:
+  output_directory: /tmp/selfquant-recordings
+  sample_interval_ms: 200
+  retention: 24h
+  depth: 50
+  # The first format uses fixed UTC hourly shards.
+  shard_hours: 1
+  zstd_level: 1
+  writer_queue_slots: 1024
+  topic_slots: 64
+  min_free_disk_bytes: 0

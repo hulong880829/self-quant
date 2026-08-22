@@ -6,14 +6,53 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
-	"sync"
 	"time"
 )
 
-type Binance struct{ client client }
+type Binance struct {
+	client        client
+	coinClient    client
+	spotClient    client
+	historyClient client
+}
 
 func NewBinance(timeout time.Duration) *Binance {
-	return &Binance{client: newClient("https://fapi.binance.com", timeout)}
+	historyClient := newClient("https://fapi.binance.com", timeout)
+	historyClient.limiter.interval = 650 * time.Millisecond
+	return &Binance{
+		client:        newClient("https://fapi.binance.com", timeout),
+		coinClient:    newClient("https://dapi.binance.com", timeout),
+		spotClient:    newClient("https://api.binance.com", timeout),
+		historyClient: historyClient,
+	}
+}
+
+func parseBinanceSpotInstruments(payload binanceExchangeInfo) []Instrument {
+	result := make([]Instrument, 0, len(payload.Symbols))
+	for _, item := range payload.Symbols {
+		if item.Status != "TRADING" {
+			continue
+		}
+		var tick, step float64
+		for _, filter := range item.Filters {
+			switch filter.FilterType {
+			case "PRICE_FILTER":
+				tick, _ = parseFloat(filter.TickSize)
+			case "LOT_SIZE":
+				step, _ = parseFloat(filter.StepSize)
+			}
+		}
+		metadata, _ := json.Marshal(item)
+		result = append(result, Instrument{
+			Exchange: "binance", ExchangeSymbol: item.Symbol,
+			BaseAsset: item.BaseAsset, QuoteAsset: item.QuoteAsset,
+			GlobalSymbol: GlobalSymbol(item.BaseAsset, item.QuoteAsset),
+			SettleAsset:  item.QuoteAsset, ContractType: ContractTypeSpot,
+			Status: "active", ContractSize: 1, PriceTick: tick, QuantityStep: step,
+			Metadata: metadata, SourceUpdatedAt: time.Now().UTC(),
+		})
+	}
+	return result
 }
 
 func (b *Binance) Name() string { return "binance" }
@@ -21,6 +60,7 @@ func (b *Binance) Name() string { return "binance" }
 type binanceExchangeInfo struct {
 	Symbols []struct {
 		Symbol, BaseAsset, QuoteAsset, MarginAsset, Status, ContractType string
+		ContractSize                                                     float64 `json:"contractSize"`
 		Filters                                                          []struct {
 			FilterType string `json:"filterType"`
 			TickSize   string `json:"tickSize"`
@@ -44,7 +84,7 @@ func parseBinanceInstruments(payload binanceExchangeInfo) []Instrument {
 				step, _ = parseFloat(filter.StepSize)
 			}
 		}
-		metadata, _ := json.Marshal(item)
+		metadata := instrumentMetadata(item, "linear", "base")
 		result = append(result, Instrument{
 			Exchange: "binance", ExchangeSymbol: item.Symbol,
 			BaseAsset: item.BaseAsset, QuoteAsset: item.QuoteAsset,
@@ -58,12 +98,56 @@ func parseBinanceInstruments(payload binanceExchangeInfo) []Instrument {
 	return result
 }
 
-func (b *Binance) SyncInstruments(ctx context.Context) ([]Instrument, error) {
+func parseBinanceCoinInstruments(payload binanceExchangeInfo) []Instrument {
+	result := make([]Instrument, 0, len(payload.Symbols))
+	for _, item := range payload.Symbols {
+		if item.Status != "TRADING" || item.ContractType != "PERPETUAL" ||
+			item.ContractSize <= 0 {
+			continue
+		}
+		var tick, step float64
+		for _, filter := range item.Filters {
+			if filter.FilterType == "PRICE_FILTER" {
+				tick, _ = parseFloat(filter.TickSize)
+			}
+			if filter.FilterType == "LOT_SIZE" {
+				step, _ = parseFloat(filter.StepSize)
+			}
+		}
+		result = append(result, Instrument{
+			Exchange: "binance", ExchangeSymbol: item.Symbol,
+			BaseAsset: item.BaseAsset, QuoteAsset: item.QuoteAsset,
+			GlobalSymbol:  GlobalSymbol(item.BaseAsset, item.QuoteAsset),
+			IntervalHours: 8, SettleAsset: item.MarginAsset,
+			ContractType: ContractTypePerpetual, Status: "active",
+			ContractSize: item.ContractSize, PriceTick: tick, QuantityStep: step,
+			Metadata:        instrumentMetadata(item, "inverse", "contracts"),
+			SourceUpdatedAt: time.Now().UTC(),
+		})
+	}
+	return result
+}
+
+func (b *Binance) SyncInstruments(ctx context.Context, contractType string) ([]Instrument, error) {
 	var payload binanceExchangeInfo
+	if contractType == ContractTypeSpot {
+		if err := b.spotClient.get(ctx, "/api/v3/exchangeInfo", nil, &payload); err != nil {
+			return nil, err
+		}
+		return parseBinanceSpotInstruments(payload), nil
+	}
+	if contractType != ContractTypePerpetual {
+		return nil, fmt.Errorf("binance: unsupported contract type %q", contractType)
+	}
 	if err := b.client.get(ctx, "/fapi/v1/exchangeInfo", nil, &payload); err != nil {
 		return nil, err
 	}
-	return parseBinanceInstruments(payload), nil
+	result := parseBinanceInstruments(payload)
+	var coinPayload binanceExchangeInfo
+	if err := b.coinClient.get(ctx, "/dapi/v1/exchangeInfo", nil, &coinPayload); err != nil {
+		return nil, err
+	}
+	return append(result, parseBinanceCoinInstruments(coinPayload)...), nil
 }
 
 type binancePremium struct {
@@ -121,46 +205,53 @@ func (b *Binance) FetchCurrent(ctx context.Context, instruments []Instrument) ([
 	for _, item := range tickerPayload {
 		tickers[item.Symbol] = item
 	}
+	type fundingInfo struct {
+		Symbol               string `json:"symbol"`
+		FundingIntervalHours int    `json:"fundingIntervalHours"`
+	}
+	var fundingInfoPayload []fundingInfo
+	intervals := make(map[string]float64, len(instruments))
+	for _, instrument := range instruments {
+		intervals[instrument.ExchangeSymbol] = instrument.IntervalHours
+	}
+	if err := b.client.get(ctx, "/fapi/v1/fundingInfo", nil, &fundingInfoPayload); err == nil {
+		for _, item := range fundingInfoPayload {
+			if item.FundingIntervalHours > 0 {
+				intervals[item.Symbol] = float64(item.FundingIntervalHours)
+			}
+		}
+	}
 	rates, err := parseBinanceCurrent(payload, tickers)
 	if err != nil {
 		return nil, err
 	}
 	bySymbol := make(map[string]*FundingRate, len(rates))
 	for index := range rates {
+		if interval := intervals[rates[index].ExchangeSymbol]; interval > 0 {
+			rates[index].IntervalHours = interval
+		}
 		bySymbol[rates[index].ExchangeSymbol] = &rates[index]
 	}
 	type openInterest struct {
 		Symbol       string `json:"symbol"`
 		OpenInterest string `json:"openInterest"`
 	}
-	jobs := make(chan Instrument)
-	var workers sync.WaitGroup
-	var lock sync.Mutex
-	for range 6 {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for instrument := range jobs {
-				var response openInterest
-				if err := b.client.get(ctx, "/fapi/v1/openInterest", url.Values{"symbol": {instrument.ExchangeSymbol}}, &response); err != nil {
-					continue
-				}
-				value, _ := parseFloat(response.OpenInterest)
-				lock.Lock()
-				if rate := bySymbol[instrument.ExchangeSymbol]; rate != nil {
-					rate.OpenInterestContracts = value
-					rate.OpenInterestBase = value
-					rate.OpenInterestNotionalUSD = value * rate.MarkPrice
-				}
-				lock.Unlock()
+	for index, instrument := range instruments {
+		var response openInterest
+		if err := b.client.get(ctx, "/fapi/v1/openInterest", url.Values{
+			"symbol": {instrument.ExchangeSymbol},
+		}, &response); err == nil {
+			value, _ := parseFloat(response.OpenInterest)
+			if rate := bySymbol[instrument.ExchangeSymbol]; rate != nil {
+				rate.OpenInterestContracts = value
+				rate.OpenInterestBase = value
+				rate.OpenInterestNotionalUSD = value * rate.MarkPrice
 			}
-		}()
+		}
+		if err := waitAfterBatch(ctx, index+1); err != nil {
+			return nil, err
+		}
 	}
-	for _, instrument := range instruments {
-		jobs <- instrument
-	}
-	close(jobs)
-	workers.Wait()
 	return rates, nil
 }
 
@@ -171,7 +262,7 @@ type binanceHistory struct {
 }
 
 func (b *Binance) FetchHistory(ctx context.Context, instrument Instrument, since time.Time, limit int) ([]FundingRate, error) {
-	wanted := clampLimit(limit, 5000)
+	wanted := clampLimit(limit, 10000)
 	result := make([]FundingRate, 0, wanted)
 	start := since.UnixMilli()
 	for len(result) < wanted {
@@ -181,7 +272,11 @@ func (b *Binance) FetchHistory(ctx context.Context, instrument Instrument, since
 			query.Set("startTime", strconv.FormatInt(start, 10))
 		}
 		var page []binanceHistory
-		if err := b.client.get(ctx, "/fapi/v1/fundingRate", query, &page); err != nil {
+		historyClient := b.historyClient
+		if historyClient.http == nil {
+			historyClient = b.client
+		}
+		if err := historyClient.get(ctx, "/fapi/v1/fundingRate", query, &page); err != nil {
 			return nil, err
 		}
 		for _, item := range page {

@@ -1,0 +1,298 @@
+syntax = "proto3";
+
+package account.v1;
+
+option go_package = "selfquant/backend/gen/account/v1;accountv1";
+
+import "google/protobuf/timestamp.proto";
+
+service AccountService {
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc ValidateSession(ValidateSessionRequest) returns (ValidateSessionResponse);
+  rpc ListTradingAccounts(ListTradingAccountsRequest) returns (ListTradingAccountsResponse);
+  rpc CreateTradingAccount(CreateTradingAccountRequest) returns (CreateTradingAccountResponse);
+  rpc CreatePolymarketTradingAccount(CreatePolymarketTradingAccountRequest) returns (CreatePolymarketTradingAccountResponse);
+  rpc GetPolymarketCredentials(GetPolymarketCredentialsRequest) returns (GetPolymarketCredentialsResponse);
+  rpc RefreshPolymarketCredentials(GetPolymarketCredentialsRequest) returns (GetPolymarketCredentialsResponse);
+  rpc InvalidatePolymarketCredentials(GetPolymarketCredentialsRequest) returns (DeleteTradingAccountResponse);
+  rpc DeleteTradingAccount(DeleteTradingAccountRequest) returns (DeleteTradingAccountResponse);
+  rpc GetTradingAccountSnapshot(GetTradingAccountSnapshotRequest) returns (GetTradingAccountSnapshotResponse);
+  rpc GetProductGroupSnapshot(GetProductGroupSnapshotRequest) returns (GetProductGroupSnapshotResponse);
+  rpc GetProductAccountSnapshotsInternal(GetProductAccountSnapshotsInternalRequest) returns (GetProductAccountSnapshotsInternalResponse);
+  rpc SyncProductTradeFillsInternal(SyncProductTradeFillsInternalRequest) returns (SyncProductTradeFillsInternalResponse);
+  rpc GetTradingCredentials(GetTradingCredentialsRequest) returns (GetTradingCredentialsResponse);
+  rpc GetTradingCredentialsInternal(GetTradingCredentialsInternalRequest) returns (GetTradingCredentialsResponse);
+  rpc GetAICredential(GetAICredentialRequest) returns (AICredentialResponse);
+  rpc UpsertAICredential(UpsertAICredentialRequest) returns (AICredentialResponse);
+  rpc DeleteAICredential(DeleteAICredentialRequest) returns (DeleteAICredentialResponse);
+  rpc GetAICredentialSecret(GetAICredentialRequest) returns (AICredentialSecretResponse);
+  rpc UpdateAICredentialStatus(UpdateAICredentialStatusRequest) returns (AICredentialResponse);
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  string token = 1;
+  string username = 2;
+  string permission = 3;
+}
+
+message ValidateSessionRequest {
+  string token = 1;
+}
+
+message ValidateSessionResponse {
+  string username = 1;
+  string permission = 2;
+}
+
+message TradingAccount {
+  int64 id = 1;
+  string product_name = 2;
+  string exchange = 3;
+  string account_name = 4;
+  string api_key_masked = 5;
+  bool has_passphrase = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  string wallet_address = 9;
+  string wallet_type = 10;
+  string binding_status = 11;
+}
+
+message ListTradingAccountsRequest {
+  string token = 1;
+}
+
+message ListTradingAccountsResponse {
+  repeated TradingAccount items = 1;
+}
+
+message CreateTradingAccountRequest {
+  string token = 1;
+  string product_name = 2;
+  string exchange = 3;
+  string account_name = 4;
+  string api_key = 5;
+  string api_secret = 6;
+  string passphrase = 7;
+}
+
+message CreateTradingAccountResponse {
+  TradingAccount account = 1;
+}
+
+message CreatePolymarketTradingAccountRequest {
+  string token = 1;
+  string product_name = 2;
+  string account_name = 3;
+  string private_key = 4;
+  string wallet_type = 5;
+  string funder_address = 6;
+}
+
+message CreatePolymarketTradingAccountResponse {
+  TradingAccount account = 1;
+}
+
+message GetPolymarketCredentialsRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+}
+
+message GetPolymarketCredentialsResponse {
+  int64 trading_account_id = 1;
+  string account_name = 2;
+  string signer_address = 3;
+  string funder_address = 4;
+  string wallet_type = 5;
+  int32 signature_type = 6;
+  string private_key = 7;
+  string api_key = 8;
+  string api_secret = 9;
+  string passphrase = 10;
+}
+
+message DeleteTradingAccountRequest {
+  string token = 1;
+  int64 id = 2;
+}
+
+message DeleteTradingAccountResponse {}
+
+message PortfolioPosition {
+  string key = 1;
+  string kind = 2;
+  string exchange = 3;
+  string symbol = 4;
+  string side = 5;
+  string notional_usd = 6;
+  string size = 7;
+  string entry_price = 8;
+  string mark_price = 9;
+  string unrealized_pnl = 10;
+  string market_title = 11;
+  string outcome = 12;
+  string initial_value = 13;
+  string current_value = 14;
+  string cash_pnl = 15;
+  string condition_id = 16;
+  string token_id = 17;
+  google.protobuf.Timestamp end_time = 18;
+  string spot_size = 19;
+  string signed_contract_size = 20;
+}
+
+message TradingAccountSnapshot {
+  int64 trading_account_id = 1;
+  string product_name = 2;
+  string exchange = 3;
+  string account_name = 4;
+  string available_funds_usd = 5;
+  string risk_percent = 6;
+  repeated PortfolioPosition positions = 7;
+  google.protobuf.Timestamp source_updated_at = 8;
+  bool stale = 9;
+  string last_error = 10;
+  string account_equity_usd = 11;
+}
+
+message GetTradingAccountSnapshotRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+}
+
+message GetTradingAccountSnapshotResponse {
+  TradingAccountSnapshot snapshot = 1;
+  google.protobuf.Timestamp server_time = 2;
+}
+
+message ProductGroupPosition {
+  string symbol = 1;
+  string side = 2;
+  string total_notional_usd = 3;
+  string spot_size = 4;
+  string contract_size = 5;
+}
+
+message ProductGroupSnapshot {
+  string product_name = 1;
+  int32 account_count = 2;
+  repeated ProductGroupPosition positions = 3;
+  google.protobuf.Timestamp source_updated_at = 4;
+  bool stale = 5;
+  bool partial = 6;
+  repeated string errors = 7;
+  string account_equity_usd = 8;
+  string available_funds_usd = 9;
+}
+
+message GetProductGroupSnapshotRequest {
+  string token = 1;
+  string product_name = 2;
+}
+
+message GetProductGroupSnapshotResponse {
+  ProductGroupSnapshot snapshot = 1;
+  google.protobuf.Timestamp server_time = 2;
+}
+
+message GetProductAccountSnapshotsInternalRequest {
+  string service_token = 1;
+  string owner_username = 2;
+  string product_name = 3;
+}
+
+message GetProductAccountSnapshotsInternalResponse {
+  repeated TradingAccountSnapshot snapshots = 1;
+  repeated string errors = 2;
+  google.protobuf.Timestamp server_time = 3;
+}
+
+message SyncProductTradeFillsInternalRequest {
+  string service_token = 1;
+  string owner_username = 2;
+  string product_name = 3;
+  google.protobuf.Timestamp through_time = 4;
+}
+
+message TradeFillSyncResult {
+  int64 trading_account_id = 1;
+  string exchange = 2;
+  int32 inserted_count = 3;
+  google.protobuf.Timestamp synced_through = 4;
+  string error = 5;
+}
+
+message SyncProductTradeFillsInternalResponse {
+  repeated TradeFillSyncResult results = 1;
+  google.protobuf.Timestamp server_time = 2;
+}
+
+message GetTradingCredentialsRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+}
+
+message GetTradingCredentialsInternalRequest {
+  string service_token = 1;
+  string owner_username = 2;
+  int64 trading_account_id = 3;
+}
+
+message GetTradingCredentialsResponse {
+  int64 trading_account_id = 1;
+  string product_name = 2;
+  string exchange = 3;
+  string account_name = 4;
+  string api_key = 5;
+  string api_secret = 6;
+  string passphrase = 7;
+}
+
+message AICredential {
+  string provider = 1;
+  string api_key_masked = 2;
+  string status = 3;
+  string last_error = 4;
+  google.protobuf.Timestamp last_tested_at = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+message GetAICredentialRequest {
+  string token = 1;
+  string provider = 2;
+}
+
+message UpsertAICredentialRequest {
+  string token = 1;
+  string provider = 2;
+  string api_key = 3;
+}
+
+message DeleteAICredentialRequest {
+  string token = 1;
+  string provider = 2;
+}
+
+message DeleteAICredentialResponse {}
+
+message AICredentialResponse {
+  AICredential credential = 1;
+}
+
+message AICredentialSecretResponse {
+  string provider = 1;
+  string api_key = 2;
+}
+
+message UpdateAICredentialStatusRequest {
+  string token = 1;
+  string provider = 2;
+  string status = 3;
+  string error_message = 4;
+}

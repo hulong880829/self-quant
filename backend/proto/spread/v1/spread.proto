@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package spread.v1;
+
+option go_package = "selfquant/backend/gen/spread/v1;spreadv1";
+
+import "google/protobuf/timestamp.proto";
+
+service SpreadService {
+  rpc GetBasisSpreadHistory(GetBasisSpreadHistoryRequest) returns (GetBasisSpreadHistoryResponse);
+}
+
+enum BasisSpreadRange {
+  BASIS_SPREAD_RANGE_UNSPECIFIED = 0;
+  BASIS_SPREAD_RANGE_1H = 1;
+  BASIS_SPREAD_RANGE_4H = 2;
+  BASIS_SPREAD_RANGE_8H = 3;
+  BASIS_SPREAD_RANGE_24H = 4;
+  BASIS_SPREAD_RANGE_7D = 5;
+}
+
+enum BasisSpreadAvailability {
+  BASIS_SPREAD_AVAILABILITY_UNSPECIFIED = 0;
+  BASIS_SPREAD_AVAILABILITY_AVAILABLE = 1;
+  BASIS_SPREAD_AVAILABILITY_UNAVAILABLE = 2;
+}
+
+message GetBasisSpreadHistoryRequest {
+  string venue = 1;
+  string base_asset = 2;
+  string quote_asset = 3;
+  BasisSpreadRange range = 4;
+}
+
+message BasisSpreadPoint {
+  google.protobuf.Timestamp ts = 1;
+  string spread_bps = 2;
+  string spot_ask = 3;
+  string perpetual_ask = 4;
+  int32 samples = 5;
+}
+
+message BasisSpreadSummary {
+  string current_bps = 1;
+  string min_bps = 2;
+  string max_bps = 3;
+  string avg_bps = 4;
+  string coverage = 5;
+}
+
+message GetBasisSpreadHistoryResponse {
+  string venue = 1;
+  string base_asset = 2;
+  string quote_asset = 3;
+  string canonical_symbol = 4;
+  BasisSpreadRange range = 5;
+  int32 resolution_seconds = 6;
+  BasisSpreadAvailability availability = 7;
+  google.protobuf.Timestamp as_of = 8;
+  repeated BasisSpreadPoint points = 9;
+  BasisSpreadSummary summary = 10;
+}

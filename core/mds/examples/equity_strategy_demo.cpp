@@ -143,7 +143,7 @@ public:
   std::optional<utils::md::wire::TickerRecord> ticker{};
 };
 
-std::size_t instrument_index(std::uint32_t instrument_id) {
+std::size_t instrument_index(utils::md::InstrumentId instrument_id) {
   return instrument_id >= 600000U && instrument_id <= 600009U
              ? static_cast<std::size_t>(instrument_id - 600000U)
              : 10U;

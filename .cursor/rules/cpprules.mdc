@@ -1,0 +1,14 @@
+---
+description: C++20 low-latency development rules
+globs: core/**/*.{cpp,h,hpp,cc,cxx}
+alwaysApply: false
+---
+
+# C++ Low-Latency Rules
+
+- Use C++20 and make the smallest complete change.
+- Preserve observable behavior and existing module boundaries unless explicitly asked otherwise.
+- Prefer RAII and explicit ownership; avoid raw owning pointers.
+- Make ownership, synchronization, lifetime, and atomic ordering explicit.
+- Do not introduce data races or silently ignore failures.
+- In low-latency paths, avoid allocation, blocking calls, unnecessary copies, and exception-based control flow.

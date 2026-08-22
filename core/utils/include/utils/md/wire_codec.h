@@ -19,7 +19,7 @@ enum class CodecError : std::uint8_t {
 };
 
 struct HeaderFields {
-  std::uint32_t instrument_id{};
+  InstrumentId instrument_id{};
   std::uint64_t bus_seq{};
   std::uint64_t source_seq{};
   std::uint64_t exchange_ts_ns{};
@@ -43,10 +43,42 @@ struct EncodeResult {
 ValidateHeader(std::span<const std::byte> bytes,
                RecordHeader *header = nullptr) noexcept;
 
+[[nodiscard]] CodecError
+DecodeInstrument(std::span<const std::byte> bytes,
+                 InstrumentUpdateRecord &record) noexcept;
+[[nodiscard]] CodecError
+DecodeInstrumentCatalog(std::span<const std::byte> bytes,
+                        InstrumentCatalogRecord &record) noexcept;
+[[nodiscard]] CodecError DecodeBbo(std::span<const std::byte> bytes,
+                                   BboRecord &record) noexcept;
+[[nodiscard]] CodecError DecodeTicker(std::span<const std::byte> bytes,
+                                      TickerRecord &record) noexcept;
+[[nodiscard]] CodecError DecodeDelta(std::span<const std::byte> bytes,
+                                     DeltaRecord &record) noexcept;
+[[nodiscard]] CodecError
+DecodeSnapshotBegin(std::span<const std::byte> bytes,
+                    SnapshotBeginRecord &record) noexcept;
+[[nodiscard]] CodecError
+DecodeSnapshotChunk(std::span<const std::byte> bytes,
+                    SnapshotChunkRecord &record) noexcept;
+[[nodiscard]] CodecError
+DecodeSnapshotEnd(std::span<const std::byte> bytes,
+                  SnapshotEndRecord &record) noexcept;
+[[nodiscard]] CodecError
+DecodeAggBbo(std::span<const std::byte> bytes,
+             AggBboRecord &record) noexcept;
+[[nodiscard]] CodecError
+DecodeAggOrderBook(std::span<const std::byte> bytes,
+                   AggOrderBookRecord &record) noexcept;
+
 [[nodiscard]] EncodeResult
 EncodeInstrument(std::span<std::byte> destination,
                  const HeaderFields &header,
                  const Instrument &instrument) noexcept;
+[[nodiscard]] EncodeResult
+EncodeInstrumentCatalog(std::span<std::byte> destination,
+                        const HeaderFields &header,
+                        const InstrumentCatalog &catalog) noexcept;
 [[nodiscard]] EncodeResult EncodeBbo(std::span<std::byte> destination,
                                      const HeaderFields &header,
                                      const Level &bid,
@@ -69,11 +101,23 @@ EncodeSnapshotChunk(std::span<std::byte> destination,
 EncodeSnapshotEnd(std::span<std::byte> destination,
                   const HeaderFields &header, std::uint32_t received_levels,
                   std::uint32_t checksum) noexcept;
+[[nodiscard]] EncodeResult
+EncodeAggBbo(std::span<std::byte> destination,
+             const HeaderFields &header,
+             const AggBboRecord &value) noexcept;
+[[nodiscard]] EncodeResult
+EncodeAggOrderBook(std::span<std::byte> destination,
+                   const HeaderFields &header,
+                   const AggOrderBookRecord &value) noexcept;
 
 class RecordVisitor {
  public:
   virtual ~RecordVisitor() = default;
   virtual bool OnInstrument(const InstrumentUpdateRecord &) noexcept = 0;
+  virtual bool OnInstrumentCatalog(
+      const InstrumentCatalogRecord &) noexcept {
+    return true;
+  }
   virtual bool OnBbo(const BboRecord &) noexcept = 0;
   virtual bool OnTicker(const TickerRecord &) noexcept = 0;
   virtual bool OnDelta(const DeltaRecord &) noexcept = 0;

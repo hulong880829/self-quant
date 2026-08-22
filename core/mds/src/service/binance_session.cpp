@@ -73,13 +73,14 @@ void copy_text(std::array<char, N> &destination, std::string_view source) {
   destination[count] = '\0';
 }
 
-utils::md::EventHeader make_header(std::uint32_t generation,
+utils::md::EventHeader make_header(utils::md::InstrumentId instrument_id,
+                                   std::uint32_t generation,
                                    std::uint64_t source_sequence,
                                    std::uint64_t bus_sequence,
                                    std::uint64_t exchange_time_ms,
                                    utils::md::BookState state) noexcept {
   utils::md::EventHeader header{};
-  header.instrument_id = 1;
+  header.instrument_id = instrument_id;
   header.book_generation = generation;
   header.source_seq = source_sequence;
   header.bus_seq = bus_sequence;
@@ -94,25 +95,15 @@ utils::md::EventHeader make_header(std::uint32_t generation,
   return header;
 }
 
-std::vector<utils::md::Level>
-convert_levels(const std::vector<exchange::binance::PriceLevel> &levels) {
-  std::vector<utils::md::Level> converted;
-  converted.reserve(levels.size());
-  for (const auto &level : levels) {
-    converted.push_back({level.price, level.quantity});
-  }
-  return converted;
+bool terminal(net::WebSocketClientState state) noexcept {
+  return state == net::WebSocketClientState::Closed ||
+         state == net::WebSocketClientState::TimedOut ||
+         state == net::WebSocketClientState::Failed;
 }
 
-bool terminal(network::WebSocketClientState state) noexcept {
-  return state == network::WebSocketClientState::Closed ||
-         state == network::WebSocketClientState::TimedOut ||
-         state == network::WebSocketClientState::Failed;
-}
-
-bool terminal(network::HttpClientState state) noexcept {
-  return state == network::HttpClientState::TimedOut ||
-         state == network::HttpClientState::Failed;
+bool terminal(net::HttpClientState state) noexcept {
+  return state == net::HttpClientState::TimedOut ||
+         state == net::HttpClientState::Failed;
 }
 
 bool connecting(SessionState state) noexcept {
@@ -154,20 +145,26 @@ std::string_view to_string(BinanceSessionState state) noexcept {
   return "Unknown";
 }
 
-BinanceSession::BinanceSession(network::EpollLoop &loop,
-                               network::SharedSslContext tls,
+BinanceSession::BinanceSession(net::EpollLoop &loop,
+                               net::SharedSslContext tls,
                                BinanceSessionOptions options)
     : loop_(loop), tls_(std::move(tls)), options_(std::move(options)),
       websocket_(tls_), metadata_http_(tls_), snapshot_http_(tls_),
       combined_parser_(), rest_parser_(),
       synchronizer_(options_.profile, options_.max_buffered_updates),
-      order_book_(std::make_unique<utils::md::OrderBook>(
-          options_.ladder_levels_per_side)),
+      order_book_(options_.subscribe_orderbook
+                      ? std::make_unique<utils::md::OrderBook>(
+                            options_.ladder_ticks_per_side)
+                      : nullptr),
       overlay_(options_.profile == Profile::Spot
                    ? book::SequenceDomain::Shared
                    : book::SequenceDomain::Independent) {
-  websocket_.set_frame_callback([this](const network::WsFrameView &frame) {
-    if (frame.opcode != network::WsOpcode::Text) {
+  if (options_.subscribe_orderbook) {
+    depth_scratch_.bids.reserve(options_.max_depth_levels_per_side);
+    depth_scratch_.asks.reserve(options_.max_depth_levels_per_side);
+  }
+  websocket_.set_frame_callback([this](const net::WsFrameView &frame) {
+    if (frame.opcode != net::WsOpcode::Text) {
       return true;
     }
     last_message_ = Clock::now();
@@ -190,9 +187,25 @@ api::Result<void> BinanceSession::start(Clock::time_point now) {
     return {.error = api::ErrorCode::AlreadyInitialized,
             .message = "Binance session already started"};
   }
-  if (options_.symbol.empty() || options_.ladder_levels_per_side == 0 ||
-      options_.ladder_levels_per_side > options_.max_ladder_levels_per_side ||
-      options_.max_ladder_levels_per_side > utils::md::kMaxLadderLevels) {
+  if (options_.symbol.empty() || options_.ladder_ticks_per_side == 0 ||
+      options_.ladder_ticks_per_side > options_.max_ladder_ticks_per_side ||
+      options_.max_ladder_ticks_per_side > utils::md::kMaxLadderLevels ||
+      options_.max_depth_levels_per_side == 0 ||
+      options_.max_depth_levels_per_side >
+          exchange::binance::kDefaultMaxDepthLevelsPerSide ||
+      (!options_.subscribe_ticker && !options_.subscribe_orderbook) ||
+      (options_.subscribe_orderbook &&
+       ((options_.profile == Profile::Spot &&
+         options_.depth_update_interval_ms != 100 &&
+         options_.depth_update_interval_ms != 1000) ||
+        (options_.profile == Profile::UsdM &&
+         options_.depth_update_interval_ms != 100 &&
+         options_.depth_update_interval_ms != 250 &&
+         options_.depth_update_interval_ms != 500))) ||
+      (options_.snapshot_depth != 0 &&
+       options_.snapshot_depth >
+           (options_.profile == Profile::Spot ? std::size_t{5000}
+                                              : std::size_t{1000}))) {
     return {.error = api::ErrorCode::InvalidConfig,
             .message = "invalid Binance symbol or ladder bounds"};
   }
@@ -202,9 +215,12 @@ api::Result<void> BinanceSession::start(Clock::time_point now) {
                    return static_cast<char>(std::toupper(c));
                  });
   std::string start_error;
+  const auto depth_interval =
+      std::to_string(options_.depth_update_interval_ms) + "ms";
   if (!exchange::binance::build_combined_stream_path(
-          options_.profile, options_.symbol, true, true, websocket_target_,
-          start_error, "100ms") ||
+          options_.profile, options_.symbol, options_.subscribe_ticker,
+          options_.subscribe_orderbook, websocket_target_, start_error,
+          depth_interval) ||
       !open_publishers(start_error)) {
     state_ = SessionState::Failed;
     error_ = std::move(start_error);
@@ -227,32 +243,42 @@ bool BinanceSession::open_publishers(std::string &error) {
     return true;
   }
   auto ring = options_.ring;
-  auto ticker_options = ring;
-  ticker_options.name = publish::make_publisher_segment_name(
-      options_.shm_prefix, profile_name(options_.profile), options_.symbol,
-      "ticker");
-  auto orderbook_options = ring;
-  orderbook_options.name = publish::make_publisher_segment_name(
-      options_.shm_prefix, profile_name(options_.profile), options_.symbol,
-      "orderbook");
-  if (ticker_options.name.empty() || orderbook_options.name.empty()) {
-    error = "shared-memory prefix, profile, or symbol produces an invalid "
-            "segment name";
-    return false;
+  if (options_.subscribe_ticker) {
+    auto ticker_options = ring;
+    ticker_options.name = publish::make_publisher_segment_name(
+        options_.shm_prefix, profile_name(options_.profile), options_.symbol,
+        "ticker");
+    if (ticker_options.name.empty()) {
+      error = "shared-memory prefix, profile, or symbol produces an invalid "
+              "ticker segment name";
+      return false;
+    }
+    auto ticker_ring = transport::SharedRing::open(ticker_options);
+    if (!ticker_ring) {
+      error = ticker_ring.message;
+      return false;
+    }
+    ticker_publisher_ = std::make_unique<publish::WirePublisher>(
+        std::move(ticker_ring.value));
   }
-  auto ticker_ring = transport::SharedRing::open(ticker_options);
-  if (!ticker_ring) {
-    error = ticker_ring.message;
-    return false;
+  if (options_.subscribe_orderbook) {
+    auto orderbook_options = ring;
+    orderbook_options.name = publish::make_publisher_segment_name(
+        options_.shm_prefix, profile_name(options_.profile), options_.symbol,
+        "orderbook");
+    if (orderbook_options.name.empty()) {
+      error = "shared-memory prefix, profile, or symbol produces an invalid "
+              "orderbook segment name";
+      return false;
+    }
+    auto orderbook_ring = transport::SharedRing::open(orderbook_options);
+    if (!orderbook_ring) {
+      error = orderbook_ring.message;
+      return false;
+    }
+    orderbook_publisher_ = std::make_unique<publish::WirePublisher>(
+        std::move(orderbook_ring.value));
   }
-  auto orderbook_ring = transport::SharedRing::open(orderbook_options);
-  if (!orderbook_ring) {
-    error = orderbook_ring.message;
-    return false;
-  }
-  publishers_ = std::make_unique<publish::TickerOrderBookPublishers>(
-      publish::WirePublisher(std::move(ticker_ring.value)),
-      publish::WirePublisher(std::move(orderbook_ring.value)));
   return true;
 }
 
@@ -272,6 +298,7 @@ bool BinanceSession::begin_connection(Clock::time_point now,
   json_parser_.reset();
   bridge_.reset();
   overlay_.Clear();
+  latest_ticker_.reset();
   instrument_ready_ = false;
   state_ = SessionState::Resolving;
   const auto endpoint = websocket_endpoint();
@@ -316,7 +343,12 @@ bool BinanceSession::begin_snapshot(Clock::time_point now, std::string &error) {
   target += "?symbol=";
   target += options_.symbol;
   target += "&limit=";
-  target += options_.profile == Profile::Spot ? "5000" : "1000";
+  const auto depth =
+      options_.snapshot_depth != 0
+          ? options_.snapshot_depth
+          : (options_.profile == Profile::Spot ? std::size_t{5000}
+                                               : std::size_t{1000});
+  target += std::to_string(depth);
   if (!snapshot_http_.start_get(endpoint.host, endpoint.service, target,
                                 now + options_.request_timeout)) {
     error.assign(snapshot_http_.error_message());
@@ -415,23 +447,23 @@ void BinanceSession::handle_ws_state(Clock::time_point now) noexcept {
   (void)now;
   const auto current = state();
   switch (websocket_.state()) {
-  case network::WebSocketClientState::TcpConnecting:
+  case net::WebSocketClientState::TcpConnecting:
     if (connecting(current)) {
       state_ = SessionState::Tcp;
     }
     break;
-  case network::WebSocketClientState::TlsHandshaking:
+  case net::WebSocketClientState::TlsHandshaking:
     if (connecting(current)) {
       state_ = SessionState::Tls;
     }
     break;
-  case network::WebSocketClientState::SendingUpgrade:
-  case network::WebSocketClientState::ReadingUpgrade:
+  case net::WebSocketClientState::SendingUpgrade:
+  case net::WebSocketClientState::ReadingUpgrade:
     if (connecting(current)) {
       state_ = SessionState::Upgrade;
     }
     break;
-  case network::WebSocketClientState::Open:
+  case net::WebSocketClientState::Open:
     if (connecting(current) || current == SessionState::Metadata) {
       state_ = SessionState::Buffering;
     }
@@ -446,10 +478,20 @@ void BinanceSession::handle_http_state(ClientKind kind,
   auto &client =
       kind == ClientKind::Metadata ? metadata_http_ : snapshot_http_;
   if (terminal(client.state())) {
-    schedule_reconnect(client.error_message(), now);
+    if (kind == ClientKind::Snapshot) {
+      error_.assign(client.error_message());
+      remove_registration(kind);
+      client.reset();
+      snapshot_request_active_ = false;
+      snapshot_deferred_ = true;
+      next_snapshot_attempt_ = now + std::chrono::milliseconds(250);
+      state_ = SessionState::Resync;
+    } else {
+      schedule_reconnect(client.error_message(), now);
+    }
     return;
   }
-  if (client.state() != network::HttpClientState::Complete) {
+  if (client.state() != net::HttpClientState::Complete) {
     return;
   }
   const auto completed_generation = client.socket_generation();
@@ -458,7 +500,7 @@ void BinanceSession::handle_http_state(ClientKind kind,
                               body.size());
   std::string parse_error;
   bool ok = false;
-  if (client.response().status_class() != network::HttpStatusClass::Success) {
+  if (client.response().status_class() != net::HttpStatusClass::Success) {
     parse_error = "Binance REST returned HTTP " +
                   std::to_string(client.response().status_code());
   } else if (kind == ClientKind::Metadata) {
@@ -466,8 +508,10 @@ void BinanceSession::handle_http_state(ClientKind kind,
       state_ = SessionState::Metadata;
     }
     ok = ingest_exchange_info(json, parse_error);
-    if (ok) {
+    if (ok && options_.subscribe_orderbook) {
       ok = request_snapshot(now, parse_error);
+    } else if (ok) {
+      state_ = SessionState::Live;
     }
   } else {
     snapshot_request_active_ = false;
@@ -479,7 +523,15 @@ void BinanceSession::handle_http_state(ClientKind kind,
   }
   if (!ok) {
     ++metrics_.parse_errors;
-    schedule_reconnect(parse_error, now);
+    if (kind == ClientKind::Snapshot) {
+      error_ = parse_error;
+      snapshot_request_active_ = false;
+      snapshot_deferred_ = true;
+      next_snapshot_attempt_ = now + std::chrono::milliseconds(250);
+      state_ = SessionState::Resync;
+    } else {
+      schedule_reconnect(parse_error, now);
+    }
   }
 }
 
@@ -491,13 +543,22 @@ bool BinanceSession::ingest_exchange_info(std::string_view json,
   }
   metadata_ready_ = true;
   json_parser_ = std::make_unique<exchange::binance::JsonParser>(
-      metadata_.price_scale, metadata_.quantity_scale);
-  bridge_ = std::make_unique<book::BookBridge>(*order_book_,
-                                               metadata_.price_filter.tick_size);
+      options_.max_depth_levels_per_side);
+  if (options_.subscribe_orderbook) {
+    bridge_ = std::make_unique<book::BookBridge>(
+        *order_book_, metadata_.price_filter.tick_size);
+  }
 
-  if (publishers_) {
+  if (ticker_publisher_ || orderbook_publisher_) {
     instrument_ = {};
-    instrument_.instrument_id = 1;
+    if (!instrument_manager_.resolve(
+            utils::md::Venue::Binance,
+            options_.profile == Profile::Spot
+                ? utils::md::ProductType::Spot
+                : utils::md::ProductType::Perpetual,
+            options_.symbol, instrument_.instrument_id, error)) {
+      return false;
+    }
     instrument_.venue = utils::md::Venue::Binance;
     instrument_.product_type =
         options_.profile == Profile::Spot ? utils::md::ProductType::Spot
@@ -517,17 +578,54 @@ bool BinanceSession::ingest_exchange_info(std::string_view json,
                      ":" + options_.symbol;
     copy_text(instrument_.instrument_key, key);
     instrument_ready_ = true;
-    auto header = make_header(generation(), 0, bus_sequence_++, 0,
-                              utils::md::BookState::Building);
-    const auto ticker_result =
-        publishers_->ticker().publish_instrument(header, instrument_);
-    const auto book_result =
-        publishers_->order_book().publish_instrument(header, instrument_);
-    if (!ticker_result || !book_result) {
-      ++metrics_.publish_errors;
-      error = !ticker_result ? ticker_result.message : book_result.message;
-      handle_publish_failure(error, Clock::now());
-      return false;
+    catalog_ = {};
+    catalog_.instrument_id = instrument_.instrument_id;
+    catalog_.venue = instrument_.venue;
+    catalog_.product_type = instrument_.product_type;
+    catalog_.price_scale = instrument_.price_scale;
+    catalog_.quantity_scale = instrument_.quantity_scale;
+    catalog_.contract_multiplier_scale =
+        instrument_.contract_multiplier_scale;
+    catalog_.flags = instrument_.flags;
+    catalog_.tick_size = instrument_.tick_size;
+    catalog_.lot_size = instrument_.lot_size;
+    catalog_.contract_multiplier = instrument_.contract_multiplier;
+    copy_text(catalog_.base_asset, metadata_.base_asset);
+    copy_text(catalog_.quote_asset, metadata_.quote_asset);
+    copy_text(catalog_.settle_asset, metadata_.settle_asset);
+    copy_text(catalog_.canonical_symbol, options_.symbol);
+    copy_text(catalog_.venue_symbol, metadata_.venue_symbol);
+    auto header = make_header(instrument_.instrument_id, generation(), 0,
+                              bus_sequence_++, 0,
+                              options_.subscribe_orderbook
+                                  ? utils::md::BookState::Building
+                                  : utils::md::BookState::Live);
+    if (ticker_publisher_) {
+      auto result =
+          ticker_publisher_->publish_instrument_catalog(header, catalog_);
+      if (result) {
+        result = ticker_publisher_->publish_instrument(header, instrument_);
+      }
+      if (!result) {
+        ++metrics_.publish_errors;
+        error = result.message;
+        handle_publish_failure(error, Clock::now());
+        return false;
+      }
+    }
+    if (orderbook_publisher_) {
+      auto result =
+          orderbook_publisher_->publish_instrument_catalog(header, catalog_);
+      if (result) {
+        result =
+            orderbook_publisher_->publish_instrument(header, instrument_);
+      }
+      if (!result) {
+        ++metrics_.publish_errors;
+        error = result.message;
+        handle_publish_failure(error, Clock::now());
+        return false;
+      }
     }
   } else {
     instrument_ready_ = true;
@@ -558,8 +656,8 @@ bool BinanceSession::ingest_depth_snapshot(std::string_view json,
   }
   book::DepthSnapshot snapshot;
   snapshot.last_update_id = parsed.last_update_id;
-  snapshot.bids = convert_levels(parsed.bids);
-  snapshot.asks = convert_levels(parsed.asks);
+  snapshot.bids = std::move(parsed.bids);
+  snapshot.asks = std::move(parsed.asks);
   const auto loaded = bridge_->LoadSnapshot(snapshot, generation());
   if (loaded.action != book::BridgeAction::Applied) {
     error = "depth snapshot does not fit the configured ladder window";
@@ -608,20 +706,32 @@ bool BinanceSession::ingest_websocket_message(std::string_view json,
 
 bool BinanceSession::handle_ticker(std::string_view data, std::string &error) {
   exchange::binance::BookTicker ticker;
-  if (!json_parser_->parse_book_ticker(data, ticker, error)) {
+  if (!json_parser_->parse_book_ticker(
+          data, metadata_.price_scale, metadata_.quantity_scale, ticker,
+          error)) {
     return false;
   }
   ++metrics_.ticker_updates;
   utils::md::BboEvent event{};
   event.header =
-      make_header(generation(), ticker.update_id, bus_sequence_++,
+      make_header(instrument_.instrument_id, generation(), ticker.update_id,
+                  bus_sequence_++,
                   ticker.transaction_time_ms != 0 ? ticker.transaction_time_ms
                                                   : ticker.event_time_ms,
                   utils::md::BookState::Live);
   event.bid = {ticker.bid_price, ticker.bid_quantity};
   event.ask = {ticker.ask_price, ticker.ask_quantity};
-  auto canonical = order_book_->Bbo(1).value_or(utils::md::BboEvent{});
-  canonical.header.instrument_id = 1;
+  latest_ticker_ = event;
+  if (!options_.subscribe_orderbook) {
+    if (ticker_publisher_ && !ticker_publisher_->publish_bbo(event)) {
+      ++metrics_.publish_errors;
+      handle_publish_failure("ticker BBO publish failed", Clock::now());
+    }
+    return true;
+  }
+  auto canonical = order_book_->Bbo(instrument_.instrument_id)
+                       .value_or(utils::md::BboEvent{});
+  canonical.header.instrument_id = instrument_.instrument_id;
   canonical.header.book_generation = generation();
   canonical.header.source_seq =
       bridge_ ? bridge_->last_update_id() : std::uint64_t{};
@@ -632,7 +742,7 @@ bool BinanceSession::handle_ticker(std::string_view data, std::string &error) {
   std::optional<utils::md::BboEvent> output =
       options_.profile == Profile::Spot ? overlay_.Effective(canonical)
                                         : overlay_.ticker();
-  if (publishers_ && output && !publishers_->ticker().publish_bbo(*output)) {
+  if (ticker_publisher_ && output && !ticker_publisher_->publish_bbo(*output)) {
     ++metrics_.publish_errors;
     handle_publish_failure("ticker BBO publish failed", Clock::now());
   }
@@ -640,10 +750,12 @@ bool BinanceSession::handle_ticker(std::string_view data, std::string &error) {
 }
 
 bool BinanceSession::handle_depth(std::string_view data, std::string &error) {
-  exchange::binance::DepthUpdate update;
-  if (!json_parser_->parse_depth(data, update, error)) {
+  if (!json_parser_->parse_depth(
+          data, metadata_.price_scale, metadata_.quantity_scale,
+          depth_scratch_, error)) {
     return false;
   }
+  const auto &update = depth_scratch_;
   const auto action = synchronizer_.on_update(update);
   if (action == exchange::binance::SyncAction::Resnapshot) {
     const std::string reason =
@@ -692,25 +804,10 @@ bool BinanceSession::apply_depth(
   if (!bridge_) {
     return false;
   }
-  const auto bids = convert_levels(update.bids);
-  const auto asks = convert_levels(update.asks);
-  std::vector<utils::md::Level> maintained_bids;
-  std::vector<utils::md::Level> maintained_asks;
-  maintained_bids.reserve(bids.size());
-  maintained_asks.reserve(asks.size());
-  for (const auto &level : bids) {
-    if (bridge_->Maintains(utils::md::Side::Bid, level.price)) {
-      maintained_bids.push_back(level);
-    }
-  }
-  for (const auto &level : asks) {
-    if (bridge_->Maintains(utils::md::Side::Ask, level.price)) {
-      maintained_asks.push_back(level);
-    }
-  }
   const auto ignored_before = bridge_->outside_updates_ignored();
-  if (bridge_->Apply({update.first_update_id, update.final_update_id, bids,
-                      asks}) != book::BridgeAction::Applied) {
+  if (bridge_->Apply({update.first_update_id, update.final_update_id,
+                      update.bids, update.asks}) !=
+      book::BridgeAction::Applied) {
     metrics_.outside_depth_levels_ignored +=
         bridge_->outside_updates_ignored() - ignored_before;
     return false;
@@ -718,34 +815,42 @@ bool BinanceSession::apply_depth(
   metrics_.outside_depth_levels_ignored +=
       bridge_->outside_updates_ignored() - ignored_before;
   ++metrics_.depth_updates;
-  if (publish && publishers_) {
-    for (const auto &level : maintained_bids) {
+  if (publish && orderbook_publisher_) {
+    for (const auto &level : update.bids) {
+      if (!bridge_->Maintains(utils::md::Side::Bid, level.price)) {
+        continue;
+      }
       utils::md::BookDelta delta{};
       delta.header = make_header(
-          generation(), update.final_update_id, bus_sequence_++,
+          instrument_.instrument_id, generation(), update.final_update_id,
+          bus_sequence_++,
           update.transaction_time_ms != 0 ? update.transaction_time_ms
                                           : update.event_time_ms,
           state() == SessionState::Live ? utils::md::BookState::Live
                                         : utils::md::BookState::Building);
       delta.side = utils::md::Side::Bid;
       delta.level = level;
-      if (!publishers_->order_book().publish_delta(delta)) {
+      if (!orderbook_publisher_->publish_delta(delta)) {
         ++metrics_.publish_errors;
         handle_publish_failure("order-book delta publish failed", Clock::now());
         return false;
       }
     }
-    for (const auto &level : maintained_asks) {
+    for (const auto &level : update.asks) {
+      if (!bridge_->Maintains(utils::md::Side::Ask, level.price)) {
+        continue;
+      }
       utils::md::BookDelta delta{};
       delta.header = make_header(
-          generation(), update.final_update_id, bus_sequence_++,
+          instrument_.instrument_id, generation(), update.final_update_id,
+          bus_sequence_++,
           update.transaction_time_ms != 0 ? update.transaction_time_ms
                                           : update.event_time_ms,
           state() == SessionState::Live ? utils::md::BookState::Live
                                         : utils::md::BookState::Building);
       delta.side = utils::md::Side::Ask;
       delta.level = level;
-      if (!publishers_->order_book().publish_delta(delta)) {
+      if (!orderbook_publisher_->publish_delta(delta)) {
         ++metrics_.publish_errors;
         handle_publish_failure("order-book delta publish failed", Clock::now());
         return false;
@@ -764,20 +869,21 @@ bool BinanceSession::apply_depth(
 
 bool BinanceSession::publish_canonical(std::uint64_t sequence,
                                        std::uint64_t exchange_time_ms) noexcept {
-  auto canonical = order_book_->Bbo(1);
+  auto canonical = order_book_->Bbo(instrument_.instrument_id);
   if (!canonical) {
     return true;
   }
   canonical->header =
-      make_header(generation(), sequence, bus_sequence_++, exchange_time_ms,
+      make_header(instrument_.instrument_id, generation(), sequence,
+                  bus_sequence_++, exchange_time_ms,
                   state() == SessionState::Live ? utils::md::BookState::Live
                                                 : utils::md::BookState::Building);
   if (overlay_.OnCanonical(*canonical) == book::OverlayAction::Divergence) {
     request_resync("ticker/canonical BBO divergence", Clock::now());
     return false;
   }
-  if (publishers_ &&
-      !publishers_->order_book().publish_bbo(*canonical)) {
+  if (orderbook_publisher_ &&
+      !orderbook_publisher_->publish_bbo(*canonical)) {
     ++metrics_.publish_errors;
     handle_publish_failure("canonical BBO publish failed", Clock::now());
     return false;
@@ -787,12 +893,13 @@ bool BinanceSession::publish_canonical(std::uint64_t sequence,
 
 bool BinanceSession::publish_live_image(
     std::uint64_t sequence, std::uint64_t exchange_time_ms) noexcept {
-  if (publishers_) {
+  if (orderbook_publisher_) {
     const auto header =
-        make_header(generation(), sequence, bus_sequence_++, exchange_time_ms,
+        make_header(instrument_.instrument_id, generation(), sequence,
+                    bus_sequence_++, exchange_time_ms,
                     utils::md::BookState::Live);
     const auto result =
-        publishers_->order_book().publish_snapshot(header, *order_book_);
+        orderbook_publisher_->publish_snapshot(header, *order_book_);
     if (!result) {
       ++metrics_.publish_errors;
       handle_publish_failure(result.message, Clock::now());
@@ -803,21 +910,38 @@ bool BinanceSession::publish_live_image(
 }
 
 bool BinanceSession::republish_ticker() noexcept {
-  if (!publishers_ || !instrument_ready_) {
+  if (!ticker_publisher_ || !instrument_ready_) {
     return true;
   }
-  auto header = make_header(generation(), 0, bus_sequence_++, 0,
+  auto header = make_header(instrument_.instrument_id, generation(), 0,
+                            bus_sequence_++, 0,
                             state() == SessionState::Live
                                 ? utils::md::BookState::Live
                                 : utils::md::BookState::Building);
-  auto result = publishers_->ticker().publish_instrument(header, instrument_);
+  auto result =
+      ticker_publisher_->publish_instrument_catalog(header, catalog_);
+  if (result) {
+    result = ticker_publisher_->publish_instrument(header, instrument_);
+  }
   if (!result) {
     ++metrics_.publish_errors;
     handle_publish_failure(result.message, Clock::now());
     return false;
   }
-  auto canonical = order_book_->Bbo(1).value_or(utils::md::BboEvent{});
-  canonical.header.instrument_id = 1;
+  if (!options_.subscribe_orderbook) {
+    if (latest_ticker_) {
+      result = ticker_publisher_->publish_bbo(*latest_ticker_);
+      if (!result) {
+        ++metrics_.publish_errors;
+        handle_publish_failure(result.message, Clock::now());
+        return false;
+      }
+    }
+    return true;
+  }
+  auto canonical = order_book_->Bbo(instrument_.instrument_id)
+                       .value_or(utils::md::BboEvent{});
+  canonical.header.instrument_id = instrument_.instrument_id;
   canonical.header.book_generation = generation();
   canonical.header.source_seq =
       bridge_ ? bridge_->last_update_id() : std::uint64_t{};
@@ -825,7 +949,7 @@ bool BinanceSession::republish_ticker() noexcept {
       options_.profile == Profile::Spot ? overlay_.Effective(canonical)
                                         : overlay_.ticker();
   if (output) {
-    result = publishers_->ticker().publish_bbo(*output);
+    result = ticker_publisher_->publish_bbo(*output);
     if (!result) {
       ++metrics_.publish_errors;
       handle_publish_failure(result.message, Clock::now());
@@ -836,15 +960,19 @@ bool BinanceSession::republish_ticker() noexcept {
 }
 
 bool BinanceSession::republish_order_book() noexcept {
-  if (!publishers_ || !instrument_ready_) {
+  if (!orderbook_publisher_ || !instrument_ready_) {
     return true;
   }
-  auto header = make_header(generation(), 0, bus_sequence_++, 0,
+  auto header = make_header(instrument_.instrument_id, generation(), 0,
+                            bus_sequence_++, 0,
                             state() == SessionState::Live
                                 ? utils::md::BookState::Live
                                 : utils::md::BookState::Building);
   auto result =
-      publishers_->order_book().publish_instrument(header, instrument_);
+      orderbook_publisher_->publish_instrument_catalog(header, catalog_);
+  if (result) {
+    result = orderbook_publisher_->publish_instrument(header, instrument_);
+  }
   if (!result) {
     ++metrics_.publish_errors;
     handle_publish_failure(result.message, Clock::now());
@@ -863,7 +991,12 @@ void BinanceSession::handle_publish_failure(
     return;
   }
   handling_publish_failure_ = true;
-  request_resync(reason.empty() ? "market-data publish failed" : reason, now);
+  if (options_.subscribe_orderbook) {
+    request_resync(reason.empty() ? "market-data publish failed" : reason, now);
+  } else {
+    schedule_reconnect(reason.empty() ? "market-data publish failed" : reason,
+                       now);
+  }
   handling_publish_failure_ = false;
 }
 
@@ -960,7 +1093,8 @@ void BinanceSession::tick(Clock::time_point now) noexcept {
     schedule_reconnect(websocket_.error_message(), now);
     return;
   }
-  if (snapshot_deferred_ && snapshot_allowed(websocket_.state())) {
+  if (snapshot_deferred_ && now >= next_snapshot_attempt_ &&
+      snapshot_allowed(websocket_.state())) {
     std::string snapshot_error;
     if (!request_snapshot(now, snapshot_error)) {
       schedule_reconnect(snapshot_error, now);
@@ -978,7 +1112,7 @@ void BinanceSession::tick(Clock::time_point now) noexcept {
   sync_registration(ClientKind::WebSocket);
   sync_registration(ClientKind::Metadata);
   sync_registration(ClientKind::Snapshot);
-  if (publishers_ &&
+  if ((ticker_publisher_ || orderbook_publisher_) &&
       (last_reader_reclaim_ == Clock::time_point{} ||
        now - last_reader_reclaim_ >= std::chrono::seconds(1))) {
     const auto now_ns = static_cast<std::uint64_t>(
@@ -987,21 +1121,25 @@ void BinanceSession::tick(Clock::time_point now) noexcept {
             .count());
     const auto timeout_ns = static_cast<std::uint64_t>(
         std::max<std::int64_t>(1, options_.reader_lease_timeout.count()));
-    (void)publishers_->ticker().reclaim_stale_readers(now_ns, timeout_ns);
-    (void)publishers_->order_book().reclaim_stale_readers(now_ns, timeout_ns);
+    if (ticker_publisher_) {
+      (void)ticker_publisher_->reclaim_stale_readers(now_ns, timeout_ns);
+    }
+    if (orderbook_publisher_) {
+      (void)orderbook_publisher_->reclaim_stale_readers(now_ns, timeout_ns);
+    }
     last_reader_reclaim_ = now;
   }
   if (!poll_reader_changes()) {
     return;
   }
 
-  if (websocket_.state() == network::WebSocketClientState::Open &&
+  if (websocket_.state() == net::WebSocketClientState::Open &&
       now - last_message_ >= options_.idle_timeout) {
     schedule_reconnect("Binance WebSocket idle timeout", now);
     return;
   }
   constexpr auto rotation = std::chrono::hours(23) + std::chrono::minutes(50);
-  if (websocket_.state() == network::WebSocketClientState::Open &&
+  if (websocket_.state() == net::WebSocketClientState::Open &&
       now - opened_at_ >= rotation) {
     ++metrics_.rotations;
     metrics_.rotation_is_seamless = false;
@@ -1010,13 +1148,14 @@ void BinanceSession::tick(Clock::time_point now) noexcept {
 }
 
 bool BinanceSession::poll_reader_changes() noexcept {
-  if (!publishers_) {
+  if (!ticker_publisher_ && !orderbook_publisher_) {
     return true;
   }
-  if (publishers_->ticker().poll_reader_change() && !republish_ticker()) {
+  if (ticker_publisher_ && ticker_publisher_->poll_reader_change() &&
+      !republish_ticker()) {
     return false;
   }
-  if (publishers_->order_book().poll_reader_change() &&
+  if (orderbook_publisher_ && orderbook_publisher_->poll_reader_change() &&
       !republish_order_book()) {
     return false;
   }
@@ -1039,12 +1178,13 @@ void BinanceSession::stop() noexcept {
 }
 
 std::string_view BinanceSession::ticker_segment() const noexcept {
-  return publishers_ ? publishers_->ticker().segment_name() : std::string_view{};
+  return ticker_publisher_ ? ticker_publisher_->segment_name()
+                           : std::string_view{};
 }
 
 std::string_view BinanceSession::orderbook_segment() const noexcept {
-  return publishers_ ? publishers_->order_book().segment_name()
-                     : std::string_view{};
+  return orderbook_publisher_ ? orderbook_publisher_->segment_name()
+                              : std::string_view{};
 }
 
 BinanceSession::Endpoint BinanceSession::websocket_endpoint() const {
@@ -1085,10 +1225,10 @@ std::uint32_t BinanceSession::client_events(ClientKind kind) const noexcept {
 
 SessionManager::SessionManager() {
   std::string error;
-  tls_ = network::make_client_ssl_context(error);
+  tls_ = net::make_client_ssl_context(error);
 }
 
-SessionManager::SessionManager(network::SharedSslContext tls)
+SessionManager::SessionManager(net::SharedSslContext tls)
     : tls_(std::move(tls)) {}
 
 api::Result<BinanceSession *>

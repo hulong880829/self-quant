@@ -4,6 +4,7 @@
 !**/.env.example
 
 # C++ / CMake generated files.
+/build/
 /core/build*/
 /core/build-ninja/
 /core/.cache/
@@ -15,6 +16,8 @@ compile_commands.json
 *.profdata
 /core/core
 /core/core.[0-9]*
+/strategys/depend/
+/strategys/*/build*/
 
 # Go generated files.
 /backend/build/
@@ -22,6 +25,20 @@ compile_commands.json
 /backend/coverage/
 /backend/coverage.out
 /backend/*.test
+/backend/**/*.test
+/backend/logs/
+
+# Accidental Go binaries built beside main.go.
+/backend/*-service
+/backend/cmd/*-service/*-service
+/backend/cmd/api-gateway/api-gateway
+
+# Local MDS runtime configs (keep templates).
+/core/mds/config/*.yaml
+!/core/mds/config/*.example.yaml
+
+# Repository-root coverage output.
+/coverage/
 
 # Node / Next.js generated files.
 /web/node_modules/
@@ -45,7 +62,9 @@ tmp/
 Thumbs.db
 .idea/
 .vscode/
-.cursor/
+.cursor/*
+!.cursor/rules/
+!.cursor/skills/
 *.swp
 *.swo
 *~

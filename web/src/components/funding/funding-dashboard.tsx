@@ -11,6 +11,7 @@ import {
   type LegacyColumnDef,
   useLegacyTable,
 } from "@tanstack/react-table/legacy";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowDown,
   ArrowDownUp,
@@ -27,17 +28,15 @@ import {
 } from "lucide-react";
 
 import { useFundingSnapshot } from "@/components/funding/funding-provider";
+import { FundingOpportunityRanking } from "@/components/funding/funding-opportunity-ranking";
+import { FundingSpreadView } from "@/components/funding/funding-spread-view";
+import { WorkspacePanel } from "@/components/layout/responsive";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import {
+  annualize24h,
+  annualize7d,
   formatCompactNumber,
   formatCurrency,
   formatDateTime,
@@ -45,14 +44,27 @@ import {
   formatPercent,
   formatSettlementCountdown,
   rateColor,
+  resolveFundingRate,
 } from "@/lib/market-format";
+import { fetchFundingHistory } from "@/lib/api/funding";
+import { BasisSpreadPanel } from "@/components/funding/basis-spread-chart";
 import { cn } from "@/lib/utils";
 import type {
   Exchange,
   FundingFilters,
+  FundingHistoryPoint,
   FundingOpportunity,
+  FundingSpread,
   RateDirection,
 } from "@/types/market";
+
+type FundingViewMode = "single" | "spread" | "ranking";
+type FundingListItem =
+  | { kind: "row"; key: string; opportunity: FundingOpportunity }
+  | { kind: "detail"; key: string; opportunity: FundingOpportunity };
+
+const DATA_ROW_HEIGHT_PX = 56;
+const DETAIL_ROW_HEIGHT_PX = 328;
 
 const exchanges: Exchange[] = [
   "Binance",
@@ -79,15 +91,32 @@ const exchangeDot: Record<Exchange, string> = {
   Bitget: "bg-cyan-500",
   Gate: "bg-blue-500",
   Hyperliquid: "bg-emerald-500",
+  Polymarket: "bg-violet-500",
 };
+
+const fundingHeaderDescriptions: Record<string, string> = {
+  annualizedRate: "根据历史已结算资金费线性外推的年化值",
+  annualized24h: "将过去 24 小时已结算资金费累计线性外推至一年",
+  annualized7d: "将过去 7 天已结算资金费累计线性外推至一年",
+};
+
+interface HistoryState {
+  data: FundingHistoryPoint[];
+  loading: boolean;
+  error: string | null;
+}
+
+const HISTORY_CACHE_TTL_MS = 5 * 60_000;
 
 function SortHeader({
   label,
+  description,
   sorted,
   onClick,
   align = "left",
 }: {
   label: string;
+  description?: string;
   sorted: false | "asc" | "desc";
   onClick: () => void;
   align?: "left" | "right";
@@ -101,12 +130,30 @@ function SortHeader({
         "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-medium uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground",
         align === "right" && "w-full justify-end",
       )}
+      title={description}
+      aria-label={description ? `${label}：${description}` : label}
     >
       {label}
+      {description && <Info className="size-3 opacity-55" />}
       <Icon className={cn("size-3", !sorted && "opacity-35")} />
     </button>
   );
 }
+
+const SettlementCountdown = React.memo(function SettlementCountdown({
+  value,
+}: {
+  value: string;
+}) {
+  const [now, setNow] = React.useState(() => Date.now());
+
+  React.useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return <>{formatSettlementCountdown(value, now)}</>;
+});
 
 function RangeFilter({
   label,
@@ -153,10 +200,14 @@ function Filters({
   filters,
   setFilters,
   resultCount,
+  mode,
+  onModeChange,
 }: {
   filters: FundingFilters;
   setFilters: React.Dispatch<React.SetStateAction<FundingFilters>>;
   resultCount: number;
+  mode: FundingViewMode;
+  onModeChange: (mode: FundingViewMode) => void;
 }) {
   const toggleExchange = (exchange: Exchange) => {
     setFilters((current) => ({
@@ -168,10 +219,10 @@ function Filters({
   };
 
   return (
-    <section className="rounded-xl border bg-card/80 shadow-sm backdrop-blur">
-      <div className="flex flex-col gap-4 p-4 xl:flex-row xl:items-end">
+    <section className="min-w-0 rounded-xl border bg-card/80 shadow-sm backdrop-blur">
+      <div className="flex flex-col gap-4 p-4 xl:flex-row xl:flex-wrap xl:items-end">
         <RangeFilter
-          label="持仓名义价值"
+          label={mode === "single" ? "持仓名义价值" : "较小腿持仓"}
           value={filters.minPositionNotional}
           min={0}
           max={50_000_000}
@@ -182,7 +233,7 @@ function Filters({
           }
         />
         <RangeFilter
-          label="日成交额"
+          label={mode === "single" ? "日成交额" : "较小腿日成交额"}
           value={filters.minDailyVolume}
           min={0}
           max={100_000_000}
@@ -192,7 +243,7 @@ function Filters({
             setFilters((current) => ({ ...current, minDailyVolume: value }))
           }
         />
-        <div className="min-w-44">
+        {mode !== "ranking" && <div className="min-w-44">
           <label className="mb-2 block text-xs text-muted-foreground">结算间隔</label>
           <select
             value={filters.intervalHours}
@@ -212,13 +263,15 @@ function Filters({
             <option value={4}>每 4 小时</option>
             <option value={8}>每 8 小时</option>
           </select>
-        </div>
+        </div>}
         <div className="relative min-w-52 flex-[1.25]">
-          <label className="mb-2 block text-xs text-muted-foreground">搜索币种</label>
+          <label className="mb-2 block text-xs text-muted-foreground">
+            {mode === "single" ? "搜索币种" : "搜索币种 / 交易所"}
+          </label>
           <Search className="pointer-events-none absolute bottom-2.5 left-3 size-4 text-muted-foreground" />
           <Input
             value={filters.search}
-            placeholder="BTC、ETH、USDT..."
+            placeholder={mode === "single" ? "BTC、ETH、USDT..." : "BTC、Binance、OKX..."}
             onChange={(event) =>
               setFilters((current) => ({ ...current, search: event.target.value }))
             }
@@ -237,8 +290,34 @@ function Filters({
 
       <div className="flex flex-col gap-3 border-t px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="mr-1 text-xs text-muted-foreground">交易所</span>
-          {exchanges.map((exchange) => {
+          <div
+            className="mr-2 inline-flex items-center rounded-lg border bg-muted/60 p-0.5"
+            aria-label="资金费视图"
+          >
+            {(
+              [
+                ["single", "单所"],
+                ["spread", "跨所"],
+                ["ranking", "机会排名"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                type="button"
+                key={value}
+                onClick={() => onModeChange(value)}
+                className={cn(
+                  "rounded-md px-3 py-1.5 text-xs font-medium transition-all",
+                  mode === value
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {mode !== "ranking" && <span className="mr-1 text-xs text-muted-foreground">交易所</span>}
+          {mode !== "ranking" && exchanges.map((exchange) => {
             const selected =
               filters.exchanges.length === 0 || filters.exchanges.includes(exchange);
             return (
@@ -261,29 +340,30 @@ function Filters({
         </div>
 
         <div className="flex items-center gap-1 rounded-md bg-muted/70 p-1">
-          {(
-            [
-              ["all", "全部费率"],
-              ["positive", "正费率"],
-              ["negative", "负费率"],
-            ] as [RateDirection, string][]
-          ).map(([value, label]) => (
-            <button
-              type="button"
-              key={value}
-              onClick={() =>
-                setFilters((current) => ({ ...current, direction: value }))
-              }
-              className={cn(
-                "rounded px-2.5 py-1 text-xs transition-colors",
-                filters.direction === value
-                  ? "bg-background font-medium text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {label}
-            </button>
-          ))}
+          {mode === "single" &&
+            (
+              [
+                ["all", "全部费率"],
+                ["positive", "正费率"],
+                ["negative", "负费率"],
+              ] as [RateDirection, string][]
+            ).map(([value, label]) => (
+              <button
+                type="button"
+                key={value}
+                onClick={() =>
+                  setFilters((current) => ({ ...current, direction: value }))
+                }
+                className={cn(
+                  "rounded px-2.5 py-1 text-xs transition-colors",
+                  filters.direction === value
+                    ? "bg-background font-medium text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}
+              </button>
+            ))}
           <span className="px-2 font-mono text-[11px] text-muted-foreground">
             {resultCount} 条
           </span>
@@ -293,15 +373,23 @@ function Filters({
   );
 }
 
-function DetailPanel({
+const DetailPanel = React.memo(function DetailPanel({
   opportunity,
-  now,
+  history,
+  historyLoading,
+  historyError,
   compact = false,
 }: {
   opportunity: FundingOpportunity;
-  now: number;
+  history: FundingHistoryPoint[];
+  historyLoading: boolean;
+  historyError: string | null;
   compact?: boolean;
 }) {
+  const displayedFundingRate = resolveFundingRate(
+    opportunity.nextFundingRate,
+    opportunity.currentFundingRate,
+  );
   return (
     <div className={cn("flex h-full flex-col", compact && "overflow-y-auto")}>
       <div className="border-b p-4">
@@ -344,8 +432,11 @@ function DetailPanel({
             </div>
           </div>
           <div>
-            <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-              年化费率
+            <div
+              className="text-[11px] uppercase tracking-wider text-muted-foreground"
+              title="根据历史已结算资金费线性外推的年化值"
+            >
+              历史年化费率
             </div>
             <div
               className={cn(
@@ -366,10 +457,10 @@ function DetailPanel({
         <div className="bg-card p-3">
           <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
             <Clock3 className="size-3" />
-            下次资金费率
+            资金费率
           </div>
-          <div className={cn("mt-1.5 font-mono font-semibold", rateColor(opportunity.nextFundingRate))}>
-            {formatFundingRate(opportunity.nextFundingRate)}
+          <div className={cn("mt-1.5 font-mono font-semibold", rateColor(displayedFundingRate))}>
+            {formatFundingRate(displayedFundingRate)}
           </div>
         </div>
         <div className="bg-card p-3">
@@ -378,7 +469,7 @@ function DetailPanel({
             距离结算
           </div>
           <div className="mt-1.5 font-mono font-semibold">
-            {formatSettlementCountdown(opportunity.nextSettlementAt, now)}
+            <SettlementCountdown value={opportunity.nextSettlementAt} />
           </div>
         </div>
       </div>
@@ -388,22 +479,46 @@ function DetailPanel({
           <h3 className="text-sm font-medium">历史资金费</h3>
           <div className="flex items-center gap-4 font-mono text-xs">
             <span>
-              <span className="mr-1 text-muted-foreground">24H</span>
-              <span className={rateColor(opportunity.cumulative24h)}>
-                {formatPercent(opportunity.cumulative24h)}
+              <span
+                className="mr-1 text-muted-foreground"
+                title="将过去 24 小时已结算资金费累计线性外推至一年"
+              >
+                24H 年化
+              </span>
+              <span className={rateColor(annualize24h(opportunity.cumulative24h))}>
+                {formatPercent(annualize24h(opportunity.cumulative24h), 1)}
               </span>
             </span>
             <span>
-              <span className="mr-1 text-muted-foreground">7D</span>
-              <span className={rateColor(opportunity.cumulative7d)}>
-                {formatPercent(opportunity.cumulative7d)}
+              <span
+                className="mr-1 text-muted-foreground"
+                title="将过去 7 天已结算资金费累计线性外推至一年"
+              >
+                7D 年化
+              </span>
+              <span className={rateColor(annualize7d(opportunity.cumulative7d))}>
+                {formatPercent(annualize7d(opportunity.cumulative7d), 1)}
               </span>
             </span>
           </div>
         </div>
 
         <div className="mt-3 space-y-1">
-          {opportunity.fundingHistory.slice(0, 10).map((point) => (
+          {historyLoading ? (
+            <div className="flex h-20 items-center justify-center text-xs text-muted-foreground">
+              <LoaderCircle className="mr-2 size-3.5 animate-spin" />
+              加载历史资金费
+            </div>
+          ) : historyError ? (
+            <div className="flex h-20 items-center justify-center text-xs text-amber-600 dark:text-amber-300">
+              {historyError}
+            </div>
+          ) : history.length === 0 ? (
+            <div className="flex h-20 items-center justify-center text-xs text-muted-foreground">
+              暂无历史资金费
+            </div>
+          ) : (
+            history.slice(0, 10).map((point) => (
             <div
               key={point.settledAt}
               className="group flex items-center justify-between rounded-md px-2 py-2 font-mono text-xs transition-colors hover:bg-muted/70"
@@ -419,7 +534,8 @@ function DetailPanel({
               </span>
               <span className="text-muted-foreground">{point.settledAt}</span>
             </div>
-          ))}
+            ))
+          )}
         </div>
       </div>
 
@@ -450,11 +566,12 @@ function DetailPanel({
       </div>
     </div>
   );
-}
+});
 
 export function FundingDashboard() {
   const {
     snapshot,
+    spreadSnapshot,
     loading,
     refreshing,
     error,
@@ -465,30 +582,89 @@ export function FundingDashboard() {
     () => snapshot?.data ?? [],
     [snapshot],
   );
+  const fundingSpreads = React.useMemo(
+    () => spreadSnapshot?.data ?? [],
+    [spreadSnapshot],
+  );
+  const [mode, setMode] = React.useState<FundingViewMode>("single");
+  const [rankingResultCount, setRankingResultCount] = React.useState(0);
   const [filters, setFilters] = React.useState<FundingFilters>(defaultFilters);
   const [sorting, setSorting] = React.useState<SortingState>([
     { id: "annualizedRate", desc: true },
   ]);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
-  const [mobileDetailOpen, setMobileDetailOpen] = React.useState(false);
-  const [now, setNow] = React.useState(() => Date.now());
 
-  React.useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
+  const selectOpportunity = React.useCallback(
+    (id: string) => {
+      setSelectedId((current) => (current === id ? null : id));
+    },
+    [],
+  );
 
   const selected = React.useMemo(
-    () =>
-      fundingOpportunities.find((item) => item.id === selectedId) ??
-      fundingOpportunities[0] ??
-      null,
+    () => fundingOpportunities.find((item) => item.id === selectedId) ?? null,
     [fundingOpportunities, selectedId],
   );
+  const historyCache = React.useRef(
+    new Map<string, { data: FundingHistoryPoint[]; loadedAt: number }>(),
+  );
+  const [historyState, setHistoryState] = React.useState<HistoryState>({
+    data: [],
+    loading: false,
+    error: null,
+  });
+
+  React.useEffect(() => {
+    if (!selected) {
+      setHistoryState({ data: [], loading: false, error: null });
+      return;
+    }
+    if (selected.fundingHistory.length > 0) {
+      setHistoryState({
+        data: selected.fundingHistory,
+        loading: false,
+        error: null,
+      });
+      return;
+    }
+    const cached = historyCache.current.get(selected.id);
+    if (cached && Date.now() - cached.loadedAt < HISTORY_CACHE_TTL_MS) {
+      setHistoryState({ data: cached.data, loading: false, error: null });
+      return;
+    }
+    const controller = new AbortController();
+    setHistoryState((current) => ({
+      data: current.data,
+      loading: true,
+      error: null,
+    }));
+    void fetchFundingHistory(
+      selected.exchange,
+      selected.exchangeSymbol,
+      controller.signal,
+    )
+      .then((data) => {
+        historyCache.current.set(selected.id, { data, loadedAt: Date.now() });
+        setHistoryState({ data, loading: false, error: null });
+      })
+      .catch((reason) => {
+        if (controller.signal.aborted) return;
+        setHistoryState({
+          data: [],
+          loading: false,
+          error: reason instanceof Error ? reason.message : "历史资金费加载失败",
+        });
+      });
+    return () => controller.abort();
+  }, [selected]);
 
   const filteredData = React.useMemo(() => {
     const query = filters.search.trim().toLowerCase();
     return fundingOpportunities.filter((item) => {
+      const displayedRate = resolveFundingRate(
+        item.nextFundingRate,
+        item.currentFundingRate,
+      );
       if (
         query &&
         !item.symbol.toLowerCase().includes(query) &&
@@ -512,19 +688,50 @@ export function FundingDashboard() {
       }
       if (
         filters.direction === "positive" &&
-        (item.nextFundingRate === null || item.nextFundingRate <= 0)
+        (displayedRate === null || displayedRate <= 0)
       ) {
         return false;
       }
       if (
         filters.direction === "negative" &&
-        (item.nextFundingRate === null || item.nextFundingRate >= 0)
+        (displayedRate === null || displayedRate >= 0)
       ) {
         return false;
       }
       return true;
     });
   }, [filters, fundingOpportunities]);
+
+  const filteredSpreads = React.useMemo(() => {
+    const query = filters.search.trim().toLowerCase();
+    return fundingSpreads.filter((item: FundingSpread) => {
+      if (
+        query &&
+        !item.symbol.toLowerCase().includes(query) &&
+        !item.longLeg.exchange.toLowerCase().includes(query) &&
+        !item.shortLeg.exchange.toLowerCase().includes(query)
+      ) {
+        return false;
+      }
+      if (item.minPositionNotional < filters.minPositionNotional) return false;
+      if (item.minDailyVolume < filters.minDailyVolume) return false;
+      if (
+        filters.exchanges.length > 0 &&
+        !filters.exchanges.includes(item.longLeg.exchange) &&
+        !filters.exchanges.includes(item.shortLeg.exchange)
+      ) {
+        return false;
+      }
+      if (
+        filters.intervalHours !== "all" &&
+        item.longLeg.settlementIntervalHours !== filters.intervalHours &&
+        item.shortLeg.settlementIntervalHours !== filters.intervalHours
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [filters, fundingSpreads]);
 
   const columns = React.useMemo<LegacyColumnDef<FundingOpportunity>[]>(
     () => [
@@ -559,18 +766,18 @@ export function FundingDashboard() {
         ),
       },
       {
-        accessorKey: "positionQuantity",
-        header: "持仓量",
+        accessorKey: "positionNotional",
+        header: "持仓市值 (USDT)",
         cell: ({ row }) => (
           <div
             className="text-right"
-            title={`美元名义价值 ${formatCurrency(row.original.positionNotional, true)}`}
+            title={`${formatCompactNumber(row.original.positionQuantity)} ${row.original.baseAsset}`}
           >
             <div className="font-mono text-xs">
-              {formatCompactNumber(row.original.positionQuantity)}
+              {formatCurrency(row.original.positionNotional, true)}
             </div>
             <div className="mt-0.5 text-[10px] text-muted-foreground">
-              {row.original.baseAsset}
+              USDT
             </div>
           </div>
         ),
@@ -586,7 +793,7 @@ export function FundingDashboard() {
       },
       {
         accessorKey: "annualizedRate",
-        header: "年化资金费率",
+        header: "历史年化费率",
         cell: ({ row }) => (
           <div
             className={cn(
@@ -605,7 +812,7 @@ export function FundingDashboard() {
         cell: ({ row }) => (
           <div className="text-right">
             <div className="font-mono text-xs">
-              {formatSettlementCountdown(row.original.nextSettlementAt, now)}
+              <SettlementCountdown value={row.original.nextSettlementAt} />
             </div>
             <div className="mt-0.5 text-[10px] text-muted-foreground">
               {row.original.settlementIntervalHours}H 周期
@@ -614,44 +821,54 @@ export function FundingDashboard() {
         ),
       },
       {
-        accessorKey: "nextFundingRate",
-        header: "预计下次费率",
-        cell: ({ row }) => (
-          <div
-            className={cn(
-              "text-right font-mono text-xs font-semibold",
-              rateColor(row.original.nextFundingRate),
-            )}
-          >
-            {formatFundingRate(row.original.nextFundingRate)}
-          </div>
-        ),
+        id: "displayedFundingRate",
+        accessorFn: (row) =>
+          resolveFundingRate(row.nextFundingRate, row.currentFundingRate),
+        header: "资金费率",
+        cell: ({ row }) => {
+          const displayedRate = resolveFundingRate(
+            row.original.nextFundingRate,
+            row.original.currentFundingRate,
+          );
+          return (
+            <div
+              className={cn(
+                "text-right font-mono text-xs font-semibold",
+                rateColor(displayedRate),
+              )}
+            >
+              {formatFundingRate(displayedRate)}
+            </div>
+          );
+        },
       },
       {
-        accessorKey: "cumulative24h",
-        header: "24H 累计",
+        id: "annualized24h",
+        accessorFn: (row) => annualize24h(row.cumulative24h),
+        header: "24H 窗口年化",
         cell: ({ row }) => (
           <div
             className={cn(
               "text-right font-mono text-xs",
-              rateColor(row.original.cumulative24h),
+              rateColor(annualize24h(row.original.cumulative24h)),
             )}
           >
-            {formatPercent(row.original.cumulative24h)}
+            {formatPercent(annualize24h(row.original.cumulative24h), 1)}
           </div>
         ),
       },
       {
-        accessorKey: "cumulative7d",
-        header: "7D 累计",
+        id: "annualized7d",
+        accessorFn: (row) => annualize7d(row.cumulative7d),
+        header: "7D 窗口年化",
         cell: ({ row }) => (
           <div
             className={cn(
               "text-right font-mono text-xs",
-              rateColor(row.original.cumulative7d),
+              rateColor(annualize7d(row.original.cumulative7d)),
             )}
           >
-            {formatPercent(row.original.cumulative7d)}
+            {formatPercent(annualize7d(row.original.cumulative7d), 1)}
           </div>
         ),
       },
@@ -664,7 +881,7 @@ export function FundingDashboard() {
         ),
       },
     ],
-    [now],
+    [],
   );
 
   const table = useLegacyTable({
@@ -674,17 +891,75 @@ export function FundingDashboard() {
     onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
+    getRowId: (row) => row.id,
   });
+  const rows = table.getRowModel().rows;
+  const rowsById = React.useMemo(() => {
+    return new Map(rows.map((row) => [row.original.id, row]));
+  }, [rows]);
+  const listItems = React.useMemo(() => {
+    const items: FundingListItem[] = [];
+    for (const row of rows) {
+      items.push({
+        kind: "row",
+        key: `row-${row.original.id}`,
+        opportunity: row.original,
+      });
+      if (selected?.id === row.original.id) {
+        items.push({
+          kind: "detail",
+          key: `detail-${row.original.id}`,
+          opportunity: row.original,
+        });
+      }
+    }
+    return items;
+  }, [rows, selected]);
+  const tableContainerRef = React.useRef<HTMLDivElement>(null);
+  // TanStack Virtual intentionally exposes imperative functions that React Compiler skips.
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const rowVirtualizer = useVirtualizer({
+    count: listItems.length,
+    getScrollElement: () => tableContainerRef.current,
+    estimateSize: (index) =>
+      listItems[index]?.kind === "detail" ? DETAIL_ROW_HEIGHT_PX : DATA_ROW_HEIGHT_PX,
+    overscan: 10,
+    getItemKey: (index) => listItems[index]?.key ?? index,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0;
+  const paddingBottom =
+    virtualRows.length > 0
+      ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end
+      : 0;
 
   return (
-    <div className="space-y-4">
+    <div className="relative min-w-0 space-y-4">
       <Filters
         filters={filters}
         setFilters={setFilters}
-        resultCount={filteredData.length}
+        resultCount={
+          mode === "single"
+            ? filteredData.length
+            : mode === "spread"
+              ? filteredSpreads.length
+              : rankingResultCount
+        }
+        mode={mode}
+        onModeChange={setMode}
       />
 
-      {(loading || refreshing || error || snapshot?.hasStaleSources) && (
+      {mode !== "ranking" && refreshing && snapshot && !error && (
+        <div
+          className="pointer-events-none absolute right-4 top-3 z-20 inline-flex items-center gap-1.5 rounded-md border bg-background/90 px-2 py-1 text-[11px] text-muted-foreground shadow-sm backdrop-blur"
+          role="status"
+        >
+          <LoaderCircle className="size-3 animate-spin" />
+          后台刷新
+        </div>
+      )}
+
+      {mode !== "ranking" && (loading || error || snapshot?.hasStaleSources) && (
         <div
           className={cn(
             "flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs",
@@ -694,7 +969,7 @@ export function FundingDashboard() {
           )}
         >
           <div className="flex items-center gap-2">
-            {loading || refreshing ? (
+            {loading ? (
               <LoaderCircle className="size-3.5 animate-spin" />
             ) : (
               <Info className="size-3.5" />
@@ -720,8 +995,15 @@ export function FundingDashboard() {
         </div>
       )}
 
-      <div className="grid min-h-[650px] overflow-hidden rounded-xl border bg-card shadow-sm xl:grid-cols-[minmax(0,1fr)_340px] 2xl:grid-cols-[minmax(0,1fr)_380px]">
-        <div className="min-w-0 overflow-x-auto">
+      {mode === "single" ? (
+      <WorkspacePanel
+        className="grid-cols-[minmax(0,1fr)_380px]"
+      >
+        <div
+          ref={tableContainerRef}
+          data-wide-table-scroll
+          className="min-w-0 overflow-auto"
+        >
           <table className="w-full min-w-[1050px] border-collapse">
             <thead className="sticky top-0 z-10 bg-muted/80 backdrop-blur">
               {table.getHeaderGroups().map((headerGroup) => (
@@ -740,6 +1022,7 @@ export function FundingDashboard() {
                         {header.isPlaceholder ? null : header.column.getCanSort() ? (
                           <SortHeader
                             label={String(header.column.columnDef.header)}
+                            description={fundingHeaderDescriptions[header.id]}
                             sorted={header.column.getIsSorted()}
                             onClick={() => header.column.toggleSorting()}
                             align={rightAligned ? "right" : "left"}
@@ -757,34 +1040,65 @@ export function FundingDashboard() {
               ))}
             </thead>
             <tbody>
-              {table.getRowModel().rows.length > 0 ? (
-                table.getRowModel().rows.map((row) => (
-                  <tr
-                    key={row.id}
-                    tabIndex={0}
-                    onClick={() => {
-                      setSelectedId(row.original.id);
-                      setMobileDetailOpen(true);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        setSelectedId(row.original.id);
-                        setMobileDetailOpen(true);
-                      }
-                    }}
-                    className={cn(
-                      "cursor-pointer border-b transition-colors last:border-b-0 hover:bg-muted/45 focus-visible:bg-muted focus-visible:outline-none",
-                      selected?.id === row.original.id &&
-                        "bg-primary/[0.055] hover:bg-primary/[0.075]",
-                    )}
-                  >
-                    {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="h-14 px-3">
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
-                  </tr>
-                ))
+              {rows.length > 0 ? (
+                <>
+                  {paddingTop > 0 && (
+                    <tr aria-hidden="true">
+                      <td colSpan={columns.length} style={{ height: paddingTop }} />
+                    </tr>
+                  )}
+                  {virtualRows.map((virtualRow) => {
+                    const item = listItems[virtualRow.index];
+                    if (!item) return null;
+                    if (item.kind === "detail") {
+                      return (
+                        <tr
+                          key={item.key}
+                          className="border-b bg-muted/20 last:border-b-0"
+                        >
+                          <td colSpan={columns.length} className="px-4 py-3">
+                            <BasisSpreadPanel
+                              venue={item.opportunity.exchange}
+                              baseAsset={item.opportunity.baseAsset}
+                              quoteAsset={item.opportunity.quoteAsset}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    }
+                    const row = rowsById.get(item.opportunity.id);
+                    if (!row) return null;
+                    return (
+                      <tr
+                        key={item.key}
+                        tabIndex={0}
+                        onClick={() => selectOpportunity(item.opportunity.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            selectOpportunity(item.opportunity.id);
+                          }
+                        }}
+                        className={cn(
+                          "cursor-pointer border-b transition-colors last:border-b-0 hover:bg-muted/45 focus-visible:bg-muted focus-visible:outline-none",
+                          selected?.id === item.opportunity.id &&
+                            "bg-primary/[0.055] hover:bg-primary/[0.075]",
+                        )}
+                      >
+                        {row.getVisibleCells().map((cell) => (
+                          <td key={cell.id} className="h-14 px-3">
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                  {paddingBottom > 0 && (
+                    <tr aria-hidden="true">
+                      <td colSpan={columns.length} style={{ height: paddingBottom }} />
+                    </tr>
+                  )}
+                </>
               ) : (
                 <tr>
                   <td colSpan={columns.length} className="h-72 text-center">
@@ -814,16 +1128,29 @@ export function FundingDashboard() {
           </table>
         </div>
 
-        <aside className="hidden border-l bg-card xl:block">
+        <aside className="border-l bg-card">
           {selected ? (
-            <DetailPanel opportunity={selected} now={now} />
+            <DetailPanel
+              opportunity={selected}
+              history={historyState.data}
+              historyLoading={historyState.loading}
+              historyError={historyState.error}
+            />
           ) : (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
               选择合约后查看详情
             </div>
           )}
         </aside>
-      </div>
+      </WorkspacePanel>
+      ) : mode === "spread" ? (
+        <FundingSpreadView data={filteredSpreads} loading={loading} />
+      ) : (
+        <FundingOpportunityRanking
+          filters={filters}
+          onResultCountChange={setRankingResultCount}
+        />
+      )}
 
       <div className="flex items-center justify-between px-1 text-[11px] text-muted-foreground">
         <span>实时快照仅供研究参考，不构成投资建议</span>
@@ -836,19 +1163,6 @@ export function FundingDashboard() {
         </span>
       </div>
 
-      {selected && (
-        <Sheet open={mobileDetailOpen} onOpenChange={setMobileDetailOpen}>
-          <SheetContent className="w-full overflow-y-auto p-0 sm:max-w-md xl:hidden">
-            <SheetHeader className="sr-only">
-              <SheetTitle>{selected.symbol} 资金费详情</SheetTitle>
-              <SheetDescription>
-                展示当前合约的费率、历史结算与价格信息
-              </SheetDescription>
-            </SheetHeader>
-            <DetailPanel opportunity={selected} now={now} compact />
-          </SheetContent>
-        </Sheet>
-      )}
     </div>
   );
 }

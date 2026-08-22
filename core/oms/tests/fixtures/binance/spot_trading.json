@@ -1,0 +1,66 @@
+{
+  "venue": "binance",
+  "product": "spot",
+  "retrieval_date": "2026-08-14",
+  "status": "doc-derived-unverified-live",
+  "verification_tier": "doc-derived-unverified-live",
+  "source_url": "https://developers.binance.com/docs/binance-spot-api-docs/rest-api/trading-endpoints",
+  "fixtures": [
+    {
+      "id": "binance.spot.place_order.ack.v1",
+      "event": "place_order",
+      "request": {
+        "method": "POST",
+        "path": "/api/v3/order",
+        "parameters": {
+          "symbol": "BTCUSDT",
+          "side": "BUY",
+          "type": "LIMIT",
+          "timeInForce": "GTC",
+          "quantity": "0.10000000",
+          "price": "10000.00000000",
+          "newClientOrderId": "myOrder1",
+          "timestamp": 1499827319559
+        }
+      },
+      "response": {
+        "symbol": "BTCUSDT",
+        "orderId": 28,
+        "orderListId": -1,
+        "clientOrderId": "6gCrw2kRUAF9CvJDGP16IP",
+        "transactTime": 1507725176595
+      }
+    },
+    {
+      "id": "binance.spot.cancel_order.v1",
+      "event": "cancel_order",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/v3/order",
+        "parameters": {
+          "symbol": "BTCUSDT",
+          "orderId": 28,
+          "timestamp": 1499827319559
+        }
+      },
+      "response": {
+        "symbol": "BTCUSDT",
+        "origClientOrderId": "myOrder1",
+        "orderId": 28,
+        "orderListId": -1,
+        "clientOrderId": "cancelMyOrder1",
+        "transactTime": 1507725176595,
+        "price": "10000.00000000",
+        "origQty": "0.10000000",
+        "executedQty": "0.00000000",
+        "origQuoteOrderQty": "0.00000000",
+        "cummulativeQuoteQty": "0.00000000",
+        "status": "CANCELED",
+        "timeInForce": "GTC",
+        "type": "LIMIT",
+        "side": "BUY",
+        "selfTradePreventionMode": "NONE"
+      }
+    }
+  ]
+}

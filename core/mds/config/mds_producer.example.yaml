@@ -1,0 +1,203 @@
+# 生产者共享内存配置。策略使用 per_symbol；宽 universe 可使用 multiplex。
+shared_memory:
+  prefix: /selfquant.mds                # Segment 前缀，必须以 / 开头
+  backend: POSIX_SHM                    # POSIX_SHM 或 HUGETLBFS
+  mode: OVERWRITE_OLDEST                # OVERWRITE_OLDEST 或 LOSSLESS
+  hugetlbfs_mount: /dev/hugepages       # HUGETLBFS 挂载目录
+  ring_bytes: 8388608                    # Ring 数据区，必须是 2 的幂
+  max_record_bytes: 65536                # 单条记录上限，不得超过 ring_bytes
+  max_readers: 32                        # 每个 Ring 的消费者上限，最大 64
+  reader_lease_timeout_ns: 5000000000    # 消费者心跳租约，单位纳秒
+  allow_hugepage_fallback: false         # 大页不可用时是否回退 POSIX SHM
+  unlink_on_shutdown: false              # 正常退出是否删除 Segment
+  ring_layout: per_symbol                # per_symbol | multiplex | both
+  shard_count: 1                         # multiplex 分片数，按 instrument_id 取模
+  multiplex_ring_bytes: 67108864         # 每个 multiplex shard 的数据区
+
+capacity:
+  max_instruments: 4096
+  max_rings: 4096
+  max_total_ring_bytes: 17179869184
+
+order_book:
+  # 单位是价格 tick 格数，不是行情档位数。例如 tick_size=0.1 时，
+  # 8192 个 tick 覆盖 819.2 的价格带；过小会导致价格移动时频繁重同步。
+  default_ladder_ticks_per_side: 8192
+  max_ladder_ticks_per_side: 16384
+  default_price_band_bps: 10            # 参考价两侧至少覆盖 10bp（0.1%）
+
+# 每个 (venue, product) 配置一组可复用的 WebSocket 分片。
+# max_symbols_per_connection 仍是 producer 总容量门禁；max_symbols_per_ws
+# 仅控制单条 WebSocket 的 canonical symbol 数，0/省略表示不分片。
+venues:
+  - venue: binance
+    product: SPOT
+    websocket_endpoint: wss://stream.binance.com:9443
+    rest_endpoint: https://api.binance.com
+    protocol: JSON
+    redundant_ab: false                  # 本阶段尚未实现 A/B 冗余
+    allow_json_fallback: true
+    max_symbols_per_ws: 450              # ticker/orderbook 始终留在同一分片
+
+  - venue: binance
+    product: PERPETUAL                   # Binance USD-M 永续
+    websocket_endpoint: wss://fstream.binance.com
+    rest_endpoint: https://fapi.binance.com
+    protocol: JSON
+    redundant_ab: false
+
+  - venue: okx
+    product: SPOT
+    websocket_endpoint: wss://ws.okx.com:8443/ws/v5/public
+    rest_endpoint: https://www.okx.com
+    protocol: JSON
+    # 默认 books-l2-tbt(10ms) 时必须配置以下环境变量引用：
+    # auth:
+    #   api_key_env: OKX_MDS_API_KEY
+    #   secret_env: OKX_MDS_SECRET
+    #   passphrase_env: OKX_MDS_PASSPHRASE
+
+  - venue: bybit
+    product: PERPETUAL
+    websocket_endpoint: wss://stream.bybit.com/v5/public/linear
+    rest_endpoint: https://api.bybit.com
+    protocol: JSON
+
+  - venue: bitget
+    product: PERPETUAL
+    websocket_endpoint: wss://ws.bitget.com/v2/ws/public
+    rest_endpoint: https://api.bitget.com
+    protocol: JSON
+
+  - venue: gate
+    product: SPOT
+    websocket_endpoint: wss://api.gateio.ws/ws/v4/
+    rest_endpoint: https://api.gateio.ws
+    protocol: JSON
+
+  - venue: hyperliquid
+    product: PERPETUAL
+    websocket_endpoint: wss://api.hyperliquid.xyz/ws
+    rest_endpoint: https://api.hyperliquid.xyz
+    protocol: JSON
+
+  # Polymarket 建议首次使用独立 producer 与独立 shared_memory.prefix。
+  # - venue: polymarket
+  #   product: BINARY_OPTION
+  #   websocket_endpoint: wss://ws-subscriptions-clob.polymarket.com/ws/market
+  #   discovery_endpoint: https://gamma-api.polymarket.com
+  #   protocol: JSON
+  #   max_symbols_per_connection: 16
+
+# 相同 (venue, product) 按 canonical symbol 确定性分配 WebSocket。
+# 同一 symbol 的 ticker 和 orderbook 共用连接，但发布到各自的 SHM Ring。
+subscriptions:
+  # Product 级发现示例。启用前将 shared_memory.ring_layout 改为 multiplex；
+  # per_symbol/both 模式必须显式设置 max_symbols，防止创建海量 SHM。
+  # - stream: ticker
+  #   venue: binance
+  #   product: PERPETUAL
+  #   discovery:
+  #     quote_assets: [USDT]
+  #     symbol_regex: '^[A-Z0-9]+USDT$'
+  #     minimum_turnover: 0
+  #     # max_symbols: 100
+
+  - stream: ticker                       # 低延迟 BBO Ring
+    symbol: BTCUSDT
+    product: PERPETUAL
+
+  - stream: orderbook
+    symbol: BTCUSDT
+    product: PERPETUAL
+    depth: 1000                          # USD-M REST 初始化快照档位
+    ladder_ticks_per_side: 8192
+    update_interval_ms: 100              # USD-M 最快为 100ms
+
+  - stream: orderbook                    # orderbook-only：不创建 ticker Ring
+    symbol: SOLUSDT
+    product: PERPETUAL
+    depth: 1000                          # USD-M 最大 1000
+    ladder_ticks_per_side: 8192
+    update_interval_ms: 100              # USD-M 支持 100、250 或 500
+
+  - stream: ticker                       # ticker-only：不创建 orderbook Ring
+    symbol: ETHUSDT
+    product: PERPETUAL
+
+  # OKX 未写 orderbook_channel 时默认 books-l2-tbt(10ms)，需要登录和
+  # VIP 权限。这里显式使用无需登录的 books(100ms)，便于示例直接校验。
+  - venue: okx
+    stream: ticker
+    symbol: BTCUSDT
+    product: SPOT
+  - venue: okx
+    stream: orderbook
+    symbol: BTCUSDT
+    product: SPOT
+    orderbook_channel: books
+    ladder_ticks_per_side: 8192
+
+  # Bybit ticker 来源 orderbook.1(10ms)，orderbook 默认
+  # orderbook.50(20ms)。
+  - venue: bybit
+    stream: ticker
+    symbol: BTCUSDT
+    product: PERPETUAL
+  - venue: bybit
+    stream: orderbook
+    symbol: BTCUSDT
+    product: PERPETUAL
+
+  # Bitget ticker 来源 books1(10ms)，完整 orderbook 为 books(150ms)。
+  - venue: bitget
+    stream: ticker
+    symbol: BTCUSDT
+    product: PERPETUAL
+  - venue: bitget
+    stream: orderbook
+    symbol: BTCUSDT
+    product: PERPETUAL
+
+  # Gate 支持原生 interval 参数；缺省即最快 20ms/20档。
+  - venue: gate
+    stream: ticker
+    symbol: BTCUSDT
+    product: SPOT
+  - venue: gate
+    stream: orderbook
+    symbol: BTCUSDT
+    product: SPOT
+    update_interval_ms: 20
+
+  # Hyperliquid l2Book slow 为满足 top-10 的最快 20档 image。
+  - venue: hyperliquid
+    stream: ticker
+    symbol: BTCUSDT
+    product: PERPETUAL
+  - venue: hyperliquid
+    stream: orderbook
+    symbol: BTCUSDT
+    product: PERPETUAL
+
+  # 一个 BTC5M 逻辑订阅会展开为稳定的 BTC5MUP/BTC5MDOWN 两个
+  # instrument；ticker 与 orderbook 可分别配置并自动合并。
+  # - venue: polymarket
+  #   stream: ticker
+  #   symbol: BTC5M
+  #   product: BINARY_OPTION
+  #   polymarket:
+  #     asset: BTC
+  #     period: 5m
+  #     outcomes: BOTH
+  #     prediscovery_seconds: 30
+  #     rollover_grace_seconds: 2
+  #     resolver_timeout_ms: 3000
+  # - venue: polymarket
+  #   stream: orderbook
+  #   symbol: BTC5M
+  #   product: BINARY_OPTION
+  #   polymarket:
+  #     asset: BTC
+  #     period: 5m
+  #     outcomes: BOTH
