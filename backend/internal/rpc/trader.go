@@ -262,9 +262,12 @@ func (s *TraderServer) GetArbitrageCombination(
 			Id: execution.ID, Direction: execution.Direction, Status: execution.Status,
 			TriggerSpreadBps: trigger, TargetBaseQuantity: execution.TargetBaseQuantity,
 			FilledBaseQuantity: filled, DeltaNotional: execution.DeltaNotional,
-			ErrorMessage: execution.ErrorMessage,
-			CreatedAt:    optionalTraderTimestamp(execution.CreatedAt),
-			UpdatedAt:    optionalTraderTimestamp(execution.UpdatedAt),
+			ErrorMessage:      execution.ErrorMessage,
+			CreatedAt:         optionalTraderTimestamp(execution.CreatedAt),
+			UpdatedAt:         optionalTraderTimestamp(execution.UpdatedAt),
+			RequestedNotional: execution.RequestedNotional,
+			PositionEffect:    execution.PositionEffect,
+			ReduceOnly:        execution.ReduceOnly,
 		})
 	}
 	for _, event := range events {
@@ -384,13 +387,17 @@ func arbitrageCombinationToProto(item trader.ArbitrageCombination) *traderv1.Arb
 		TargetNotional: item.TargetNotional, OrderNotional: item.OrderNotional,
 		MaxDeltaNotional: item.MaxDeltaNotional, ExecutionMode: item.ExecutionMode,
 		MakerLeg: item.MakerLeg, Status: item.Status,
-		CompletedNotional:   item.CompletedNotional,
-		CurrentAskSpreadBps: item.CurrentAskSpreadBps,
-		CurrentBidSpreadBps: item.CurrentBidSpreadBps,
-		MarketDataStale:     item.MarketDataStale, ErrorMessage: item.ErrorMessage,
-		CreatedAt: optionalTraderTimestamp(item.CreatedAt),
-		UpdatedAt: optionalTraderTimestamp(item.UpdatedAt),
-		ClosedAt:  optionalTraderTimestamp(item.ClosedAt),
+		PositionNotional:           item.PositionNotional,
+		CumulativeTurnoverNotional: item.CumulativeTurnoverNotional,
+		CurrentAskSpreadBps:        item.CurrentAskSpreadBps,
+		CurrentBidSpreadBps:        item.CurrentBidSpreadBps,
+		MarketDataStale:            item.MarketDataStale, ErrorMessage: item.ErrorMessage,
+		ConsecutiveFailures: int32(item.ConsecutiveFailures),
+		NextRetryAt:         optionalTraderTimestamp(item.NextRetryAt),
+		PositionUncertain:   item.PositionUncertain,
+		CreatedAt:           optionalTraderTimestamp(item.CreatedAt),
+		UpdatedAt:           optionalTraderTimestamp(item.UpdatedAt),
+		ClosedAt:            optionalTraderTimestamp(item.ClosedAt),
 	}
 }
 

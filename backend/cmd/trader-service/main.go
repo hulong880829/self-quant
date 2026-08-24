@@ -87,7 +87,10 @@ func main() {
 		cfg.TwapCleanupBatch, cfg.TwapCleanupMaxBatches, logger,
 	)
 	go twapCleanup.Run(ctx)
-	marketData, err := marketdata.New(marketdata.Options{StaleAfter: cfg.ArbitrageBBOStale})
+	marketData, err := marketdata.New(marketdata.Options{
+		StaleAfter: cfg.ArbitrageBBOStale,
+		Logger:     logger,
+	})
 	if err != nil {
 		logger.Error("arbitrage market data startup failed", "error", err)
 		os.Exit(1)

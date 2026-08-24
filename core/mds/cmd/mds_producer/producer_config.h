@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -54,6 +55,7 @@ struct VenueEndpoint {
   std::uint32_t snapshot_max_consecutive_failures{10};
   std::uint32_t snapshot_rate_limit_backoff_ms{60'000};
   std::uint32_t snapshot_ban_backoff_ms{300'000};
+  std::uint32_t recovery_deadline_ms{30'000};
   std::uint32_t max_continuous_recovery_ms{300'000};
 };
 
@@ -105,6 +107,23 @@ struct ProducerConfig {
   std::size_t max_instruments{4096};
   std::size_t max_rings{4096};
   std::uint64_t max_total_ring_bytes{16ULL << 30U};
+};
+
+class DiscoveryPaginationGuard {
+ public:
+  static constexpr std::size_t maximum_pages = 64;
+
+  [[nodiscard]] bool begin_page(std::string &error);
+  [[nodiscard]] bool accept_page(
+      bool has_symbols, std::string next_cursor, std::string &error);
+  [[nodiscard]] bool complete() const noexcept { return complete_; }
+  [[nodiscard]] std::string_view cursor() const noexcept { return cursor_; }
+
+ private:
+  std::size_t pages_{};
+  std::string cursor_;
+  std::set<std::string> seen_cursors_;
+  bool complete_{};
 };
 
 [[nodiscard]] api::Result<ProducerConfig>

@@ -36,9 +36,14 @@ bool VenueIngest::sequence_ok(
                                  utils::md::MessageType::InstrumentUpdate) ||
       header.message_type == static_cast<std::uint16_t>(
                                  utils::md::MessageType::InstrumentCatalog);
-  return instrument || header.instrument_id != selected_instrument_id_ ||
-         !have_source_sequence_ ||
-         header.book_generation != source_generation_ ||
+  if (instrument || header.instrument_id != selected_instrument_id_) {
+    return true;
+  }
+  if (source_generation_ != 0 &&
+      header.book_generation != source_generation_) {
+    return false;
+  }
+  return !have_source_sequence_ ||
          header.source_seq >= last_source_sequence_;
 }
 
@@ -57,6 +62,27 @@ void VenueIngest::accept_sequence(
     source_generation_ = header.book_generation;
     have_source_sequence_ = true;
   }
+}
+
+void VenueIngest::reset_generation_state(
+    std::uint32_t generation) noexcept {
+  have_bbo_ = false;
+  snapshot_active_ = false;
+  snapshot_bid_count_ = 0;
+  snapshot_ask_count_ = 0;
+  top_bid_count_ = 0;
+  top_ask_count_ = 0;
+  snapshot_bridge_sequence_ = 0;
+  bbo_ingress_ns_ = 0;
+  book_ingress_ns_ = 0;
+  book_exchange_ts_ns_ = 0;
+  bridge_.reset();
+  book_->Reset(0, 0, 0, generation);
+  book_generation_ = generation;
+  book_dirty_ = false;
+  last_source_sequence_ = 0;
+  source_generation_ = generation;
+  have_source_sequence_ = false;
 }
 
 IngestResult VenueIngest::consume(
@@ -112,6 +138,16 @@ IngestResult VenueIngest::consume(
     if (selected_instrument_id_ == 0 && selector_matches) {
       selected_instrument_id_ = record.header.instrument_id;
     }
+    if (record.header.instrument_id == selected_instrument_id_) {
+      if (source_generation_ != 0 &&
+          header.book_generation < source_generation_) {
+        accept_sequence(ring_sequence, header);
+        return IngestResult::Ignored;
+      }
+      if (header.book_generation > source_generation_) {
+        reset_generation_state(header.book_generation);
+      }
+    }
     accept_sequence(ring_sequence, header);
     return IngestResult::Ignored;
   }
@@ -136,6 +172,16 @@ IngestResult VenueIngest::consume(
       accept_sequence(ring_sequence, header);
       return IngestResult::Ignored;
     }
+    if (source_generation_ != 0 &&
+        header.book_generation < source_generation_) {
+      accept_sequence(ring_sequence, header);
+      return IngestResult::Ignored;
+    }
+    const bool generation_advanced =
+        header.book_generation > source_generation_;
+    if (generation_advanced) {
+      reset_generation_state(header.book_generation);
+    }
     const bool changed =
         have_instrument_ &&
         (instrument_.instrument_id != record.instrument.instrument_id ||
@@ -156,15 +202,11 @@ IngestResult VenueIngest::consume(
          instrument_.canonical_symbol !=
              record.instrument.canonical_symbol ||
          instrument_.venue_symbol != record.instrument.venue_symbol);
-    instrument_changed_ = changed;
+    instrument_changed_ = changed || generation_advanced;
     instrument_ = record.instrument;
     have_instrument_ = instrument_.tick_size > 0;
     if (changed) {
-      have_bbo_ = false;
-      snapshot_active_ = false;
-      bridge_.reset();
-      book_->Reset(0, 0, 0, header.book_generation);
-      ++book_generation_;
+      reset_generation_state(header.book_generation);
     }
     if (have_instrument_ && !bridge_) {
       bridge_.emplace(

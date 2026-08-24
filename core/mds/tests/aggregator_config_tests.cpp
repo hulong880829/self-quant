@@ -25,6 +25,8 @@ int main() {
       mds::aggregator::load_config(MDS_AGGREGATOR_EXAMPLE_CONFIG);
   assert(loaded);
   assert(loaded.value.book_count == 1);
+  assert(loaded.value.bbo_ring.ring_bytes == (4U << 20U));
+  assert(loaded.value.orderbook_ring.ring_bytes == (4U << 20U));
   const auto &book = loaded.value.books[0];
   assert(book.member_count == 6);
   assert(book.enable_bbo);
@@ -42,6 +44,43 @@ int main() {
   assert(mds::aggregator::input_segment_name(
              loaded.value, book, book.members[5], "ticker") ==
          "/selfquant.mds.hyperliquid_perp.btcusdc.ticker.2");
+
+  const auto default_ring = write_temp(
+      "shared_memory:\n"
+      "  prefix: /test\n"
+      "  output:\n"
+      "    max_record_bytes: 32768\n"
+      "books:\n"
+      "  - symbol: BTCUSDT\n"
+      "    product: PERPETUAL\n"
+      "    base_asset: BTC\n"
+      "    quote_asset: USDT\n"
+      "    members:\n"
+      "      - venue: binance\n",
+      "default-ring");
+  const auto loaded_default_ring =
+      mds::aggregator::load_config(default_ring.string());
+  assert(loaded_default_ring);
+  assert(loaded_default_ring.value.bbo_ring.ring_bytes == (4U << 20U));
+
+  const auto production_ring = write_temp(
+      "shared_memory:\n"
+      "  prefix: /test\n"
+      "  output:\n"
+      "    ring_bytes: 33554432\n"
+      "    max_record_bytes: 32768\n"
+      "books:\n"
+      "  - symbol: BTCUSDT\n"
+      "    product: PERPETUAL\n"
+      "    base_asset: BTC\n"
+      "    quote_asset: USDT\n"
+      "    members:\n"
+      "      - venue: binance\n",
+      "production-ring");
+  const auto loaded_production_ring =
+      mds::aggregator::load_config(production_ring.string());
+  assert(loaded_production_ring);
+  assert(loaded_production_ring.value.bbo_ring.ring_bytes == (32U << 20U));
 
   const auto unknown =
       write_temp("shared_memory:\n  unexpected: true\nbooks: []\n",
@@ -209,6 +248,8 @@ int main() {
   assert(!mds::aggregator::load_config(duplicate_output.string()));
 
   std::filesystem::remove(unknown);
+  std::filesystem::remove(default_ring);
+  std::filesystem::remove(production_ring);
   std::filesystem::remove(bad_quote);
   std::filesystem::remove(bbo_only);
   std::filesystem::remove(book_only);

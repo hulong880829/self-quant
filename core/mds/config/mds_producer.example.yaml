@@ -38,6 +38,8 @@ venues:
     redundant_ab: false                  # 本阶段尚未实现 A/B 冗余
     allow_json_fallback: true
     max_symbols_per_ws: 450              # ticker/orderbook 始终留在同一分片
+    recovery_deadline_ms: 30000           # 有恢复进展时滚动延长
+    max_continuous_recovery_ms: 300000    # 最终进程失败兜底
 
   - venue: binance
     product: PERPETUAL                   # Binance USD-M 永续
@@ -101,6 +103,9 @@ subscriptions:
   #     quote_assets: [USDT]
   #     symbol_regex: '^[A-Z0-9]+USDT$'
   #     minimum_turnover: 0
+  #     # 过去 24h、以 quote asset 计价的成交额整数下限；小数向下取整。
+  #     # 大于 0 时启动阶段额外请求 ticker，缺失/零值排除；0 表示不请求、
+  #     # 不按成交额过滤。
   #     # max_symbols: 100
 
   - stream: ticker                       # 低延迟 BBO Ring

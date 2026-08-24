@@ -19,6 +19,7 @@ export interface BasisSpreadSummary {
 
 export interface BasisSpreadHistory {
   venue: string;
+  compareVenue?: string;
   baseAsset: string;
   quoteAsset: string;
   canonicalSymbol: string;
@@ -123,6 +124,10 @@ export function mapBasisSpreadHistory(value: unknown): BasisSpreadHistory {
   const summary = record(item.summary, "response.summary");
   return {
     venue: text(item.venue, "response.venue"),
+    compareVenue:
+      item.compareVenue === undefined || item.compareVenue === ""
+        ? undefined
+        : text(item.compareVenue, "response.compareVenue"),
     baseAsset: text(item.baseAsset, "response.baseAsset"),
     quoteAsset: text(item.quoteAsset, "response.quoteAsset"),
     canonicalSymbol: text(item.canonicalSymbol, "response.canonicalSymbol"),
@@ -146,9 +151,14 @@ function historyUrl(
   baseAsset: string,
   quoteAsset: string,
   range: BasisSpreadRange,
+  compareVenue?: string,
 ) {
   const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(/\/+$/, "");
-  return `${baseUrl}/api/v1/basis-spreads/${encodeURIComponent(venue.toLowerCase())}/${encodeURIComponent(baseAsset.toUpperCase())}/${encodeURIComponent(quoteAsset.toUpperCase())}/history?range=${range}`;
+  const query = new URLSearchParams({ range });
+  if (compareVenue) {
+    query.set("compareVenue", compareVenue.toLowerCase());
+  }
+  return `${baseUrl}/api/v1/basis-spreads/${encodeURIComponent(venue.toLowerCase())}/${encodeURIComponent(baseAsset.toUpperCase())}/${encodeURIComponent(quoteAsset.toUpperCase())}/history?${query.toString()}`;
 }
 
 export async function fetchBasisSpreadHistory(
@@ -158,12 +168,13 @@ export async function fetchBasisSpreadHistory(
   range: BasisSpreadRange,
   etag?: string | null,
   signal?: AbortSignal,
+  compareVenue?: string,
 ): Promise<BasisSpreadFetchResult> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (etag) {
     headers["If-None-Match"] = etag;
   }
-  const response = await fetch(historyUrl(venue, baseAsset, quoteAsset, range), {
+  const response = await fetch(historyUrl(venue, baseAsset, quoteAsset, range, compareVenue), {
     method: "GET",
     headers,
     cache: "no-store",

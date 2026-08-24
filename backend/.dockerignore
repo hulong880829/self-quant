@@ -1,0 +1,9 @@
+.git
+.gitignore
+build
+**/*.log
+**/*~
+.dockerignore
+deploy/clickhouse/certs/*.pem
+deploy/clickhouse/certs/*.key
+deploy/clickhouse/certs/*.crt

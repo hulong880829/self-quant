@@ -68,22 +68,23 @@ func (a *bitgetAdapter) PlaceOrder(ctx context.Context, credentials Credentials,
 		timeInForce = "ioc"
 	}
 	body := map[string]string{
-		"category":    bitgetCategory(request.Instrument),
-		"symbol":      request.Instrument.ExchangeSymbol,
-		"side":        request.Side,
-		"orderType":   request.OrderType,
-		"qty":         request.Quantity,
-		"clientOid":   request.ClientOrderID,
-		"timeInForce": timeInForce,
+		"category":  bitgetCategory(request.Instrument),
+		"symbol":    request.Instrument.ExchangeSymbol,
+		"side":      request.Side,
+		"orderType": request.OrderType,
+		"qty":       request.Quantity,
+		"clientOid": request.ClientOrderID,
 	}
 	if request.OrderType == "limit" {
 		body["price"] = request.Price
+		body["timeInForce"] = timeInForce
 	}
 	if request.Instrument.ContractType != "spot" {
-		if request.Side == "sell" {
-			body["posSide"] = "short"
+		body["marginMode"] = "crossed"
+		if request.ReduceOnly {
+			body["reduceOnly"] = "yes"
 		} else {
-			body["posSide"] = "long"
+			body["reduceOnly"] = "no"
 		}
 	}
 	raw, err := a.signed(ctx, http.MethodPost, "/api/v3/trade/place-order", credentials, compactJSON(body), nil)

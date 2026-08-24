@@ -53,6 +53,32 @@ bool append_url_component(std::string &target,
   return true;
 }
 
+bool valid_encoded_cursor(std::string_view value) noexcept {
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    const char raw = value[index];
+    const auto character = static_cast<unsigned char>(raw);
+    const bool unreserved =
+        (character >= 'A' && character <= 'Z') ||
+        (character >= 'a' && character <= 'z') ||
+        (character >= '0' && character <= '9') ||
+        raw == '-' || raw == '.' || raw == '_' || raw == '~';
+    if (unreserved) {
+      continue;
+    }
+    const auto is_hex = [](char value) {
+      return (value >= '0' && value <= '9') ||
+             (value >= 'A' && value <= 'F') ||
+             (value >= 'a' && value <= 'f');
+    };
+    if (raw != '%' || index + 2 >= value.size() ||
+        !is_hex(value[index + 1]) || !is_hex(value[index + 2])) {
+      return false;
+    }
+    index += 2;
+  }
+  return true;
+}
+
 bool valid_topic_component(std::string_view value) noexcept {
   if (value.empty()) {
     return false;
@@ -484,6 +510,144 @@ class BybitAdapter final : public VenueAdapter {
     request.target = "/v5/market/instruments-info?category=";
     request.target.append(category(product_));
     return request;
+  }
+
+  [[nodiscard]] HttpRequestSpec
+  discovery_metadata_request(std::string_view cursor) const override {
+    auto request = metadata_request();
+    if (product_ != utils::md::ProductType::Perpetual) {
+      return request;
+    }
+    request.target.append("&limit=1000");
+    if (!cursor.empty()) {
+      request.target.append("&cursor=");
+      request.target.append(cursor);
+    }
+    return request;
+  }
+
+  bool discovery_metadata_next_cursor(
+      std::string_view json, std::string &cursor,
+      std::string &error) override {
+    cursor.clear();
+    if (product_ != utils::md::ProductType::Perpetual) {
+      error.clear();
+      return true;
+    }
+#ifndef MDS_HAS_SIMDJSON
+    (void)json;
+    error = "simdjson support was not compiled";
+    return false;
+#else
+    try {
+      auto document = parse(json);
+      if (!response_code_ok(document)) {
+        error = "Bybit instruments-info pagination returned an error";
+        return false;
+      }
+      auto result = document["result"].get_object();
+      if (result.error()) {
+        error = "Bybit instruments-info pagination result is missing";
+        return false;
+      }
+      auto returned_category = result.value()["category"].get_string();
+      if (returned_category.error() ||
+          std::string_view(returned_category.value()) != category(product_)) {
+        error = "Bybit instruments-info pagination category mismatch";
+        return false;
+      }
+      auto next = result.value()["nextPageCursor"].get_string();
+      if (next.error()) {
+        error = "Bybit instruments-info nextPageCursor is missing or invalid";
+        return false;
+      }
+      const std::string_view value(next.value());
+      if (!valid_encoded_cursor(value)) {
+        error = "Bybit instruments-info nextPageCursor is not URL encoded";
+        return false;
+      }
+      cursor.assign(value);
+      error.clear();
+      return true;
+    } catch (const simdjson::simdjson_error &exception) {
+      error = "malformed Bybit instruments-info pagination response: ";
+      error.append(exception.what());
+      return false;
+    }
+#endif
+  }
+
+  [[nodiscard]] HttpRequestSpec
+  discovery_turnover_request() const override {
+    HttpRequestSpec request;
+    request.target = "/v5/market/tickers?category=";
+    request.target.append(category(product_));
+    return request;
+  }
+
+  bool enrich_discovery_turnover(
+      std::string_view json, std::span<InstrumentMetadata> metadata,
+      std::string &error) override {
+#ifndef MDS_HAS_SIMDJSON
+    (void)json;
+    (void)metadata;
+    error = "simdjson support was not compiled";
+    return false;
+#else
+    try {
+      auto document = parse(json);
+      auto code = document["retCode"].get_int64();
+      if (code.error() || code.value() != 0) {
+        error = "Bybit tickers returned an error";
+        return false;
+      }
+      auto result = document["result"].get_object().value();
+      auto entries = result["list"].get_array().value();
+      std::vector<std::uint64_t> turnovers(metadata.size());
+      std::vector<bool> matched(metadata.size());
+      for (auto raw_entry : entries) {
+        auto entry = raw_entry.get_object().value();
+        auto symbol_result = entry["symbol"].get_string();
+        if (symbol_result.error()) {
+          continue;
+        }
+        const auto symbol = std::string_view(symbol_result.value());
+        const auto found =
+            std::find_if(metadata.begin(), metadata.end(),
+                         [symbol](const InstrumentMetadata &instrument) {
+                           return instrument.venue_symbol == symbol;
+                         });
+        if (found == metadata.end()) {
+          continue;
+        }
+        const auto index =
+            static_cast<std::size_t>(found - metadata.begin());
+        if (matched[index]) {
+          error = "duplicate Bybit ticker symbol: ";
+          error.append(symbol);
+          return false;
+        }
+        matched[index] = true;
+        auto turnover = entry["turnover24h"].get_string();
+        if (turnover.error() ||
+            !mds::exchange::decimal_to_turnover(turnover.value(),
+                                                turnovers[index])) {
+          error = "invalid Bybit turnover24h: ";
+          error.append(symbol);
+          return false;
+        }
+      }
+      for (std::size_t index = 0; index < metadata.size(); ++index) {
+        metadata[index].turnover_24h = turnovers[index];
+      }
+      error.clear();
+      return true;
+    } catch (const simdjson::simdjson_error &exception) {
+      error = "malformed Bybit tickers response: ";
+      error.append(exception.what());
+      return false;
+    }
+#endif
   }
 
   bool build_metadata_request_batches(

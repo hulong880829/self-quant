@@ -251,7 +251,7 @@ message ArbitrageCombination {
   string execution_mode = 10;
   string maker_leg = 11;
   string status = 12;
-  string completed_notional = 13;
+  string position_notional = 13;
   string current_ask_spread_bps = 14;
   string current_bid_spread_bps = 15;
   bool market_data_stale = 16;
@@ -259,6 +259,10 @@ message ArbitrageCombination {
   google.protobuf.Timestamp created_at = 18;
   google.protobuf.Timestamp updated_at = 19;
   google.protobuf.Timestamp closed_at = 20;
+  string cumulative_turnover_notional = 21;
+  int32 consecutive_failures = 22;
+  google.protobuf.Timestamp next_retry_at = 23;
+  bool position_uncertain = 24;
 }
 
 message CreateArbitrageCombinationRequest {
@@ -304,6 +308,9 @@ message ArbitrageExecution {
   string error_message = 8;
   google.protobuf.Timestamp created_at = 9;
   google.protobuf.Timestamp updated_at = 10;
+  string requested_notional = 11;
+  string position_effect = 12;
+  bool reduce_only = 13;
 }
 
 message ArbitrageEvent {

@@ -20,6 +20,7 @@ import {
   ShieldAlert,
 } from "lucide-react";
 
+import { BasisSpreadPanel } from "@/components/funding/basis-spread-chart";
 import { WorkspacePanel } from "@/components/layout/responsive";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,13 @@ import type {
   FundingSpreadLeg,
   RankedFundingOpportunity,
 } from "@/types/market";
+
+type RankingListItem =
+  | { kind: "row"; key: string; item: RankedFundingOpportunity }
+  | { kind: "detail"; key: string; item: RankedFundingOpportunity };
+
+const DATA_ROW_HEIGHT_PX = 64;
+const DETAIL_ROW_HEIGHT_PX = 328;
 
 const periods: FundingOpportunityPeriod[] = ["1h", "4h", "8h", "24h"];
 
@@ -152,6 +160,9 @@ function RankingDetail({ item }: { item: RankedFundingOpportunity }) {
               </div>
             ))}
           </div>
+          <div className="mt-2 text-[10px] text-muted-foreground">
+            当前资金费率非零不代表 1h 模型资金费收益非零；持有窗口内未跨越结算点时，该项按 0 计算。
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-x-4 gap-y-2">
           <span className="text-muted-foreground">可执行 / 目标价差</span><span className="text-right font-mono">{item.currentExecutableSpreadBps.toFixed(1)} / {item.targetSpreadBps.toFixed(1)} bps</span>
@@ -179,8 +190,9 @@ export function FundingOpportunityRanking({
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [sorting, setSorting] = React.useState<SortingState>([{ id: "rank", desc: false }]);
+  const [sorting, setSorting] = React.useState<SortingState>([]);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const [mobileDetailOpen, setMobileDetailOpen] = React.useState(false);
   const [workspaceRef, width] = useElementWidth<HTMLDivElement>();
   const showSplit = shouldUseSplitLayout(width, FUNDING_DETAIL_WIDTH_PX);
@@ -253,7 +265,6 @@ export function FundingOpportunityRanking({
   const selected = data.find((item) => item.id === selectedId) ?? data[0] ?? null;
 
   const columns = React.useMemo<LegacyColumnDef<RankedFundingOpportunity>[]>(() => [
-    { accessorKey: "rank", header: "排名", cell: ({ row }) => <div className="font-mono text-sm font-bold">#{row.original.rank}</div> },
     { accessorKey: "symbol", header: "币对", cell: ({ row }) => <div><div className="font-mono text-xs font-semibold">{row.original.baseAsset}/{row.original.quoteAsset}</div><div className="mt-0.5 text-[10px] text-muted-foreground">{row.original.modelState}</div></div> },
     { id: "longLeg", accessorFn: (row) => row.longLeg.exchange, header: "做多腿", cell: ({ row }) => <LegSummary leg={row.original.longLeg} side="long" /> },
     { id: "shortLeg", accessorFn: (row) => row.shortLeg.exchange, header: "做空腿", cell: ({ row }) => <LegSummary leg={row.original.shortLeg} side="short" /> },
@@ -274,24 +285,48 @@ export function FundingOpportunityRanking({
     getRowId: (row) => row.id,
   });
   const rows = table.getRowModel().rows;
+  const rowsById = React.useMemo(() => {
+    return new Map(rows.map((row) => [row.original.id, row]));
+  }, [rows]);
+  const listItems = React.useMemo(() => {
+    const items: RankingListItem[] = [];
+    for (const row of rows) {
+      items.push({
+        kind: "row",
+        key: `row-${row.original.id}`,
+        item: row.original,
+      });
+      if (expandedId === row.original.id) {
+        items.push({
+          kind: "detail",
+          key: `detail-${row.original.id}`,
+          item: row.original,
+        });
+      }
+    }
+    return items;
+  }, [rows, expandedId]);
   const containerRef = React.useRef<HTMLDivElement>(null);
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
-    count: rows.length,
+    count: listItems.length,
     getScrollElement: () => containerRef.current,
-    estimateSize: () => 64,
+    estimateSize: (index) =>
+      listItems[index]?.kind === "detail" ? DETAIL_ROW_HEIGHT_PX : DATA_ROW_HEIGHT_PX,
     overscan: 10,
-    getItemKey: (index) => rows[index]?.original.id ?? index,
+    getItemKey: (index) => listItems[index]?.key ?? index,
   });
   const virtualRows = virtualizer.getVirtualItems();
   const top = virtualRows[0]?.start ?? 0;
   const bottom = virtualRows.length ? virtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0;
   const select = (id: string) => {
     setSelectedId(id);
+    setExpandedId((current) => (current === id ? null : id));
     if (!showSplit) setMobileDetailOpen(true);
   };
   const unavailable = Boolean(error && !snapshot) ||
-    snapshot?.meta.snapshotVersion === "unavailable";
+    snapshot?.meta.status === "unavailable";
+  const warming = snapshot?.meta.status === "warming";
 
   return (
     <div className="space-y-3">
@@ -303,12 +338,14 @@ export function FundingOpportunityRanking({
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           {refreshing && <><LoaderCircle className="size-3 animate-spin" />后台刷新</>}
-          {snapshot && <span className="font-mono">CALC {formatDateTime(snapshot.meta.calculatedAt)}</span>}
+          {snapshot && <span className="font-mono">
+            CALC {formatDateTime(snapshot.meta.calculatedAt)} · DATA {formatDateTime(snapshot.meta.dataThrough)}
+          </span>}
         </div>
       </div>
-      {(error || snapshot?.meta.stale) && (
+      {(error || snapshot?.meta.status !== "ready") && (
         <div className="flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-          <span>{error ? (snapshot ? `刷新失败，继续展示上次数据：${error}` : `加载失败：${error}`) : unavailable ? "排名数据暂时不可用，请检查 BBO 覆盖" : "排名快照已过期，请谨慎决策"}</span>
+          <span>{error ? (snapshot ? `刷新失败，继续展示上次数据：${error}` : `加载失败：${error}`) : unavailable ? "排名数据暂时不可用，请检查 BBO 覆盖" : warming ? "排名历史正在预热，已有周期会先展示" : "排名快照已过期，继续展示最后一次正确结果"}</span>
           {error && <Button variant="outline" size="sm" className="h-7 gap-1" onClick={() => void load()}><RefreshCw className="size-3" />重试</Button>}
         </div>
       )}
@@ -317,14 +354,51 @@ export function FundingOpportunityRanking({
           <div ref={containerRef} data-wide-table-scroll className="min-w-0 overflow-auto">
             <table className="w-full min-w-[1120px] border-collapse">
               <thead className="sticky top-0 z-10 bg-muted/80 backdrop-blur">
-                {table.getHeaderGroups().map((group) => <tr key={group.id} className="border-b">{group.headers.map((header, index) => <th key={header.id} className={cn("h-11 px-3 text-left", index >= 4 && index <= 8 && "text-right")}>{header.isPlaceholder ? null : header.column.getCanSort() ? <SortHeader label={String(header.column.columnDef.header)} sorted={header.column.getIsSorted()} onClick={() => header.column.toggleSorting()} align={index >= 4 && index <= 8 ? "right" : "left"} /> : flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}
+                {table.getHeaderGroups().map((group) => <tr key={group.id} className="border-b">{group.headers.map((header, index) => <th key={header.id} className={cn("h-11 px-3 text-left", index >= 3 && index <= 7 && "text-right")}>{header.isPlaceholder ? null : header.column.getCanSort() ? <SortHeader label={String(header.column.columnDef.header)} sorted={header.column.getIsSorted()} onClick={() => header.column.toggleSorting()} align={index >= 3 && index <= 7 ? "right" : "left"} /> : flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}
               </thead>
               <tbody>
                 {rows.length ? <>
                   {top > 0 && <tr aria-hidden><td colSpan={columns.length} style={{ height: top }} /></tr>}
                   {virtualRows.map((virtualRow) => {
-                    const row = rows[virtualRow.index];
-                    return <tr key={row.original.id} tabIndex={0} onClick={() => select(row.original.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(row.original.id); } }} className={cn("cursor-pointer border-b hover:bg-muted/45 focus-visible:bg-muted focus-visible:outline-none", selected?.id === row.original.id && "bg-primary/[0.055]")}>{row.getVisibleCells().map((cell) => <td key={cell.id} className="h-16 px-3">{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>;
+                    const item = listItems[virtualRow.index];
+                    if (!item) return null;
+                    if (item.kind === "detail") {
+                      return (
+                        <tr key={item.key} className="border-b bg-muted/20 last:border-b-0">
+                          <td colSpan={columns.length} className="px-4 py-3">
+                            <BasisSpreadPanel
+                              venue={item.item.shortLeg.exchange}
+                              compareVenue={item.item.longLeg.exchange}
+                              baseAsset={item.item.baseAsset}
+                              quoteAsset={item.item.quoteAsset}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    }
+                    const row = rowsById.get(item.item.id);
+                    if (!row) return null;
+                    return (
+                      <tr
+                        key={item.key}
+                        tabIndex={0}
+                        onClick={() => select(item.item.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            select(item.item.id);
+                          }
+                        }}
+                        className={cn(
+                          "cursor-pointer border-b hover:bg-muted/45 focus-visible:bg-muted focus-visible:outline-none",
+                          selected?.id === item.item.id && "bg-primary/[0.055]",
+                        )}
+                      >
+                        {row.getVisibleCells().map((cell) => (
+                          <td key={cell.id} className="h-16 px-3">{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
+                        ))}
+                      </tr>
+                    );
                   })}
                   {bottom > 0 && <tr aria-hidden><td colSpan={columns.length} style={{ height: bottom }} /></tr>}
                 </> : <tr><td colSpan={columns.length} className="h-72 text-center"><div className="mx-auto flex max-w-xs flex-col items-center text-muted-foreground">{loading ? <LoaderCircle className="size-7 animate-spin" /> : <Info className="size-7" />}<div className="mt-3 text-sm font-medium text-foreground">{loading ? "正在加载机会排名" : unavailable ? "排名数据暂时不可用" : "没有符合条件的排名机会"}</div><div className="mt-1 text-xs">{unavailable ? "请检查 Funding 服务与 ClickHouse 数据后重试" : "降低较小腿阈值或切换排名周期"}</div></div></td></tr>}

@@ -40,7 +40,7 @@ func TestOKXCurrentFundingUsesFundingTimeForNextSettlement(t *testing.T) {
 	const following = int64(1720014400000)
 	payload := okxEnvelope[okxFunding]{Data: []okxFunding{{
 		InstID: "BEAT-USDT-SWAP", FundingRate: "0.0001",
-		FundingTime: strconv.FormatInt(imminent, 10),
+		FundingTime:     strconv.FormatInt(imminent, 10),
 		NextFundingTime: strconv.FormatInt(following, 10),
 		NextFundingRate: "0.0002",
 	}}}
@@ -61,7 +61,7 @@ func TestOKXCurrentFundingUsesFundingTimeForNextSettlement(t *testing.T) {
 	if !rate.FundingTime.Before(milliseconds(following)) {
 		t.Fatalf("imminent settlement must precede following settlement")
 	}
-	if rate.FundingTime.Add(4 * time.Hour).UnixMilli() != following {
+	if rate.FundingTime.Add(4*time.Hour).UnixMilli() != following {
 		t.Fatalf("interval should match gap between fundingTime and nextFundingTime")
 	}
 }
@@ -466,7 +466,7 @@ func TestBitgetPerpetualUsesSupportMarginCoins(t *testing.T) {
 	mustJSON(t, `[{
 		"symbol":"BTCUSDT","symbolStatus":"normal","symbolType":"perpetual",
 		"baseCoin":"BTC","quoteCoin":"USDT","sizeMultiplier":"0.001",
-		"priceEndStep":"0.1","minTradeNum":"0.001",
+		"priceEndStep":"1","pricePlace":"1","minTradeNum":"0.001",
 		"supportMarginCoins":["USDT"]
 	},{
 		"symbol":"BTCUSD","symbolStatus":"normal","symbolType":"perpetual",
@@ -481,6 +481,9 @@ func TestBitgetPerpetualUsesSupportMarginCoins(t *testing.T) {
 	}
 	if instruments[0].SettleAsset != "USDT" {
 		t.Fatalf("linear settle=%q", instruments[0].SettleAsset)
+	}
+	if instruments[0].PriceTick != 0.1 {
+		t.Fatalf("linear price tick=%v", instruments[0].PriceTick)
 	}
 	if instruments[1].SettleAsset != "BTC" {
 		t.Fatalf("inverse settle=%q", instruments[1].SettleAsset)

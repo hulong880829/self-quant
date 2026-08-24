@@ -27,7 +27,7 @@ func TestTraderArbitrageJSONMatchesWebContract(t *testing.T) {
 		Id: "combo-1", Status: "running", MakerLeg: "a",
 		ExecutionMode: "maker_then_hedge", AskThresholdBps: "12",
 		BidThresholdBps: "-8", TargetNotional: "10000",
-		OrderNotional: "500", MaxDeltaNotional: "100", CompletedNotional: "0",
+		OrderNotional: "500", MaxDeltaNotional: "100", PositionNotional: "0",
 		LegA: &traderv1.ArbitrageLeg{
 			ProductName: "ARBITRAGE", TradingAccountId: 1,
 			AccountName: "a", Exchange: "binance", InstrumentId: 11,

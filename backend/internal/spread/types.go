@@ -34,19 +34,20 @@ const (
 )
 
 type HistoryRequest struct {
-	Venue      string
-	BaseAsset  string
-	QuoteAsset string
-	Range      Range
-	Now        time.Time
+	Venue        string
+	CompareVenue string
+	BaseAsset    string
+	QuoteAsset   string
+	Range        Range
+	Now          time.Time
 }
 
 type Point struct {
-	TS            time.Time
-	SpreadBps     decimal.Decimal
-	SpotAsk       decimal.Decimal
-	PerpetualAsk  decimal.Decimal
-	Samples       int
+	TS           time.Time
+	SpreadBps    decimal.Decimal
+	SpotAsk      decimal.Decimal
+	PerpetualAsk decimal.Decimal
+	Samples      int
 }
 
 type Summary struct {
@@ -59,6 +60,7 @@ type Summary struct {
 
 type History struct {
 	Venue             string
+	CompareVenue      string
 	BaseAsset         string
 	QuoteAsset        string
 	CanonicalSymbol   string
@@ -137,9 +139,13 @@ func CanonicalSymbol(baseAsset, quoteAsset string) string {
 
 func NormalizeRequest(input HistoryRequest) (HistoryRequest, error) {
 	venue := strings.ToLower(strings.TrimSpace(input.Venue))
+	compareVenue := strings.ToLower(strings.TrimSpace(input.CompareVenue))
 	base := strings.ToUpper(strings.TrimSpace(input.BaseAsset))
 	quote := strings.ToUpper(strings.TrimSpace(input.QuoteAsset))
 	if !validVenue(venue) || !validAsset(base) || !validAsset(quote) {
+		return HistoryRequest{}, ErrInvalidArgument
+	}
+	if compareVenue != "" && (!validVenue(compareVenue) || compareVenue == venue) {
 		return HistoryRequest{}, ErrInvalidArgument
 	}
 	parsed, err := ParseRange(string(input.Range))
@@ -151,7 +157,8 @@ func NormalizeRequest(input HistoryRequest) (HistoryRequest, error) {
 		now = time.Now().UTC()
 	}
 	return HistoryRequest{
-		Venue: venue, BaseAsset: base, QuoteAsset: quote, Range: parsed, Now: now,
+		Venue: venue, CompareVenue: compareVenue, BaseAsset: base, QuoteAsset: quote,
+		Range: parsed, Now: now,
 	}, nil
 }
 
@@ -209,9 +216,10 @@ func coverage(paired, expected int) decimal.Decimal {
 
 func buildHistory(req HistoryRequest, rows []bucketRow) History {
 	history := History{
-		Venue: req.Venue, BaseAsset: req.BaseAsset, QuoteAsset: req.QuoteAsset,
+		Venue: req.Venue, CompareVenue: req.CompareVenue,
+		BaseAsset: req.BaseAsset, QuoteAsset: req.QuoteAsset,
 		CanonicalSymbol: CanonicalSymbol(req.BaseAsset, req.QuoteAsset),
-		Range: req.Range, ResolutionSeconds: int(req.Range.Resolution().Seconds()),
+		Range:           req.Range, ResolutionSeconds: int(req.Range.Resolution().Seconds()),
 		Availability: AvailabilityUnavailable, AsOf: req.Now,
 		Points: make([]Point, 0, len(rows)),
 	}

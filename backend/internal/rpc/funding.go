@@ -139,9 +139,12 @@ func spreadLegToProto(
 }
 
 func (s *FundingServer) ListFundingOpportunities(
-	_ context.Context,
+	ctx context.Context,
 	request *fundingv1.ListFundingOpportunitiesRequest,
 ) (*fundingv1.ListFundingOpportunitiesResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
 	period, err := ranking.ParsePeriod(request.GetPeriod())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "period must be one of 1h, 4h, 8h, 24h")
@@ -163,29 +166,46 @@ func (s *FundingServer) ListFundingOpportunities(
 	}
 	now := time.Now().UTC()
 	if s.rankings == nil {
-		return &fundingv1.ListFundingOpportunitiesResponse{ServerTime: timestamppb.New(now)}, nil
+		return &fundingv1.ListFundingOpportunitiesResponse{
+			ServerTime: timestamppb.New(now), Status: string(ranking.SnapshotUnavailable), Stale: true,
+		}, nil
 	}
-	snapshot := s.rankings.Get(period)
-	filtered := make([]ranking.Opportunity, 0, len(snapshot.Items))
-	for _, item := range snapshot.Items {
-		if item.MinPositionNotionalUSD >= minNotional && item.MinTurnover24hUSD >= minVolume {
-			filtered = append(filtered, item)
-		}
-	}
-	total := len(filtered)
-	if len(filtered) > limit {
-		filtered = filtered[:limit]
-	}
+	snapshot := s.rankings.View(period)
 	response := &fundingv1.ListFundingOpportunitiesResponse{
-		Items: make([]*fundingv1.FundingOpportunityRanking, 0, len(filtered)),
-		Total: int32(total), SnapshotVersion: snapshot.Version,
-		ServerTime: timestamppb.New(now), Stale: snapshot.Stale || snapshot.Version == "",
+		Items:           make([]*fundingv1.FundingOpportunityRanking, 0, min(limit, len(snapshot.Items))),
+		SnapshotVersion: snapshot.Version, Generation: snapshot.Generation,
+		ServerTime: timestamppb.New(now), Status: string(snapshot.Status),
+		Stale: snapshot.Stale || snapshot.Status != ranking.SnapshotReady,
 	}
 	if !snapshot.CalculatedAt.IsZero() {
 		response.CalculatedAt = timestamppb.New(snapshot.CalculatedAt)
 	}
-	for index, item := range filtered {
-		response.Items = append(response.Items, rankingToProto(index+1, item, now, s.staleAfter))
+	if !snapshot.LastSuccessfulAt.IsZero() {
+		response.LastSuccessfulAt = timestamppb.New(snapshot.LastSuccessfulAt)
+	}
+	if !snapshot.DataThrough.IsZero() {
+		response.DataThrough = timestamppb.New(snapshot.DataThrough)
+	}
+	for index, item := range snapshot.Items {
+		if err := ctx.Err(); err != nil {
+			return nil, status.FromContextError(err).Err()
+		}
+		if item.MinPositionNotionalUSD < minNotional || item.MinTurnover24hUSD < minVolume {
+			continue
+		}
+		response.Total++
+		if len(response.Items) < limit {
+			rank := item.Rank
+			if rank <= 0 {
+				rank = index + 1
+			}
+			protoItem := rankingToProto(rank, item, now, s.staleAfter, response.Stale)
+			response.Items = append(response.Items, protoItem)
+			response.Stale = response.Stale || protoItem.Stale
+		}
+	}
+	if response.Stale && response.Status == string(ranking.SnapshotReady) {
+		response.Status = string(ranking.SnapshotStale)
 	}
 	return response, nil
 }
@@ -195,12 +215,15 @@ func rankingToProto(
 	item ranking.Opportunity,
 	now time.Time,
 	staleAfter time.Duration,
+	snapshotStale bool,
 ) *fundingv1.FundingOpportunityRanking {
+	longLeg := rankingLegToProto(item.Long, now, staleAfter)
+	shortLeg := rankingLegToProto(item.Short, now, staleAfter)
 	return &fundingv1.FundingOpportunityRanking{
 		Rank: int32(rank), GlobalSymbol: item.GlobalSymbol,
 		BaseAsset: item.BaseAsset, QuoteAsset: item.QuoteAsset, Period: string(item.Period),
-		LongLeg:                    rankingLegToProto(item.Long, now, staleAfter),
-		ShortLeg:                   rankingLegToProto(item.Short, now, staleAfter),
+		LongLeg:                    longLeg,
+		ShortLeg:                   shortLeg,
 		CurrentMidSpreadBps:        decimal(item.CurrentMidSpreadBPS),
 		CurrentExecutableSpreadBps: decimal(item.CurrentExecutableSpreadBPS),
 		TargetSpreadBps:            decimal(item.TargetSpreadBPS),
@@ -216,7 +239,7 @@ func rankingToProto(
 		MinTurnover_24HUsd:         decimal(item.MinTurnover24hUSD),
 		Coverage:                   decimal(item.Coverage), Confidence: decimal(item.Confidence),
 		ModelState: item.ModelState, UpdatedAt: timestamppb.New(item.UpdatedAt),
-		Stale: item.Stale,
+		Stale: snapshotStale || item.Stale || longLeg.Stale || shortLeg.Stale,
 	}
 }
 

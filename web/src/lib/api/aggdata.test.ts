@@ -1,8 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  aggdataMarketKey,
+  aggdataProductFromProfile,
   decodeFairPriceMessage,
   decodeAggdataFrame,
+  fetchAggdataHistory,
+  fetchAggdataSnapshot,
   fixedToSafeNumber,
   mapFairPriceHistoryResponse,
   mapHistoryResponse,
@@ -10,6 +14,8 @@ import {
   mapSnapshotResponse,
   resolveFairPriceMarket,
 } from "./aggdata";
+
+afterEach(() => vi.unstubAllGlobals());
 
 const market = {
   profile: "binance-okx",
@@ -36,6 +42,61 @@ describe("aggdata REST mapping", () => {
         }],
       }),
     ).toEqual([market]);
+  });
+
+  it("builds a stable profile-and-symbol identity and classifies products", () => {
+    expect(aggdataMarketKey({
+      profile: "AGG_SPOT_USDT_BINANCE",
+      symbol: "btcusdt",
+    })).toBe("agg_spot_usdt_binance::BTCUSDT");
+    expect(aggdataProductFromProfile("agg_spot_usdt_binance")).toBe("SPOT");
+    expect(aggdataProductFromProfile("agg_perp_usdt_binance")).toBe(
+      "PERPETUAL",
+    );
+    expect(aggdataProductFromProfile("custom_profile")).toBeNull();
+  });
+
+  it("adds profile to snapshot and spread-history requests", async () => {
+    const profiledMarket = {
+      ...market,
+      profile: "agg_perp_usdt_binance-okx",
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          symbol: "BTCUSDT",
+          orderbook: {
+            sequence: "1",
+            generation: "1",
+            wall_ns: "1786512000000000000",
+            bids: [],
+            asks: [],
+          },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          start_ns: "1786512000000000000",
+          end_ns: "1786512060000000000",
+          resolution_ns: "60000000000",
+          buckets: [],
+          gaps: [],
+          distribution_bps: [],
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchAggdataSnapshot(profiledMarket);
+    await fetchAggdataHistory(profiledMarket);
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      "snapshot?profile=agg_perp_usdt_binance-okx&depth=50",
+    );
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain(
+      "spread-history?profile=agg_perp_usdt_binance-okx&range=24h&type=gated",
+    );
   });
 
   it("expands snapshot contributions without losing bigint precision", () => {

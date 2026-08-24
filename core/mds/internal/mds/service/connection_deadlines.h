@@ -1,6 +1,9 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 
 namespace mds::service {
@@ -29,6 +32,50 @@ namespace mds::service {
   return started != std::chrono::steady_clock::time_point{} &&
          now - started >= maximum;
 }
+
+class SubscriptionBudget {
+ public:
+  using Clock = std::chrono::steady_clock;
+
+  void prune(Clock::time_point now) noexcept {
+    const auto window = std::chrono::hours(1);
+    while (size_ > 0 && now - requests_[begin_] >= window) {
+      begin_ = (begin_ + 1) % requests_.size();
+      --size_;
+    }
+  }
+
+  [[nodiscard]] bool allow(Clock::time_point now,
+                           std::size_t limit) noexcept {
+    prune(now);
+    return size_ < std::min(limit, requests_.size());
+  }
+
+  [[nodiscard]] Clock::time_point retry_at(Clock::time_point now,
+                                            std::size_t limit) noexcept {
+    prune(now);
+    if (size_ < std::min(limit, requests_.size())) {
+      return now;
+    }
+    return requests_[begin_] + std::chrono::hours(1);
+  }
+
+  void record(Clock::time_point now) noexcept {
+    if (size_ == requests_.size()) {
+      begin_ = (begin_ + 1) % requests_.size();
+      --size_;
+    }
+    requests_[(begin_ + size_) % requests_.size()] = now;
+    ++size_;
+  }
+
+  [[nodiscard]] std::size_t size() const noexcept { return size_; }
+
+ private:
+  std::array<Clock::time_point, 480> requests_{};
+  std::size_t begin_{};
+  std::size_t size_{};
+};
 
 class ConnectionDeadlines {
  public:
@@ -59,11 +106,13 @@ class ConnectionDeadlines {
     }
   }
 
-  void continue_recovery(Clock::time_point now,
-                         Clock::duration timeout) noexcept {
+  [[nodiscard]] bool continue_recovery(Clock::time_point now,
+                                       Clock::duration timeout) noexcept {
     if (reached_live_once_ && recovery_ != Clock::time_point{}) {
       recovery_ = now + timeout;
+      return true;
     }
+    return false;
   }
 
   void mark_live() noexcept {

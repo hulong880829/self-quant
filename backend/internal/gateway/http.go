@@ -814,12 +814,18 @@ func (h *Handler) listFundingOpportunities(writer http.ResponseWriter, request *
 		})
 		return
 	}
-	etag := `"` + response.GetSnapshotVersion() + "-" + period + "-" +
+	etag := `"` + response.GetSnapshotVersion() + "-" + response.GetStatus() + "-" +
+		strconv.FormatUint(response.GetGeneration(), 10) + "-" + period + "-" +
 		requestMessage.GetMinLegNotionalUsd() + "-" + requestMessage.GetMinLegVolume_24HUsd() +
 		"-" + strconv.Itoa(limit) + `"`
 	writer.Header().Set("ETag", etag)
 	writer.Header().Set("Cache-Control", "no-cache")
-	if request.Header.Get("If-None-Match") == etag {
+	statusValue := response.GetStatus()
+	if statusValue == "" && !response.GetStale() {
+		statusValue = "ready"
+	}
+	if request.Header.Get("If-None-Match") == etag &&
+		statusValue == "ready" && !response.GetStale() {
 		writer.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -855,6 +861,14 @@ func (h *Handler) listFundingOpportunities(writer http.ResponseWriter, request *
 	if response.GetCalculatedAt() != nil {
 		calculatedAt = response.GetCalculatedAt().AsTime().UTC().Format(time.RFC3339Nano)
 	}
+	lastSuccessfulAt := ""
+	if response.GetLastSuccessfulAt() != nil {
+		lastSuccessfulAt = response.GetLastSuccessfulAt().AsTime().UTC().Format(time.RFC3339Nano)
+	}
+	dataThrough := ""
+	if response.GetDataThrough() != nil {
+		dataThrough = response.GetDataThrough().AsTime().UTC().Format(time.RFC3339Nano)
+	}
 	serverTime := time.Now().UTC().Format(time.RFC3339Nano)
 	if response.GetServerTime() != nil {
 		serverTime = response.GetServerTime().AsTime().UTC().Format(time.RFC3339Nano)
@@ -864,6 +878,8 @@ func (h *Handler) listFundingOpportunities(writer http.ResponseWriter, request *
 		"meta": map[string]any{
 			"total": response.GetTotal(), "snapshotVersion": response.GetSnapshotVersion(),
 			"serverTime": serverTime, "calculatedAt": calculatedAt, "stale": response.GetStale(),
+			"status": statusValue, "lastSuccessfulAt": lastSuccessfulAt,
+			"dataThrough": dataThrough, "generation": response.GetGeneration(),
 		},
 	})
 }

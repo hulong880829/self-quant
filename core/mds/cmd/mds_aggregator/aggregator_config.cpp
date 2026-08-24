@@ -89,7 +89,7 @@ transport::RingOptions parse_ring(const YAML::Node &node,
                  "shared_memory");
   transport::RingOptions ring;
   ring.mode = api::RingMode::OverwriteOldest;
-  ring.ring_bytes = value_or<std::size_t>(node, "ring_bytes", 1U << 20U);
+  ring.ring_bytes = value_or<std::size_t>(node, "ring_bytes", 4U << 20U);
   ring.max_record_bytes =
       value_or<std::size_t>(node, "max_record_bytes", 32U << 10U);
   ring.max_readers = value_or<std::size_t>(node, "max_readers", 32);

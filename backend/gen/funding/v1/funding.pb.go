@@ -1055,15 +1055,19 @@ func (x *FundingOpportunityRanking) GetStale() bool {
 }
 
 type ListFundingOpportunitiesResponse struct {
-	state           protoimpl.MessageState       `protogen:"open.v1"`
-	Items           []*FundingOpportunityRanking `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
-	Total           int32                        `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
-	SnapshotVersion string                       `protobuf:"bytes,3,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
-	ServerTime      *timestamppb.Timestamp       `protobuf:"bytes,4,opt,name=server_time,json=serverTime,proto3" json:"server_time,omitempty"`
-	CalculatedAt    *timestamppb.Timestamp       `protobuf:"bytes,5,opt,name=calculated_at,json=calculatedAt,proto3" json:"calculated_at,omitempty"`
-	Stale           bool                         `protobuf:"varint,6,opt,name=stale,proto3" json:"stale,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state            protoimpl.MessageState       `protogen:"open.v1"`
+	Items            []*FundingOpportunityRanking `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	Total            int32                        `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	SnapshotVersion  string                       `protobuf:"bytes,3,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
+	ServerTime       *timestamppb.Timestamp       `protobuf:"bytes,4,opt,name=server_time,json=serverTime,proto3" json:"server_time,omitempty"`
+	CalculatedAt     *timestamppb.Timestamp       `protobuf:"bytes,5,opt,name=calculated_at,json=calculatedAt,proto3" json:"calculated_at,omitempty"`
+	Stale            bool                         `protobuf:"varint,6,opt,name=stale,proto3" json:"stale,omitempty"`
+	Status           string                       `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`
+	LastSuccessfulAt *timestamppb.Timestamp       `protobuf:"bytes,8,opt,name=last_successful_at,json=lastSuccessfulAt,proto3" json:"last_successful_at,omitempty"`
+	DataThrough      *timestamppb.Timestamp       `protobuf:"bytes,9,opt,name=data_through,json=dataThrough,proto3" json:"data_through,omitempty"`
+	Generation       uint64                       `protobuf:"varint,10,opt,name=generation,proto3" json:"generation,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ListFundingOpportunitiesResponse) Reset() {
@@ -1136,6 +1140,34 @@ func (x *ListFundingOpportunitiesResponse) GetStale() bool {
 		return x.Stale
 	}
 	return false
+}
+
+func (x *ListFundingOpportunitiesResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ListFundingOpportunitiesResponse) GetLastSuccessfulAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastSuccessfulAt
+	}
+	return nil
+}
+
+func (x *ListFundingOpportunitiesResponse) GetDataThrough() *timestamppb.Timestamp {
+	if x != nil {
+		return x.DataThrough
+	}
+	return nil
+}
+
+func (x *ListFundingOpportunitiesResponse) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
 }
 
 type GetFundingHistoryRequest struct {
@@ -1364,7 +1396,7 @@ const file_funding_v1_funding_proto_rawDesc = "" +
 	"modelState\x129\n" +
 	"\n" +
 	"updated_at\x18\x18 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x14\n" +
-	"\x05stale\x18\x19 \x01(\bR\x05stale\"\xb4\x02\n" +
+	"\x05stale\x18\x19 \x01(\bR\x05stale\"\xf5\x03\n" +
 	" ListFundingOpportunitiesResponse\x12;\n" +
 	"\x05items\x18\x01 \x03(\v2%.funding.v1.FundingOpportunityRankingR\x05items\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x05R\x05total\x12)\n" +
@@ -1372,7 +1404,14 @@ const file_funding_v1_funding_proto_rawDesc = "" +
 	"\vserver_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"serverTime\x12?\n" +
 	"\rcalculated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\fcalculatedAt\x12\x14\n" +
-	"\x05stale\x18\x06 \x01(\bR\x05stale\"u\n" +
+	"\x05stale\x18\x06 \x01(\bR\x05stale\x12\x16\n" +
+	"\x06status\x18\a \x01(\tR\x06status\x12H\n" +
+	"\x12last_successful_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x10lastSuccessfulAt\x12=\n" +
+	"\fdata_through\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\vdataThrough\x12\x1e\n" +
+	"\n" +
+	"generation\x18\n" +
+	" \x01(\x04R\n" +
+	"generation\"u\n" +
 	"\x18GetFundingHistoryRequest\x12\x1a\n" +
 	"\bexchange\x18\x01 \x01(\tR\bexchange\x12'\n" +
 	"\x0fexchange_symbol\x18\x02 \x01(\tR\x0eexchangeSymbol\x12\x14\n" +
@@ -1434,20 +1473,22 @@ var file_funding_v1_funding_proto_depIdxs = []int32{
 	9,  // 16: funding.v1.ListFundingOpportunitiesResponse.items:type_name -> funding.v1.FundingOpportunityRanking
 	13, // 17: funding.v1.ListFundingOpportunitiesResponse.server_time:type_name -> google.protobuf.Timestamp
 	13, // 18: funding.v1.ListFundingOpportunitiesResponse.calculated_at:type_name -> google.protobuf.Timestamp
-	2,  // 19: funding.v1.GetFundingHistoryResponse.items:type_name -> funding.v1.FundingHistoryPoint
-	0,  // 20: funding.v1.FundingService.ListFundingRates:input_type -> funding.v1.ListFundingRatesRequest
-	4,  // 21: funding.v1.FundingService.ListFundingSpreads:input_type -> funding.v1.ListFundingSpreadsRequest
-	8,  // 22: funding.v1.FundingService.ListFundingOpportunities:input_type -> funding.v1.ListFundingOpportunitiesRequest
-	11, // 23: funding.v1.FundingService.GetFundingHistory:input_type -> funding.v1.GetFundingHistoryRequest
-	3,  // 24: funding.v1.FundingService.ListFundingRates:output_type -> funding.v1.ListFundingRatesResponse
-	7,  // 25: funding.v1.FundingService.ListFundingSpreads:output_type -> funding.v1.ListFundingSpreadsResponse
-	10, // 26: funding.v1.FundingService.ListFundingOpportunities:output_type -> funding.v1.ListFundingOpportunitiesResponse
-	12, // 27: funding.v1.FundingService.GetFundingHistory:output_type -> funding.v1.GetFundingHistoryResponse
-	24, // [24:28] is the sub-list for method output_type
-	20, // [20:24] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	13, // 19: funding.v1.ListFundingOpportunitiesResponse.last_successful_at:type_name -> google.protobuf.Timestamp
+	13, // 20: funding.v1.ListFundingOpportunitiesResponse.data_through:type_name -> google.protobuf.Timestamp
+	2,  // 21: funding.v1.GetFundingHistoryResponse.items:type_name -> funding.v1.FundingHistoryPoint
+	0,  // 22: funding.v1.FundingService.ListFundingRates:input_type -> funding.v1.ListFundingRatesRequest
+	4,  // 23: funding.v1.FundingService.ListFundingSpreads:input_type -> funding.v1.ListFundingSpreadsRequest
+	8,  // 24: funding.v1.FundingService.ListFundingOpportunities:input_type -> funding.v1.ListFundingOpportunitiesRequest
+	11, // 25: funding.v1.FundingService.GetFundingHistory:input_type -> funding.v1.GetFundingHistoryRequest
+	3,  // 26: funding.v1.FundingService.ListFundingRates:output_type -> funding.v1.ListFundingRatesResponse
+	7,  // 27: funding.v1.FundingService.ListFundingSpreads:output_type -> funding.v1.ListFundingSpreadsResponse
+	10, // 28: funding.v1.FundingService.ListFundingOpportunities:output_type -> funding.v1.ListFundingOpportunitiesResponse
+	12, // 29: funding.v1.FundingService.GetFundingHistory:output_type -> funding.v1.GetFundingHistoryResponse
+	26, // [26:30] is the sub-list for method output_type
+	22, // [22:26] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_funding_v1_funding_proto_init() }

@@ -10,6 +10,38 @@ vi.mock("@/hooks/use-element-width", () => ({
   useElementWidth: () => [{ current: null }, 1400],
 }));
 
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: ({ count }: { count: number }) => ({
+    getVirtualItems: () =>
+      Array.from({ length: count }, (_, index) => ({
+        index,
+        key: index,
+        start: index * 64,
+        end: (index + 1) * 64,
+        size: 64,
+      })),
+    getTotalSize: () => count * 64,
+  }),
+}));
+
+vi.mock("@/components/funding/basis-spread-chart", () => ({
+  BasisSpreadPanel: ({
+    venue,
+    compareVenue,
+    baseAsset,
+    quoteAsset,
+  }: {
+    venue: string;
+    compareVenue?: string;
+    baseAsset: string;
+    quoteAsset: string;
+  }) => (
+    <section aria-label="跨所 Best Ask 价差">
+      <span>{`${venue}/${compareVenue}-${baseAsset}-${quoteAsset}`}</span>
+    </section>
+  ),
+}));
+
 const { fetchFundingOpportunities } = vi.hoisted(() => ({
   fetchFundingOpportunities: vi.fn(),
 }));
@@ -80,6 +112,25 @@ const filters: FundingFilters = {
   direction: "all",
 };
 
+const snapshot = {
+  status: "updated" as const,
+  etag: '"rank-1"',
+  snapshot: {
+    data: [item],
+    meta: {
+      total: 1,
+      snapshotVersion: "rank-1",
+      serverTime: "2026-08-22T14:00:01Z",
+      calculatedAt: "2026-08-22T14:00:00Z",
+      stale: false,
+      status: "ready" as const,
+      lastSuccessfulAt: "2026-08-22T14:00:00Z",
+      dataThrough: "2026-08-22T13:59:00Z",
+      generation: 1,
+    },
+  },
+};
+
 describe("FundingOpportunityRanking", () => {
   afterEach(() => {
     cleanup();
@@ -87,20 +138,7 @@ describe("FundingOpportunityRanking", () => {
   });
 
   it("shows periods, explicit legs, and combined return details", async () => {
-    fetchFundingOpportunities.mockResolvedValue({
-      status: "updated",
-      etag: '"rank-1"',
-      snapshot: {
-        data: [item],
-        meta: {
-          total: 1,
-          snapshotVersion: "rank-1",
-          serverTime: "2026-08-22T14:00:01Z",
-          calculatedAt: "2026-08-22T14:00:00Z",
-          stale: false,
-        },
-      },
-    });
+    fetchFundingOpportunities.mockResolvedValue(snapshot);
     render(<FundingOpportunityRanking filters={filters} />);
 
     await waitFor(() => expect(fetchFundingOpportunities).toHaveBeenCalled());
@@ -110,6 +148,7 @@ describe("FundingOpportunityRanking", () => {
     expect(screen.getByText("明确做空")).not.toBeNull();
     expect(screen.getByText("收益拆解（年化）")).not.toBeNull();
     expect(screen.getAllByText("盈利概率").length).toBeGreaterThan(0);
+    expect(screen.getByText("机会排名 #1 · 1h")).not.toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "4h" }));
     await waitFor(() => {
@@ -119,5 +158,26 @@ describe("FundingOpportunityRanking", () => {
         expect.any(AbortSignal),
       );
     });
+  });
+
+  it("hides the rank column and expands a cross-exchange chart under the selected row", async () => {
+    fetchFundingOpportunities.mockResolvedValue(snapshot);
+    render(<FundingOpportunityRanking filters={filters} />);
+
+    await waitFor(() => expect(screen.getByText("BTC/USDT")).not.toBeNull());
+    expect(screen.queryByRole("columnheader", { name: "排名" })).toBeNull();
+    expect(screen.queryByText(/^#1$/)).toBeNull();
+    expect(screen.queryByLabelText("跨所 Best Ask 价差")).toBeNull();
+
+    const row = screen.getByText("BTC/USDT").closest("tr");
+    expect(row).not.toBeNull();
+    fireEvent.click(row!);
+    expect(screen.getByLabelText("跨所 Best Ask 价差")).not.toBeNull();
+    expect(screen.getByText("OKX/Binance-BTC-USDT")).not.toBeNull();
+    expect(screen.getByText("明确做多")).not.toBeNull();
+    expect(screen.getByText("明确做空")).not.toBeNull();
+
+    fireEvent.click(row!);
+    expect(screen.queryByLabelText("跨所 Best Ask 价差")).toBeNull();
   });
 });

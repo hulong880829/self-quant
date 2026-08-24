@@ -84,6 +84,8 @@ func (a *binanceAdapter) PlaceOrder(
 	if request.Instrument.ContractType == "spot" {
 		values.Set("sideEffectType", "NO_SIDE_EFFECT")
 		values.Set("autoRepayAtCancel", "false")
+	} else if request.ReduceOnly {
+		values.Set("reduceOnly", "true")
 	}
 	raw, err := a.signed(ctx, http.MethodPost, binancePath(request.Instrument.ContractType), credentials, values, nil)
 	if err != nil {

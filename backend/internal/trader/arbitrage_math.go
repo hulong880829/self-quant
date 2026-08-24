@@ -32,6 +32,100 @@ func arbitrageTriggered(
 	return ""
 }
 
+type arbitragePositionPlan struct {
+	Direction         string
+	Effect            string
+	ReduceOnly        bool
+	RequestedNotional decimal.Decimal
+}
+
+func planArbitragePosition(
+	position, target, order decimal.Decimal,
+	direction string,
+) (arbitragePositionPlan, bool) {
+	if !target.IsPositive() || !order.IsPositive() {
+		return arbitragePositionPlan{}, false
+	}
+	switch strings.ToLower(strings.TrimSpace(direction)) {
+	case "ask":
+		if position.GreaterThanOrEqual(target) {
+			return arbitragePositionPlan{}, false
+		}
+		if position.IsNegative() {
+			size := decimal.Min(order, position.Abs())
+			if !size.IsPositive() {
+				return arbitragePositionPlan{}, false
+			}
+			return arbitragePositionPlan{
+				Direction: "ask", Effect: "close", ReduceOnly: true, RequestedNotional: size,
+			}, true
+		}
+		size := decimal.Min(order, target.Sub(position))
+		if !size.IsPositive() {
+			return arbitragePositionPlan{}, false
+		}
+		return arbitragePositionPlan{
+			Direction: "ask", Effect: "open", ReduceOnly: false, RequestedNotional: size,
+		}, true
+	case "bid":
+		if position.LessThanOrEqual(target.Neg()) {
+			return arbitragePositionPlan{}, false
+		}
+		if position.IsPositive() {
+			size := decimal.Min(order, position)
+			if !size.IsPositive() {
+				return arbitragePositionPlan{}, false
+			}
+			return arbitragePositionPlan{
+				Direction: "bid", Effect: "close", ReduceOnly: true, RequestedNotional: size,
+			}, true
+		}
+		size := decimal.Min(order, target.Add(position))
+		if !size.IsPositive() {
+			return arbitragePositionPlan{}, false
+		}
+		return arbitragePositionPlan{
+			Direction: "bid", Effect: "open", ReduceOnly: false, RequestedNotional: size,
+		}, true
+	default:
+		return arbitragePositionPlan{}, false
+	}
+}
+
+func signedPositionDelta(direction string, fillA, fillB, mark decimal.Decimal) decimal.Decimal {
+	completed := decimal.Min(fillA, fillB).Mul(mark)
+	if !completed.IsPositive() {
+		return decimal.Zero
+	}
+	if strings.EqualFold(strings.TrimSpace(direction), "bid") {
+		return completed.Neg()
+	}
+	return completed
+}
+
+func executionNotional(combination ArbitrageCombination, execution ArbitrageExecution) decimal.Decimal {
+	if requested := parsePositiveDecimal(execution.RequestedNotional); requested.IsPositive() {
+		return requested
+	}
+	return parsePositiveDecimal(combination.OrderNotional)
+}
+
+func executionHasExposure(execution ArbitrageExecution) bool {
+	return parseDecimal(execution.LegAFilledQuantity).IsPositive() ||
+		parseDecimal(execution.LegBFilledQuantity).IsPositive()
+}
+
+func arbitrageBackoff(failures int) decimal.Decimal {
+	if failures <= 0 {
+		return decimal.NewFromInt(2)
+	}
+	seconds := 2 << (failures - 1)
+	if seconds > 60 {
+		seconds = 60
+	}
+	return decimal.NewFromInt(int64(seconds))
+}
+
 func arbitrageLegSides(direction string) (legA, legB string, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(direction)) {
 	case "ask":

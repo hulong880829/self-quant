@@ -83,17 +83,129 @@ func TestNormalizeArbitrageInput(t *testing.T) {
 	}
 }
 
-func TestNormalizeArbitrageInputRejectsUnsafeThresholds(t *testing.T) {
-	_, err := normalizeArbitrageInput(CreateArbitrageInput{
-		Token: "token", IdempotencyKey: "request-123",
-		LegATradingAccountID: 1, LegAInstrumentID: 11,
-		LegBTradingAccountID: 2, LegBInstrumentID: 22,
-		AskThresholdBps: "-1", BidThresholdBps: "1",
-		TargetNotional: "1000", OrderNotional: "100", MaxDeltaNotional: "10",
-		ExecutionMode: "simultaneous_market",
-	})
-	if err != ErrInvalidArgument {
-		t.Fatalf("err=%v", err)
+func TestNormalizeArbitrageInputAllowsAnyThresholdSigns(t *testing.T) {
+	cases := []struct {
+		name             string
+		ask, bid         string
+		wantAsk, wantBid string
+	}{
+		{name: "negative ask positive bid", ask: "-70.00", bid: "8.00", wantAsk: "-70", wantBid: "8"},
+		{name: "zero thresholds", ask: "0", bid: "0.0", wantAsk: "0", wantBid: "0"},
+		{name: "positive ask negative bid", ask: "12.00", bid: "-8.00", wantAsk: "12", wantBid: "-8"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input, err := normalizeArbitrageInput(CreateArbitrageInput{
+				Token: "token", IdempotencyKey: "request-123",
+				LegATradingAccountID: 1, LegAInstrumentID: 11,
+				LegBTradingAccountID: 2, LegBInstrumentID: 22,
+				AskThresholdBps: tc.ask, BidThresholdBps: tc.bid,
+				TargetNotional: "1000", OrderNotional: "100", MaxDeltaNotional: "10",
+				ExecutionMode: "simultaneous_market",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if input.AskThresholdBps != tc.wantAsk || input.BidThresholdBps != tc.wantBid {
+				t.Fatalf("ask=%s bid=%s", input.AskThresholdBps, input.BidThresholdBps)
+			}
+		})
+	}
+}
+
+func TestArbitrageTriggeredWithArbitraryThresholdSigns(t *testing.T) {
+	if direction := arbitrageTriggered(
+		decimal.RequireFromString("-10"),
+		decimal.RequireFromString("-5"),
+		decimal.RequireFromString("-70"),
+		decimal.RequireFromString("8"),
+	); direction != "ask" {
+		t.Fatalf("negative ask threshold direction=%s", direction)
+	}
+	if direction := arbitrageTriggered(
+		decimal.RequireFromString("-80"),
+		decimal.RequireFromString("5"),
+		decimal.RequireFromString("-70"),
+		decimal.RequireFromString("8"),
+	); direction != "bid" {
+		t.Fatalf("positive bid threshold direction=%s", direction)
+	}
+	if direction := arbitrageTriggered(
+		decimal.RequireFromString("-80"),
+		decimal.RequireFromString("10"),
+		decimal.RequireFromString("-70"),
+		decimal.RequireFromString("8"),
+	); direction != "" {
+		t.Fatalf("untriggered direction=%s", direction)
+	}
+	if direction := arbitrageTriggered(
+		decimal.Zero,
+		decimal.RequireFromString("1"),
+		decimal.Zero,
+		decimal.Zero,
+	); direction != "ask" {
+		t.Fatalf("zero thresholds prefer ask direction=%s", direction)
+	}
+}
+
+func TestPlanArbitragePosition(t *testing.T) {
+	target := decimal.RequireFromString("10000")
+	order := decimal.RequireFromString("3000")
+	cases := []struct {
+		name      string
+		position  string
+		direction string
+		wantOK    bool
+		effect    string
+		reduce    bool
+		size      string
+	}{
+		{name: "zero ask opens", position: "0", direction: "ask", wantOK: true, effect: "open", size: "3000"},
+		{name: "zero bid opens", position: "0", direction: "bid", wantOK: true, effect: "open", size: "3000"},
+		{name: "ask clips remaining", position: "8000", direction: "ask", wantOK: true, effect: "open", size: "2000"},
+		{name: "ask at cap blocked", position: "10000", direction: "ask", wantOK: false},
+		{name: "bid closes positive", position: "2500", direction: "bid", wantOK: true, effect: "close", reduce: true, size: "2500"},
+		{name: "ask closes negative", position: "-1800", direction: "ask", wantOK: true, effect: "close", reduce: true, size: "1800"},
+		{name: "bid clips remaining short", position: "-8000", direction: "bid", wantOK: true, effect: "open", size: "2000"},
+		{name: "bid at cap blocked", position: "-10000", direction: "bid", wantOK: false},
+		{name: "bid does not cross zero", position: "500", direction: "bid", wantOK: true, effect: "close", reduce: true, size: "500"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, ok := planArbitragePosition(
+				decimal.RequireFromString(tc.position), target, order, tc.direction,
+			)
+			if ok != tc.wantOK {
+				t.Fatalf("ok=%v plan=%+v", ok, plan)
+			}
+			if !ok {
+				return
+			}
+			if plan.Effect != tc.effect || plan.ReduceOnly != tc.reduce || plan.RequestedNotional.String() != tc.size {
+				t.Fatalf("plan=%+v", plan)
+			}
+		})
+	}
+}
+
+func TestSignedPositionDelta(t *testing.T) {
+	delta := signedPositionDelta(
+		"ask",
+		decimal.RequireFromString("2"),
+		decimal.RequireFromString("1.5"),
+		decimal.RequireFromString("100"),
+	)
+	if !delta.Equal(decimal.RequireFromString("150")) {
+		t.Fatalf("ask delta=%s", delta)
+	}
+	delta = signedPositionDelta(
+		"bid",
+		decimal.RequireFromString("2"),
+		decimal.RequireFromString("1.5"),
+		decimal.RequireFromString("100"),
+	)
+	if !delta.Equal(decimal.RequireFromString("-150")) {
+		t.Fatalf("bid delta=%s", delta)
 	}
 }
 

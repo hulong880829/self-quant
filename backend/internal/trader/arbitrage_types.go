@@ -18,29 +18,33 @@ type ArbitrageLeg struct {
 }
 
 type ArbitrageCombination struct {
-	ID                  string
-	IdempotencyKey      string
-	RequestFingerprint  string
-	OwnerUsername       string
-	LegA                ArbitrageLeg
-	LegB                ArbitrageLeg
-	AskThresholdBps     string
-	BidThresholdBps     string
-	TargetNotional      string
-	OrderNotional       string
-	MaxDeltaNotional    string
-	ExecutionMode       string
-	MakerLeg            string
-	Status              string
-	CompletedNotional   string
-	CurrentAskSpreadBps string
-	CurrentBidSpreadBps string
-	MarketDataStale     bool
-	ErrorMessage        string
-	SchedulerLeaseUntil time.Time
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
-	ClosedAt            time.Time
+	ID                         string
+	IdempotencyKey             string
+	RequestFingerprint         string
+	OwnerUsername              string
+	LegA                       ArbitrageLeg
+	LegB                       ArbitrageLeg
+	AskThresholdBps            string
+	BidThresholdBps            string
+	TargetNotional             string
+	OrderNotional              string
+	MaxDeltaNotional           string
+	ExecutionMode              string
+	MakerLeg                   string
+	Status                     string
+	PositionNotional           string
+	CumulativeTurnoverNotional string
+	CurrentAskSpreadBps        string
+	CurrentBidSpreadBps        string
+	MarketDataStale            bool
+	ErrorMessage               string
+	ConsecutiveFailures        int
+	NextRetryAt                time.Time
+	PositionUncertain          bool
+	SchedulerLeaseUntil        time.Time
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
+	ClosedAt                   time.Time
 }
 
 type ArbitrageExecution struct {
@@ -56,6 +60,9 @@ type ArbitrageExecution struct {
 	TriggerLegBBid     string
 	TriggerLegBAsk     string
 	TargetBaseQuantity string
+	RequestedNotional  string
+	PositionEffect     string
+	ReduceOnly         bool
 	LegAFilledQuantity string
 	LegBFilledQuantity string
 	DeltaNotional      string
@@ -113,11 +120,12 @@ type arbitrageStore interface {
 	LeaseArbitrageCombinations(context.Context, int, time.Duration) ([]ArbitrageCombination, error)
 	RenewArbitrageLease(context.Context, string, time.Duration) (bool, error)
 	ClaimArbitrageExecution(context.Context, ArbitrageExecution) (ArbitrageExecution, bool, error)
-	GetActiveArbitrageExecution(context.Context, string, string) (ArbitrageExecution, error)
+	GetActiveArbitrageExecution(context.Context, string) (ArbitrageExecution, error)
 	UpdateArbitrageExecution(context.Context, ArbitrageExecution) (ArbitrageExecution, error)
 	UpdateArbitrageCombinationRuntime(context.Context, ArbitrageCombination) (ArbitrageCombination, error)
 	UpdateArbitrageMarketSnapshot(context.Context, string, string, string, bool) (ArbitrageCombination, error)
-	AddArbitrageCompletedNotional(context.Context, string, string) (ArbitrageCombination, error)
+	AddArbitragePositionDelta(context.Context, string, string) (ArbitrageCombination, error)
+	RecordArbitrageFailure(context.Context, string, string) (ArbitrageCombination, error)
 	AppendArbitrageEvent(context.Context, string, string, string, map[string]any) error
 	DeleteExpiredArbitrageCombinations(context.Context, time.Time, int) (int64, error)
 }

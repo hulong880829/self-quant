@@ -24,8 +24,10 @@ func (h *Handler) getBasisSpreadHistory(writer http.ResponseWriter, request *htt
 	if rangeValue == "" {
 		rangeValue = "24h"
 	}
+	compareVenue := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("compareVenue")))
 	protoRange, ok := basisSpreadRange(rangeValue)
-	if !ok || !validSpreadVenue(venue) || !validSpreadAsset(baseAsset) || !validSpreadAsset(quoteAsset) {
+	if !ok || !validSpreadVenue(venue) || !validSpreadAsset(baseAsset) || !validSpreadAsset(quoteAsset) ||
+		(compareVenue != "" && (!validSpreadVenue(compareVenue) || compareVenue == venue)) {
 		writeJSON(writer, http.StatusBadRequest, map[string]string{
 			"error": "venue, assets and range are invalid",
 		})
@@ -34,14 +36,15 @@ func (h *Handler) getBasisSpreadHistory(writer http.ResponseWriter, request *htt
 	ctx, cancel := context.WithTimeout(request.Context(), 6*time.Second)
 	defer cancel()
 	response, err := h.spread.GetBasisSpreadHistory(ctx, &spreadv1.GetBasisSpreadHistoryRequest{
-		Venue: venue, BaseAsset: baseAsset, QuoteAsset: quoteAsset, Range: protoRange,
+		Venue: venue, CompareVenue: compareVenue, BaseAsset: baseAsset,
+		QuoteAsset: quoteAsset, Range: protoRange,
 	})
 	if err != nil {
 		h.writeSpreadError(writer, request, err)
 		return
 	}
 	payload := basisSpreadHistoryJSON(response, rangeValue)
-	etag := basisSpreadETag(venue, baseAsset, quoteAsset, rangeValue, response.GetAsOf().AsTime())
+	etag := basisSpreadETag(venue, compareVenue, baseAsset, quoteAsset, rangeValue, response.GetAsOf().AsTime())
 	writer.Header().Set("ETag", etag)
 	writer.Header().Set("Cache-Control", "public, max-age=15")
 	if request.Header.Get("If-None-Match") == etag {
@@ -85,6 +88,7 @@ func basisSpreadHistoryJSON(response *spreadv1.GetBasisSpreadHistoryResponse, ra
 	summary := response.GetSummary()
 	return map[string]any{
 		"venue":             response.GetVenue(),
+		"compareVenue":      response.GetCompareVenue(),
 		"baseAsset":         response.GetBaseAsset(),
 		"quoteAsset":        response.GetQuoteAsset(),
 		"canonicalSymbol":   response.GetCanonicalSymbol(),
@@ -127,9 +131,9 @@ func basisSpreadAvailabilityJSON(value spreadv1.BasisSpreadAvailability) string 
 	return "unavailable"
 }
 
-func basisSpreadETag(venue, baseAsset, quoteAsset, rangeValue string, asOf time.Time) string {
+func basisSpreadETag(venue, compareVenue, baseAsset, quoteAsset, rangeValue string, asOf time.Time) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
-		venue, baseAsset, quoteAsset, rangeValue, asOf.UTC().Format(time.RFC3339Nano),
+		venue, compareVenue, baseAsset, quoteAsset, rangeValue, asOf.UTC().Format(time.RFC3339Nano),
 	}, "|")))
 	return `"` + hex.EncodeToString(sum[:8]) + `"`
 }

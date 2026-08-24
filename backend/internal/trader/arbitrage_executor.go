@@ -129,17 +129,35 @@ func (e *ArbitrageExecutor) Execute(
 		err = ErrInvalidArgument
 	}
 	if err != nil {
-		execution.Status = "failed"
 		execution.ErrorMessage = sanitizeError(err)
-		_, _ = e.store.UpdateArbitrageExecution(context.Background(), execution)
-		if latest, getErr := e.store.GetArbitrageCombinationByOwner(
-			context.Background(), combination.OwnerUsername, combination.ID,
-		); getErr == nil {
-			combination = latest
+		if errorsIsCanceled(err) && !executionHasExposure(execution) {
+			execution.Status = "canceled"
+			_, _ = e.store.UpdateArbitrageExecution(context.Background(), execution)
+			return
 		}
-		combination.Status = "failed"
-		combination.ErrorMessage = execution.ErrorMessage
-		_, _ = e.store.UpdateArbitrageCombinationRuntime(context.Background(), combination)
+		if executionHasExposure(execution) {
+			if execution.Status != "hedging" && execution.Status != "maker_open" &&
+				execution.Status != "reconciling" {
+				if execution.HedgeOrderID != "" {
+					execution.Status = "hedging"
+				} else {
+					execution.Status = "reconciling"
+				}
+			}
+			_, _ = e.store.UpdateArbitrageExecution(context.Background(), execution)
+			_, _ = e.store.RecordArbitrageFailure(
+				context.Background(), combination.ID, execution.ErrorMessage,
+			)
+			e.logger.Error("arbitrage execution needs recovery",
+				"combination_id", combination.ID, "execution_id", execution.ID,
+				"direction", execution.Direction, "error", sanitizeError(err))
+			return
+		}
+		execution.Status = "failed"
+		_, _ = e.store.UpdateArbitrageExecution(context.Background(), execution)
+		_, _ = e.store.RecordArbitrageFailure(
+			context.Background(), combination.ID, execution.ErrorMessage,
+		)
 		e.logger.Error("arbitrage execution failed",
 			"combination_id", combination.ID, "execution_id", execution.ID,
 			"direction", execution.Direction, "error", sanitizeError(err))
@@ -180,8 +198,9 @@ func (e *ArbitrageExecutor) CloseCombination(
 	); err == nil {
 		combination = latest
 	}
-	if combination.Status == "failed" {
-		return ErrRiskLimit
+	if leftover, leftoverErr := e.store.GetActiveArbitrageExecution(ctx, combination.ID); leftoverErr == nil {
+		leftover.Status = "canceled"
+		_, _ = e.store.UpdateArbitrageExecution(ctx, leftover)
 	}
 	combination.Status = "closed"
 	combination.MarketDataStale = true
@@ -269,7 +288,7 @@ func (e *ArbitrageExecutor) executeMakerThenHedge(
 	priceValue := parsePositiveDecimal(price)
 	step := parsePositiveDecimal(makerInstrument.QuantityStep)
 	qty := baseQuantityForNotional(
-		parsePositiveDecimal(combination.OrderNotional), priceValue, step,
+		executionNotional(combination, *execution), priceValue, step,
 	)
 	if !qty.IsPositive() {
 		return ErrRiskLimit
@@ -435,7 +454,7 @@ func (e *ArbitrageExecutor) executeSimultaneousMarket(
 	if bSide == "sell" {
 		priceB = parsePositiveDecimal(bboB.BidPrice)
 	}
-	notional := parsePositiveDecimal(combination.OrderNotional)
+	notional := executionNotional(combination, *execution)
 	qtyA := baseQuantityForNotional(notional, priceA, parsePositiveDecimal(instrumentA.QuantityStep))
 	qtyB := baseQuantityForNotional(notional, priceB, parsePositiveDecimal(instrumentB.QuantityStep))
 	if !qtyA.IsPositive() || !qtyB.IsPositive() {
@@ -774,13 +793,14 @@ func (e *ArbitrageExecutor) completeExecution(
 	if _, err := e.store.UpdateArbitrageExecution(ctx, *execution); err != nil {
 		return err
 	}
-	completed := decimal.Min(fillA, fillB).Mul(mark)
-	updated, err := e.store.AddArbitrageCompletedNotional(ctx, combination.ID, completed.String())
+	delta := signedPositionDelta(execution.Direction, fillA, fillB, mark)
+	updated, err := e.store.AddArbitragePositionDelta(ctx, combination.ID, delta.String())
 	if err == nil {
 		_ = e.store.AppendArbitrageEvent(ctx, combination.ID, execution.ID, "execution_completed", map[string]any{
-			"completedNotional":      completed.String(),
-			"totalCompletedNotional": updated.CompletedNotional,
-			"deltaNotional":          execution.DeltaNotional,
+			"positionDelta":              delta.String(),
+			"positionNotional":           updated.PositionNotional,
+			"cumulativeTurnoverNotional": updated.CumulativeTurnoverNotional,
+			"deltaNotional":              execution.DeltaNotional,
 		})
 	}
 	return err
@@ -819,6 +839,10 @@ func (e *ArbitrageExecutor) orderIntent(
 		legName = "b"
 	}
 	idempotency := fmt.Sprintf("arb:%s:%s:%s:%d", execution.ID, legName, role, attempt)
+	fingerprintExtras := []string(nil)
+	if execution.ReduceOnly {
+		fingerprintExtras = []string{"reduce_only"}
+	}
 	return Order{
 		IdempotencyKey: idempotency, OwnerUsername: combination.OwnerUsername,
 		TradingAccountID: leg.TradingAccountID, ProductName: leg.ProductName,
@@ -827,9 +851,10 @@ func (e *ArbitrageExecutor) orderIntent(
 		BaseAsset: instrument.BaseAsset, QuoteAsset: instrument.QuoteAsset,
 		Side: side, OrderType: orderType, Quantity: quantity, Price: price,
 		RequestFingerprint: requestFingerprint(
-			leg.TradingAccountID, instrument.ID, side, orderType, quantity, price,
+			leg.TradingAccountID, instrument.ID, side, orderType, quantity, price, fingerprintExtras...,
 		),
 		ArbitrageExecutionID: execution.ID, ArbitrageLeg: legName, ArbitrageRole: role,
+		ReduceOnly: execution.ReduceOnly,
 	}
 }
 

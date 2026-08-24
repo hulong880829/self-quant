@@ -21,6 +21,10 @@ export interface FundingOpportunitySnapshot {
     serverTime: string;
     calculatedAt: string;
     stale: boolean;
+    status: "ready" | "warming" | "stale" | "unavailable";
+    lastSuccessfulAt: string;
+    dataThrough: string;
+    generation: number;
   };
 }
 
@@ -75,6 +79,17 @@ function integer(value: unknown, path: string, allowZero = false): number {
 function boolean(value: unknown, path: string): boolean {
   if (typeof value !== "boolean") throw new Error(`${path} 必须是 boolean`);
   return value;
+}
+
+function snapshotStatus(
+  value: unknown,
+  stale: boolean,
+): FundingOpportunitySnapshot["meta"]["status"] {
+  if (value === undefined || value === "") return stale ? "stale" : "ready";
+  if (value === "ready" || value === "warming" || value === "stale" || value === "unavailable") {
+    return value;
+  }
+  throw new Error("response.meta.status 不是支持的快照状态");
 }
 
 function isoTime(value: unknown, path: string): string {
@@ -190,6 +205,15 @@ export function mapFundingOpportunitiesResponse(value: unknown): FundingOpportun
     typeof meta.calculatedAt === "string" && meta.calculatedAt.length > 0
       ? isoTime(meta.calculatedAt, "response.meta.calculatedAt")
       : serverTime;
+  const stale = boolean(meta.stale, "response.meta.stale");
+  const lastSuccessfulAt =
+    typeof meta.lastSuccessfulAt === "string" && meta.lastSuccessfulAt.length > 0
+      ? isoTime(meta.lastSuccessfulAt, "response.meta.lastSuccessfulAt")
+      : calculatedAt;
+  const dataThrough =
+    typeof meta.dataThrough === "string" && meta.dataThrough.length > 0
+      ? isoTime(meta.dataThrough, "response.meta.dataThrough")
+      : calculatedAt;
   return {
     data,
     meta: {
@@ -200,7 +224,14 @@ export function mapFundingOpportunitiesResponse(value: unknown): FundingOpportun
           : version(meta.snapshotVersion, "response.meta.snapshotVersion"),
       serverTime,
       calculatedAt,
-      stale: boolean(meta.stale, "response.meta.stale"),
+      stale,
+      status: snapshotStatus(meta.status, stale),
+      lastSuccessfulAt,
+      dataThrough,
+      generation:
+        meta.generation === undefined
+          ? 0
+          : integer(meta.generation, "response.meta.generation", true),
     },
   };
 }

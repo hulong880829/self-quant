@@ -76,6 +76,7 @@ struct VenueConnectionOptions {
   std::uint32_t snapshot_ban_backoff_ms{300'000};
   std::chrono::milliseconds connect_timeout{10'000};
   std::chrono::milliseconds request_timeout{10'000};
+  std::chrono::milliseconds recovery_deadline{30'000};
   std::chrono::milliseconds idle_timeout{60'000};
   std::chrono::milliseconds reconnect_base{250};
   std::chrono::milliseconds reconnect_max{30'000};

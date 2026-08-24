@@ -382,9 +382,9 @@ func (c *logicalConnection) finish(err error) {
 func websocketEndpoint(key Key) (string, error) {
 	switch key.Venue {
 	case VenueBinance:
-		baseURL := "wss://stream.binance.com:9443/ws"
+		baseURL := "wss://stream.binance.com:9443/stream"
 		if key.Product == ProductPerpetual {
-			baseURL = "wss://fstream.binance.com/ws"
+			baseURL = "wss://fstream.binance.com/stream"
 		}
 		return baseURL, nil
 	case VenueOKX:
@@ -396,11 +396,7 @@ func websocketEndpoint(key Key) (string, error) {
 		}
 		return "wss://stream.bybit.com/v5/public/" + category, nil
 	case VenueBitget:
-		segment := "spot"
-		if key.Product == ProductPerpetual {
-			segment = "mix"
-		}
-		return "wss://ws.bitget.com/v2/ws/public/" + segment, nil
+		return "wss://ws.bitget.com/v2/ws/public", nil
 	case VenueGate:
 		url := "wss://api.gateio.ws/ws/v4/"
 		if key.Product == ProductPerpetual {
@@ -421,21 +417,21 @@ func subscriptionRequest(key Key, subscribe bool) any {
 	case VenueBinance:
 		return map[string]any{
 			"method": strings.ToUpper(operation),
-			"params": []string{strings.ToLower(key.Symbol) + "@bookTicker"},
+			"params": []string{strings.ToLower(key.Symbol) + "@depth10@100ms"},
 			"id":     time.Now().UnixNano(),
 		}
 	case VenueOKX:
 		return map[string]any{
 			"op": operation,
 			"args": []map[string]string{{
-				"channel": "tickers",
+				"channel": "books5",
 				"instId":  key.Symbol,
 			}},
 		}
 	case VenueBybit:
 		return map[string]any{
 			"op":   operation,
-			"args": []string{"tickers." + key.Symbol},
+			"args": []string{"orderbook.1." + key.Symbol},
 		}
 	case VenueBitget:
 		instrumentType := "SPOT"
@@ -446,20 +442,23 @@ func subscriptionRequest(key Key, subscribe bool) any {
 			"op": operation,
 			"args": []map[string]string{{
 				"instType": instrumentType,
-				"channel":  "ticker",
+				"channel":  "books15",
 				"instId":   key.Symbol,
 			}},
 		}
 	case VenueGate:
-		channel := "spot.book_ticker"
+		channel := "spot.order_book"
+		payload := []string{key.Symbol, "10", "100ms"}
 		if key.Product == ProductPerpetual {
-			channel = "futures.book_ticker"
+			channel = "futures.order_book"
+			// Gate's legacy futures snapshot channel only accepts interval "0".
+			payload = []string{key.Symbol, "10", "0"}
 		}
 		return map[string]any{
 			"time":    time.Now().Unix(),
 			"channel": channel,
 			"event":   operation,
-			"payload": []string{key.Symbol},
+			"payload": payload,
 		}
 	default:
 		return nil
@@ -470,14 +469,18 @@ func messageSymbols(venue string, payload []byte) ([]string, error) {
 	switch venue {
 	case VenueBinance:
 		var message struct {
-			Symbol string `json:"s"`
+			Stream string `json:"stream"`
 		}
 		if err := json.Unmarshal(payload, &message); err != nil {
 			return nil, err
 		}
-		return []string{message.Symbol}, nil
+		stream, _, _ := strings.Cut(message.Stream, "@")
+		return []string{strings.ToUpper(stream)}, nil
 	case VenueOKX:
 		var message struct {
+			Argument struct {
+				Symbol string `json:"instId"`
+			} `json:"arg"`
 			Data []struct {
 				Symbol string `json:"instId"`
 			} `json:"data"`
@@ -491,12 +494,15 @@ func messageSymbols(venue string, payload []byte) ([]string, error) {
 				symbols = append(symbols, item.Symbol)
 			}
 		}
+		if len(symbols) == 0 && message.Argument.Symbol != "" {
+			symbols = append(symbols, message.Argument.Symbol)
+		}
 		return symbols, nil
 	case VenueBybit:
 		var message struct {
 			Topic string `json:"topic"`
 			Data  struct {
-				Symbol string `json:"symbol"`
+				Symbol string `json:"s"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(payload, &message); err != nil {
@@ -505,7 +511,11 @@ func messageSymbols(venue string, payload []byte) ([]string, error) {
 		if message.Data.Symbol != "" {
 			return []string{message.Data.Symbol}, nil
 		}
-		return []string{strings.TrimPrefix(message.Topic, "tickers.")}, nil
+		topic := strings.TrimPrefix(message.Topic, "orderbook.1.")
+		if topic == message.Topic {
+			return nil, nil
+		}
+		return []string{topic}, nil
 	case VenueBitget:
 		var message struct {
 			Argument struct {
@@ -518,14 +528,20 @@ func messageSymbols(venue string, payload []byte) ([]string, error) {
 		return []string{message.Argument.Symbol}, nil
 	case VenueGate:
 		var message struct {
-			Result struct {
-				Symbol string `json:"s"`
+			Channel string `json:"channel"`
+			Result  struct {
+				Symbol   string `json:"s"`
+				Contract string `json:"contract"`
 			} `json:"result"`
 		}
 		if err := json.Unmarshal(payload, &message); err != nil {
 			return nil, err
 		}
-		return []string{message.Result.Symbol}, nil
+		symbol := message.Result.Symbol
+		if symbol == "" {
+			symbol = message.Result.Contract
+		}
+		return []string{symbol}, nil
 	}
 	return nil, errors.New("unsupported websocket venue")
 }

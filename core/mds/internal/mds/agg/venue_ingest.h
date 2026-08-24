@@ -65,6 +65,7 @@ private:
       const utils::md::wire::RecordHeader &header) noexcept;
   void accept_sequence(std::uint64_t ring_sequence,
                        const utils::md::wire::RecordHeader &header) noexcept;
+  void reset_generation_state(std::uint32_t generation) noexcept;
   [[nodiscard]] bool rebuild_book(
       const utils::md::wire::SnapshotEndRecord &end) noexcept;
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,7 @@ type Options struct {
 	ReconnectInitial time.Duration
 	ReconnectMax     time.Duration
 	Now              func() time.Time
+	Logger           *slog.Logger
 }
 
 type Manager struct {
@@ -39,6 +41,7 @@ type Manager struct {
 	reconnectInitial time.Duration
 	reconnectMax     time.Duration
 	now              func() time.Time
+	logger           *slog.Logger
 
 	mu         sync.Mutex
 	streams    map[Key]*stream
@@ -50,14 +53,15 @@ type Manager struct {
 }
 
 type stream struct {
-	key     Key
-	ctx     context.Context
-	cancel  context.CancelFunc
-	refs    int
-	nextID  uint64
-	subs    map[uint64]chan BBO
-	latest  BBO
-	hasData bool
+	key          Key
+	ctx          context.Context
+	cancel       context.CancelFunc
+	refs         int
+	nextID       uint64
+	subs         map[uint64]chan BBO
+	latest       BBO
+	hasData      bool
+	lastErrorLog time.Time
 }
 
 type Subscription struct {
@@ -91,6 +95,9 @@ func New(options Options) (*Manager, error) {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
 	return &Manager{
 		connector:        options.Connector,
 		parsers:          options.Parsers,
@@ -98,6 +105,7 @@ func New(options Options) (*Manager, error) {
 		reconnectInitial: options.ReconnectInitial,
 		reconnectMax:     options.ReconnectMax,
 		now:              options.Now,
+		logger:           options.Logger,
 		streams:          make(map[Key]*stream),
 	}, nil
 }
@@ -249,12 +257,13 @@ func (m *Manager) run(s *stream) {
 		if err == nil {
 			m.connects.Add(1)
 			backoff = m.reconnectInitial
-			_ = m.consume(s, connection)
+			err = m.consume(s, connection)
 			m.reconnects.Add(1)
 		}
 		if s.ctx.Err() != nil {
 			return
 		}
+		m.logStreamError(s, err, backoff)
 		jitterMax := max(time.Millisecond, backoff/4)
 		jitter := time.Duration(rand.Int64N(int64(jitterMax)))
 		timer := time.NewTimer(backoff + jitter)
@@ -266,6 +275,24 @@ func (m *Manager) run(s *stream) {
 		}
 		backoff = min(m.reconnectMax, backoff*2)
 	}
+}
+
+func (m *Manager) logStreamError(s *stream, err error, retryAfter time.Duration) {
+	if err == nil {
+		return
+	}
+	now := m.now()
+	if !s.lastErrorLog.IsZero() && now.Sub(s.lastErrorLog) < 10*time.Second {
+		return
+	}
+	s.lastErrorLog = now
+	m.logger.Warn("public BBO stream reconnecting",
+		"venue", s.key.Venue,
+		"product", s.key.Product,
+		"symbol", s.key.Symbol,
+		"retry_after", retryAfter,
+		"error", err,
+	)
 }
 
 func (m *Manager) consume(s *stream, connection Connection) error {

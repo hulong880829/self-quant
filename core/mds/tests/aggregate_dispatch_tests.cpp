@@ -177,6 +177,27 @@ int main() {
   assert(bbo_snapshot.status.ready);
   assert(bbo_snapshot.cross_window.sample_count == 0);
 
+  bbo.raw_cross_bps = 8;
+  bbo.gated_cross_bps = -8;
+  state.publish(bbo, {.ring_epoch = 3,
+                      .ring_sequence = 13,
+                      .receive_mono_ns = 260,
+                      .receive_wall_ns = 360});
+  state.interrupt_bbo_window();
+  assert(state.snapshot(bbo_snapshot));
+  assert(bbo_snapshot.status.ready);
+  assert(bbo_snapshot.status.receive.ring_sequence == 13);
+  assert(bbo_snapshot.cross_window.sample_count == 0);
+  bbo.raw_cross_bps = 6;
+  bbo.gated_cross_bps = -6;
+  state.publish(bbo, {.ring_epoch = 3,
+                      .ring_sequence = 20,
+                      .receive_mono_ns = 300,
+                      .receive_wall_ns = 400});
+  assert(state.snapshot(bbo_snapshot));
+  assert(bbo_snapshot.cross_window.start_mono_ns == 300);
+  assert(bbo_snapshot.cross_window.sample_count == 1);
+
   state.reset(AggregateTopic::AggBbo,
               {.ring_epoch = 4, .ring_sequence = 99});
   assert(state.snapshot(bbo_snapshot));
@@ -229,6 +250,34 @@ int main() {
   assert(!eth_bbo.snapshot(isolated_book));
   assert(!btc_book.snapshot(isolated_bbo));
   assert(!eth_book.snapshot(isolated_bbo));
+
+  mds::consume::AggregateWatchdog watchdog(5'000, 10'000);
+  assert(watchdog.poll(100'000) ==
+         mds::consume::AggregateWatchdogAction::None);
+  assert(!watchdog.started());
+  watchdog.on_ready(1'000);
+  assert(watchdog.poll(5'999) ==
+         mds::consume::AggregateWatchdogAction::None);
+  assert(watchdog.poll(6'000) ==
+         mds::consume::AggregateWatchdogAction::Stale);
+  assert(watchdog.stale());
+  assert(watchdog.poll(10'999) ==
+         mds::consume::AggregateWatchdogAction::None);
+  assert(watchdog.poll(11'000) ==
+         mds::consume::AggregateWatchdogAction::HardReset);
+  assert(watchdog.hard_reset_latched());
+  assert(watchdog.poll(20'000) ==
+         mds::consume::AggregateWatchdogAction::None);
+  watchdog.on_ready(21'000);
+  assert(!watchdog.stale());
+  assert(!watchdog.hard_reset_latched());
+  assert(watchdog.poll(31'000) ==
+         mds::consume::AggregateWatchdogAction::HardReset);
+  watchdog.on_ready(40'000);
+  watchdog.on_hard_reset();
+  assert(watchdog.hard_reset_latched());
+  assert(watchdog.poll(60'000) ==
+         mds::consume::AggregateWatchdogAction::None);
 
   concurrent_no_torn<AggBboRecord, AggBboSnapshot>(10'000);
   concurrent_no_torn<AggOrderBookRecord, AggOrderBookSnapshot>(4'000);

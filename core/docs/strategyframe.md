@@ -221,6 +221,11 @@ slots. Registration can still fail if the ring's own registry is full.
 segment header; a mismatch fails startup with `InvalidConfig`. Readers heartbeat
 at `heartbeat_interval_ns` and unregister on normal teardown.
 
+The five-venue production aggregate segments use `ring_bytes: 33554432` and
+`max_record_bytes: 32768`. A future StrategyFrame strategy that attaches to an
+`aggbbo` or `aggorderbook` segment must declare those values. This does not
+change strategies that attach only to raw producer BBO/order-book rings.
+
 Self-hosted producer:
 
 ```yaml

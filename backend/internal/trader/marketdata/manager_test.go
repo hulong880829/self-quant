@@ -45,6 +45,7 @@ func (c *fakeConnection) Close() error {
 type fakeConnector struct {
 	mu          sync.Mutex
 	connections []*fakeConnection
+	failures    map[int]error
 	connects    int
 	connected   chan int
 }
@@ -54,6 +55,13 @@ func (c *fakeConnector) Connect(context.Context, Key) (Connection, error) {
 	defer c.mu.Unlock()
 	index := c.connects
 	c.connects++
+	if err := c.failures[index]; err != nil {
+		select {
+		case c.connected <- c.connects:
+		default:
+		}
+		return nil, err
+	}
 	if index >= len(c.connections) {
 		return nil, errors.New("no fake connection")
 	}
@@ -207,6 +215,37 @@ func TestManagerReconnectsAndRestoresSubscription(t *testing.T) {
 	}
 }
 
+func TestManagerRetriesInitialConnectionFailure(t *testing.T) {
+	t.Parallel()
+	connection := newFakeConnection()
+	connector := &fakeConnector{
+		connections: []*fakeConnection{nil, connection},
+		failures:    map[int]error{0: errors.New("handshake rejected")},
+		connected:   make(chan int, 4),
+	}
+	manager, err := New(Options{
+		Connector:        connector,
+		Parsers:          map[string]Parser{VenueBitget: testParser},
+		ReconnectInitial: time.Millisecond,
+		ReconnectMax:     2 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	key := Key{Venue: VenueBitget, Product: ProductPerpetual, Symbol: "COTIUSDT"}
+	subscription, err := manager.Subscribe(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	waitForConnectCount(t, connector.connected, 1)
+	waitForConnectCount(t, connector.connected, 2)
+	connection.reads <- fakeRead{payload: []byte("42")}
+	waitForPrice(t, manager, key, "42")
+}
+
 func TestManagerStaleCheckUsesReceiveTimestamp(t *testing.T) {
 	t.Parallel()
 	connection := newFakeConnection()
@@ -220,7 +259,7 @@ func TestManagerStaleCheckUsesReceiveTimestamp(t *testing.T) {
 	manager, err := New(Options{
 		Connector:  connector,
 		Parsers:    map[string]Parser{VenueBinance: testParser},
-		StaleAfter: 100 * time.Millisecond,
+		StaleAfter: 2 * time.Second,
 		Now: func() time.Time {
 			return time.Unix(0, nowNanos.Load())
 		},
@@ -239,9 +278,16 @@ func TestManagerStaleCheckUsesReceiveTimestamp(t *testing.T) {
 	connection.reads <- fakeRead{payload: []byte("100")}
 	waitForPrice(t, manager, key, "100")
 
-	nowNanos.Store(base.Add(101 * time.Millisecond).UnixNano())
+	nowNanos.Store(base.Add(2 * time.Second).UnixNano())
+	if _, err := manager.Latest(key); err != nil {
+		t.Fatalf("Latest at stale boundary: %v", err)
+	}
+	connection.reads <- fakeRead{payload: []byte("101")}
+	waitForPrice(t, manager, key, "101")
+
+	nowNanos.Store(base.Add(4*time.Second + time.Nanosecond).UnixNano())
 	value, err := manager.Latest(key)
-	if !errors.Is(err, ErrStale) || value.BidPrice != "100" {
+	if !errors.Is(err, ErrStale) || value.BidPrice != "101" {
 		t.Fatalf("Latest = (%#v, %v), want value and ErrStale", value, err)
 	}
 	if !manager.IsStale(key) {

@@ -141,6 +141,9 @@ func (a *gateAdapter) PlaceOrder(ctx context.Context, credentials Credentials, r
 		body["price"] = "0"
 		body["tif"] = "ioc"
 	}
+	if request.ReduceOnly {
+		body["reduce_only"] = true
+	}
 	raw, err := a.signed(ctx, http.MethodPost, "/api/v4/futures/usdt/orders", credentials, compactJSON(body), nil)
 	if err != nil {
 		return Result{}, err

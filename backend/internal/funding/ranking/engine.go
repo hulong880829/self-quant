@@ -2,6 +2,7 @@ package ranking
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -30,40 +31,75 @@ func (e *Engine) Refresh(
 	if len(periods) == 0 {
 		return nil
 	}
-	maxLookback := time.Duration(0)
 	for _, period := range periods {
 		if period.Lookback() <= 0 {
 			return ErrInvalidPeriod
 		}
-		maxLookback = max(maxLookback, period.Lookback())
 	}
 	symbols, venues := rateDimensions(rates)
-	quotes, err := e.history.Query(ctx, now.Add(-maxLookback), now, symbols, venues)
-	if err != nil {
-		for _, period := range periods {
-			e.snapshots.MarkStale(period)
-		}
-		return fmt.Errorf("load opportunity history: %w", err)
-	}
-	if !hasCrossVenueCoverage(quotes, now) {
-		for _, period := range periods {
-			e.snapshots.MarkStale(period)
-		}
-		return fmt.Errorf("%w: no fresh cross-venue perpetual BBO", ErrInsufficient)
-	}
-	quoteIndex := indexQuotes(quotes)
 	rateGroups := groupRates(rates)
+	var refreshErrors []error
 	for _, period := range periods {
+		quoteIndex, dataThrough, err := e.loadIndex(
+			ctx, now.Add(-period.Lookback()), now, symbols, venues,
+		)
+		if err != nil {
+			e.snapshots.MarkStale(period)
+			refreshErrors = append(refreshErrors, fmt.Errorf("%s: %w", period, err))
+			continue
+		}
+		if !quoteIndex.hasCrossVenueCoverage(now) {
+			e.snapshots.MarkStale(period)
+			refreshErrors = append(
+				refreshErrors,
+				fmt.Errorf("%s: %w: no fresh cross-venue perpetual BBO", period, ErrInsufficient),
+			)
+			continue
+		}
 		items := e.rankPeriod(period, rateGroups, quoteIndex, now)
-		e.snapshots.Replace(period, items, now)
+		e.snapshots.ReplaceWithDataThrough(period, items, now, dataThrough)
 	}
-	return nil
+	return errors.Join(refreshErrors...)
+}
+
+type historySnapshotProvider interface {
+	SnapshotRange(time.Time, time.Time, []string, []string) (
+		map[string]map[string][]MinuteQuote, *HistoryGeneration, error,
+	)
+}
+
+type loadedHistory struct {
+	quotes  map[string]map[string][]Quote
+	minutes map[string]map[string][]MinuteQuote
+}
+
+func (e *Engine) loadIndex(
+	ctx context.Context, from, to time.Time, symbols, venues []string,
+) (*loadedHistory, time.Time, error) {
+	if cache, ok := e.history.(historySnapshotProvider); ok {
+		index, generation, err := cache.SnapshotRange(from, to, symbols, venues)
+		if err != nil {
+			return nil, time.Time{}, fmt.Errorf("load opportunity history cache: %w", err)
+		}
+		return &loadedHistory{minutes: index}, generation.DataThrough, nil
+	}
+	quotes, err := e.history.Query(ctx, from, to, symbols, venues)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("load opportunity history: %w", err)
+	}
+	var dataThrough time.Time
+	for _, quote := range quotes {
+		if quote.TS.After(dataThrough) {
+			dataThrough = quote.TS
+		}
+	}
+	return &loadedHistory{quotes: indexQuotes(quotes)}, dataThrough, nil
 }
 
 func (e *Engine) rankPeriod(
 	period Period,
 	groups map[string][]funding.Rate,
-	quotes map[string]map[string][]Quote,
+	quotes *loadedHistory,
 	now time.Time,
 ) []Opportunity {
 	items := make([]Opportunity, 0)
@@ -73,21 +109,24 @@ func (e *Engine) rankPeriod(
 	}
 	sort.Strings(symbols)
 	for _, symbol := range symbols {
-		rates := groups[symbol]
+		rates := e.eligibleRates(groups[symbol], now)
 		for first := 0; first < len(rates); first++ {
 			for second := first + 1; second < len(rates); second++ {
 				firstRate, secondRate := rates[first], rates[second]
+				forwardPoints := quotes.paired(
+					symbol, firstRate.Exchange, secondRate.Exchange,
+				)
 				var candidates []Opportunity
 				if item, ok := e.scoreDirection(
 					period, firstRate, secondRate,
-					pairedQuotes(quotes[symbol][firstRate.Exchange], quotes[symbol][secondRate.Exchange]),
+					forwardPoints,
 					now,
 				); ok {
 					candidates = append(candidates, item)
 				}
 				if item, ok := e.scoreDirection(
 					period, secondRate, firstRate,
-					pairedQuotes(quotes[symbol][secondRate.Exchange], quotes[symbol][firstRate.Exchange]),
+					reversePairPoints(forwardPoints),
 					now,
 				); ok {
 					candidates = append(candidates, item)
@@ -110,6 +149,24 @@ func (e *Engine) rankPeriod(
 		items[index].Rank = index + 1
 	}
 	return items
+}
+
+func (e *Engine) eligibleRates(rates []funding.Rate, now time.Time) []funding.Rate {
+	result := make([]funding.Rate, 0, len(rates))
+	for _, rate := range rates {
+		if rate.PositionNotionalUSD <= 0 || rate.Turnover24hUSD <= 0 ||
+			rate.SourceUpdatedAt.IsZero() || now.Sub(rate.SourceUpdatedAt) > e.staleAfter {
+			continue
+		}
+		result = append(result, rate)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Turnover24hUSD != result[j].Turnover24hUSD {
+			return result[i].Turnover24hUSD > result[j].Turnover24hUSD
+		}
+		return result[i].Exchange < result[j].Exchange
+	})
+	return result
 }
 
 func (e *Engine) scoreDirection(
@@ -233,6 +290,52 @@ func pairedQuotes(longQuotes, shortQuotes []Quote) []PairPoint {
 	return result
 }
 
+func (h *loadedHistory) paired(symbol, longVenue, shortVenue string) []PairPoint {
+	if h.minutes != nil {
+		return pairedMinuteQuotes(
+			h.minutes[symbol][longVenue], h.minutes[symbol][shortVenue],
+		)
+	}
+	return pairedQuotes(h.quotes[symbol][longVenue], h.quotes[symbol][shortVenue])
+}
+
+func pairedMinuteQuotes(longQuotes, shortQuotes []MinuteQuote) []PairPoint {
+	result := make([]PairPoint, 0, min(len(longQuotes), len(shortQuotes)))
+	longIndex, shortIndex := 0, 0
+	for longIndex < len(longQuotes) && shortIndex < len(shortQuotes) {
+		longQuote, shortQuote := longQuotes[longIndex], shortQuotes[shortIndex]
+		switch {
+		case longQuote.Minute < shortQuote.Minute:
+			longIndex++
+		case longQuote.Minute > shortQuote.Minute:
+			shortIndex++
+		default:
+			result = append(result, PairPoint{
+				TS: time.Unix(longQuote.Minute*60, 0).UTC(),
+				Long: Quote{
+					TS:  time.Unix(longQuote.Minute*60, 0).UTC(),
+					Bid: longQuote.Bid, Ask: longQuote.Ask,
+				},
+				Short: Quote{
+					TS:  time.Unix(shortQuote.Minute*60, 0).UTC(),
+					Bid: shortQuote.Bid, Ask: shortQuote.Ask,
+				},
+			})
+			longIndex++
+			shortIndex++
+		}
+	}
+	return result
+}
+
+func reversePairPoints(points []PairPoint) []PairPoint {
+	result := make([]PairPoint, len(points))
+	for index, point := range points {
+		result[index] = PairPoint{TS: point.TS, Long: point.Short, Short: point.Long}
+	}
+	return result
+}
+
 func rateDimensions(rates []funding.Rate) ([]string, []string) {
 	symbols := make([]string, 0, len(rates))
 	venues := make([]string, 0, len(rates))
@@ -291,6 +394,40 @@ func hasCrossVenueCoverage(quotes []Quote, now time.Time) bool {
 	}
 	for _, venues := range venuesBySymbol {
 		if len(venues) >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCrossVenueCoverageIndex(index map[string]map[string][]Quote, now time.Time) bool {
+	for _, byVenue := range index {
+		fresh := 0
+		for _, quotes := range byVenue {
+			if len(quotes) > 0 && now.Sub(quotes[len(quotes)-1].TS) <= 2*time.Minute {
+				fresh++
+			}
+		}
+		if fresh >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *loadedHistory) hasCrossVenueCoverage(now time.Time) bool {
+	if h.minutes == nil {
+		return hasCrossVenueCoverageIndex(h.quotes, now)
+	}
+	nowMinute := now.Unix() / 60
+	for _, byVenue := range h.minutes {
+		fresh := 0
+		for _, quotes := range byVenue {
+			if len(quotes) > 0 && nowMinute-quotes[len(quotes)-1].Minute <= 2 {
+				fresh++
+			}
+		}
+		if fresh >= 2 {
 			return true
 		}
 	}

@@ -4,6 +4,37 @@
 
 namespace mds::consume {
 
+void AggregateWatchdog::on_ready(std::uint64_t receive_mono_ns) noexcept {
+  last_ready_mono_ns_ = receive_mono_ns;
+  started_ = true;
+  stale_ = false;
+  hard_reset_latched_ = false;
+}
+
+void AggregateWatchdog::on_hard_reset() noexcept {
+  if (started_) {
+    stale_ = true;
+    hard_reset_latched_ = true;
+  }
+}
+
+AggregateWatchdogAction AggregateWatchdog::poll(std::uint64_t now_ns) noexcept {
+  if (!started_ || hard_reset_latched_ || now_ns < last_ready_mono_ns_) {
+    return AggregateWatchdogAction::None;
+  }
+  const auto elapsed = now_ns - last_ready_mono_ns_;
+  if (elapsed >= hard_reset_after_ns_) {
+    stale_ = true;
+    hard_reset_latched_ = true;
+    return AggregateWatchdogAction::HardReset;
+  }
+  if (!stale_ && elapsed >= stale_after_ns_) {
+    stale_ = true;
+    return AggregateWatchdogAction::Stale;
+  }
+  return AggregateWatchdogAction::None;
+}
+
 void AggregateLatestState::publish(
     const utils::md::wire::AggBboRecord &record,
     AggregateReceiveInfo receive) noexcept {
@@ -69,6 +100,14 @@ void AggregateLatestState::reset(AggregateTopic topic,
 std::uint64_t
 AggregateLatestState::request_bbo_window_rollover() noexcept {
   return requested_rollover_.fetch_add(1, std::memory_order_acq_rel) + 1;
+}
+
+void AggregateLatestState::interrupt_bbo_window() noexcept {
+  bbo_writer_.cross_window = {};
+  bbo_window_initialized_ = false;
+  if (bbo_writer_.status.ready) {
+    (void)bbo_.publish(bbo_writer_);
+  }
 }
 
 void AggregateLatestState::service_bbo_window_rollover(

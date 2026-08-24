@@ -28,6 +28,9 @@ type Funding struct {
 	Ranking1hInterval      time.Duration
 	RankingSlowInterval    time.Duration
 	RankingEnabled         bool
+	RankingCacheEnabled    bool
+	RankingMinuteEnabled   bool
+	RankingHistoryMaxRows  int
 	LogLevel               string
 	Development            bool
 	EnabledExchanges       map[string]bool
@@ -259,6 +262,9 @@ func FundingFromEnv() (Funding, error) {
 		Ranking1hInterval:      duration("FUNDING_RANKING_1H_INTERVAL", time.Minute),
 		RankingSlowInterval:    duration("FUNDING_RANKING_SLOW_INTERVAL", 10*time.Minute),
 		RankingEnabled:         boolean("FUNDING_RANKING_ENABLED", true),
+		RankingCacheEnabled:    boolean("FUNDING_RANKING_HISTORY_CACHE_ENABLED", true),
+		RankingMinuteEnabled:   boolean("FUNDING_RANKING_MINUTE_TABLE_ENABLED", true),
+		RankingHistoryMaxRows:  positiveInteger("FUNDING_RANKING_HISTORY_MAX_ROWS", 12_000_000),
 		LogLevel:               env("LOG_LEVEL", "info"),
 		Development:            boolean("DEVELOPMENT", false),
 		EnabledExchanges: enabledExchanges(env(
@@ -267,7 +273,7 @@ func FundingFromEnv() (Funding, error) {
 		)),
 	}
 	if c.SyncInterval <= 0 || c.HTTPTimeout <= 0 || c.InstrumentSyncInterval <= 0 ||
-		c.RankingQueryTimeout <= 0 || c.RankingPoolSize <= 0 ||
+		c.RankingQueryTimeout <= 0 || c.RankingPoolSize <= 0 || c.RankingHistoryMaxRows <= 0 ||
 		c.Ranking1hInterval <= 0 || c.RankingSlowInterval <= 0 {
 		return c, fmt.Errorf("durations must be positive")
 	}
@@ -462,7 +468,7 @@ func TraderFromEnv() (Trader, error) {
 		ArbitrageScheduleLease:      duration("TRADER_ARBITRAGE_SCHEDULE_LEASE", 30*time.Second),
 		ArbitrageScheduleBatch:      positiveInteger("TRADER_ARBITRAGE_SCHEDULE_BATCH", 50),
 		ArbitrageScheduleWorkers:    positiveInteger("TRADER_ARBITRAGE_SCHEDULE_WORKERS", 8),
-		ArbitrageBBOStale:           duration("TRADER_ARBITRAGE_BBO_STALE", 2*time.Second),
+		ArbitrageBBOStale:           duration("TRADER_ARBITRAGE_BBO_STALE", 60*time.Second),
 		ArbitrageRepriceTicks:       positiveInteger("TRADER_ARBITRAGE_REPRICE_TICKS", 2),
 		ArbitrageObserverInterval:   duration("TRADER_ARBITRAGE_OBSERVER_INTERVAL", 200*time.Millisecond),
 		ArbitrageIOCProtectionTicks: positiveInteger("TRADER_ARBITRAGE_IOC_PROTECTION_TICKS", 3),

@@ -36,8 +36,10 @@ npm run build
 `NEXT_PUBLIC_AGGDATA_BASE_URL`（默认 `http://127.0.0.1:9093`）；WebSocket 默认
 由该地址推导为 `/v1/stream`，也可用 `NEXT_PUBLIC_AGGDATA_WS_URL` 单独覆盖。若
 服务启用了 browser token，可设置公开的 `NEXT_PUBLIC_AGGDATA_TOKEN`。REST
-使用 `/v1/markets`、`/v1/markets/{symbol}/snapshot` 和
-`/v1/markets/{symbol}/spread-history?range=24h&type=gated`。
+使用 `/v1/markets`、`/v1/markets/{symbol}/snapshot?profile=...` 和
+`/v1/markets/{symbol}/spread-history?profile=...&range=24h&type=gated`。
+聚合盘口以 `profile + symbol` 区分同名现货和永续市场，WebSocket 订阅也会
+同时发送这两个字段。
 
 Polymarket 页面也直接使用 aggdata：通过 `channel:"fairprice"` 的 JSON
 WebSocket 帧显示当前 Fair Price，并从

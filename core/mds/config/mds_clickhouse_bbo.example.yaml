@@ -6,7 +6,7 @@ clickhouse_bbo:
   user: bbo_writer
   password_env: CLICKHOUSE_BBO_PASSWORD
 
-  # 必须与 Binance、OKX producer 的 shared_memory.prefix 一致
+  # 必须与五所 producer 的 shared_memory.prefix 一致
   shm_prefix: /selfquant.mds.bbo
 
   # 每个标的每秒保存一次最新 BBO
@@ -16,9 +16,9 @@ clickhouse_bbo:
   flush_interval_ms: 1000
   request_timeout_ms: 5000
 
-  batch_rows: 2000
-  queue_rows: 20000
-  unresolved_rows: 2048
+  batch_rows: 5000
+  queue_rows: 50000
+  unresolved_rows: 4096
 
   selectors:
     - venue: binance
@@ -70,5 +70,83 @@ clickhouse_bbo:
       product: perpetual
       shard: 2
     - venue: okx
+      product: perpetual
+      shard: 3
+
+    - venue: bitget
+      product: spot
+      shard: 0
+    - venue: bitget
+      product: spot
+      shard: 1
+    - venue: bitget
+      product: spot
+      shard: 2
+    - venue: bitget
+      product: spot
+      shard: 3
+
+    - venue: bitget
+      product: perpetual
+      shard: 0
+    - venue: bitget
+      product: perpetual
+      shard: 1
+    - venue: bitget
+      product: perpetual
+      shard: 2
+    - venue: bitget
+      product: perpetual
+      shard: 3
+
+    - venue: bybit
+      product: spot
+      shard: 0
+    - venue: bybit
+      product: spot
+      shard: 1
+    - venue: bybit
+      product: spot
+      shard: 2
+    - venue: bybit
+      product: spot
+      shard: 3
+
+    - venue: bybit
+      product: perpetual
+      shard: 0
+    - venue: bybit
+      product: perpetual
+      shard: 1
+    - venue: bybit
+      product: perpetual
+      shard: 2
+    - venue: bybit
+      product: perpetual
+      shard: 3
+
+    - venue: gate
+      product: spot
+      shard: 0
+    - venue: gate
+      product: spot
+      shard: 1
+    - venue: gate
+      product: spot
+      shard: 2
+    - venue: gate
+      product: spot
+      shard: 3
+
+    - venue: gate
+      product: perpetual
+      shard: 0
+    - venue: gate
+      product: perpetual
+      shard: 1
+    - venue: gate
+      product: perpetual
+      shard: 2
+    - venue: gate
       product: perpetual
       shard: 3

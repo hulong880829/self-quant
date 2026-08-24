@@ -39,10 +39,10 @@ func (r *Repository) CreateArbitrageIntents(
 				exchange,instrument_id,contract_type,exchange_symbol,client_order_id,
 				side,order_type,quantity,price,status,request_fingerprint,base_asset,quote_asset,
 				twap_job_id,twap_slice_index,twap_attempt_index,
-				arbitrage_execution_id,arbitrage_leg,arbitrage_role
+				arbitrage_execution_id,arbitrage_leg,arbitrage_role,reduce_only
 			) VALUES (
 				$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NULLIF($14,'')::numeric,
-				'pending',$15,$16,$17,NULL,NULL,0,NULLIF($18,'')::uuid,NULLIF($19,''),NULLIF($20,'')
+				'pending',$15,$16,$17,NULL,NULL,0,NULLIF($18,'')::uuid,NULLIF($19,''),NULLIF($20,''),$21
 			)
 			ON CONFLICT (idempotency_key) DO NOTHING
 			RETURNING `+orderColumns, orderWriteArgs(order)...,
@@ -105,12 +105,12 @@ func (r *Repository) CreateArbitrageCombination(
 			leg_b_trading_account_id,leg_b_instrument_id,leg_b_product_name,leg_b_account_name,
 			leg_b_exchange,leg_b_contract_type,leg_b_exchange_symbol,leg_b_base_asset,leg_b_quote_asset,
 			ask_threshold_bps,bid_threshold_bps,target_notional,order_notional,max_delta_notional,
-			execution_mode,maker_leg,status,completed_notional,market_data_stale
+			execution_mode,maker_leg,status,position_notional,cumulative_turnover_notional,market_data_stale
 		) VALUES (
 			$1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
 			$14,$15,$16,$17,$18,$19,$20,$21,$22,
 			$23::numeric,$24::numeric,$25::numeric,$26::numeric,$27::numeric,
-			$28,$29,$30,$31::numeric,$32
+			$28,$29,$30,$31::numeric,$32::numeric,$33
 		)
 		ON CONFLICT (idempotency_key) DO NOTHING
 		RETURNING `+arbitrageCombinationColumns,
@@ -389,16 +389,17 @@ func (r *Repository) ClaimArbitrageExecution(
 			id,combination_id,direction,sequence,status,
 			trigger_ask_spread_bps,trigger_bid_spread_bps,
 			trigger_leg_a_bid,trigger_leg_a_ask,trigger_leg_b_bid,trigger_leg_b_ask,
-			target_base_quantity,leg_a_filled_quantity,leg_b_filled_quantity,delta_notional,
+			target_base_quantity,requested_notional,position_effect,reduce_only,
+			leg_a_filled_quantity,leg_b_filled_quantity,delta_notional,
 			hedge_sequence,attempt,error_message
 		)
 		SELECT $1::uuid,$2::uuid,$3,
 			COALESCE((SELECT max(sequence)+1 FROM trader_arbitrage_executions WHERE combination_id=$2::uuid),1),
 			$4,$5::numeric,$6::numeric,$7::numeric,$8::numeric,$9::numeric,$10::numeric,
-			$11::numeric,$12::numeric,$13::numeric,$14::numeric,$15,$16,$17
+			$11::numeric,$12::numeric,$13,$14,$15::numeric,$16::numeric,$17::numeric,$18,$19,$20
 		WHERE EXISTS (
 			SELECT 1 FROM trader_arbitrage_combinations
-			WHERE id=$2::uuid AND status='running'
+			WHERE id=$2::uuid AND status='running' AND NOT position_uncertain
 		)
 		ON CONFLICT DO NOTHING
 		RETURNING `+arbitrageExecutionColumns,
@@ -406,7 +407,9 @@ func (r *Repository) ClaimArbitrageExecution(
 		execution.TriggerAskSpread, execution.TriggerBidSpread,
 		execution.TriggerLegABid, execution.TriggerLegAAsk,
 		execution.TriggerLegBBid, execution.TriggerLegBAsk,
-		execution.TargetBaseQuantity, zeroString(execution.LegAFilledQuantity),
+		execution.TargetBaseQuantity, zeroString(execution.RequestedNotional),
+		execution.PositionEffect, execution.ReduceOnly,
+		zeroString(execution.LegAFilledQuantity),
 		zeroString(execution.LegBFilledQuantity), zeroString(execution.DeltaNotional),
 		execution.HedgeSequence, execution.Attempt, execution.ErrorMessage,
 	).Scan(arbitrageExecutionScanTargets(&result)...)
@@ -418,15 +421,15 @@ func (r *Repository) ClaimArbitrageExecution(
 
 func (r *Repository) GetActiveArbitrageExecution(
 	ctx context.Context,
-	combinationID, direction string,
+	combinationID string,
 ) (ArbitrageExecution, error) {
 	var item ArbitrageExecution
 	err := r.pool.QueryRow(ctx, `
 		SELECT `+arbitrageExecutionColumns+`
 		FROM trader_arbitrage_executions
-		WHERE combination_id=$1::uuid AND direction=$2
+		WHERE combination_id=$1::uuid
 		  AND status NOT IN ('completed','failed','canceled','dry_run')`,
-		combinationID, direction,
+		combinationID,
 	).Scan(arbitrageExecutionScanTargets(&item)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ArbitrageExecution{}, ErrNotFound
@@ -465,15 +468,14 @@ func (r *Repository) UpdateArbitrageCombinationRuntime(
 	var updated ArbitrageCombination
 	err := r.pool.QueryRow(ctx, `
 		UPDATE trader_arbitrage_combinations SET
-			status=$2,completed_notional=$3::numeric,
-			current_ask_spread_bps=NULLIF($4,'')::numeric,
-			current_bid_spread_bps=NULLIF($5,'')::numeric,
-			market_data_stale=$6,error_message=$7,version=version+1,updated_at=now(),
+			status=$2,
+			current_ask_spread_bps=NULLIF($3,'')::numeric,
+			current_bid_spread_bps=NULLIF($4,'')::numeric,
+			market_data_stale=$5,error_message=$6,version=version+1,updated_at=now(),
 			closed_at=CASE WHEN $2 IN ('closed','failed') THEN COALESCE(closed_at,now()) ELSE closed_at END
 		WHERE id=$1::uuid
 		RETURNING `+arbitrageCombinationColumns,
-		item.ID, item.Status, zeroString(item.CompletedNotional),
-		item.CurrentAskSpreadBps, item.CurrentBidSpreadBps,
+		item.ID, item.Status, item.CurrentAskSpreadBps, item.CurrentBidSpreadBps,
 		item.MarketDataStale, item.ErrorMessage,
 	).Scan(arbitrageCombinationScanTargets(&updated)...)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -503,48 +505,46 @@ func (r *Repository) UpdateArbitrageMarketSnapshot(
 	return updated, err
 }
 
-func (r *Repository) AddArbitrageCompletedNotional(
+func (r *Repository) AddArbitragePositionDelta(
 	ctx context.Context,
 	id, delta string,
 ) (ArbitrageCombination, error) {
 	var updated ArbitrageCombination
 	err := r.pool.QueryRow(ctx, `
 		UPDATE trader_arbitrage_combinations SET
-			completed_notional=LEAST(target_notional,completed_notional+$2::numeric),
-			status=CASE
-				WHEN status='closing' THEN 'closing'
-				WHEN completed_notional+$2::numeric >= target_notional THEN 'closed'
-				ELSE status
-			END,
-			market_data_stale=CASE
-				WHEN status='running' AND completed_notional+$2::numeric >= target_notional THEN TRUE
-				ELSE market_data_stale
-			END,
-			closed_at=CASE
-				WHEN status='running' AND completed_notional+$2::numeric >= target_notional
-					THEN COALESCE(closed_at,now())
-				ELSE closed_at
-			END,
+			position_notional=GREATEST(-target_notional,LEAST(target_notional,position_notional+$2::numeric)),
+			cumulative_turnover_notional=cumulative_turnover_notional+ABS($2::numeric),
+			consecutive_failures=0,
+			next_retry_at='-infinity',
+			error_message=CASE WHEN position_uncertain THEN error_message ELSE '' END,
 			version=version+1,updated_at=now()
 		WHERE id=$1::uuid AND status IN ('running','closing')
 		RETURNING `+arbitrageCombinationColumns,
 		id, delta,
 	).Scan(arbitrageCombinationScanTargets(&updated)...)
 	if errors.Is(err, pgx.ErrNoRows) {
-		err = r.pool.QueryRow(ctx, `
-			SELECT `+arbitrageCombinationColumns+`
-			FROM trader_arbitrage_combinations WHERE id=$1::uuid`, id,
-		).Scan(arbitrageCombinationScanTargets(&updated)...)
-		if err == nil && updated.Status == "closed" {
-			return updated, nil
-		}
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ArbitrageCombination{}, ErrNotFound
-		}
-		if err != nil {
-			return ArbitrageCombination{}, err
-		}
-		return ArbitrageCombination{}, ErrArbitrageConflict
+		return ArbitrageCombination{}, ErrNotFound
+	}
+	return updated, err
+}
+
+func (r *Repository) RecordArbitrageFailure(
+	ctx context.Context,
+	id, errorMessage string,
+) (ArbitrageCombination, error) {
+	var updated ArbitrageCombination
+	err := r.pool.QueryRow(ctx, `
+		UPDATE trader_arbitrage_combinations SET
+			error_message=$2,
+			consecutive_failures=consecutive_failures+1,
+			next_retry_at=now() + make_interval(secs => LEAST(60, (2 * POWER(2, consecutive_failures))::int)),
+			version=version+1,updated_at=now()
+		WHERE id=$1::uuid AND status IN ('running','closing')
+		RETURNING `+arbitrageCombinationColumns,
+		id, truncateMessage(errorMessage),
+	).Scan(arbitrageCombinationScanTargets(&updated)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ArbitrageCombination{}, ErrNotFound
 	}
 	return updated, err
 }
@@ -623,9 +623,13 @@ const arbitrageCombinationColumns = `
 	leg_b_trading_account_id,leg_b_instrument_id,leg_b_product_name,leg_b_account_name,
 	leg_b_exchange,leg_b_contract_type,leg_b_exchange_symbol,leg_b_base_asset,leg_b_quote_asset,
 	ask_threshold_bps::text,bid_threshold_bps::text,target_notional::text,order_notional::text,
-	max_delta_notional::text,execution_mode,maker_leg,status,completed_notional::text,
+	max_delta_notional::text,execution_mode,maker_leg,status,position_notional::text,
+	cumulative_turnover_notional::text,
 	COALESCE(current_ask_spread_bps::text,''),COALESCE(current_bid_spread_bps::text,''),
-	market_data_stale,error_message,
+	market_data_stale,error_message,consecutive_failures,
+	CASE WHEN next_retry_at='-infinity'::timestamptz
+		THEN 'epoch'::timestamptz ELSE next_retry_at END,
+	position_uncertain,
 	CASE WHEN scheduler_lease_until='-infinity'::timestamptz
 		THEN 'epoch'::timestamptz ELSE scheduler_lease_until END,
 	created_at,updated_at,
@@ -642,8 +646,9 @@ func arbitrageCombinationScanTargets(item *ArbitrageCombination) []any {
 		&item.LegB.ExchangeSymbol, &item.LegB.BaseAsset, &item.LegB.QuoteAsset,
 		&item.AskThresholdBps, &item.BidThresholdBps, &item.TargetNotional,
 		&item.OrderNotional, &item.MaxDeltaNotional, &item.ExecutionMode, &item.MakerLeg,
-		&item.Status, &item.CompletedNotional, &item.CurrentAskSpreadBps,
-		&item.CurrentBidSpreadBps, &item.MarketDataStale, &item.ErrorMessage,
+		&item.Status, &item.PositionNotional, &item.CumulativeTurnoverNotional,
+		&item.CurrentAskSpreadBps, &item.CurrentBidSpreadBps, &item.MarketDataStale,
+		&item.ErrorMessage, &item.ConsecutiveFailures, &item.NextRetryAt, &item.PositionUncertain,
 		&item.SchedulerLeaseUntil, &item.CreatedAt, &item.UpdatedAt, &item.ClosedAt,
 	}
 }
@@ -659,7 +664,8 @@ func arbitrageCombinationWriteArgs(item ArbitrageCombination) []any {
 		item.LegB.ExchangeSymbol, item.LegB.BaseAsset, item.LegB.QuoteAsset,
 		item.AskThresholdBps, item.BidThresholdBps, item.TargetNotional,
 		item.OrderNotional, item.MaxDeltaNotional, item.ExecutionMode, item.MakerLeg,
-		item.Status, zeroString(item.CompletedNotional), item.MarketDataStale,
+		item.Status, zeroString(item.PositionNotional), zeroString(item.CumulativeTurnoverNotional),
+		item.MarketDataStale,
 	}
 }
 
@@ -667,7 +673,8 @@ const arbitrageExecutionColumns = `
 	id::text,combination_id::text,direction,sequence,status,
 	trigger_ask_spread_bps::text,trigger_bid_spread_bps::text,
 	trigger_leg_a_bid::text,trigger_leg_a_ask::text,trigger_leg_b_bid::text,trigger_leg_b_ask::text,
-	target_base_quantity::text,leg_a_filled_quantity::text,leg_b_filled_quantity::text,
+	target_base_quantity::text,requested_notional::text,position_effect,reduce_only,
+	leg_a_filled_quantity::text,leg_b_filled_quantity::text,
 	delta_notional::text,COALESCE(maker_order_id::text,''),COALESCE(hedge_order_id::text,''),
 	hedge_sequence,attempt,error_message,created_at,updated_at,COALESCE(closed_at,'epoch'::timestamptz)`
 
@@ -676,7 +683,8 @@ func arbitrageExecutionScanTargets(item *ArbitrageExecution) []any {
 		&item.ID, &item.CombinationID, &item.Direction, &item.Sequence, &item.Status,
 		&item.TriggerAskSpread, &item.TriggerBidSpread,
 		&item.TriggerLegABid, &item.TriggerLegAAsk, &item.TriggerLegBBid, &item.TriggerLegBAsk,
-		&item.TargetBaseQuantity, &item.LegAFilledQuantity, &item.LegBFilledQuantity,
+		&item.TargetBaseQuantity, &item.RequestedNotional, &item.PositionEffect, &item.ReduceOnly,
+		&item.LegAFilledQuantity, &item.LegBFilledQuantity,
 		&item.DeltaNotional, &item.MakerOrderID, &item.HedgeOrderID, &item.HedgeSequence, &item.Attempt,
 		&item.ErrorMessage, &item.CreatedAt, &item.UpdatedAt, &item.ClosedAt,
 	}

@@ -71,6 +71,7 @@ BboRecord bbo(std::int64_t bid, std::int64_t ask,
   result.header.message_type =
       static_cast<std::uint16_t>(utils::md::MessageType::Bbo);
   result.header.state = static_cast<std::uint8_t>(BookState::Live);
+  result.header.book_generation = 1;
   result.header.exchange_ts_ns = exchange_ns;
   result.header.source_seq = source;
   result.bid_price = bid;
@@ -523,6 +524,55 @@ void test_member_rejoins_after_new_generation() {
   assert(okx_contribution);
 }
 
+void test_five_members_degrade_and_generation_rejoin() {
+  AggregationEngine engine(config());
+  constexpr std::array<Venue, 5> venues{
+      Venue::Binance, Venue::Okx, Venue::Bybit, Venue::Bitget, Venue::Gate};
+  for (std::size_t slot = 0; slot < venues.size(); ++slot) {
+    const auto ttl = slot == 3 ? 100U : 1'000U;
+    assert(engine.add_member({venues[slot], ttl, 2, 2, false}));
+  }
+  const std::array<utils::md::Level, 1> bids{{{10'000, 2}}};
+  const std::array<utils::md::Level, 1> asks{{{10'100, 3}}};
+  for (std::size_t slot = 0; slot < venues.size(); ++slot) {
+    auto quote = bbo(10'000, 10'100, 1'000 + slot);
+    assert(engine.update_bbo(slot, quote, 1'000'000));
+    assert(engine.update_book(
+        slot, {bids, asks, 1'000 + slot, 1'000'000, 1}));
+  }
+  assert(engine.build_bbo(1'050'000).record.live_mask == 0x1f);
+  assert(engine.build_orderbook(1'050'000).record.active_mask == 0x1f);
+
+  const auto degraded_bbo = engine.build_bbo(1'101'000);
+  const auto degraded_book = engine.build_orderbook(1'101'000);
+  assert(degraded_bbo.record.live_mask == 0x17);
+  assert(degraded_book.record.active_mask == 0x17);
+  for (std::size_t level = 0; level < degraded_book.record.bid_count;
+       ++level) {
+    assert(degraded_book.record.bids[level].venue_quantity[3] == 0);
+  }
+  for (std::size_t level = 0; level < degraded_book.record.ask_count;
+       ++level) {
+    assert(degraded_book.record.asks[level].venue_quantity[3] == 0);
+  }
+  const auto degraded_generation =
+      degraded_book.record.header.book_generation;
+
+  auto recovered_quote = bbo(10'010, 10'110, 2'000);
+  recovered_quote.header.book_generation = 2;
+  assert(engine.update_bbo(3, recovered_quote, 1'200'000));
+  const auto bbo_before_image = engine.build_bbo(1'210'000);
+  const auto book_before_image = engine.build_orderbook(1'210'000);
+  assert((bbo_before_image.record.live_mask & (1U << 3U)) != 0);
+  assert((book_before_image.record.active_mask & (1U << 3U)) == 0);
+
+  assert(engine.update_book(
+      3, {bids, asks, 2'000, 1'220'000, 2}));
+  const auto rejoined = engine.build_orderbook(1'230'000);
+  assert(rejoined.record.active_mask == 0x1f);
+  assert(rejoined.record.header.book_generation > degraded_generation);
+}
+
 void test_slot_identity_metadata_and_fx_expiry() {
   AggregationEngine slots(config(false));
   assert(slots.add_member({Venue::Binance, 1'000'000, 2, 2, false}));
@@ -697,6 +747,93 @@ void test_venue_ingest_bbo_and_sequence_gap() {
   assert(ingest.consume(
              5, static_cast<std::uint32_t>(utils::md::MessageType::Bbo),
              bbo_bytes, 3'000) == mds::agg::IngestResult::NeedResync);
+}
+
+void test_venue_ingest_generation_barrier_and_stale_rejection() {
+  using namespace utils::md;
+  using namespace utils::md::wire;
+  mds::agg::VenueIngest ingest(32);
+  std::uint64_t ring_sequence{};
+  std::uint64_t bus_sequence{};
+
+  Instrument instrument{};
+  instrument.instrument_id = 7;
+  instrument.venue = Venue::Bitget;
+  instrument.product_type = ProductType::Spot;
+  instrument.price_scale = 2;
+  instrument.quantity_scale = 3;
+  instrument.tick_size = 1;
+  instrument.lot_size = 1;
+  std::copy_n("BTCUSDT", 7, instrument.canonical_symbol.begin());
+
+  HeaderFields fields{};
+  fields.instrument_id = instrument.instrument_id;
+  fields.bus_seq = ++bus_sequence;
+  fields.book_generation = 1;
+  fields.state = BookState::Building;
+  std::array<std::byte, sizeof(InstrumentUpdateRecord)> instrument_bytes{};
+  assert(EncodeInstrument(instrument_bytes, fields, instrument));
+  assert(ingest.consume(
+             ++ring_sequence,
+             static_cast<std::uint32_t>(MessageType::InstrumentUpdate),
+             instrument_bytes, 1'000) == mds::agg::IngestResult::Instrument);
+
+  fields.bus_seq = ++bus_sequence;
+  fields.source_seq = 1;
+  fields.state = BookState::Live;
+  std::array<std::byte, sizeof(BboRecord)> bbo_bytes{};
+  assert(EncodeBbo(bbo_bytes, fields, {10'000, 1}, {10'100, 2}));
+  assert(ingest.consume(
+             ++ring_sequence, static_cast<std::uint32_t>(MessageType::Bbo),
+             bbo_bytes, 2'000) == mds::agg::IngestResult::Bbo);
+  assert(ingest.bbo() != nullptr);
+
+  InstrumentCatalog catalog{};
+  catalog.instrument_id = instrument.instrument_id;
+  catalog.venue = instrument.venue;
+  catalog.product_type = instrument.product_type;
+  catalog.price_scale = instrument.price_scale;
+  catalog.quantity_scale = instrument.quantity_scale;
+  catalog.tick_size = instrument.tick_size;
+  std::copy_n("BTCUSDT", 7, catalog.canonical_symbol.begin());
+  fields.bus_seq = ++bus_sequence;
+  fields.source_seq = 0;
+  fields.book_generation = 2;
+  fields.state = BookState::Building;
+  std::array<std::byte, sizeof(InstrumentCatalogRecord)> catalog_bytes{};
+  assert(EncodeInstrumentCatalog(catalog_bytes, fields, catalog));
+  assert(ingest.consume(
+             ++ring_sequence,
+             static_cast<std::uint32_t>(MessageType::InstrumentCatalog),
+             catalog_bytes, 3'000) == mds::agg::IngestResult::Ignored);
+  assert(ingest.bbo() == nullptr);
+
+  fields.bus_seq = ++bus_sequence;
+  assert(EncodeInstrument(instrument_bytes, fields, instrument));
+  assert(ingest.consume(
+             ++ring_sequence,
+             static_cast<std::uint32_t>(MessageType::InstrumentUpdate),
+             instrument_bytes, 4'000) == mds::agg::IngestResult::Instrument);
+
+  fields.bus_seq = ++bus_sequence;
+  fields.source_seq = 2;
+  fields.book_generation = 1;
+  fields.state = BookState::Live;
+  assert(EncodeBbo(bbo_bytes, fields, {9'000, 1}, {9'100, 2}));
+  assert(ingest.consume(
+             ++ring_sequence, static_cast<std::uint32_t>(MessageType::Bbo),
+             bbo_bytes, 5'000) == mds::agg::IngestResult::NeedResync);
+  assert(ingest.bbo() == nullptr);
+
+  fields.bus_seq = ++bus_sequence;
+  fields.source_seq = 1;
+  fields.book_generation = 2;
+  assert(EncodeBbo(bbo_bytes, fields, {10'010, 1}, {10'110, 2}));
+  assert(ingest.consume(
+             ++ring_sequence, static_cast<std::uint32_t>(MessageType::Bbo),
+             bbo_bytes, 6'000) == mds::agg::IngestResult::Bbo);
+  assert(ingest.bbo() != nullptr);
+  assert(ingest.bbo()->header.book_generation == 2);
 }
 
 void test_venue_ingest_refines_flagged_snapshot_tick() {
@@ -1007,11 +1144,13 @@ int main() {
   test_eight_members_fill_eighty_levels();
   test_orderbook_active_mask_and_legal_cross();
   test_member_rejoins_after_new_generation();
+  test_five_members_degrade_and_generation_rejoin();
   test_slot_identity_metadata_and_fx_expiry();
   test_member_metadata_reconfiguration_keeps_scales_frozen();
   test_agg_bbo_abi_and_codec_flags();
   test_timestamp_slot_and_hot_path_allocations();
   test_venue_ingest_bbo_and_sequence_gap();
+  test_venue_ingest_generation_barrier_and_stale_rejection();
   test_venue_ingest_refines_flagged_snapshot_tick();
   test_per_symbol_and_multiplex_aggregate_parity();
   return 0;

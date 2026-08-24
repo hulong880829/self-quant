@@ -3,6 +3,8 @@
 import * as React from "react";
 
 import {
+  aggdataMarketKey,
+  aggdataProductFromProfile,
   aggdataWebSocketUrl,
   decodeAggdataFrame,
   fetchAggdataHistory,
@@ -11,6 +13,7 @@ import {
   type AggdataFrame,
   type AggdataHistory,
   type AggdataMarket,
+  type AggdataProduct,
   type AggdataSnapshot,
 } from "@/lib/api/aggdata";
 import {
@@ -26,8 +29,10 @@ type ConnectionState = "idle" | "connecting" | "live" | "reconnecting";
 
 interface OrderbookContextValue {
   markets: AggdataMarket[];
-  selectedSymbol: string;
-  selectMarket: (symbol: string) => void;
+  selectedMarket: AggdataMarket | null;
+  selectedProduct: AggdataProduct;
+  selectProduct: (product: AggdataProduct) => void;
+  selectMarket: (marketKey: string) => void;
   levels: AggregatedBookLevel[];
   automaticIncrement: FixedDecimal | null;
   history: SpreadPoint[];
@@ -84,7 +89,7 @@ export function clearOrderbookCachesForTest() {
 
 export function OrderbookProvider({ children }: { children: React.ReactNode }) {
   const [markets, setMarkets] = React.useState<AggdataMarket[]>([]);
-  const [selectedSymbol, setSelectedSymbol] = React.useState("");
+  const [selectedMarketKey, setSelectedMarketKey] = React.useState("");
   const [levels, setLevels] = React.useState<AggregatedBookLevel[]>([]);
   const [automaticIncrement, setAutomaticIncrement] =
     React.useState<FixedDecimal | null>(null);
@@ -104,18 +109,43 @@ export function OrderbookProvider({ children }: { children: React.ReactNode }) {
   const [generation, setGeneration] = React.useState(0);
   const sequence = React.useRef<bigint>(0n);
   const bookGeneration = React.useRef<bigint>(0n);
+  const selectedMarket = React.useMemo(
+    () =>
+      markets.find(
+        (market) => aggdataMarketKey(market) === selectedMarketKey,
+      ) ?? null,
+    [markets, selectedMarketKey],
+  );
+  const selectedProduct =
+    (selectedMarket &&
+      aggdataProductFromProfile(selectedMarket.profile)) ||
+    "SPOT";
 
   React.useEffect(() => {
     const controller = new AbortController();
     const applyMarkets = (nextMarkets: AggdataMarket[]) => {
-      setMarkets(nextMarkets);
-      setSelectedSymbol((current) =>
-        nextMarkets.some((market) => market.symbol === current)
-          ? current
-          : (nextMarkets[0]?.symbol ?? ""),
+      const supportedMarkets = nextMarkets.filter(
+        (market) => aggdataProductFromProfile(market.profile) !== null,
       );
-      if (nextMarkets.length === 0) setLoading(false);
-      setError(nextMarkets.length === 0 ? "aggdata 未返回可用市场" : null);
+      setMarkets(supportedMarkets);
+      setSelectedMarketKey((current) => {
+        if (
+          supportedMarkets.some(
+            (market) => aggdataMarketKey(market) === current,
+          )
+        ) {
+          return current;
+        }
+        const fallback =
+          supportedMarkets.find(
+            (market) => aggdataProductFromProfile(market.profile) === "SPOT",
+          ) ?? supportedMarkets[0];
+        return fallback ? aggdataMarketKey(fallback) : "";
+      });
+      if (supportedMarkets.length === 0) setLoading(false);
+      setError(
+        supportedMarkets.length === 0 ? "aggdata 未返回可用市场" : null,
+      );
     };
     const cachedMarkets = freshCacheValue(
       marketsCache,
@@ -138,9 +168,9 @@ export function OrderbookProvider({ children }: { children: React.ReactNode }) {
   }, [generation]);
 
   React.useEffect(() => {
-    if (!selectedSymbol) return;
-    const market = markets.find((item) => item.symbol === selectedSymbol);
-    if (!market) return;
+    if (!selectedMarket) return;
+    const market = selectedMarket;
+    const marketKey = aggdataMarketKey(market);
 
     let disposed = false;
     let socket: WebSocket | null = null;
@@ -199,25 +229,26 @@ export function OrderbookProvider({ children }: { children: React.ReactNode }) {
       setHistoryEndMs(nextHistory.endMs);
     };
     const cachedHistory = freshCacheValue(
-      historyCache.get(market.symbol),
+      historyCache.get(marketKey),
       HISTORY_CACHE_TTL_MS,
     );
     if (cachedHistory) {
-      applyHistory(cachedHistory);
-      setHistoryLoading(false);
-    } else {
-      setHistoryLoading(true);
+      queueMicrotask(() => {
+        if (disposed) return;
+        applyHistory(cachedHistory);
+        setHistoryLoading(false);
+      });
     }
     const loadHistory = async () => {
       if (historyRequestInFlight || disposed) return;
       historyRequestInFlight = true;
       try {
         const nextHistory = await fetchAggdataHistory(
-          market.symbol,
+          market,
           historyController.signal,
         );
         if (disposed) return;
-        historyCache.set(market.symbol, {
+        historyCache.set(marketKey, {
           value: nextHistory,
           storedAt: Date.now(),
         });
@@ -345,6 +376,7 @@ export function OrderbookProvider({ children }: { children: React.ReactNode }) {
         ws.send(
           JSON.stringify({
             op: "subscribe",
+            profile: market.profile,
             symbol: market.symbol,
             channel: "orderbook",
             depth: 50,
@@ -413,7 +445,7 @@ export function OrderbookProvider({ children }: { children: React.ReactNode }) {
       socket = null;
       activeSocket?.close();
     };
-  }, [markets, selectedSymbol, generation]);
+  }, [selectedMarket, generation]);
 
   React.useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 1_000);
@@ -435,21 +467,45 @@ export function OrderbookProvider({ children }: { children: React.ReactNode }) {
     setHistoryError(null);
     setConnection("idle");
   }, []);
-  const selectMarket = React.useCallback((symbol: string) => {
-    historyCache.delete(symbol);
-    resetDisplay();
-    setSelectedSymbol(symbol);
-  }, [resetDisplay]);
+  const selectMarket = React.useCallback(
+    (marketKey: string) => {
+      historyCache.delete(marketKey);
+      resetDisplay();
+      setSelectedMarketKey(marketKey);
+    },
+    [resetDisplay],
+  );
+  const selectProduct = React.useCallback(
+    (product: AggdataProduct) => {
+      const sameSymbol = selectedMarket
+        ? markets.find(
+            (market) =>
+              market.symbol === selectedMarket.symbol &&
+              aggdataProductFromProfile(market.profile) === product,
+          )
+        : null;
+      const fallback =
+        sameSymbol ??
+        markets.find(
+          (market) => aggdataProductFromProfile(market.profile) === product,
+        );
+      if (!fallback) return;
+      selectMarket(aggdataMarketKey(fallback));
+    },
+    [markets, selectMarket, selectedMarket],
+  );
   const retry = React.useCallback(() => {
-    historyCache.delete(selectedSymbol);
+    historyCache.delete(selectedMarketKey);
     resetDisplay();
     setGeneration((value) => value + 1);
-  }, [resetDisplay, selectedSymbol]);
+  }, [resetDisplay, selectedMarketKey]);
 
   const value = React.useMemo<OrderbookContextValue>(
     () => ({
       markets,
-      selectedSymbol,
+      selectedMarket,
+      selectedProduct,
+      selectProduct,
       selectMarket,
       levels,
       automaticIncrement,
@@ -485,7 +541,9 @@ export function OrderbookProvider({ children }: { children: React.ReactNode }) {
       automaticIncrement,
       loading,
       markets,
-      selectedSymbol,
+      selectedMarket,
+      selectedProduct,
+      selectProduct,
       selectMarket,
       retry,
     ],

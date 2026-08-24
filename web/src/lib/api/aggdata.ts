@@ -18,6 +18,21 @@ export interface AggdataMarket {
   hasOrderBook: boolean;
 }
 
+export type AggdataProduct = "SPOT" | "PERPETUAL";
+
+export function aggdataMarketKey(market: Pick<AggdataMarket, "profile" | "symbol">) {
+  return `${market.profile.toLowerCase()}::${market.symbol.toUpperCase()}`;
+}
+
+export function aggdataProductFromProfile(
+  profile: string,
+): AggdataProduct | null {
+  const normalized = profile.toLowerCase();
+  if (normalized.startsWith("agg_spot_")) return "SPOT";
+  if (normalized.startsWith("agg_perp_")) return "PERPETUAL";
+  return null;
+}
+
 export interface AggdataSnapshot {
   symbol: string;
   sequence: bigint;
@@ -467,19 +482,28 @@ export async function fetchAggdataSnapshot(
   market: AggdataMarket,
   signal?: AbortSignal,
 ) {
+  const query = new URLSearchParams({ profile: market.profile, depth: "50" });
   return mapSnapshotResponse(
-    await getJson(`/v1/markets/${encodeURIComponent(market.symbol)}/snapshot?depth=50`, signal),
+    await getJson(
+      `/v1/markets/${encodeURIComponent(market.symbol)}/snapshot?${query}`,
+      signal,
+    ),
     market,
   );
 }
 
 export async function fetchAggdataHistory(
-  symbol: string,
+  market: AggdataMarket,
   signal?: AbortSignal,
 ) {
+  const query = new URLSearchParams({
+    profile: market.profile,
+    range: "24h",
+    type: "gated",
+  });
   return mapHistoryResponse(
     await getJson(
-      `/v1/markets/${encodeURIComponent(symbol)}/spread-history?range=24h&type=gated`,
+      `/v1/markets/${encodeURIComponent(market.symbol)}/spread-history?${query}`,
       signal,
     ),
   );

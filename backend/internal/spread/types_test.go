@@ -33,6 +33,28 @@ func TestNormalizeRequestAndRange(t *testing.T) {
 	}
 }
 
+func TestNormalizeRequestCompareVenue(t *testing.T) {
+	request, err := NormalizeRequest(HistoryRequest{
+		Venue: "Binance", CompareVenue: "OKX", BaseAsset: "btc", QuoteAsset: "usdt", Range: "24h",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Venue != "binance" || request.CompareVenue != "okx" {
+		t.Fatalf("normalized=%+v", request)
+	}
+	if _, err := NormalizeRequest(HistoryRequest{
+		Venue: "binance", CompareVenue: "binance", BaseAsset: "BTC", QuoteAsset: "USDT", Range: "24h",
+	}); err == nil {
+		t.Fatal("same compare venue was accepted")
+	}
+	if _, err := NormalizeRequest(HistoryRequest{
+		Venue: "binance", CompareVenue: "okx;drop", BaseAsset: "BTC", QuoteAsset: "USDT", Range: "24h",
+	}); err == nil {
+		t.Fatal("invalid compare venue was accepted")
+	}
+}
+
 func TestBuildHistoryScaleAndCoverage(t *testing.T) {
 	now := time.Date(2026, 8, 22, 7, 0, 0, 0, time.UTC)
 	request := HistoryRequest{

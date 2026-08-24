@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -17,15 +18,16 @@ type HistoryStore interface {
 }
 
 type RepositoryConfig struct {
-	Address       string
-	Database      string
-	Table         string
-	User          string
-	Password      string
-	TLS           bool
-	TLSSkipVerify bool
-	QueryTimeout  time.Duration
-	PoolSize      int
+	Address        string
+	Database       string
+	Table          string
+	User           string
+	Password       string
+	TLS            bool
+	TLSSkipVerify  bool
+	QueryTimeout   time.Duration
+	PoolSize       int
+	UseMinuteTable bool
 }
 
 type Repository struct {
@@ -42,7 +44,8 @@ func Open(ctx context.Context, cfg RepositoryConfig) (*Repository, error) {
 			Database: cfg.Database, Username: cfg.User, Password: cfg.Password,
 		},
 		Protocol: clickhouse.Native, DialTimeout: 5 * time.Second,
-		ReadTimeout: cfg.QueryTimeout, MaxOpenConns: cfg.PoolSize, MaxIdleConns: cfg.PoolSize,
+		ReadTimeout:  max(cfg.QueryTimeout, 2*time.Minute),
+		MaxOpenConns: cfg.PoolSize, MaxIdleConns: cfg.PoolSize,
 		Settings: clickhouse.Settings{"readonly": 1},
 	}
 	if cfg.TLS {
@@ -58,7 +61,13 @@ func Open(ctx context.Context, cfg RepositoryConfig) (*Repository, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("ping opportunity clickhouse: %w", err)
 	}
-	return &Repository{conn: conn, database: cfg.Database, table: cfg.Table, timeout: cfg.QueryTimeout}, nil
+	table := cfg.Table
+	if cfg.UseMinuteTable {
+		table = minuteTable(table)
+	}
+	return &Repository{
+		conn: conn, database: cfg.Database, table: table, timeout: cfg.QueryTimeout,
+	}, nil
 }
 
 func (r *Repository) Close() error {
@@ -75,19 +84,40 @@ func (r *Repository) Query(
 	symbols []string,
 	venues []string,
 ) ([]Quote, error) {
+	return r.query(ctx, from, to, symbols, venues, r.timeout)
+}
+
+func (r *Repository) QueryWarm(
+	ctx context.Context,
+	from time.Time,
+	to time.Time,
+	symbols []string,
+	venues []string,
+) ([]Quote, error) {
+	return r.query(ctx, from, to, symbols, venues, max(r.timeout, 2*time.Minute))
+}
+
+func (r *Repository) query(
+	ctx context.Context,
+	from time.Time,
+	to time.Time,
+	symbols []string,
+	venues []string,
+	timeout time.Duration,
+) ([]Quote, error) {
 	if len(symbols) == 0 || len(venues) == 0 || !from.Before(to) {
 		return nil, nil
 	}
 	symbols = uniqueSorted(symbols)
 	venues = uniqueSorted(venues)
 	queryCtx := ctx
-	if r.timeout > 0 {
+	if timeout > 0 {
 		var cancel context.CancelFunc
-		queryCtx, cancel = context.WithTimeout(ctx, r.timeout)
+		queryCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	rows, err := r.conn.Query(
-		queryCtx, historyQuery(r.database, r.table),
+		queryCtx, historyQueryForTable(r.database, r.table),
 		clickhouse.Named("from", from.UTC()), clickhouse.Named("to", to.UTC()),
 		clickhouse.Named("symbols", symbols), clickhouse.Named("venues", venues),
 	)
@@ -121,7 +151,34 @@ func (r *Repository) Query(
 	return result, nil
 }
 
+func historyQueryForTable(database, table string) string {
+	if strings.HasSuffix(table, "_minute") {
+		return historyQuery(database, table)
+	}
+	return rawHistoryQuery(database, table)
+}
+
 func historyQuery(database, table string) string {
+	return fmt.Sprintf(`
+SELECT
+	bucket,
+	canonical_symbol,
+	venue,
+	tupleElement(argMaxMerge(bbo_state), 1) AS bid_raw,
+	tupleElement(argMaxMerge(bbo_state), 2) AS bid_scale,
+	tupleElement(argMaxMerge(bbo_state), 3) AS ask_raw,
+	tupleElement(argMaxMerge(bbo_state), 4) AS ask_scale
+FROM %s.%s
+PREWHERE product = 'perpetual'
+	AND bucket >= toStartOfMinute(@from) AND bucket < toStartOfMinute(@to)
+	AND canonical_symbol IN @symbols
+	AND venue IN @venues
+GROUP BY bucket, canonical_symbol, venue
+ORDER BY canonical_symbol, venue, bucket
+`, database, table)
+}
+
+func rawHistoryQuery(database, table string) string {
 	return fmt.Sprintf(`
 SELECT
 	toStartOfMinute(ts) AS bucket,
@@ -137,9 +194,15 @@ PREWHERE product = 'perpetual'
 	AND canonical_symbol IN @symbols
 	AND venue IN @venues
 GROUP BY bucket, canonical_symbol, venue
-HAVING bucket >= @from AND bucket < @to
 ORDER BY canonical_symbol, venue, bucket
 `, database, table)
+}
+
+func minuteTable(table string) string {
+	if strings.HasSuffix(table, "_minute") {
+		return table
+	}
+	return table + "_minute"
 }
 
 func decodePrice(raw int64, scale uint8) (float64, bool) {

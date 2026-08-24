@@ -76,6 +76,12 @@ func (a *bybitAdapter) PlaceOrder(ctx context.Context, credentials Credentials, 
 	if request.Instrument.ContractType == "spot" && request.OrderType == "market" {
 		body["marketUnit"] = "baseCoin"
 	}
+	if request.Instrument.ContractType != "spot" {
+		body["positionIdx"] = 0
+		if request.ReduceOnly {
+			body["reduceOnly"] = true
+		}
+	}
 	raw, err := a.signed(ctx, http.MethodPost, "/v5/order/create", credentials, compactJSON(body), nil)
 	if err != nil {
 		return Result{}, err

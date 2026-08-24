@@ -44,10 +44,10 @@ func (r *Repository) CreateIntent(ctx context.Context, order Order) (Order, bool
 			exchange, instrument_id, contract_type, exchange_symbol, client_order_id,
 			side, order_type, quantity, price, status, request_fingerprint, base_asset, quote_asset,
 			twap_job_id, twap_slice_index, twap_attempt_index,
-			arbitrage_execution_id, arbitrage_leg, arbitrage_role
+			arbitrage_execution_id, arbitrage_leg, arbitrage_role, reduce_only
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NULLIF($14,'')::numeric,'pending',$15,$16,$17,
-			NULL, NULL, 0,NULLIF($18,'')::uuid,NULLIF($19,''),NULLIF($20,'')
+			NULL, NULL, 0,NULLIF($18,'')::uuid,NULLIF($19,''),NULLIF($20,''),$21
 		)
 		ON CONFLICT (idempotency_key) DO NOTHING
 		RETURNING `+orderColumns, orderWriteArgs(order)...).Scan(orderScanTargets(&result)...)
@@ -525,7 +525,7 @@ const orderColumns = `
 	COALESCE(last_venue_event_at, 'epoch'::timestamptz),
 	COALESCE(twap_job_id::text,''), COALESCE(twap_slice_index,0),
 	COALESCE(twap_attempt_index,0),COALESCE(arbitrage_execution_id::text,''),
-	COALESCE(arbitrage_leg,''),COALESCE(arbitrage_role,'')`
+	COALESCE(arbitrage_leg,''),COALESCE(arbitrage_role,''),COALESCE(reduce_only,FALSE)`
 
 func orderScanTargets(order *Order) []any {
 	return []any{
@@ -539,7 +539,7 @@ func orderScanTargets(order *Order) []any {
 		&order.LastReconciledAt, &order.ReconcileFailures, &order.SyncState,
 		&order.LastStreamEventAt, &order.LastVenueEventAt,
 		&order.TwapJobID, &order.TwapSliceIndex, &order.TwapAttemptIndex,
-		&order.ArbitrageExecutionID, &order.ArbitrageLeg, &order.ArbitrageRole,
+		&order.ArbitrageExecutionID, &order.ArbitrageLeg, &order.ArbitrageRole, &order.ReduceOnly,
 	}
 }
 
@@ -549,7 +549,7 @@ func orderWriteArgs(order Order) []any {
 		order.ProductName, order.Exchange, order.InstrumentID, order.ContractType,
 		order.ExchangeSymbol, order.ClientOrderID, order.Side, order.OrderType,
 		order.Quantity, order.Price, order.RequestFingerprint, order.BaseAsset, order.QuoteAsset,
-		order.ArbitrageExecutionID, order.ArbitrageLeg, order.ArbitrageRole,
+		order.ArbitrageExecutionID, order.ArbitrageLeg, order.ArbitrageRole, order.ReduceOnly,
 	}
 }
 

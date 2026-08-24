@@ -337,6 +337,7 @@ func (s *Service) submitWithOptions(
 		Price:         intent.Price,
 		TimeInForce:   timeInForce,
 		PostOnly:      postOnly,
+		ReduceOnly:    intent.ReduceOnly,
 	})
 	if err != nil {
 		if uncertain(err) {

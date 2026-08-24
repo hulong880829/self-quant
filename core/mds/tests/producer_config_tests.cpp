@@ -51,6 +51,7 @@ int main() {
              .endpoint.snapshot_rate_limit_backoff_ms == 60'000);
   assert(valid.value.connections[0].endpoint.snapshot_ban_backoff_ms ==
          300'000);
+  assert(valid.value.connections[0].endpoint.recovery_deadline_ms == 30'000);
   assert(valid.value.connections[0].endpoint.max_continuous_recovery_ms ==
          300'000);
   const auto &binance = valid.value.connections[0].streams;
@@ -113,6 +114,7 @@ int main() {
   assert(endpoint_end != std::string::npos);
   configured_recovery.insert(
       endpoint_end + 1,
+      "    recovery_deadline_ms: 5000\n"
       "    max_continuous_recovery_ms: 12345\n");
   const auto configured_recovery_path =
       write_temp(configured_recovery, "recovery-duration");
@@ -121,6 +123,8 @@ int main() {
   assert(configured);
   assert(configured.value.connections[0]
              .endpoint.max_continuous_recovery_ms == 12'345);
+  assert(configured.value.connections[0]
+             .endpoint.recovery_deadline_ms == 5'000);
 
   auto invalid_recovery = configured_recovery;
   const auto recovery_duration =
@@ -133,6 +137,18 @@ int main() {
   const auto invalid_recovery_path =
       write_temp(invalid_recovery, "invalid-recovery-duration");
   assert(!mds::producer::load_config(invalid_recovery_path.string()));
+
+  auto invalid_deadline = configured_recovery;
+  const auto recovery_deadline =
+      invalid_deadline.find("recovery_deadline_ms: 5000");
+  assert(recovery_deadline != std::string::npos);
+  invalid_deadline.replace(
+      recovery_deadline,
+      std::string("recovery_deadline_ms: 5000").size(),
+      "recovery_deadline_ms: 20000");
+  const auto invalid_deadline_path =
+      write_temp(invalid_deadline, "invalid-recovery-deadline");
+  assert(!mds::producer::load_config(invalid_deadline_path.string()));
 
   auto malformed = text;
   const auto ring = malformed.find("ring_bytes: 8388608");
@@ -377,10 +393,10 @@ int main() {
 
   mds::producer::ProductDiscovery filter;
   filter.quote_assets = {"USDT"};
-  filter.symbol_regex = "^(BTC|ETH)USDT$";
+  filter.symbol_regex = "^(BTC|ETH|SOL)USDT$";
   filter.minimum_turnover = 1000;
-  filter.max_symbols = 2;
-  std::vector<mds::exchange::InstrumentMetadata> metadata(3);
+  filter.max_symbols = 3;
+  std::vector<mds::exchange::InstrumentMetadata> metadata(4);
   metadata[0].canonical_symbol = "BTCUSDT";
   metadata[0].venue_symbol = "BTCUSDT";
   metadata[0].quote_asset = "USDT";
@@ -389,26 +405,82 @@ int main() {
   metadata[1] = metadata[0];
   metadata[1].canonical_symbol = "ETHUSDT";
   metadata[1].venue_symbol = "ETHUSDT";
-  metadata[1].turnover_24h = 0;  // unavailable: do not reject
+  metadata[1].turnover_24h = 999;
   metadata[2] = metadata[0];
-  metadata[2].canonical_symbol = "BTCUSDC";
-  metadata[2].venue_symbol = "BTCUSDC";
-  metadata[2].quote_asset = "USDC";
+  metadata[2].canonical_symbol = "SOLUSDT";
+  metadata[2].venue_symbol = "SOLUSDT";
+  metadata[2].turnover_24h = 0;  // unavailable: reject with threshold enabled
+  metadata[3] = metadata[0];
+  metadata[3].canonical_symbol = "BTCUSDC";
+  metadata[3].venue_symbol = "BTCUSDC";
+  metadata[3].quote_asset = "USDC";
   const auto universe =
       mds::producer::reconcile_universe(filter, metadata, {});
   assert(universe);
-  assert(universe.value.added.size() == 2);
-  const std::array active{metadata[0], metadata[2]};
+  assert(universe.value.added.size() == 1);
+  auto unfiltered = filter;
+  unfiltered.minimum_turnover = 0;
+  const auto zero_threshold =
+      mds::producer::reconcile_universe(unfiltered, metadata, {});
+  assert(zero_threshold);
+  assert(zero_threshold.value.added.size() == 3);
+  auto capped = unfiltered;
+  capped.max_symbols = 2;
+  assert(!mds::producer::reconcile_universe(capped, metadata, {}));
+  const std::array active{metadata[0], metadata[3]};
   const auto changed =
       mds::producer::reconcile_universe(filter, metadata, active);
   assert(changed);
-  assert(changed.value.added.size() == 1);
+  assert(changed.value.added.empty());
   assert(changed.value.retained.size() == 1);
   assert(changed.value.retired.size() == 1);
+
+  std::string pagination_error;
+  mds::producer::DiscoveryPaginationGuard pagination;
+  assert(pagination.begin_page(pagination_error));
+  assert(pagination.accept_page(true, "cursor-1", pagination_error));
+  assert(!pagination.complete());
+  assert(pagination.cursor() == "cursor-1");
+  assert(pagination.begin_page(pagination_error));
+  assert(pagination.accept_page(true, "", pagination_error));
+  assert(pagination.complete());
+  assert(!pagination.begin_page(pagination_error));
+  assert(pagination_error.find("already complete") != std::string::npos);
+
+  mds::producer::DiscoveryPaginationGuard repeated_cursor;
+  assert(repeated_cursor.begin_page(pagination_error));
+  assert(repeated_cursor.accept_page(
+      true, "cursor-1", pagination_error));
+  assert(repeated_cursor.begin_page(pagination_error));
+  assert(!repeated_cursor.accept_page(
+      true, "cursor-1", pagination_error));
+  assert(pagination_error.find("cursor repeated") != std::string::npos);
+
+  mds::producer::DiscoveryPaginationGuard empty_page;
+  assert(empty_page.begin_page(pagination_error));
+  assert(!empty_page.accept_page(
+      false, "cursor-1", pagination_error));
+  assert(pagination_error.find("empty page") != std::string::npos);
+
+  mds::producer::DiscoveryPaginationGuard page_limit;
+  for (std::size_t page = 0;
+       page + 1 <
+       mds::producer::DiscoveryPaginationGuard::maximum_pages;
+       ++page) {
+    assert(page_limit.begin_page(pagination_error));
+    assert(page_limit.accept_page(
+        true, "cursor-" + std::to_string(page + 1),
+        pagination_error));
+  }
+  assert(page_limit.begin_page(pagination_error));
+  assert(!page_limit.accept_page(
+      true, "cursor-limit", pagination_error));
+  assert(pagination_error.find("page limit") != std::string::npos);
 
   std::filesystem::remove(bad_ring);
   std::filesystem::remove(configured_recovery_path);
   std::filesystem::remove(invalid_recovery_path);
+  std::filesystem::remove(invalid_deadline_path);
   std::filesystem::remove(bad_price_band);
   std::filesystem::remove(conflict);
   std::filesystem::remove(unknown);

@@ -43,6 +43,7 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 	if err := database.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
+	assertArbitrageThresholdSignChecksDropped(t, ctx, pool)
 
 	accountA, instrumentA := insertArbitrageFixture(t, ctx, pool, "binance", "BTCUSDT")
 	accountB, instrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "BTC-USDT-SWAP")
@@ -51,6 +52,23 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 	created, inserted, err := repository.CreateArbitrageCombination(ctx, input)
 	if err != nil || !inserted {
 		t.Fatalf("create inserted=%v err=%v", inserted, err)
+	}
+	signed := input
+	signed.ID = uuid.NewString()
+	signed.IdempotencyKey = "arb-combination-signed-thresholds"
+	signed.RequestFingerprint = "arb-fingerprint-signed"
+	signed.AskThresholdBps = "-70"
+	signed.BidThresholdBps = "8"
+	createdSigned, inserted, err := repository.CreateArbitrageCombination(ctx, signed)
+	if err != nil || !inserted {
+		t.Fatalf("signed thresholds inserted=%v err=%v", inserted, err)
+	}
+	if createdSigned.AskThresholdBps != "-70" || createdSigned.BidThresholdBps != "8" {
+		t.Fatalf("persisted thresholds ask=%s bid=%s", createdSigned.AskThresholdBps, createdSigned.BidThresholdBps)
+	}
+	createdSigned.Status = "closed"
+	if _, err := repository.UpdateArbitrageCombinationRuntime(ctx, createdSigned); err != nil {
+		t.Fatal(err)
 	}
 	repeated, inserted, err := repository.CreateArbitrageCombination(ctx, input)
 	if err != nil || inserted || repeated.ID != created.ID {
@@ -105,8 +123,8 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 		t.Fatalf("duplicate claim=%v err=%v", claimed, err)
 	}
 	_, claimed, err = repository.ClaimArbitrageExecution(ctx, integrationArbitrageExecution(created.ID, "bid"))
-	if err != nil || !claimed {
-		t.Fatalf("bid claim=%v err=%v", claimed, err)
+	if err != nil || claimed {
+		t.Fatalf("parallel bid claim=%v err=%v", claimed, err)
 	}
 	order, _, err := repository.CreateIntent(ctx, Order{
 		IdempotencyKey: "arb-order-integration", OwnerUsername: "admin",
@@ -145,20 +163,26 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 	if err != nil || createdFlags[0] || createdFlags[1] {
 		t.Fatalf("recovered pair flags=%v err=%v", createdFlags, err)
 	}
-	for _, direction := range []string{"ask", "bid"} {
-		active, err := repository.GetActiveArbitrageExecution(ctx, created.ID, direction)
-		if err != nil {
-			t.Fatal(err)
-		}
-		active.Status = "completed"
-		active.HedgeSequence = 7
-		updated, err := repository.UpdateArbitrageExecution(ctx, active)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if updated.HedgeSequence != 7 {
-			t.Fatalf("hedge sequence=%d want=7", updated.HedgeSequence)
-		}
+	active, err := repository.GetActiveArbitrageExecution(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active.Status = "completed"
+	active.HedgeSequence = 7
+	updated, err := repository.UpdateArbitrageExecution(ctx, active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.HedgeSequence != 7 {
+		t.Fatalf("hedge sequence=%d want=7", updated.HedgeSequence)
+	}
+	bid, claimed, err := repository.ClaimArbitrageExecution(ctx, integrationArbitrageExecution(created.ID, "bid"))
+	if err != nil || !claimed {
+		t.Fatalf("serial bid claim=%v err=%v", claimed, err)
+	}
+	bid.Status = "completed"
+	if _, err := repository.UpdateArbitrageExecution(ctx, bid); err != nil {
+		t.Fatal(err)
 	}
 	var completionWG sync.WaitGroup
 	completionErrors := make(chan error, 16)
@@ -166,7 +190,7 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 		completionWG.Add(1)
 		go func() {
 			defer completionWG.Done()
-			if _, err := repository.AddArbitrageCompletedNotional(ctx, created.ID, "10"); err != nil {
+			if _, err := repository.AddArbitragePositionDelta(ctx, created.ID, "10"); err != nil {
 				completionErrors <- err
 			}
 		}()
@@ -180,8 +204,18 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if refreshed.CompletedNotional != "160" {
-		t.Fatalf("atomic completed notional=%s", refreshed.CompletedNotional)
+	if refreshed.PositionNotional != "160" || refreshed.CumulativeTurnoverNotional != "160" ||
+		refreshed.Status != "running" {
+		t.Fatalf("atomic position=%+v", refreshed)
+	}
+	closedByTarget, err := repository.AddArbitragePositionDelta(ctx, created.ID, "20000")
+	if err != nil || closedByTarget.Status != "running" || closedByTarget.PositionNotional != "10000" {
+		t.Fatalf("clamped position=%+v err=%v", closedByTarget, err)
+	}
+	reversed, err := repository.AddArbitragePositionDelta(ctx, created.ID, "-4000")
+	if err != nil || reversed.PositionNotional != "6000" || reversed.CumulativeTurnoverNotional != "24160" ||
+		reversed.Status != "running" {
+		t.Fatalf("reversed position=%+v err=%v", reversed, err)
 	}
 	created = refreshed
 	created.Status = "closed"
@@ -189,7 +223,7 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	deleted, err := repository.DeleteExpiredArbitrageCombinations(ctx, time.Now().Add(time.Hour), 10)
-	if err != nil || deleted != 1 {
+	if err != nil || deleted != 2 {
 		t.Fatalf("deleted=%d err=%v", deleted, err)
 	}
 	var executionID *uuid.UUID
@@ -198,6 +232,28 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 	}
 	if executionID != nil {
 		t.Fatalf("order execution reference retained: %v", executionID)
+	}
+}
+
+func assertArbitrageThresholdSignChecksDropped(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	var remaining int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM pg_constraint con
+		JOIN pg_class rel ON rel.oid = con.conrelid
+		JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+		WHERE rel.relname = 'trader_arbitrage_combinations'
+		  AND nsp.nspname = current_schema()
+		  AND con.contype = 'c'
+		  AND (
+		      pg_get_constraintdef(con.oid) LIKE '%ask_threshold_bps >%'
+		      OR pg_get_constraintdef(con.oid) LIKE '%bid_threshold_bps <%'
+		  )`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatalf("threshold sign checks remaining=%d", remaining)
 	}
 }
 
@@ -246,7 +302,7 @@ func integrationArbitrageCombination(
 		AskThresholdBps: "12", BidThresholdBps: "-8",
 		TargetNotional: "10000", OrderNotional: "500", MaxDeltaNotional: "10",
 		ExecutionMode: "simultaneous_market", Status: "running",
-		CompletedNotional: "0", MarketDataStale: true,
+		PositionNotional: "0", CumulativeTurnoverNotional: "0", MarketDataStale: true,
 	}
 }
 

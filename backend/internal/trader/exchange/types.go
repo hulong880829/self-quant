@@ -35,6 +35,7 @@ type OrderRequest struct {
 	Price         string
 	TimeInForce   string
 	PostOnly      bool
+	ReduceOnly    bool
 }
 
 type BBO struct {

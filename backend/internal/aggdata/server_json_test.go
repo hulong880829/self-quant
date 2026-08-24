@@ -3,6 +3,8 @@ package aggdata
 import (
 	"encoding/json"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -102,5 +104,60 @@ func TestHistoryJSONEncodesNanosecondsAsStrings(t *testing.T) {
 		encoded.Gaps[0].StartNS != "17865120000000005" ||
 		encoded.Gaps[0].EndNS != "17865120000000006" {
 		t.Fatalf("unsafe history timestamps were not preserved: %s", body)
+	}
+}
+
+func TestSnapshotSelectsAmbiguousSymbolByProfile(t *testing.T) {
+	store := NewStore()
+	store.Reconcile(&catalogSnapshot{Markets: []catalogMarket{
+		{
+			Identity: Identity{Profile: "agg_spot_usdt_binance", Symbol: "BTCUSDT"},
+			Segments: map[Kind]string{KindBook: "/sq.spot.btcusdt.aggorderbook.2"},
+		},
+		{
+			Identity: Identity{Profile: "agg_perp_usdt_binance", Symbol: "BTCUSDT"},
+			Segments: map[Kind]string{KindBook: "/sq.perp.btcusdt.aggorderbook.2"},
+		},
+	}})
+	perpetual, err := store.LookupProfile("agg_perp_usdt_binance", "BTCUSDT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	perpetual.book.value.Store(&Snapshot{
+		RingSequence: 7,
+		Generation:   3,
+		WallNS:       17_865_120_000_000_001,
+		Ready:        true,
+		Book:         &Book{},
+	})
+	server := &Server{store: store}
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/markets/BTCUSDT/snapshot?profile=agg_perp_usdt_binance",
+		nil,
+	)
+	request.SetPathValue("symbol", "BTCUSDT")
+	response := httptest.NewRecorder()
+	server.snapshot(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("profile snapshot returned %d: %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Profile string `json:"profile"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Profile != "agg_perp_usdt_binance" {
+		t.Fatalf("unexpected profile %q", body.Profile)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/v1/markets/BTCUSDT/snapshot", nil)
+	request.SetPathValue("symbol", "BTCUSDT")
+	response = httptest.NewRecorder()
+	server.snapshot(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("ambiguous symbol-only snapshot returned %d", response.Code)
 	}
 }

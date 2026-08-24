@@ -14,6 +14,7 @@ const fetchBasisSpreadHistory = vi.fn<
     range: string,
     etag?: string | null,
     signal?: AbortSignal,
+    compareVenue?: string,
   ) => Promise<BasisSpreadFetchResult>
 >();
 
@@ -25,7 +26,8 @@ vi.mock("@/lib/api/spread", () => ({
     range: string,
     etag?: string | null,
     signal?: AbortSignal,
-  ) => fetchBasisSpreadHistory(venue, baseAsset, quoteAsset, range, etag, signal),
+    compareVenue?: string,
+  ) => fetchBasisSpreadHistory(venue, baseAsset, quoteAsset, range, etag, signal, compareVenue),
 }));
 
 import {
@@ -101,6 +103,37 @@ describe("BasisSpreadPanel", () => {
       "24h",
       null,
       expect.any(AbortSignal),
+      undefined,
+    );
+  });
+
+  it("uses cross-exchange title and compareVenue when provided", async () => {
+    fetchBasisSpreadHistory.mockResolvedValue({
+      status: "updated",
+      etag: '"spread-x"',
+      history: availableHistory(),
+    });
+    render(
+      <BasisSpreadPanel
+        venue="OKX"
+        compareVenue="Binance"
+        baseAsset="BTC"
+        quoteAsset="USDT"
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("+12.50 bps")).not.toBeNull();
+    });
+    expect(screen.getByLabelText("跨所 Best Ask 价差")).not.toBeNull();
+    expect(screen.getByText("OKX Ask / Binance Ask - 1 · BTC/USDT")).not.toBeNull();
+    expect(fetchBasisSpreadHistory).toHaveBeenCalledWith(
+      "OKX",
+      "BTC",
+      "USDT",
+      "24h",
+      null,
+      expect.any(AbortSignal),
+      "Binance",
     );
   });
 
@@ -123,6 +156,7 @@ describe("BasisSpreadPanel", () => {
         "1h",
         null,
         expect.any(AbortSignal),
+        undefined,
       );
     });
   });

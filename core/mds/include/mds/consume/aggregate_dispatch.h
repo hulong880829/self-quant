@@ -18,6 +18,38 @@ enum class AggregateTopic : std::uint8_t {
   Unsupported,
 };
 
+enum class AggregateWatchdogAction : std::uint8_t {
+  None,
+  Stale,
+  HardReset,
+};
+
+class AggregateWatchdog {
+ public:
+  AggregateWatchdog(std::uint64_t stale_after_ns = 5'000'000'000ULL,
+                    std::uint64_t hard_reset_after_ns =
+                        10'000'000'000ULL) noexcept
+      : stale_after_ns_(stale_after_ns),
+        hard_reset_after_ns_(hard_reset_after_ns) {}
+
+  void on_ready(std::uint64_t receive_mono_ns) noexcept;
+  void on_hard_reset() noexcept;
+  [[nodiscard]] AggregateWatchdogAction poll(std::uint64_t now_ns) noexcept;
+  [[nodiscard]] bool started() const noexcept { return started_; }
+  [[nodiscard]] bool stale() const noexcept { return stale_; }
+  [[nodiscard]] bool hard_reset_latched() const noexcept {
+    return hard_reset_latched_;
+  }
+
+ private:
+  std::uint64_t stale_after_ns_{};
+  std::uint64_t hard_reset_after_ns_{};
+  std::uint64_t last_ready_mono_ns_{};
+  bool started_{};
+  bool stale_{};
+  bool hard_reset_latched_{};
+};
+
 struct AggregateReceiveInfo {
   std::uint64_t ring_epoch{};
   std::uint64_t ring_sequence{};
@@ -148,6 +180,9 @@ class AggregateLatestState {
   // windows. Call this from its event loop even when no BBO arrives.
   [[nodiscard]] std::uint64_t request_bbo_window_rollover() noexcept;
   void service_bbo_window_rollover(AggregateReceiveInfo receive) noexcept;
+  // Drops an incomplete cross window after a safe aggregate catch-up while
+  // retaining the last-good BBO publication.
+  void interrupt_bbo_window() noexcept;
 
   [[nodiscard]] bool snapshot(AggBboSnapshot &snapshot,
                               std::size_t max_attempts = 8) const noexcept {

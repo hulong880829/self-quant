@@ -64,10 +64,14 @@ func validateInstrumentRules(instrument Instrument, orderType, quantity, price s
 	return nil
 }
 
-func requestFingerprint(accountID, instrumentID int64, side, orderType, quantity, price string) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{
-		itoa(accountID), itoa(instrumentID), side, orderType, quantity, price,
-	}, "|")))
+func requestFingerprint(
+	accountID, instrumentID int64,
+	side, orderType, quantity, price string,
+	extras ...string,
+) string {
+	parts := []string{itoa(accountID), itoa(instrumentID), side, orderType, quantity, price}
+	parts = append(parts, extras...)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return hex.EncodeToString(sum[:])
 }
 

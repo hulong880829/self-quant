@@ -552,6 +552,79 @@ class GateAdapter final : public VenueAdapter {
             {}, {}};
   }
 
+  [[nodiscard]] HttpRequestSpec
+  discovery_turnover_request() const override {
+    return {HttpRequestSpec::Method::Get,
+            product_ == utils::md::ProductType::Spot
+                ? "/api/v4/spot/tickers"
+                : "/api/v4/futures/usdt/tickers",
+            {}, {}};
+  }
+
+  bool enrich_discovery_turnover(
+      std::string_view json, std::span<InstrumentMetadata> metadata,
+      std::string &error) override {
+#ifndef MDS_HAS_SIMDJSON
+    (void)json;
+    (void)metadata;
+    error = "simdjson support was not compiled";
+    return false;
+#else
+    try {
+      auto entries = parse(json).get_array().value();
+      std::vector<std::uint64_t> turnovers(metadata.size());
+      std::vector<bool> matched(metadata.size());
+      const std::string_view symbol_field =
+          product_ == utils::md::ProductType::Spot ? "currency_pair"
+                                                   : "contract";
+      const std::string_view turnover_field =
+          product_ == utils::md::ProductType::Spot ? "quote_volume"
+                                                   : "volume_24h_quote";
+      for (auto raw_entry : entries) {
+        auto entry = raw_entry.get_object().value();
+        auto symbol_result = entry[symbol_field].get_string();
+        if (symbol_result.error()) {
+          continue;
+        }
+        const auto symbol = std::string_view(symbol_result.value());
+        const auto found =
+            std::find_if(metadata.begin(), metadata.end(),
+                         [symbol](const InstrumentMetadata &instrument) {
+                           return instrument.venue_symbol == symbol;
+                         });
+        if (found == metadata.end()) {
+          continue;
+        }
+        const auto index =
+            static_cast<std::size_t>(found - metadata.begin());
+        if (matched[index]) {
+          error = "duplicate Gate ticker symbol: ";
+          error.append(symbol);
+          return false;
+        }
+        matched[index] = true;
+        auto turnover = entry[turnover_field].get_string();
+        if (turnover.error() ||
+            !mds::exchange::decimal_to_turnover(turnover.value(),
+                                                turnovers[index])) {
+          error = "invalid Gate ticker turnover: ";
+          error.append(symbol);
+          return false;
+        }
+      }
+      for (std::size_t index = 0; index < metadata.size(); ++index) {
+        metadata[index].turnover_24h = turnovers[index];
+      }
+      error.clear();
+      return true;
+    } catch (const simdjson::simdjson_error &exception) {
+      error = "malformed Gate tickers response: ";
+      error.append(exception.what());
+      return false;
+    }
+#endif
+  }
+
   bool parse_metadata(std::string_view json,
                       std::span<const StreamRequest> requests,
                       std::vector<InstrumentMetadata> &metadata,

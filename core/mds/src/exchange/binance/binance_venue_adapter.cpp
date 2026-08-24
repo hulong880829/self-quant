@@ -342,6 +342,96 @@ class BinanceVenueAdapter final : public VenueAdapter {
                                  true, error);
   }
 
+  [[nodiscard]] HttpRequestSpec
+  discovery_turnover_request() const override {
+    return {HttpRequestSpec::Method::Get,
+            profile_ == Profile::Spot ? "/api/v3/ticker/24hr"
+                                      : "/fapi/v1/ticker/24hr",
+            {}, {}};
+  }
+
+  bool enrich_discovery_turnover(
+      std::string_view json, std::span<InstrumentMetadata> metadata,
+      std::string &error) override {
+#ifndef MDS_HAS_SIMDJSON
+    (void)json;
+    (void)metadata;
+    error =
+        "Binance 24h turnover parsing requires simdjson support";
+    return false;
+#else
+    try {
+      simdjson::dom::parser turnover_parser;
+      simdjson::padded_string padded(json);
+      auto root = turnover_parser.parse(padded).value();
+      auto entries_result = root.get_array();
+      if (entries_result.error()) {
+        auto object_result = root.get_object();
+        if (!object_result.error() &&
+            !object_result.value()["code"].error()) {
+          error = "Binance 24h ticker request failed";
+          auto message =
+              object_result.value()["msg"].get_string();
+          if (!message.error()) {
+            error += ": ";
+            error.append(message.value());
+          }
+        } else {
+          error = "Binance 24h ticker response is not an array";
+        }
+        return false;
+      }
+
+      std::vector<std::uint64_t> turnovers(metadata.size());
+      std::vector<bool> matched(metadata.size(), false);
+      for (auto raw_entry : entries_result.value()) {
+        auto entry_result = raw_entry.get_object();
+        if (entry_result.error()) {
+          continue;
+        }
+        auto entry = entry_result.value();
+        auto symbol_result = entry["symbol"].get_string();
+        if (symbol_result.error()) {
+          continue;
+        }
+        const std::string_view symbol = symbol_result.value();
+        const auto found = std::find_if(
+            metadata.begin(), metadata.end(),
+            [symbol](const InstrumentMetadata &instrument) {
+              return instrument.venue_symbol == symbol;
+            });
+        if (found == metadata.end()) {
+          continue;
+        }
+        const auto index =
+            static_cast<std::size_t>(found - metadata.begin());
+        if (matched[index]) {
+          error = "duplicate Binance 24h ticker symbol: ";
+          error.append(symbol);
+          return false;
+        }
+        auto turnover_result = entry["quoteVolume"].get_string();
+        if (turnover_result.error() ||
+            !decimal_to_turnover(turnover_result.value(),
+                                 turnovers[index])) {
+          error = "invalid Binance 24h quote turnover for symbol: ";
+          error.append(symbol);
+          return false;
+        }
+        matched[index] = true;
+      }
+      for (std::size_t index = 0; index < metadata.size(); ++index) {
+        metadata[index].turnover_24h = turnovers[index];
+      }
+      error.clear();
+      return true;
+    } catch (const simdjson::simdjson_error &exception) {
+      error = exception.what();
+      return false;
+    }
+#endif
+  }
+
   bool needs_rest_snapshot() const noexcept override { return true; }
 
   HttpRequestSpec snapshot_request(std::string_view venue_symbol,

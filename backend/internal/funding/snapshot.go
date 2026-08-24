@@ -1,7 +1,7 @@
 package funding
 
 import (
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,8 +13,7 @@ type Snapshot struct {
 }
 
 type SnapshotStore struct {
-	mu       sync.RWMutex
-	snapshot Snapshot
+	snapshot atomic.Pointer[Snapshot]
 }
 
 func NewSnapshotStore() *SnapshotStore {
@@ -23,21 +22,24 @@ func NewSnapshotStore() *SnapshotStore {
 
 func (s *SnapshotStore) Replace(rates []Rate, total int, now time.Time) {
 	copied := cloneRates(rates)
-	s.mu.Lock()
-	s.snapshot = Snapshot{
+	s.snapshot.Store(&Snapshot{
 		Rates: copied, Total: total,
 		Version:   now.UTC().Format("20060102T150405.000000000"),
 		UpdatedAt: now.UTC(),
-	}
-	s.mu.Unlock()
+	})
 }
 
 func (s *SnapshotStore) Get() Snapshot {
-	s.mu.RLock()
-	snapshot := s.snapshot
+	snapshot := *s.View()
 	snapshot.Rates = cloneRates(snapshot.Rates)
-	s.mu.RUnlock()
 	return snapshot
+}
+
+func (s *SnapshotStore) View() *Snapshot {
+	if snapshot := s.snapshot.Load(); snapshot != nil {
+		return snapshot
+	}
+	return &Snapshot{}
 }
 
 func cloneRates(rates []Rate) []Rate {

@@ -63,8 +63,15 @@ struct ClickHouseBboConfig {
   std::vector<std::string> segments;
 };
 
+struct IngestionConfig {
+  std::uint64_t stale_after_ms{5'000};
+  std::uint64_t hard_reset_after_ms{10'000};
+  std::size_t max_drain_records{512};
+};
+
 struct ConsumerConfig {
   std::vector<SegmentConfig> segments;
+  IngestionConfig ingestion;
   GatewayConfig gateway;
   RecordingConfig recording;
   ClickHouseBboConfig clickhouse_bbo;

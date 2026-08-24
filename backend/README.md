@@ -9,17 +9,65 @@ without persistence (RDB and AOF disabled).
 
 ## Run locally
 
-Requirements: Go 1.25+, PostgreSQL 17+, and Redis 7 (via Compose when needed).
+Requirements: Docker Compose (default), or Go 1.25+ for host `go run` debugging.
+PostgreSQL 17, Redis 7, and optional ClickHouse are started by Compose.
+The frontend stays on the host (`web/`, typically `npm run dev` on :3000) and
+keeps `NEXT_PUBLIC_*` pointed at the published gateway (`:8080`) and aggdata
+(`:9093`) ports. C++ MDS (`mds_producer` / `mds_aggregator` / `mds_shm_consumer`)
+also stays on the host. `aggdata-service` uses host networking so it can
+reach the MDS gateway on `127.0.0.1:9443` and still publish `:9093`.
 
 ```bash
 cp .env.example .env
-# Set ACCOUNT_TOKEN_SECRET and ACCOUNT_CREDENTIALS_KEY (32-byte hex/base64/raw)
-# before starting account-service.
+# Set ACCOUNT_TOKEN_SECRET, ACCOUNT_CREDENTIALS_KEY, TRADER_INTERNAL_TOKEN,
+# REPORT_INTERNAL_TOKEN, and MDS_GATEWAY_TOKEN before starting services.
+cd backend
+set -a; source .env; set +a
+docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
+```
+
+Compose rebuilds the shared `selfquant-backend:local` image and starts all nine
+Go services plus Postgres, Redis, and ClickHouse. Network variables in `.env`
+that still say `localhost` are overridden in `deploy/docker-compose.yml`.
+
+Before the first Compose cutover, stop host processes that bind 8080 and
+9090–9097 so the published ports are free. Confirm readiness with:
+
+```bash
+curl -sS http://127.0.0.1:8080/health/live
+curl -sS http://127.0.0.1:8080/health/ready
+curl -sS http://127.0.0.1:9093/healthz
+# /readyz needs the host MDS gateway; it is not a container start gate.
+curl -sS http://127.0.0.1:9093/readyz
+```
+
+Restart one Go service without touching databases:
+
+```bash
+docker compose --env-file .env -f deploy/docker-compose.yml restart aggdata-service
+```
+
+Restart every Go service and leave Postgres / Redis / ClickHouse running:
+
+```bash
+docker compose --env-file .env -f deploy/docker-compose.yml restart \
+  funding-service account-service polymarket-service \
+  report-service trader-service ai-service spread-service \
+  aggdata-service api-gateway
+```
+
+Infrastructure only (the `infra` workflow for host `go run` debugging):
+
+```bash
+docker compose --env-file .env -f deploy/docker-compose.yml up -d postgres redis clickhouse
+```
+
+Then in additional terminals:
+
+```bash
 set -a; source .env; set +a
 go run ./cmd/funding-service
 ```
-
-In additional terminals:
 
 ```bash
 set -a; source .env; set +a
@@ -46,27 +94,13 @@ set -a; source .env; set +a
 go run ./cmd/ai-service
 ```
 
-The optional `deploy/docker-compose.yml` starts PostgreSQL, Redis, and optional
-ClickHouse for MDS crypto BBO recording:
-
-```bash
-docker compose -f deploy/docker-compose.yml up -d
-```
-
-Start only infrastructure (no Go services):
-
-```bash
-docker compose -f deploy/docker-compose.yml up -d postgres redis
-```
-
-ClickHouse is optional and used by the host-side MDS recorder
-(`mds_shm_consumer --clickhouse-bbo`), not by backend Go services. First-time
-setup:
+ClickHouse first-time TLS setup for the host MDS recorder
+(`mds_shm_consumer --clickhouse-bbo`):
 
 ```bash
 ./deploy/clickhouse/generate-certs.sh
 export CLICKHOUSE_BBO_PASSWORD='your-password'
-docker compose -f deploy/docker-compose.yml up -d clickhouse
+docker compose --env-file .env -f deploy/docker-compose.yml up -d clickhouse
 ```
 
 See [`deploy/clickhouse/README.md`](deploy/clickhouse/README.md) for TLS trust,
@@ -279,18 +313,24 @@ Gateway. It exposes:
 
 - `GET /healthz` and `GET /readyz`
 - `GET /v1/markets`
-- `GET /v1/markets/{symbol}/snapshot?depth=20`
-- `GET /v1/markets/{symbol}/spread-history?range=24h&resolution=1m&type=gated`
+- `GET /v1/markets/{symbol}/snapshot?profile={profile}&depth=20`
+- `GET /v1/markets/{symbol}/spread-history?profile={profile}&range=24h&resolution=1m&type=gated`
 - `WS /v1/stream`
 
-Run it after the MDS consumer has created the recording directory:
+`profile` is optional while a symbol belongs to only one aggregate profile.
+Clients must provide it when spot and perpetual profiles share the same symbol.
+
+Compose starts `aggdata-service` after the MDS consumer has created the
+recording directory (`AGGDATA_RECORDING_DIR`, bind-mounted into the container).
+For host debugging:
 
 ```bash
 set -a; source .env; set +a
 go run ./cmd/aggdata-service
 ```
 
-The default listener is `127.0.0.1:9093`. `MDS_GATEWAY_TOKEN` is used only on
+The host `go run` default listener is `127.0.0.1:9093`; Compose binds `:9093`.
+`MDS_GATEWAY_TOKEN` is used only on
 the private upstream connection. If `AGGDATA_BROWSER_TOKEN` is set, REST
 requests require `Authorization: Bearer ...`; browser WebSocket clients can
 also pass `?token=...`. WebSocket origins must exactly match

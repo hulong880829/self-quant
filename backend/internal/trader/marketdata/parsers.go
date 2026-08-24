@@ -20,81 +20,94 @@ func DefaultParsers() map[string]Parser {
 }
 
 func parseBinance(key Key, payload []byte, received time.Time) (BBO, bool, error) {
-	// A map is intentional: encoding/json matches struct fields case-insensitively,
-	// while Binance uses b/B and a/A for price/quantity.
-	var message map[string]json.RawMessage
-	if err := decodeJSON(payload, &message); err != nil {
-		return BBO{}, false, err
-	}
-	var symbol, bid, ask string
-	if err := json.Unmarshal(message["s"], &symbol); err != nil && len(message["s"]) > 0 {
-		return BBO{}, false, fmt.Errorf("decode symbol: %w", err)
-	}
-	if err := json.Unmarshal(message["b"], &bid); err != nil && len(message["b"]) > 0 {
-		return BBO{}, false, fmt.Errorf("decode bid: %w", err)
-	}
-	if err := json.Unmarshal(message["a"], &ask); err != nil && len(message["a"]) > 0 {
-		return BBO{}, false, fmt.Errorf("decode ask: %w", err)
-	}
-	if bid == "" || ask == "" {
-		return BBO{}, false, nil
-	}
-	if symbol != "" && !strings.EqualFold(symbol, key.Symbol) {
-		return BBO{}, false, nil
-	}
-	return makeBBO(key, bid, ask, message["E"], received)
-}
-
-func parseOKX(key Key, payload []byte, received time.Time) (BBO, bool, error) {
 	var message struct {
-		Data []struct {
-			Instrument string          `json:"instId"`
-			Bid        string          `json:"bidPx"`
-			Ask        string          `json:"askPx"`
-			Time       json.RawMessage `json:"ts"`
+		Data struct {
+			Bids      [][]string      `json:"bids"`
+			Asks      [][]string      `json:"asks"`
+			ShortBids [][]string      `json:"b"`
+			ShortAsks [][]string      `json:"a"`
+			Time      json.RawMessage `json:"E"`
 		} `json:"data"`
 	}
 	if err := decodeJSON(payload, &message); err != nil {
 		return BBO{}, false, err
 	}
-	for _, item := range message.Data {
-		if item.Bid != "" && item.Ask != "" && strings.EqualFold(item.Instrument, key.Symbol) {
-			return makeBBO(key, item.Bid, item.Ask, item.Time, received)
-		}
+	bids, asks := message.Data.Bids, message.Data.Asks
+	if len(bids) == 0 && len(asks) == 0 {
+		bids, asks = message.Data.ShortBids, message.Data.ShortAsks
 	}
-	return BBO{}, false, nil
+	if len(bids) == 0 || len(asks) == 0 ||
+		len(bids[0]) == 0 || len(asks[0]) == 0 {
+		return BBO{}, false, nil
+	}
+	return makeBBO(
+		key, bids[0][0], asks[0][0],
+		message.Data.Time, received,
+	)
+}
+
+func parseOKX(key Key, payload []byte, received time.Time) (BBO, bool, error) {
+	var message struct {
+		Argument struct {
+			Instrument string `json:"instId"`
+			Channel    string `json:"channel"`
+		} `json:"arg"`
+		Data []struct {
+			Bids [][]string      `json:"bids"`
+			Asks [][]string      `json:"asks"`
+			Time json.RawMessage `json:"ts"`
+		} `json:"data"`
+	}
+	if err := decodeJSON(payload, &message); err != nil {
+		return BBO{}, false, err
+	}
+	if message.Argument.Channel != "books5" ||
+		!strings.EqualFold(message.Argument.Instrument, key.Symbol) ||
+		len(message.Data) == 0 {
+		return BBO{}, false, nil
+	}
+	item := message.Data[0]
+	if len(item.Bids) == 0 || len(item.Asks) == 0 ||
+		len(item.Bids[0]) == 0 || len(item.Asks[0]) == 0 {
+		return BBO{}, false, nil
+	}
+	return makeBBO(key, item.Bids[0][0], item.Asks[0][0], item.Time, received)
 }
 
 func parseBybit(key Key, payload []byte, received time.Time) (BBO, bool, error) {
 	var message struct {
 		Topic string          `json:"topic"`
+		Type  string          `json:"type"`
 		Time  json.RawMessage `json:"ts"`
 		Data  struct {
-			Symbol string `json:"symbol"`
-			Bid    string `json:"bid1Price"`
-			Ask    string `json:"ask1Price"`
+			Symbol string     `json:"s"`
+			Bids   [][]string `json:"b"`
+			Asks   [][]string `json:"a"`
 		} `json:"data"`
 	}
 	if err := decodeJSON(payload, &message); err != nil {
 		return BBO{}, false, err
 	}
-	if message.Data.Bid == "" || message.Data.Ask == "" {
+	if message.Type != "snapshot" || len(message.Data.Bids) == 0 || len(message.Data.Asks) == 0 ||
+		len(message.Data.Bids[0]) == 0 || len(message.Data.Asks[0]) == 0 {
 		return BBO{}, false, nil
 	}
 	if message.Data.Symbol != "" && !strings.EqualFold(message.Data.Symbol, key.Symbol) {
 		return BBO{}, false, nil
 	}
-	return makeBBO(key, message.Data.Bid, message.Data.Ask, message.Time, received)
+	return makeBBO(key, message.Data.Bids[0][0], message.Data.Asks[0][0], message.Time, received)
 }
 
 func parseBitget(key Key, payload []byte, received time.Time) (BBO, bool, error) {
 	var message struct {
+		Action   string `json:"action"`
 		Argument struct {
 			Instrument string `json:"instId"`
+			Channel    string `json:"channel"`
 		} `json:"arg"`
 		Data []struct {
-			Bid  string          `json:"bidPr"`
-			Ask  string          `json:"askPr"`
+			Bids [][]string      `json:"bids"`
+			Asks [][]string      `json:"asks"`
 			Time json.RawMessage `json:"ts"`
 		} `json:"data"`
 	}
@@ -105,9 +118,13 @@ func parseBitget(key Key, payload []byte, received time.Time) (BBO, bool, error)
 		!strings.EqualFold(message.Argument.Instrument, key.Symbol) {
 		return BBO{}, false, nil
 	}
+	if message.Argument.Channel != "books15" || message.Action != "snapshot" {
+		return BBO{}, false, nil
+	}
 	for _, item := range message.Data {
-		if item.Bid != "" && item.Ask != "" {
-			return makeBBO(key, item.Bid, item.Ask, item.Time, received)
+		if len(item.Bids) > 0 && len(item.Asks) > 0 &&
+			len(item.Bids[0]) > 0 && len(item.Asks[0]) > 0 {
+			return makeBBO(key, item.Bids[0][0], item.Asks[0][0], item.Time, received)
 		}
 	}
 	return BBO{}, false, nil
@@ -115,28 +132,95 @@ func parseBitget(key Key, payload []byte, received time.Time) (BBO, bool, error)
 
 func parseGate(key Key, payload []byte, received time.Time) (BBO, bool, error) {
 	var message struct {
-		Time   json.RawMessage `json:"time_ms"`
-		Result struct {
-			Symbol string          `json:"s"`
-			Bid    string          `json:"b"`
-			Ask    string          `json:"a"`
-			Time   json.RawMessage `json:"t"`
-		} `json:"result"`
+		Channel string          `json:"channel"`
+		Event   string          `json:"event"`
+		Time    json.RawMessage `json:"time_ms"`
+		Result  json.RawMessage `json:"result"`
 	}
 	if err := decodeJSON(payload, &message); err != nil {
 		return BBO{}, false, err
 	}
-	if message.Result.Bid == "" || message.Result.Ask == "" {
+	expectedChannel := "spot.order_book"
+	expectedEvent := "update"
+	if key.Product == ProductPerpetual {
+		expectedChannel = "futures.order_book"
+		expectedEvent = "all"
+	}
+	if message.Channel != expectedChannel || message.Event != expectedEvent ||
+		len(bytes.TrimSpace(message.Result)) == 0 {
 		return BBO{}, false, nil
 	}
-	if message.Result.Symbol != "" && !strings.EqualFold(message.Result.Symbol, key.Symbol) {
+	var result map[string]json.RawMessage
+	if err := decodeJSON(message.Result, &result); err != nil {
+		return BBO{}, false, err
+	}
+	symbol, err := rawString(result["s"])
+	if err != nil {
+		return BBO{}, false, err
+	}
+	if symbol == "" {
+		symbol, err = rawString(result["contract"])
+		if err != nil {
+			return BBO{}, false, err
+		}
+	}
+	if !strings.EqualFold(symbol, key.Symbol) {
 		return BBO{}, false, nil
 	}
-	timestamp := message.Result.Time
-	if len(bytes.TrimSpace(timestamp)) == 0 {
-		timestamp = message.Time
+	bid, bidOK, err := firstGateLevelPrice(result["bids"])
+	if err != nil {
+		return BBO{}, false, err
 	}
-	return makeBBO(key, message.Result.Bid, message.Result.Ask, timestamp, received)
+	ask, askOK, err := firstGateLevelPrice(result["asks"])
+	if err != nil {
+		return BBO{}, false, err
+	}
+	if !bidOK || !askOK {
+		return BBO{}, false, nil
+	}
+	return makeBBO(key, bid, ask, message.Time, received)
+}
+
+func firstGateLevelPrice(raw json.RawMessage) (string, bool, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return "", false, nil
+	}
+	var levels []json.RawMessage
+	if err := decodeJSON(raw, &levels); err != nil {
+		return "", false, err
+	}
+	if len(levels) == 0 {
+		return "", false, nil
+	}
+	var tuple []json.RawMessage
+	if err := decodeJSON(levels[0], &tuple); err == nil {
+		if len(tuple) == 0 {
+			return "", false, nil
+		}
+		price, err := rawString(tuple[0])
+		return price, price != "", err
+	}
+	var level map[string]json.RawMessage
+	if err := decodeJSON(levels[0], &level); err != nil {
+		return "", false, err
+	}
+	price, err := rawString(level["p"])
+	return price, price != "", err
+}
+
+func rawString(raw json.RawMessage) (string, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return "", nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err == nil {
+		return value, nil
+	}
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err != nil {
+		return "", err
+	}
+	return number.String(), nil
 }
 
 func decodeJSON(payload []byte, target any) error {

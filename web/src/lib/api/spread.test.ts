@@ -70,4 +70,19 @@ describe("basis spread fetch", () => {
       }),
     );
   });
+
+  it("appends compareVenue for cross-exchange history", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(historyWire({ compareVenue: "okx" })), {
+        status: 200,
+        headers: { "Content-Type": "application/json", ETag: '"spread-x"' },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchBasisSpreadHistory("Binance", "btc", "usdt", "24h", null, undefined, "OKX");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/basis-spreads/binance/BTC/USDT/history?range=24h&compareVenue=okx",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
 });

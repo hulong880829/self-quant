@@ -207,7 +207,7 @@ int main() {
     retry_time += 1s;
     assert(mds::service::ShouldRetryLaggingSnapshot(
         Decision::SnapshotTooOld, true, bounded_retries));
-    retry_deadlines.continue_recovery(retry_time, retry_timeout);
+    assert(retry_deadlines.continue_recovery(retry_time, retry_timeout));
   }
   assert(retry_deadlines.expiration(
              retry_time + retry_timeout - 1ms, true, false) ==
@@ -216,6 +216,26 @@ int main() {
       Decision::SnapshotTooOld, true, bounded_retries));
   assert(retry_deadlines.expiration(
              retry_time + retry_timeout, true, false) ==
+         Expiration::Recovery);
+
+  Deadlines independent_recovery;
+  const auto independent_start = Deadlines::Clock::time_point{50s};
+  independent_recovery.subscriptions_ready(independent_start, 1s);
+  independent_recovery.mark_live();
+  independent_recovery.begin_recovery(independent_start, 30s);
+  assert(independent_recovery.expiration(
+             independent_start + 1s, true, false) ==
+         Expiration::None);
+  assert(independent_recovery.expiration(
+             independent_start + 30s, true, false) ==
+         Expiration::Recovery);
+  assert(independent_recovery.continue_recovery(
+      independent_start + 20s, 30s));
+  assert(independent_recovery.expiration(
+             independent_start + 49s, true, false) ==
+         Expiration::None);
+  assert(independent_recovery.expiration(
+             independent_start + 50s, true, false) ==
          Expiration::Recovery);
 
   constexpr std::size_t symbol_count = 6;
@@ -246,12 +266,25 @@ int main() {
     assert(mds::service::ShouldRetryLaggingSnapshot(
         Decision::SnapshotTooOld, true,
         symbol_retries[*selected]));
-    round_robin_deadlines.continue_recovery(
-        snapshot_time, retry_timeout);
+    assert(round_robin_deadlines.continue_recovery(
+        snapshot_time, retry_timeout));
     assert(round_robin_deadlines.expiration(
                snapshot_time, true, false) ==
            Expiration::None);
   }
+
+  mds::service::SubscriptionBudget budget;
+  const auto budget_start =
+      mds::service::SubscriptionBudget::Clock::time_point{200s};
+  assert(budget.allow(budget_start, 2));
+  budget.record(budget_start);
+  budget.record(budget_start + 1s);
+  assert(!budget.allow(budget_start + 2s, 2));
+  assert(budget.retry_at(budget_start + 2s, 2) ==
+         budget_start + 1h);
+  assert(!budget.allow(budget_start + 1h - 1ms, 2));
+  assert(budget.allow(budget_start + 1h, 2));
+  assert(budget.size() == 1);
 
   constexpr auto maximum =
       std::numeric_limits<std::uint64_t>::max();

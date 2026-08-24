@@ -86,13 +86,18 @@ func (r *Repository) QueryHistory(ctx context.Context, request HistoryRequest) (
 	from := normalized.Now.Add(-normalized.Range.Window())
 	query := historyQuery(
 		r.database, r.table, int(normalized.Range.Resolution().Seconds()),
+		normalized.CompareVenue,
 	)
-	rows, err := r.conn.Query(queryCtx, query,
+	args := []any{
 		clickhouse.Named("venue", normalized.Venue),
 		clickhouse.Named("symbol", symbol),
 		clickhouse.Named("from", from),
 		clickhouse.Named("to", normalized.Now),
-	)
+	}
+	if normalized.CompareVenue != "" {
+		args = append(args, clickhouse.Named("compare_venue", normalized.CompareVenue))
+	}
+	rows, err := r.conn.Query(queryCtx, query, args...)
 	if err != nil {
 		if queryCtx.Err() != nil {
 			return History{}, fmt.Errorf("%w: %w", ErrTimeout, err)
@@ -120,7 +125,26 @@ func (r *Repository) QueryHistory(ctx context.Context, request HistoryRequest) (
 	return buildHistory(normalized, parsed), nil
 }
 
-func historyQuery(database, table string, resolutionSeconds int) string {
+func historyQuery(database, table string, resolutionSeconds int, compareVenue string) string {
+	if compareVenue != "" {
+		return fmt.Sprintf(`
+SELECT
+	toStartOfInterval(ts, INTERVAL %d SECOND) AS bucket,
+	argMaxIf(ask_price, ts, venue = @compare_venue) AS spot_ask_raw,
+	argMaxIf(price_scale, ts, venue = @compare_venue) AS spot_scale,
+	argMaxIf(ask_price, ts, venue = @venue) AS perp_ask_raw,
+	argMaxIf(price_scale, ts, venue = @venue) AS perp_scale,
+	toUInt32(countIf(venue IN (@venue, @compare_venue))) AS samples
+FROM %s.%s
+PREWHERE venue IN (@venue, @compare_venue)
+	AND canonical_symbol = @symbol
+	AND product = 'perpetual'
+	AND ts >= @from AND ts < @to
+GROUP BY bucket
+HAVING bucket >= @from AND bucket < @to
+ORDER BY bucket
+`, resolutionSeconds, database, table)
+	}
 	return fmt.Sprintf(`
 SELECT
 	toStartOfInterval(ts, INTERVAL %d SECOND) AS bucket,

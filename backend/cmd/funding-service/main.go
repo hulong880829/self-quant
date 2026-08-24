@@ -67,18 +67,34 @@ func main() {
 			Table: cfg.ClickHouseTable, User: cfg.ClickHouseUser, Password: cfg.ClickHousePassword,
 			TLS: cfg.ClickHouseTLS, TLSSkipVerify: cfg.ClickHouseTLSSkip,
 			QueryTimeout: cfg.RankingQueryTimeout, PoolSize: cfg.RankingPoolSize,
+			UseMinuteTable: cfg.RankingMinuteEnabled,
 		})
 		if openErr != nil {
 			logger.Warn("opportunity ranking disabled because clickhouse is unavailable", "error", openErr)
 		} else {
-			defer rankingRepository.Close()
-			rankingEngine := ranking.NewEngine(
-				rankingRepository, rankingSnapshots, 2*cfg.SyncInterval,
-			)
-			go runRanking(
-				ctx, rankingEngine, snapshots, cfg.Ranking1hInterval,
-				cfg.RankingSlowInterval, logger,
-			)
+			if cfg.RankingCacheEnabled {
+				historyCache := ranking.NewHistoryCache(
+					rankingRepository, 7*24*time.Hour, cfg.RankingHistoryMaxRows,
+				)
+				defer historyCache.Close()
+				rankingEngine := ranking.NewEngine(
+					historyCache, rankingSnapshots, 2*cfg.SyncInterval,
+				)
+				go runRanking(
+					ctx, rankingEngine, historyCache, rankingSnapshots, snapshots,
+					cfg.Ranking1hInterval, cfg.RankingSlowInterval, logger,
+				)
+			} else {
+				defer rankingRepository.Close()
+				rankingEngine := ranking.NewEngine(
+					rankingRepository, rankingSnapshots, 2*cfg.SyncInterval,
+				)
+				logger.Warn("opportunity ranking history cache disabled by rollback switch")
+				go runRankingDirect(
+					ctx, rankingEngine, rankingSnapshots, snapshots,
+					cfg.Ranking1hInterval, cfg.RankingSlowInterval, logger,
+				)
+			}
 		}
 	}
 
@@ -126,29 +142,136 @@ func main() {
 	logger.Info("funding service shut down")
 }
 
-func runRanking(
+func runRankingDirect(
 	ctx context.Context,
 	engine *ranking.Engine,
+	rankingSnapshots *ranking.SnapshotStore,
 	fundingSnapshots *funding.SnapshotStore,
 	fastInterval time.Duration,
 	slowInterval time.Duration,
 	logger *slog.Logger,
 ) {
-	var refreshMu sync.Mutex
-	refresh := func(periods []ranking.Period) {
-		refreshMu.Lock()
-		defer refreshMu.Unlock()
-		snapshot := fundingSnapshots.Get()
+	for _, period := range ranking.Periods {
+		rankingSnapshots.MarkWarming(period)
+	}
+	worker := func(periods []ranking.Period, interval, timeout time.Duration) {
+		refresh := func() {
+			rates := fundingSnapshots.View().Rates
+			if len(rates) == 0 {
+				return
+			}
+			refreshCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			if err := engine.Refresh(refreshCtx, periods, rates, time.Now().UTC()); err != nil {
+				logger.Warn("direct opportunity ranking refresh failed", "periods", periods, "error", err)
+			}
+		}
+		refresh()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				refresh()
+			}
+		}
+	}
+	var group sync.WaitGroup
+	group.Add(2)
+	go func() {
+		defer group.Done()
+		worker([]ranking.Period{ranking.Period1h}, fastInterval, 45*time.Second)
+	}()
+	go func() {
+		defer group.Done()
+		worker(
+			[]ranking.Period{ranking.Period4h, ranking.Period8h, ranking.Period24h},
+			slowInterval, 2*time.Minute,
+		)
+	}()
+	group.Wait()
+}
+
+func runRanking(
+	ctx context.Context,
+	engine *ranking.Engine,
+	cache *ranking.HistoryCache,
+	rankingSnapshots *ranking.SnapshotStore,
+	fundingSnapshots *funding.SnapshotStore,
+	fastInterval time.Duration,
+	slowInterval time.Duration,
+	logger *slog.Logger,
+) {
+	for _, period := range ranking.Periods {
+		rankingSnapshots.MarkWarming(period)
+	}
+	refresh := func(periods []ranking.Period, timeout time.Duration) {
+		snapshot := fundingSnapshots.View()
 		if len(snapshot.Rates) == 0 {
 			return
 		}
-		if err := engine.Refresh(ctx, periods, snapshot.Rates, time.Now().UTC()); err != nil {
+		refreshCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		started := time.Now()
+		if err := engine.Refresh(refreshCtx, periods, snapshot.Rates, time.Now().UTC()); err != nil {
 			logger.Warn("opportunity ranking refresh failed", "periods", periods, "error", err)
+			return
+		}
+		logger.Info(
+			"opportunity ranking refresh completed", "periods", periods,
+			"duration", time.Since(started),
+		)
+	}
+	initialRates := fundingSnapshots.View().Rates
+	if len(initialRates) > 0 {
+		warmCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		err := cache.Update(warmCtx, initialRates, time.Now().UTC(), ranking.Period1h.Lookback())
+		cancel()
+		if err != nil {
+			logger.Warn("opportunity history initial warm failed", "error", err)
+		} else {
+			refresh([]ranking.Period{ranking.Period1h}, 45*time.Second)
 		}
 	}
-	refresh(ranking.Periods)
+	fastRequests := make(chan struct{}, 1)
+	slowRequests := make(chan struct{}, 1)
+	enqueue := func(queue chan struct{}, name string) {
+		select {
+		case queue <- struct{}{}:
+		default:
+			logger.Info("opportunity ranking tick coalesced", "worker", name)
+		}
+	}
 	var group sync.WaitGroup
-	group.Add(2)
+	group.Add(4)
+	go func() {
+		defer group.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-fastRequests:
+				refresh([]ranking.Period{ranking.Period1h}, 45*time.Second)
+			}
+		}
+	}()
+	go func() {
+		defer group.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-slowRequests:
+				for _, period := range []ranking.Period{
+					ranking.Period4h, ranking.Period8h, ranking.Period24h,
+				} {
+					refresh([]ranking.Period{period}, 2*time.Minute)
+				}
+			}
+		}
+	}()
 	go func() {
 		defer group.Done()
 		ticker := time.NewTicker(fastInterval)
@@ -158,12 +281,38 @@ func runRanking(
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				refresh([]ranking.Period{ranking.Period1h})
+				rates := fundingSnapshots.View().Rates
+				started := time.Now()
+				updateCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				err := cache.Update(updateCtx, rates, time.Now().UTC(), 7*24*time.Hour)
+				cancel()
+				generation := cache.Generation()
+				if err != nil {
+					logger.Warn("opportunity history incremental refresh failed", "error", err)
+				} else {
+					logger.Info(
+						"opportunity history cache refreshed",
+						"duration", time.Since(started), "generation", generation.ID,
+						"rows", generation.Rows, "bytes", generation.Bytes,
+						"data_through", generation.DataThrough,
+					)
+				}
+				enqueue(fastRequests, "1h")
 			}
 		}
 	}()
 	go func() {
 		defer group.Done()
+		warmCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		err := cache.Update(
+			warmCtx, fundingSnapshots.View().Rates, time.Now().UTC(), 7*24*time.Hour,
+		)
+		cancel()
+		if err != nil {
+			logger.Warn("opportunity history seven-day warm failed", "error", err)
+		} else {
+			enqueue(slowRequests, "slow")
+		}
 		ticker := time.NewTicker(slowInterval)
 		defer ticker.Stop()
 		for {
@@ -171,7 +320,7 @@ func runRanking(
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				refresh([]ranking.Period{ranking.Period4h, ranking.Period8h, ranking.Period24h})
+				enqueue(slowRequests, "slow")
 			}
 		}
 	}()

@@ -580,10 +580,64 @@ void test_bybit() {
   auto adapter = mds::exchange::make_venue_adapter(
       Venue::Bybit, ProductType::Perpetual, 50);
   assert(adapter);
+  assert(adapter->discovery_metadata_request({}).target ==
+         "/v5/market/instruments-info?category=linear&limit=1000");
+  assert(adapter->discovery_metadata_request(
+             "first%3D0GUSDT%26last%3DNIGHTUSDT").target ==
+         "/v5/market/instruments-info?category=linear&limit=1000&"
+         "cursor=first%3D0GUSDT%26last%3DNIGHTUSDT");
+  std::string cursor;
+  std::string error;
+  assert(adapter->discovery_metadata_next_cursor(
+      R"({"retCode":0,"result":{"category":"linear","nextPageCursor":"first%3D0GUSDT%26last%3DNIGHTUSDT"}})",
+      cursor, error));
+  assert(cursor == "first%3D0GUSDT%26last%3DNIGHTUSDT");
+  assert(error.empty());
+  assert(adapter->discovery_metadata_next_cursor(
+      R"({"retCode":0,"result":{"category":"linear","nextPageCursor":""}})",
+      cursor, error));
+  assert(cursor.empty());
+  assert(!adapter->discovery_metadata_next_cursor(
+      R"({"retCode":0,"result":{"category":"linear"}})",
+      cursor, error));
+  assert(error.find("nextPageCursor") != std::string::npos);
+  assert(!adapter->discovery_metadata_next_cursor(
+      R"({"retCode":0,"result":{"category":"linear","nextPageCursor":42}})",
+      cursor, error));
+  assert(error.find("nextPageCursor") != std::string::npos);
+  assert(!adapter->discovery_metadata_next_cursor(
+      R"({"retCode":0,"result":{"category":"linear","nextPageCursor":"first=BTC&last=ETH"}})",
+      cursor, error));
+  assert(error.find("URL encoded") != std::string::npos);
+  assert(!adapter->discovery_metadata_next_cursor(
+      R"({"retCode":10001,"result":{"category":"linear","nextPageCursor":""}})",
+      cursor, error));
+  assert(error.find("returned an error") != std::string::npos);
+
+  auto spot_adapter = mds::exchange::make_venue_adapter(
+      Venue::Bybit, ProductType::Spot, 50);
+  assert(spot_adapter);
+  assert(spot_adapter->discovery_metadata_request({}).target ==
+         "/v5/market/instruments-info?category=spot");
+  cursor = "stale";
+  error = "stale";
+  assert(spot_adapter->discovery_metadata_next_cursor(
+      "not parsed for spot", cursor, error));
+  assert(cursor.empty());
+  assert(error.empty());
+  auto non_bybit_adapter = mds::exchange::make_venue_adapter(
+      Venue::Okx, ProductType::Perpetual, 50);
+  assert(non_bybit_adapter);
+  cursor = "stale";
+  error = "stale";
+  assert(non_bybit_adapter->discovery_metadata_next_cursor(
+      "not parsed by default", cursor, error));
+  assert(cursor.empty());
+  assert(error.empty());
+
   const StreamRequest request{"BTCUSDT", "BTCUSDT", "orderbook.1",
                               "orderbook.50", true, true};
   std::vector<std::string> batches;
-  std::string error;
   assert(adapter->build_subscription_batches({&request, 1}, batches, error));
   assert(batches.size() == 1);
   assert(adapter->expected_subscription_acks(batches[0]) == 1);
@@ -652,6 +706,19 @@ void test_bybit() {
   assert(metadata[0].lot_size == 1);
   assert(metadata[0].contract_multiplier == 1);
   assert(metadata[0].contract_multiplier_scale == 0);
+
+  const StreamRequest second_page_request{
+      "ONGUSDT", "ONGUSDT", "orderbook.1",
+      "orderbook.50", true, true};
+  constexpr std::string_view second_page_json =
+      R"({"retCode":0,"result":{"category":"linear","nextPageCursor":"","list":[{"symbol":"ONGUSDT","baseCoin":"ONG","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.00001"},"lotSizeFilter":{"qtyStep":"1"}}]}})";
+  std::vector<InstrumentMetadata> second_page_metadata;
+  assert(adapter->parse_discovery_metadata(
+      second_page_json, {&second_page_request, 1},
+      second_page_metadata, error));
+  assert(second_page_metadata.size() == 1);
+  assert(second_page_metadata[0].venue_symbol == "ONGUSDT");
+  assert(metadata[0].venue_symbol == "BTCUSDT");
 
   std::vector<InstrumentMetadata> combined_metadata;
   for (const auto &metadata_request : metadata_requests) {
@@ -991,6 +1058,13 @@ void test_gate() {
                                  error));
   assert(metadata[0].quantity_scale == 6);
   assert(metadata[0].lot_size == 1000);
+  auto spot_discovery = mds::exchange::make_venue_adapter(
+      Venue::Gate, ProductType::Spot, 1);
+  metadata.clear();
+  assert(spot_discovery->parse_discovery_metadata(
+      metadata_json, {&request, 1}, metadata, error));
+  assert(metadata.size() == 1);
+  assert(metadata[0].venue_symbol == "BTC_USDT");
 
   NormalizedEvent event(100);
   assert(adapter->parse_ws(
@@ -1361,6 +1435,92 @@ void test_unsubscription_regression() {
   assert(error == "venue subscription cannot be converted to unsubscribe");
 }
 
+void test_discovery_turnover() {
+  std::uint64_t parsed_turnover{};
+  assert(mds::exchange::decimal_to_turnover("123.99", parsed_turnover));
+  assert(parsed_turnover == 123);
+  assert(!mds::exchange::decimal_to_turnover("-1", parsed_turnover));
+  assert(!mds::exchange::decimal_to_turnover("NaN", parsed_turnover));
+  assert(!mds::exchange::decimal_to_turnover(
+      "18446744073709551616", parsed_turnover));
+  assert(mds::exchange::decimal_product_to_turnover(
+      "12.5", "2.4", parsed_turnover));
+  assert(parsed_turnover == 30);
+
+  const auto verify = [](Venue venue, ProductType product,
+                         std::string_view target,
+                         std::string_view venue_symbol,
+                         std::string_view json,
+                         std::uint64_t expected_turnover) {
+    auto adapter =
+        mds::exchange::make_venue_adapter(venue, product, 1);
+    assert(adapter);
+    assert(adapter->discovery_turnover_request().target == target);
+    std::vector<InstrumentMetadata> metadata(2);
+    metadata[0].venue_symbol = venue_symbol;
+    metadata[1].venue_symbol = "MISSING";
+    std::string error;
+    assert(adapter->enrich_discovery_turnover(json, metadata, error));
+    assert(error.empty());
+    assert(metadata[0].turnover_24h == expected_turnover);
+    assert(metadata[1].turnover_24h == 0);
+  };
+
+  verify(Venue::Binance, ProductType::Spot, "/api/v3/ticker/24hr",
+         "BTCUSDT",
+         R"([{"symbol":"UNKNOWN","quoteVolume":"999"},{"symbol":"BTCUSDT","quoteVolume":"1234.99"}])",
+         1234);
+  verify(Venue::Binance, ProductType::Perpetual,
+         "/fapi/v1/ticker/24hr", "BTCUSDT",
+         R"([{"symbol":"BTCUSDT","quoteVolume":"2345"}])", 2345);
+  verify(Venue::Okx, ProductType::Spot,
+         "/api/v5/market/tickers?instType=SPOT", "BTC-USDT",
+         R"({"code":"0","data":[{"instId":"BTC-USDT","volCcy24h":"3456.7","last":"2"}]})",
+         3456);
+  verify(Venue::Okx, ProductType::Perpetual,
+         "/api/v5/market/tickers?instType=SWAP", "BTC-USDT-SWAP",
+         R"({"code":"0","data":[{"instId":"BTC-USDT-SWAP","volCcy24h":"12.5","last":"2.4"}]})",
+         30);
+  verify(Venue::Bybit, ProductType::Spot,
+         "/v5/market/tickers?category=spot", "BTCUSDT",
+         R"({"retCode":0,"result":{"list":[{"symbol":"BTCUSDT","turnover24h":"4567.8"}]}})",
+         4567);
+  verify(Venue::Bybit, ProductType::Perpetual,
+         "/v5/market/tickers?category=linear", "BTCUSDT",
+         R"({"retCode":0,"result":{"list":[{"symbol":"BTCUSDT","turnover24h":"5678"}]}})",
+         5678);
+  verify(Venue::Bitget, ProductType::Spot,
+         "/api/v2/spot/market/tickers", "BTCUSDT",
+         R"({"code":"00000","data":[{"symbol":"BTCUSDT","quoteVolume":"6789.4"}]})",
+         6789);
+  verify(Venue::Bitget, ProductType::Perpetual,
+         "/api/v2/mix/market/tickers?productType=USDT-FUTURES",
+         "BTCUSDT",
+         R"({"code":"00000","data":[{"symbol":"BTCUSDT","quoteVolume":"7890"}]})",
+         7890);
+  verify(Venue::Gate, ProductType::Spot, "/api/v4/spot/tickers",
+         "BTC_USDT",
+         R"([{"currency_pair":"BTC_USDT","quote_volume":"8901.2"}])",
+         8901);
+  verify(Venue::Gate, ProductType::Perpetual,
+         "/api/v4/futures/usdt/tickers", "BTC_USDT",
+         R"([{"contract":"BTC_USDT","volume_24h_quote":"9012"}])",
+         9012);
+
+  auto binance = mds::exchange::make_venue_adapter(
+      Venue::Binance, ProductType::Spot, 1);
+  assert(binance);
+  std::vector<InstrumentMetadata> metadata(1);
+  metadata[0].venue_symbol = "BTCUSDT";
+  std::string error;
+  assert(!binance->enrich_discovery_turnover(
+      R"([{"symbol":"BTCUSDT","quoteVolume":"NaN"}])", metadata,
+      error));
+  assert(!binance->enrich_discovery_turnover(
+      R"([{"symbol":"BTCUSDT","quoteVolume":"1"},{"symbol":"BTCUSDT","quoteVolume":"2"}])",
+      metadata, error));
+}
+
 }  // namespace
 
 int main() {
@@ -1374,5 +1534,6 @@ int main() {
   test_gate();
   test_hyperliquid();
   test_unsubscription_regression();
+  test_discovery_turnover();
   return 0;
 }

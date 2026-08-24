@@ -129,12 +129,26 @@ type Opportunity struct {
 }
 
 type Snapshot struct {
-	Period       Period
-	Items        []Opportunity
-	Version      string
-	CalculatedAt time.Time
-	Stale        bool
+	Period              Period
+	Items               []Opportunity
+	Version             string
+	Generation          uint64
+	FreshnessGeneration uint64
+	Status              SnapshotStatus
+	CalculatedAt        time.Time
+	LastSuccessfulAt    time.Time
+	DataThrough         time.Time
+	Stale               bool
 }
+
+type SnapshotStatus string
+
+const (
+	SnapshotReady       SnapshotStatus = "ready"
+	SnapshotWarming     SnapshotStatus = "warming"
+	SnapshotStale       SnapshotStatus = "stale"
+	SnapshotUnavailable SnapshotStatus = "unavailable"
+)
 
 func legFromRate(rate funding.Rate) Leg {
 	effective := rate.Rate

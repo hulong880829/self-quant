@@ -288,32 +288,6 @@ std::vector<std::vector<std::size_t>> PartitionWebSocketSymbols(
 
 class VenueConnection::Impl {
  public:
-  struct SubscriptionBudget {
-    std::array<Clock::time_point, 480> requests{};
-    std::size_t begin{};
-    std::size_t size{};
-
-    void prune(Clock::time_point now) noexcept {
-      const auto window = std::chrono::hours(1);
-      while (size > 0 && now - requests[begin] >= window) {
-        begin = (begin + 1) % requests.size();
-        --size;
-      }
-    }
-    bool allow(Clock::time_point now, std::size_t limit) noexcept {
-      prune(now);
-      return size < std::min(limit, requests.size());
-    }
-    void record(Clock::time_point now) noexcept {
-      if (size == requests.size()) {
-        begin = (begin + 1) % requests.size();
-        --size;
-      }
-      requests[(begin + size) % requests.size()] = now;
-      ++size;
-    }
-  };
-
   struct WsShard {
     WsShard(std::size_t shard_id, net::SharedSslContext tls,
             Venue venue, Product product, std::size_t max_levels)
@@ -347,6 +321,7 @@ class VenueConnection::Impl {
     Clock::time_point reconnect_at{};
     Clock::time_point connect_at{};
     Clock::time_point acknowledgement_deadline{};
+    Clock::time_point next_budget_retry{};
     std::size_t id{};
     std::size_t next_batch{};
     std::size_t pending_acknowledgements{};
@@ -395,6 +370,7 @@ class VenueConnection::Impl {
     LaggingSnapshotRetries lagging_snapshot_retries;
     WsSnapshotRecovery ws_snapshot_recovery;
     Clock::time_point last_resubscribe{};
+    Clock::time_point resubscribe_not_before{};
     Clock::time_point recovery_started{};
     std::uint32_t consecutive_snapshot_failures{};
     std::uint32_t catalog_generation{};
@@ -405,6 +381,7 @@ class VenueConnection::Impl {
     bool book_live{};
     bool snapshot_quarantined{};
     bool needs_snapshot{};
+    bool resubscribe_pending{};
     std::size_t shard_id{};
   };
 
@@ -541,10 +518,10 @@ class VenueConnection::Impl {
     if (!begin_metadata(now) ||
         !begin_connection(ws_shards_.front(), now)) {
       const auto message = error_;
-      stop();
-      fail(message);
-      return {.error = api::ErrorCode::InternalError,
-              .message = error_};
+      schedule_connection_rebuild(
+          message.empty() ? "failed to start venue transport" : message,
+          now);
+      return {};
     }
     update_aggregate_state();
     return {};
@@ -608,6 +585,9 @@ class VenueConnection::Impl {
     for (std::size_t shard = 0; shard < stream.shard_count; ++shard) {
       const auto open_one = [&](std::string_view kind,
                                 std::unique_ptr<publish::WirePublisher> &out) {
+        if (out) {
+          return true;
+        }
         auto ring = stream.multiplex_ring;
         ring.name = publish::make_multiplex_segment_name(
             stream.shm_prefix, venue, product, kind, shard);
@@ -1087,7 +1067,10 @@ class VenueConnection::Impl {
         if (shard.next_batch == shard.batches.size()) {
           shard.all_subscribed = true;
           shard.deadlines.subscriptions_ready(
-              Clock::now(), options_.request_timeout);
+              Clock::now(),
+              shard.deadlines.reached_live_once()
+                  ? options_.recovery_deadline
+                  : options_.request_timeout);
           update_live_state();
         }
       }
@@ -1565,49 +1548,70 @@ class VenueConnection::Impl {
                                 SymbolRuntime &symbol,
                                 Clock::time_point now) {
     constexpr auto cooldown = std::chrono::seconds(1);
-    if (symbol.last_resubscribe != Clock::time_point{} &&
-        now - symbol.last_resubscribe < cooldown) {
-      ++metrics_.budget_reconnects;
-      schedule_reconnect(
-          shard, "symbol resubscribe cooldown exceeded", now);
+    auto not_before = now;
+    if (symbol.last_resubscribe != Clock::time_point{}) {
+      not_before = std::max(not_before, symbol.last_resubscribe + cooldown);
+      if (not_before > now) {
+        ++metrics_.cooldown_deferrals;
+      }
+    }
+    if (symbol.resubscribe_pending) {
+      symbol.resubscribe_not_before =
+          std::max(symbol.resubscribe_not_before, not_before);
       return true;
     }
-    if (!shard.budget.allow(now, subscription_limit())) {
-      ++metrics_.budget_reconnects;
-      schedule_reconnect(
-          shard, "subscription request budget exhausted", now);
-      return true;
-    }
-    const exchange::StreamRequest request{
-        symbol.options.symbol, symbol.venue_symbol,
-        symbol.options.ticker_channel,
-        symbol.options.orderbook_channel, symbol.options.ticker,
-        symbol.options.orderbook,
-        symbol.options.update_interval_ms};
-    std::vector<std::string> subscribe;
-    std::vector<std::string> unsubscribe;
-    std::string build_error;
-    if (!shard.adapter->build_subscription_batches(
-            std::span<const exchange::StreamRequest>(&request, 1),
-            subscribe, build_error) ||
-        !shard.adapter->build_unsubscription_batches(
-            std::span<const exchange::StreamRequest>(&request, 1),
-            unsubscribe, build_error) ||
-        unsubscribe.size() != subscribe.size() ||
-        subscribe.empty()) {
-      fail(
-          build_error.empty() ? "failed to build symbol resubscription"
-                              : build_error);
-      return false;
-    }
-    for (std::size_t index = 0; index < subscribe.size(); ++index) {
-      shard.batches.push_back(std::move(unsubscribe[index]));
-      shard.batches.push_back(std::move(subscribe[index]));
-    }
+    symbol.resubscribe_pending = true;
+    symbol.resubscribe_not_before = not_before;
     shard.all_subscribed = false;
-    symbol.last_resubscribe = now;
-    symbol.ws_snapshot_recovery.begin_recovery();
     begin_recovery(shard, now);
+    return true;
+  }
+
+  bool append_pending_symbol_resubscribe(WsShard &shard,
+                                         Clock::time_point now) {
+    if (shard.awaiting_ack || shard.next_batch < shard.batches.size()) {
+      return true;
+    }
+    for (const auto symbol_index : shard.symbol_indices) {
+      auto &symbol = symbols_[symbol_index];
+      if (!symbol.resubscribe_pending ||
+          now < symbol.resubscribe_not_before) {
+        continue;
+      }
+      const exchange::StreamRequest request{
+          symbol.options.symbol, symbol.venue_symbol,
+          symbol.options.ticker_channel,
+          symbol.options.orderbook_channel, symbol.options.ticker,
+          symbol.options.orderbook,
+          symbol.options.update_interval_ms};
+      std::vector<std::string> subscribe;
+      std::vector<std::string> unsubscribe;
+      std::string build_error;
+      if (!shard.adapter->build_subscription_batches(
+              std::span<const exchange::StreamRequest>(&request, 1),
+              subscribe, build_error) ||
+          !shard.adapter->build_unsubscription_batches(
+              std::span<const exchange::StreamRequest>(&request, 1),
+              unsubscribe, build_error) ||
+          unsubscribe.size() != subscribe.size() || subscribe.empty()) {
+        fail(
+            build_error.empty() ? "failed to build symbol resubscription"
+                                : build_error);
+        return false;
+      }
+      shard.batches.clear();
+      shard.next_batch = 0;
+      for (std::size_t index = 0; index < subscribe.size(); ++index) {
+        shard.batches.push_back(std::move(unsubscribe[index]));
+        shard.batches.push_back(std::move(subscribe[index]));
+      }
+      symbol.resubscribe_pending = false;
+      symbol.resubscribe_not_before = {};
+      symbol.last_resubscribe = now;
+      symbol.ws_snapshot_recovery.begin_recovery();
+      shard.all_subscribed = false;
+      return true;
+    }
     return true;
   }
 
@@ -1626,6 +1630,7 @@ class VenueConnection::Impl {
     delta.strict_previous_sequence =
         event.strict_previous_sequence;
     symbol.pending.push_back(std::move(delta));
+    note_recovery_progress(symbol, Clock::now());
     return true;
   }
 
@@ -1758,6 +1763,7 @@ class VenueConnection::Impl {
       snapshot_backoff(snapshot_http_.error_message(), now);
       return;
     }
+    note_recovery_progress(symbol, now);
     sync_http_registration(HttpKind::Snapshot);
   }
 
@@ -1820,6 +1826,7 @@ class VenueConnection::Impl {
     }
     symbol.consecutive_snapshot_failures = 0;
     symbol.needs_snapshot = false;
+    note_recovery_progress(symbol, Clock::now());
     SnapshotBridgeValidator bridge(snapshot_event_->final_sequence);
     for (const auto &pending : symbol.pending) {
       const auto expected =
@@ -1841,10 +1848,7 @@ class VenueConnection::Impl {
         symbol.image_ready = false;
         symbol.awaiting_snapshot_bridge = false;
         symbol.book_live = false;
-        if (is_binance) {
-          shard.deadlines.continue_recovery(
-              now, options_.request_timeout);
-        }
+        note_recovery_progress(symbol, now);
         begin_recovery(shard_for(symbol), now);
         return;
       }
@@ -2400,6 +2404,20 @@ class VenueConnection::Impl {
         state_ == MarketDataState::Stopped) {
       return;
     }
+    if (connection_rebuild_pending_) {
+      const auto degraded = std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - connection_degraded_since_);
+      metrics_.connection_degraded_duration_ms =
+          connection_degraded_accumulated_ms_ +
+          static_cast<std::uint64_t>(std::max<std::int64_t>(
+              0, degraded.count()));
+      if (now < connection_rebuild_at_) {
+        return;
+      }
+      if (!attempt_connection_rebuild(now)) {
+        return;
+      }
+    }
     for (auto &symbol : symbols_) {
       if (symbol_ready(symbol)) {
         symbol.recovery_started = {};
@@ -2601,6 +2619,14 @@ class VenueConnection::Impl {
     if (!shard.websocket->can_send_data()) {
       return;
     }
+    if (shard.next_budget_retry != Clock::time_point{} &&
+        now < shard.next_budget_retry) {
+      return;
+    }
+    if (shard.next_budget_retry != Clock::time_point{} &&
+        now >= shard.next_budget_retry) {
+      shard.next_budget_retry = {};
+    }
     const auto spacing =
         options_.venue == Venue::Bitget
             ? std::chrono::milliseconds(100)
@@ -2612,9 +2638,9 @@ class VenueConnection::Impl {
     std::string_view send_error;
     if (shard.requires_login && !shard.login_sent) {
       if (!shard.budget.allow(now, subscription_limit())) {
-        ++metrics_.budget_reconnects;
-        schedule_reconnect(
-            shard, "login request budget exhausted", now);
+        ++metrics_.budget_deferrals;
+        shard.next_budget_retry =
+            shard.budget.retry_at(now, subscription_limit());
         return;
       }
       std::string login_error;
@@ -2639,6 +2665,7 @@ class VenueConnection::Impl {
       shard.acknowledgement_deadline =
           now + options_.request_timeout;
       shard.budget.record(now);
+      shard.next_budget_retry = {};
       shard.last_data_send = now;
       ++metrics_.subscription_requests;
       return;
@@ -2651,12 +2678,15 @@ class VenueConnection::Impl {
       update_aggregate_state();
       return;
     }
+    if (!append_pending_symbol_resubscribe(shard, now)) {
+      return;
+    }
     if (!shard.awaiting_ack &&
         shard.next_batch < shard.batches.size()) {
       if (!shard.budget.allow(now, subscription_limit())) {
-        ++metrics_.budget_reconnects;
-        schedule_reconnect(
-            shard, "subscription request budget exhausted", now);
+        ++metrics_.budget_deferrals;
+        shard.next_budget_retry =
+            shard.budget.retry_at(now, subscription_limit());
         return;
       }
       const auto &batch = shard.batches[shard.next_batch];
@@ -2668,6 +2698,7 @@ class VenueConnection::Impl {
         return;
       }
       shard.budget.record(now);
+      shard.next_budget_retry = {};
       shard.pending_acknowledgements =
           shard.adapter->expected_subscription_acks(batch);
       shard.awaiting_ack = shard.pending_acknowledgements != 0;
@@ -2680,7 +2711,9 @@ class VenueConnection::Impl {
         if (shard.next_batch == shard.batches.size()) {
           shard.all_subscribed = true;
           shard.deadlines.subscriptions_ready(
-              now, options_.request_timeout);
+              now, shard.deadlines.reached_live_once()
+                       ? options_.recovery_deadline
+                       : options_.request_timeout);
           update_live_state();
         }
       }
@@ -2747,8 +2780,17 @@ class VenueConnection::Impl {
 
   void begin_recovery(WsShard &shard, Clock::time_point now) noexcept {
     shard.state = MarketDataState::Buffering;
-    shard.deadlines.begin_recovery(now, options_.request_timeout);
+    shard.deadlines.begin_recovery(now, options_.recovery_deadline);
     update_aggregate_state();
+  }
+
+  void note_recovery_progress(SymbolRuntime &symbol,
+                              Clock::time_point now) noexcept {
+    auto &shard = shard_for(symbol);
+    if (shard.deadlines.continue_recovery(now,
+                                          options_.recovery_deadline)) {
+      ++metrics_.recovery_deadline_extensions;
+    }
   }
 
   void update_live_state() {
@@ -2783,7 +2825,7 @@ class VenueConnection::Impl {
       } else if (shard.state != MarketDataState::Buffering) {
         shard.state = MarketDataState::Buffering;
         shard.deadlines.begin_recovery(
-            Clock::now(), options_.request_timeout);
+            Clock::now(), options_.recovery_deadline);
       }
     }
     update_aggregate_state();
@@ -2806,6 +2848,26 @@ class VenueConnection::Impl {
     metrics_.ws_shards_reconnecting = reconnecting;
     if (live == ws_shards_.size() && metadata_ready_) {
       state_ = MarketDataState::Live;
+      if (connection_rebuild_attempt_ != 0 &&
+          !connection_rebuild_pending_) {
+        ++metrics_.connection_rebuild_successes;
+        const auto now = Clock::now();
+        const auto degraded =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - connection_degraded_since_);
+        connection_degraded_accumulated_ms_ +=
+            static_cast<std::uint64_t>(std::max<std::int64_t>(
+                0, degraded.count()));
+        metrics_.connection_degraded_duration_ms =
+            connection_degraded_accumulated_ms_;
+        std::cerr << exchange::venue_name(options_.venue)
+                  << " connection rebuild live product="
+                  << exchange::product_name(options_.product)
+                  << " attempt=" << connection_rebuild_attempt_
+                  << " degraded_ms=" << degraded.count() << '\n';
+        connection_rebuild_attempt_ = 0;
+        connection_degraded_since_ = {};
+      }
       return;
     }
     if (reconnecting != 0) {
@@ -2860,20 +2922,16 @@ class VenueConnection::Impl {
     shard.deadlines.reset_connection();
     shard.acknowledgement_deadline = {};
     shard.last_data_send = {};
-    if (options_.venue == Venue::Polymarket) {
-      std::vector<std::string> reconnect_batches;
-      std::string build_error;
-      if (!shard.adapter->build_subscription_batches(
-              shard.requests, reconnect_batches, build_error) ||
-          reconnect_batches.empty()) {
-        fail(
-            build_error.empty()
-                ? "failed to rebuild Polymarket subscriptions"
-                : build_error);
-        return;
-      }
-      shard.batches = std::move(reconnect_batches);
+    std::vector<std::string> reconnect_batches;
+    std::string build_error;
+    if (!shard.adapter->build_subscription_batches(
+            shard.requests, reconnect_batches, build_error) ||
+        reconnect_batches.empty()) {
+      fail(build_error.empty() ? "failed to rebuild subscriptions"
+                               : build_error);
+      return;
     }
+    shard.batches = std::move(reconnect_batches);
     for (const auto symbol_index : shard.symbol_indices) {
       auto &symbol = symbols_[symbol_index];
       ++symbol.generation;
@@ -2890,6 +2948,8 @@ class VenueConnection::Impl {
       symbol.lagging_snapshot_retries.reset();
       symbol.snapshot_quarantined = false;
       symbol.consecutive_snapshot_failures = 0;
+      symbol.resubscribe_pending = false;
+      symbol.resubscribe_not_before = {};
       symbol.needs_snapshot =
           symbol.options.orderbook &&
           shard.adapter->needs_rest_snapshot();
@@ -2929,9 +2989,154 @@ class VenueConnection::Impl {
     update_aggregate_state();
   }
 
+  void schedule_connection_rebuild(
+      std::string_view reason, Clock::time_point now = Clock::now(),
+      bool failed_attempt = false) {
+    const std::string detail(reason);
+    if (!started_) {
+      error_ = detail;
+      state_ = MarketDataState::Failed;
+      return;
+    }
+    if (!connection_rebuild_pending_ &&
+        connection_rebuild_attempt_ == 0) {
+      connection_degraded_since_ = now;
+    }
+    if (failed_attempt) {
+      ++metrics_.connection_rebuild_failures;
+    }
+    error_ = detail;
+
+    for (auto &shard : ws_shards_) {
+      if (shard.registered_fd >= 0) {
+        loop_.remove(shard.registered_fd);
+        shard.registered_fd = -1;
+      }
+      shard.websocket->reset();
+      shard.connection_started = false;
+      shard.adapter->reset_connection_state();
+      shard.pending_reconnect_reason.clear();
+      shard.open_seen = false;
+      shard.login_sent = false;
+      shard.login_acked = false;
+      shard.next_batch = 0;
+      shard.pending_acknowledgements = 0;
+      shard.awaiting_ack = false;
+      shard.all_subscribed = false;
+      shard.deadlines.reset_connection();
+      shard.acknowledgement_deadline = {};
+      shard.last_data_send = {};
+      shard.state = MarketDataState::ReconnectWait;
+    }
+    const auto reset_http = [this](HttpKind kind) {
+      auto &fd = registered_fd(kind);
+      if (fd >= 0) {
+        loop_.remove(fd);
+        fd = -1;
+      }
+      http(kind).reset();
+    };
+    reset_http(HttpKind::Metadata);
+    reset_http(HttpKind::Snapshot);
+    reset_http(HttpKind::Discovery);
+    metadata_batches_.clear();
+    metadata_.clear();
+    metadata_batch_index_ = 0;
+    metadata_ready_ = false;
+    snapshot_active_ = false;
+    discovery_active_ = false;
+
+    if (!connection_rebuild_pending_) {
+      for (auto &symbol : symbols_) {
+        ++symbol.generation;
+        symbol.catalog_generation = 0;
+        symbol.metadata_ready = false;
+        symbol.image_ready = false;
+        symbol.awaiting_snapshot_bridge = false;
+        symbol.ticker_live = false;
+        symbol.book_live = false;
+        symbol.last_book_sequence = 0;
+        symbol.last_ticker_sequence = 0;
+        symbol.last_ticker_exchange_time_ms = 0;
+        symbol.last_book_exchange_time_ms = 0;
+        symbol.latest_bbo.reset();
+        symbol.pending.clear();
+        symbol.ws_snapshot_recovery.reset_connection();
+        symbol.lagging_snapshot_retries.reset();
+        symbol.snapshot_quarantined = false;
+        symbol.consecutive_snapshot_failures = 0;
+        symbol.needs_snapshot =
+            symbol.options.orderbook &&
+            shard_for(symbol).adapter->needs_rest_snapshot();
+        symbol.recovery_started = now;
+        if (symbol.instrument.instrument_id != 0) {
+          (void)publish_catalog_barrier(symbol);
+        }
+      }
+    }
+
+    ++connection_rebuild_attempt_;
+    ++metrics_.connection_rebuild_attempts;
+    const auto exponent =
+        std::min<std::uint32_t>(connection_rebuild_attempt_ - 1, 10);
+    auto delay = options_.reconnect_base * (1U << exponent);
+    delay = std::min(delay, options_.reconnect_max);
+    if (delay.count() > 0) {
+      const auto range =
+          std::max<std::int64_t>(1, delay.count() / 4);
+      const auto mixed =
+          (static_cast<std::uint64_t>(connection_rebuild_attempt_) *
+           0x9e3779b97f4a7c15ULL) ^
+          static_cast<std::uint64_t>(options_.venue);
+      delay = std::min(
+          options_.reconnect_max,
+          delay + std::chrono::milliseconds(
+                      static_cast<std::int64_t>(
+                          mixed % static_cast<std::uint64_t>(range))));
+    }
+    connection_rebuild_at_ = now + delay;
+    connection_rebuild_pending_ = true;
+    state_ = MarketDataState::ReconnectWait;
+    metrics_.ws_shards_live = 0;
+    metrics_.ws_shards_reconnecting = ws_shards_.size();
+    std::cerr << exchange::venue_name(options_.venue)
+              << " connection rebuild scheduled product="
+              << exchange::product_name(options_.product)
+              << " attempt=" << connection_rebuild_attempt_
+              << " delay_ms=" << delay.count()
+              << " reason=" << escape_diagnostic_bytes(error_) << '\n';
+  }
+
+  bool attempt_connection_rebuild(Clock::time_point now) {
+    constexpr auto startup_stagger = std::chrono::milliseconds(50);
+    for (auto &shard : ws_shards_) {
+      shard.connect_at = now + startup_stagger * shard.id;
+      shard.state = MarketDataState::Connecting;
+    }
+    if (!begin_metadata(now) ||
+        !begin_connection(ws_shards_.front(), now)) {
+      const std::string reason =
+          error_.empty() ? "failed to restart venue connection" : error_;
+      schedule_connection_rebuild(reason, now, true);
+      return false;
+    }
+    connection_rebuild_pending_ = false;
+    state_ = MarketDataState::Connecting;
+    for (auto &symbol : symbols_) {
+      symbol.recovery_started = now;
+    }
+    std::cerr << exchange::venue_name(options_.venue)
+              << " connection rebuild started product="
+              << exchange::product_name(options_.product)
+              << " attempt=" << connection_rebuild_attempt_ << '\n';
+    return true;
+  }
+
   void fail(std::string_view reason) {
-    error_.assign(reason);
-    state_ = MarketDataState::Failed;
+    const bool failed_attempt =
+        started_ && connection_rebuild_attempt_ != 0 &&
+        !connection_rebuild_pending_;
+    schedule_connection_rebuild(reason, Clock::now(), failed_attempt);
   }
 
   void stop() noexcept {
@@ -2962,6 +3167,10 @@ class VenueConnection::Impl {
     metadata_batches_.clear();
     metadata_.clear();
     metadata_batch_index_ = 0;
+    connection_rebuild_pending_ = false;
+    connection_rebuild_attempt_ = 0;
+    connection_rebuild_at_ = {};
+    connection_degraded_since_ = {};
     started_ = false;
     metrics_.ws_shards_live = 0;
     metrics_.ws_shards_reconnecting = 0;
@@ -2990,6 +3199,8 @@ class VenueConnection::Impl {
   Clock::time_point next_snapshot_allowed_{};
   Clock::time_point discovery_started_{};
   Clock::time_point next_discovery_attempt_{};
+  Clock::time_point connection_rebuild_at_{};
+  Clock::time_point connection_degraded_since_{};
   std::size_t metadata_batch_index_{};
   std::size_t snapshot_symbol_{};
   std::size_t next_snapshot_symbol_{};
@@ -3000,12 +3211,15 @@ class VenueConnection::Impl {
   std::uint64_t snapshot_generation_{};
   std::uint64_t discovery_generation_{};
   std::uint64_t observed_stale_messages_{};
+  std::uint64_t connection_degraded_accumulated_ms_{};
+  std::uint32_t connection_rebuild_attempt_{};
   std::int64_t active_market_window_{};
   exchange::polymarket::ResolveSlot discovery_slot_{
       exchange::polymarket::ResolveSlot::Next};
   bool metadata_ready_{};
   bool snapshot_active_{};
   bool discovery_active_{};
+  bool connection_rebuild_pending_{};
   bool started_{};
 };
 

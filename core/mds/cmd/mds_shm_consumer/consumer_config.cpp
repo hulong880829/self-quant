@@ -23,6 +23,7 @@ constexpr std::uint64_t kMinimumServiceIntervalMs = 200;
 constexpr std::size_t kMaximumDepth = 50;
 constexpr std::uint32_t kMaximumRetentionHours = 24;
 constexpr std::size_t kMaximumMultiplexShards = 256;
+constexpr std::size_t kMaximumDrainRecords = 65'536;
 
 template <typename T>
 T value_or(const YAML::Node &node, std::string_view key, T fallback) {
@@ -227,6 +228,29 @@ void validate_gateway(const GatewayConfig &gateway, bool requested) {
   }
 }
 
+void parse_ingestion(const YAML::Node &node, ConsumerConfig &config) {
+  if (!node) {
+    return;
+  }
+  reject_unknown(node,
+                 {"stale_after_ms", "hard_reset_after_ms",
+                  "max_drain_records"},
+                 "ingestion");
+  auto &ingestion = config.ingestion;
+  ingestion.stale_after_ms = value_or<std::uint64_t>(
+      node, "stale_after_ms", ingestion.stale_after_ms);
+  ingestion.hard_reset_after_ms = value_or<std::uint64_t>(
+      node, "hard_reset_after_ms", ingestion.hard_reset_after_ms);
+  ingestion.max_drain_records = value_or<std::size_t>(
+      node, "max_drain_records", ingestion.max_drain_records);
+  if (ingestion.stale_after_ms == 0 ||
+      ingestion.hard_reset_after_ms <= ingestion.stale_after_ms ||
+      ingestion.max_drain_records == 0 ||
+      ingestion.max_drain_records > kMaximumDrainRecords) {
+    throw std::runtime_error("ingestion bounds are invalid");
+  }
+}
+
 std::filesystem::path existing_directory(std::filesystem::path path) {
   while (!path.empty() && !std::filesystem::exists(path)) {
     path = path.parent_path();
@@ -386,9 +410,10 @@ api::Result<ConsumerConfig> load_config(const std::string &path,
                                         bool clickhouse_bbo_requested) noexcept {
   try {
     const auto root = YAML::LoadFile(path);
-    reject_unknown(root, {"segments", "gateway", "recording",
+    reject_unknown(root, {"segments", "ingestion", "gateway", "recording",
                           "clickhouse_bbo"}, "root");
     ConsumerConfig config;
+    parse_ingestion(root["ingestion"], config);
 
     const auto segments = root["segments"];
     if ((!segments || !segments.IsSequence() || segments.size() == 0) &&

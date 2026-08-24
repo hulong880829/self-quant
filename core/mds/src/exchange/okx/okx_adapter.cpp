@@ -538,6 +538,113 @@ class OkxAdapter final : public VenueAdapter {
     return parse_metadata_impl(json, requests, metadata, error, true);
   }
 
+  [[nodiscard]] HttpRequestSpec
+  discovery_turnover_request() const override {
+    return {HttpRequestSpec::Method::Get,
+            product_ == utils::md::ProductType::Spot
+                ? "/api/v5/market/tickers?instType=SPOT"
+                : "/api/v5/market/tickers?instType=SWAP",
+            {}, {}};
+  }
+
+  bool enrich_discovery_turnover(
+      std::string_view json, std::span<InstrumentMetadata> metadata,
+      std::string &error) override {
+#ifndef MDS_HAS_SIMDJSON
+    (void)json;
+    (void)metadata;
+    error = "OKX 24h turnover parsing requires simdjson support";
+    return false;
+#else
+    try {
+      auto root_result = impl_->parse(json).get_object();
+      if (root_result.error()) {
+        error = "OKX tickers response is not an object";
+        return false;
+      }
+      auto root = root_result.value();
+      const auto code = optional_string(root, "code");
+      if (code != "0") {
+        error = "OKX tickers request did not return code 0";
+        if (!code.empty()) {
+          error += " (code ";
+          error.append(code);
+          error.push_back(')');
+        }
+        const auto message = optional_string(root, "msg");
+        if (!message.empty()) {
+          error += ": ";
+          error.append(message);
+        }
+        return false;
+      }
+      auto data_result = root["data"].get_array();
+      if (data_result.error()) {
+        error = "OKX tickers response is missing data";
+        return false;
+      }
+
+      std::vector<std::uint64_t> turnovers(metadata.size());
+      std::vector<bool> matched(metadata.size(), false);
+      for (auto raw_entry : data_result.value()) {
+        auto entry_result = raw_entry.get_object();
+        if (entry_result.error()) {
+          continue;
+        }
+        auto entry = entry_result.value();
+        auto symbol_result = entry["instId"].get_string();
+        if (symbol_result.error()) {
+          continue;
+        }
+        const std::string_view symbol = symbol_result.value();
+        std::size_t index = 0;
+        while (index < metadata.size() &&
+               metadata[index].venue_symbol != symbol) {
+          ++index;
+        }
+        if (index == metadata.size()) {
+          continue;
+        }
+        if (matched[index]) {
+          error = "duplicate OKX 24h ticker symbol: ";
+          error.append(symbol);
+          return false;
+        }
+
+        auto volume_result = entry["volCcy24h"].get_string();
+        bool converted = false;
+        if (!volume_result.error()) {
+          if (product_ == utils::md::ProductType::Spot) {
+            converted = decimal_to_turnover(volume_result.value(),
+                                            turnovers[index]);
+          } else {
+            auto last_result = entry["last"].get_string();
+            converted =
+                !last_result.error() &&
+                decimal_product_to_turnover(
+                    volume_result.value(), last_result.value(),
+                    turnovers[index]);
+          }
+        }
+        if (!converted) {
+          error = "invalid OKX 24h turnover for symbol: ";
+          error.append(symbol);
+          return false;
+        }
+        matched[index] = true;
+      }
+      for (std::size_t index = 0; index < metadata.size(); ++index) {
+        metadata[index].turnover_24h = turnovers[index];
+      }
+      error.clear();
+      return true;
+    } catch (const simdjson::simdjson_error &exception) {
+      error = exception.what();
+      return false;
+    }
+#endif
+  }
+
  private:
   struct ScaleEntry {
     std::string venue_symbol;

@@ -257,6 +257,11 @@ func TestAdapterOrderPolicyHTTPContracts(t *testing.T) {
 		{"bitget IOC", newBitget(server.Client(), server.URL), Instrument{ContractType: "spot", ExchangeSymbol: "BTCUSDT"}, OrderRequest{TimeInForce: "IOC"}, `"timeInForce":"ioc"`},
 		{"gate post-only", newGate(server.Client(), server.URL), Instrument{ContractType: "spot", BaseAsset: "BTC", QuoteAsset: "USDT"}, OrderRequest{PostOnly: true}, `"time_in_force":"poc"`},
 		{"gate IOC", newGate(server.Client(), server.URL), Instrument{ContractType: "spot", BaseAsset: "BTC", QuoteAsset: "USDT"}, OrderRequest{TimeInForce: "IOC"}, `"time_in_force":"ioc"`},
+		{"binance reduce-only", newBinance(server.Client(), server.URL), Instrument{ContractType: "perpetual", ExchangeSymbol: "BTCUSDT"}, OrderRequest{ReduceOnly: true}, "reduceOnly=true"},
+		{"okx reduce-only", newOKX(server.Client(), server.URL), Instrument{ContractType: "perpetual", BaseAsset: "BTC", QuoteAsset: "USDT"}, OrderRequest{ReduceOnly: true}, `"reduceOnly":"true"`},
+		{"bybit one-way", newBybit(server.Client(), server.URL), Instrument{ContractType: "perpetual", ExchangeSymbol: "BTCUSDT"}, OrderRequest{}, `"positionIdx":0`},
+		{"bybit reduce-only", newBybit(server.Client(), server.URL), Instrument{ContractType: "perpetual", ExchangeSymbol: "BTCUSDT"}, OrderRequest{ReduceOnly: true}, `"reduceOnly":true`},
+		{"gate reduce-only", newGate(server.Client(), server.URL), Instrument{ContractType: "perpetual", BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT"}, OrderRequest{ReduceOnly: true}, `"reduce_only":true`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -274,5 +279,65 @@ func TestAdapterOrderPolicyHTTPContracts(t *testing.T) {
 				t.Fatalf("missing %q in %s", test.want, requestTarget)
 			}
 		})
+	}
+}
+
+func TestBitgetOneWayPerpetualOmitsPosSide(t *testing.T) {
+	var bodies []map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, body)
+		_, _ = writer.Write([]byte(`{"code":"00000","data":{"orderId":"bitget-1","status":"live"}}`))
+	}))
+	defer server.Close()
+
+	adapter := newBitget(server.Client(), server.URL)
+	result, err := adapter.PlaceOrder(context.Background(), Credentials{
+		APIKey: "key", APISecret: "secret", Passphrase: "pass",
+	}, OrderRequest{
+		Instrument: Instrument{
+			ContractType: "perpetual", ExchangeSymbol: "COTIUSDT",
+			QuoteAsset: "USDT", SettleAsset: "USDT",
+		},
+		ClientOrderID: "one-way-test", Side: "sell", OrderType: "limit",
+		Quantity: "20", Price: "1",
+	})
+	if err != nil || result.VenueOrderID != "bitget-1" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("requests=%d", len(bodies))
+	}
+	if _, exists := bodies[0]["posSide"]; exists {
+		t.Fatalf("one-way order retained posSide: %#v", bodies[0])
+	}
+	if bodies[0]["marginMode"] != "crossed" || bodies[0]["reduceOnly"] != "no" {
+		t.Fatalf("body=%#v", bodies[0])
+	}
+}
+
+func TestBitgetDoesNotRetryHTTP200ApplicationError(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = writer.Write([]byte(`{"code":"40774","msg":"one-way position type required"}`))
+	}))
+	defer server.Close()
+	_, err := newBitget(server.Client(), server.URL).PlaceOrder(context.Background(), Credentials{
+		APIKey: "key", APISecret: "secret", Passphrase: "pass",
+	}, OrderRequest{
+		Instrument: Instrument{
+			ContractType: "perpetual", ExchangeSymbol: "COTIUSDT", SettleAsset: "USDT",
+		},
+		ClientOrderID: "one-way-test", Side: "sell", OrderType: "market", Quantity: "20",
+	})
+	if err == nil {
+		t.Fatal("expected rejection")
+	}
+	if requests != 1 {
+		t.Fatalf("requests=%d", requests)
 	}
 }

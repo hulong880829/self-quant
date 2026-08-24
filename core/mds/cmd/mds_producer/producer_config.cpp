@@ -333,6 +333,7 @@ api::Result<ProducerConfig> load_config(const std::string &path) noexcept {
                       "snapshot_max_consecutive_failures",
                       "snapshot_rate_limit_backoff_ms",
                       "snapshot_ban_backoff_ms",
+                      "recovery_deadline_ms",
                       "max_continuous_recovery_ms"},
                      "venues[]");
       const auto venue = parse_required_venue(node["venue"]);
@@ -372,6 +373,8 @@ api::Result<ProducerConfig> load_config(const std::string &path) noexcept {
           node, "snapshot_rate_limit_backoff_ms", 60'000);
       endpoint.snapshot_ban_backoff_ms = value_or<std::uint32_t>(
           node, "snapshot_ban_backoff_ms", 300'000);
+      endpoint.recovery_deadline_ms = value_or<std::uint32_t>(
+          node, "recovery_deadline_ms", 30'000);
       endpoint.max_continuous_recovery_ms = value_or<std::uint32_t>(
           node, "max_continuous_recovery_ms", 300'000);
       const bool polymarket =
@@ -389,6 +392,9 @@ api::Result<ProducerConfig> load_config(const std::string &path) noexcept {
           endpoint.snapshot_rate_limit_backoff_ms == 0 ||
           endpoint.snapshot_ban_backoff_ms <
               endpoint.snapshot_rate_limit_backoff_ms ||
+          endpoint.recovery_deadline_ms == 0 ||
+          endpoint.recovery_deadline_ms >
+              endpoint.max_continuous_recovery_ms ||
           endpoint.max_continuous_recovery_ms == 0) {
         throw std::runtime_error("venue endpoint bounds are invalid");
       }
@@ -808,6 +814,48 @@ api::Result<ProducerConfig> load_config(const std::string &path) noexcept {
   }
 }
 
+bool DiscoveryPaginationGuard::begin_page(std::string &error) {
+  if (complete_) {
+    error = "product discovery pagination is already complete";
+    return false;
+  }
+  if (pages_ >= maximum_pages) {
+    error = "product discovery pagination exceeded page limit";
+    return false;
+  }
+  ++pages_;
+  error.clear();
+  return true;
+}
+
+bool DiscoveryPaginationGuard::accept_page(
+    bool has_symbols, std::string next_cursor, std::string &error) {
+  if (!has_symbols) {
+    error = next_cursor.empty()
+                ? "product discovery metadata contained no symbols"
+                : "product discovery returned an empty page before "
+                  "pagination completed";
+    return false;
+  }
+  if (next_cursor.empty()) {
+    complete_ = true;
+    error.clear();
+    return true;
+  }
+  if (next_cursor == cursor_ ||
+      !seen_cursors_.insert(next_cursor).second) {
+    error = "product discovery pagination cursor repeated";
+    return false;
+  }
+  if (pages_ >= maximum_pages) {
+    error = "product discovery pagination exceeded page limit";
+    return false;
+  }
+  cursor_ = std::move(next_cursor);
+  error.clear();
+  return true;
+}
+
 api::Result<UniverseChange> reconcile_universe(
     const ProductDiscovery &discovery,
     std::span<const exchange::InstrumentMetadata> metadata,
@@ -833,7 +881,6 @@ api::Result<UniverseChange> reconcile_universe(
         continue;
       }
       if (discovery.minimum_turnover != 0 &&
-          entry.turnover_24h != 0 &&
           entry.turnover_24h < discovery.minimum_turnover) {
         continue;
       }

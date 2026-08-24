@@ -23,6 +23,7 @@ import {
   ShieldAlert,
 } from "lucide-react";
 
+import { BasisSpreadPanel } from "@/components/funding/basis-spread-chart";
 import { WorkspacePanel } from "@/components/layout/responsive";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -44,6 +45,13 @@ import {
 import { FUNDING_DETAIL_WIDTH_PX, shouldUseSplitLayout } from "@/lib/layout";
 import { cn } from "@/lib/utils";
 import type { Exchange, FundingSpread, FundingSpreadLeg } from "@/types/market";
+
+type SpreadListItem =
+  | { kind: "row"; key: string; spread: FundingSpread }
+  | { kind: "detail"; key: string; spread: FundingSpread };
+
+const DATA_ROW_HEIGHT_PX = 64;
+const DETAIL_ROW_HEIGHT_PX = 328;
 
 const exchangeDot: Record<Exchange, string> = {
   Binance: "bg-amber-400",
@@ -232,6 +240,7 @@ export function FundingSpreadView({
     { id: "spreadAnnualized", desc: true },
   ]);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const [mobileDetailOpen, setMobileDetailOpen] = React.useState(false);
   const [workspaceRef, width] = useElementWidth<HTMLDivElement>();
   const showSplit = shouldUseSplitLayout(width, FUNDING_DETAIL_WIDTH_PX);
@@ -292,15 +301,37 @@ export function FundingSpreadView({
     getRowId: (row) => row.id,
   });
   const rows = table.getRowModel().rows;
+  const rowsById = React.useMemo(() => {
+    return new Map(rows.map((row) => [row.original.id, row]));
+  }, [rows]);
+  const listItems = React.useMemo(() => {
+    const items: SpreadListItem[] = [];
+    for (const row of rows) {
+      items.push({
+        kind: "row",
+        key: `row-${row.original.id}`,
+        spread: row.original,
+      });
+      if (expandedId === row.original.id) {
+        items.push({
+          kind: "detail",
+          key: `detail-${row.original.id}`,
+          spread: row.original,
+        });
+      }
+    }
+    return items;
+  }, [rows, expandedId]);
   const containerRef = React.useRef<HTMLDivElement>(null);
   // TanStack Virtual intentionally exposes imperative functions that React Compiler skips.
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
-    count: rows.length,
+    count: listItems.length,
     getScrollElement: () => containerRef.current,
-    estimateSize: () => 64,
+    estimateSize: (index) =>
+      listItems[index]?.kind === "detail" ? DETAIL_ROW_HEIGHT_PX : DATA_ROW_HEIGHT_PX,
     overscan: 10,
-    getItemKey: (index) => rows[index]?.original.id ?? index,
+    getItemKey: (index) => listItems[index]?.key ?? index,
   });
   const virtualRows = virtualizer.getVirtualItems();
   const top = virtualRows[0]?.start ?? 0;
@@ -309,6 +340,7 @@ export function FundingSpreadView({
     : 0;
   const select = (id: string) => {
     setSelectedId(id);
+    setExpandedId((current) => (current === id ? null : id));
     if (!showSplit) setMobileDetailOpen(true);
   };
 
@@ -340,21 +372,38 @@ export function FundingSpreadView({
                 <>
                   {top > 0 && <tr aria-hidden><td colSpan={columns.length} style={{ height: top }} /></tr>}
                   {virtualRows.map((virtualRow) => {
-                    const row = rows[virtualRow.index];
+                    const item = listItems[virtualRow.index];
+                    if (!item) return null;
+                    if (item.kind === "detail") {
+                      return (
+                        <tr key={item.key} className="border-b bg-muted/20 last:border-b-0">
+                          <td colSpan={columns.length} className="px-4 py-3">
+                            <BasisSpreadPanel
+                              venue={item.spread.shortLeg.exchange}
+                              compareVenue={item.spread.longLeg.exchange}
+                              baseAsset={item.spread.baseAsset}
+                              quoteAsset={item.spread.quoteAsset}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    }
+                    const row = rowsById.get(item.spread.id);
+                    if (!row) return null;
                     return (
                       <tr
-                        key={row.original.id}
+                        key={item.key}
                         tabIndex={0}
-                        onClick={() => select(row.original.id)}
+                        onClick={() => select(item.spread.id)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter" || event.key === " ") {
                             event.preventDefault();
-                            select(row.original.id);
+                            select(item.spread.id);
                           }
                         }}
                         className={cn(
                           "cursor-pointer border-b transition-colors hover:bg-muted/45 focus-visible:bg-muted focus-visible:outline-none",
-                          selected?.id === row.original.id && "bg-primary/[0.055]",
+                          selected?.id === item.spread.id && "bg-primary/[0.055]",
                         )}
                       >
                         {row.getVisibleCells().map((cell) => (

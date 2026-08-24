@@ -37,6 +37,14 @@ import {
   type TraderContractType,
   type TraderInstrument,
 } from "@/lib/api/trader";
+import { fetchFundingRates } from "@/lib/api/funding";
+import type { FundingOpportunity } from "@/types/market";
+import {
+  fetchBasisSpreadHistory,
+  type BasisSpreadHistory,
+  type BasisSpreadRange,
+} from "@/lib/api/spread";
+import { annualize24h, annualize7d, formatPercent, rateColor } from "@/lib/market-format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,16 +53,131 @@ import { cn } from "@/lib/utils";
 const selectClassName =
   "h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 
-type Period = "1h" | "4h" | "8h" | "24h" | "7d";
+const periods: BasisSpreadRange[] = ["1h", "4h", "8h", "24h", "7d"];
+const SPREAD_REFRESH_MS = 30_000;
+const SPREAD_CACHE_TTL_MS = 30_000;
 
-const periods: Period[] = ["1h", "4h", "8h", "24h", "7d"];
-const spreadSeries: Record<Period, number[]> = {
-  "1h": [4, 5, 3, 7, 9, 8, 12, 10, 14, 15, 13, 17, 16, 18, 17, 19, 18, 20],
-  "4h": [2, 5, 4, 8, 6, 11, 10, 13, 9, 14, 12, 16, 15, 13, 18, 17, 19, 18],
-  "8h": [-1, 2, 4, 1, 6, 8, 5, 10, 12, 9, 13, 15, 11, 14, 17, 16, 20, 18],
-  "24h": [-5, -2, 3, 1, 5, 8, 4, 10, 7, 12, 15, 11, 14, 18, 16, 21, 19, 18],
-  "7d": [-8, -4, 1, -2, 5, 9, 6, 12, 8, 15, 11, 18, 13, 20, 16, 23, 19, 18],
+type BasisSpreadQuery = {
+  venue: string;
+  compareVenue?: string;
+  baseAsset: string;
+  quoteAsset: string;
+  formula: string;
 };
+
+type SpreadCacheEntry = {
+  history: BasisSpreadHistory;
+  etag: string | null;
+  loadedAt: number;
+};
+
+export function resolveBasisSpreadQuery(
+  legA: TraderInstrument | null,
+  legB: TraderInstrument | null,
+): BasisSpreadQuery | null {
+  if (
+    !legA ||
+    !legB ||
+    legA.baseAsset !== legB.baseAsset ||
+    legA.quoteAsset !== legB.quoteAsset
+  ) {
+    return null;
+  }
+  const venueA = legA.exchange.toLowerCase();
+  const venueB = legB.exchange.toLowerCase();
+  const symbol = `${legA.baseAsset}/${legA.quoteAsset}`;
+  if (
+    venueA === venueB &&
+    new Set([legA.contractType, legB.contractType]).size === 2
+  ) {
+    return {
+      venue: venueA,
+      baseAsset: legA.baseAsset,
+      quoteAsset: legA.quoteAsset,
+      formula: `Perpetual Ask / Spot Ask - 1 · ${symbol}`,
+    };
+  }
+  if (
+    venueA !== venueB &&
+    legA.contractType === "perpetual" &&
+    legB.contractType === "perpetual"
+  ) {
+    return {
+      venue: venueB,
+      compareVenue: venueA,
+      baseAsset: legA.baseAsset,
+      quoteAsset: legA.quoteAsset,
+      formula: `${venueB.toUpperCase()} Ask / ${venueA.toUpperCase()} Ask - 1 · ${symbol}`,
+    };
+  }
+  return null;
+}
+
+export type ArbitrageYieldMode = "basis" | "cross";
+
+export function resolveArbitrageYieldMode(
+  legA: TraderInstrument | null,
+  legB: TraderInstrument | null,
+): ArbitrageYieldMode | null {
+  const query = resolveBasisSpreadQuery(legA, legB);
+  if (!query) return null;
+  return query.compareVenue ? "cross" : "basis";
+}
+
+export function annualizeBasisAvgBps(avgBps: number, range: "24h" | "7d"): number {
+  const days = range === "24h" ? 1 : 7;
+  return (avgBps / 10_000) * (365 / days) * 100;
+}
+
+export function matchFundingOpportunity(
+  items: FundingOpportunity[],
+  instrument: TraderInstrument,
+): FundingOpportunity | undefined {
+  const exchange = instrument.exchange.toLowerCase();
+  const symbol = instrument.exchangeSymbol.toLowerCase();
+  return (
+    items.find(
+      (item) =>
+        item.exchange.toLowerCase() === exchange &&
+        item.exchangeSymbol.toLowerCase() === symbol,
+    ) ??
+    items.find(
+      (item) =>
+        item.exchange.toLowerCase() === exchange &&
+        item.baseAsset === instrument.baseAsset &&
+        item.quoteAsset === instrument.quoteAsset,
+    )
+  );
+}
+
+export function crossExchangeWindowYield(
+  legA: FundingOpportunity | undefined,
+  legB: FundingOpportunity | undefined,
+): { value24h: number; value7d: number } | null {
+  if (!legA || !legB) return null;
+  return {
+    value24h: annualize24h(legB.cumulative24h - legA.cumulative24h),
+    value7d: annualize7d(legB.cumulative7d - legA.cumulative7d),
+  };
+}
+
+function spreadCacheKey(query: BasisSpreadQuery, range: BasisSpreadRange): string {
+  return [
+    query.venue,
+    query.compareVenue ?? "",
+    query.baseAsset,
+    query.quoteAsset,
+    range,
+  ].join("|");
+}
+
+function formatBps(value: number): string {
+  return `${value > 0 ? "+" : ""}${value.toFixed(2)} bps`;
+}
+
+function formatCoverage(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
+}
 
 function formatDecimal(value: string, suffix = ""): string {
   const parsed = Number(value);
@@ -80,18 +203,19 @@ function useAccountInstruments(
 ) {
   const [result, setResult] = React.useState<{
     accountID: number | null;
+    contractType: TraderContractType | null;
     items: TraderInstrument[];
-  }>({ accountID: null, items: [] });
+  }>({ accountID: null, contractType: null, items: [] });
 
   React.useEffect(() => {
     if (accountID == null) return;
     let active = true;
     void fetchTraderInstruments(accountID, contractType)
       .then((result) => {
-        if (active) setResult({ accountID, items: result });
+        if (active) setResult({ accountID, contractType, items: result });
       })
       .catch(() => {
-        if (active) setResult({ accountID, items: [] });
+        if (active) setResult({ accountID, contractType, items: [] });
       });
     return () => {
       active = false;
@@ -99,8 +223,13 @@ function useAccountInstruments(
   }, [accountID, contractType]);
 
   return {
-    items: result.accountID === accountID ? result.items : [],
-    loading: accountID != null && result.accountID !== accountID,
+    items:
+      result.accountID === accountID && result.contractType === contractType
+        ? result.items
+        : [],
+    loading:
+      accountID != null &&
+      (result.accountID !== accountID || result.contractType !== contractType),
   };
 }
 
@@ -118,7 +247,7 @@ export function ArbitrageTradingView() {
     React.useState<TraderContractType>("perpetual");
   const [legBContractType, setLegBContractType] =
     React.useState<TraderContractType>("perpetual");
-  const [period, setPeriod] = React.useState<Period>("24h");
+  const [period, setPeriod] = React.useState<BasisSpreadRange>("24h");
   const [targetNotional, setTargetNotional] = React.useState("10000");
   const [preferredLeg, setPreferredLeg] = React.useState<ArbitragePreferredLeg>("a");
   const [executionMode, setExecutionMode] =
@@ -144,6 +273,19 @@ export function ArbitrageTradingView() {
   const [detail, setDetail] = React.useState<ArbitrageCombinationDetail | null>(null);
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [closingID, setClosingID] = React.useState<string | null>(null);
+  const [spreadHistory, setSpreadHistory] = React.useState<BasisSpreadHistory | null>(null);
+  const [spreadLoading, setSpreadLoading] = React.useState(false);
+  const [spreadError, setSpreadError] = React.useState("");
+  const [spreadRetry, setSpreadRetry] = React.useState(0);
+  const [yieldMetrics, setYieldMetrics] = React.useState<{
+    value24h: number | null;
+    value7d: number | null;
+  }>({ value24h: null, value7d: null });
+  const spreadCache = React.useRef(new Map<string, SpreadCacheEntry>());
+  const fundingCache = React.useRef<{
+    items: FundingOpportunity[];
+    etag: string | null;
+  }>({ items: [], etag: null });
 
   const cexAccounts = React.useMemo(
     () => accounts.filter((item) => CEX_EXCHANGES.has(item.exchangeSlug)),
@@ -174,6 +316,14 @@ export function ArbitrageTradingView() {
     null;
   const visibleLegAInstrumentID = legAInstrument?.id ?? null;
   const visibleLegBInstrumentID = legBInstrument?.id ?? null;
+  const spreadQuery = React.useMemo(
+    () => resolveBasisSpreadQuery(legAInstrument, legBInstrument),
+    [legAInstrument, legBInstrument],
+  );
+  const yieldMode = React.useMemo(
+    () => resolveArbitrageYieldMode(legAInstrument, legBInstrument),
+    [legAInstrument, legBInstrument],
+  );
 
   React.useEffect(() => {
     void fetchTradingAccounts()
@@ -242,10 +392,183 @@ export function ArbitrageTradingView() {
     }
     return "";
   }, [legAInstrument, legBInstrument]);
+  const visibleSpreadHistory =
+    spreadHistory &&
+    spreadQuery &&
+    spreadHistory.venue.toLowerCase() === spreadQuery.venue &&
+    (spreadHistory.compareVenue?.toLowerCase() ?? "") === (spreadQuery.compareVenue ?? "") &&
+    spreadHistory.baseAsset === spreadQuery.baseAsset &&
+    spreadHistory.quoteAsset === spreadQuery.quoteAsset &&
+    spreadHistory.range === period
+      ? spreadHistory
+      : null;
+  const spreadSummary =
+    visibleSpreadHistory?.availability === "available"
+      ? visibleSpreadHistory.summary
+      : null;
 
-  const parametersValid = [targetNotional, orderNotional, maxDeltaNotional].every(
-    (value) => Number(value) > 0,
-  ) && [askThreshold, bidThreshold].every((value) => Number.isFinite(Number(value)));
+  React.useEffect(() => {
+    if (!spreadQuery) {
+      return;
+    }
+    const key = spreadCacheKey(spreadQuery, period);
+    const controller = new AbortController();
+    let active = true;
+    const load = async (force = false) => {
+      await Promise.resolve();
+      const cached = spreadCache.current.get(key);
+      if (!force && cached && Date.now() - cached.loadedAt < SPREAD_CACHE_TTL_MS) {
+        setSpreadHistory(cached.history);
+        setSpreadError("");
+        setSpreadLoading(false);
+        return;
+      }
+      setSpreadLoading(true);
+      setSpreadError("");
+      try {
+        const result = await fetchBasisSpreadHistory(
+          spreadQuery.venue,
+          spreadQuery.baseAsset,
+          spreadQuery.quoteAsset,
+          period,
+          cached?.etag ?? null,
+          controller.signal,
+          spreadQuery.compareVenue,
+        );
+        if (!active) return;
+        if (result.status === "updated") {
+          spreadCache.current.set(key, {
+            history: result.history,
+            etag: result.etag,
+            loadedAt: Date.now(),
+          });
+          setSpreadHistory(result.history);
+        } else if (cached) {
+          spreadCache.current.set(key, {
+            ...cached,
+            etag: result.etag,
+            loadedAt: Date.now(),
+          });
+          setSpreadHistory(cached.history);
+        }
+        setSpreadError("");
+      } catch (error) {
+        if (!controller.signal.aborted && active) {
+          setSpreadError(error instanceof Error ? error.message : "价差走势加载失败");
+        }
+      } finally {
+        if (active) setSpreadLoading(false);
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(true), SPREAD_REFRESH_MS);
+    return () => {
+      active = false;
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [period, spreadQuery, spreadRetry]);
+
+  React.useEffect(() => {
+    if (!spreadQuery || !legAInstrument || !legBInstrument || !yieldMode) {
+      setYieldMetrics({ value24h: null, value7d: null });
+      return;
+    }
+    const controller = new AbortController();
+    let active = true;
+    const loadCachedRange = async (range: "24h" | "7d") => {
+      const key = spreadCacheKey(spreadQuery, range);
+      const cached = spreadCache.current.get(key);
+      if (cached && Date.now() - cached.loadedAt < SPREAD_CACHE_TTL_MS) {
+        return cached.history;
+      }
+      const result = await fetchBasisSpreadHistory(
+        spreadQuery.venue,
+        spreadQuery.baseAsset,
+        spreadQuery.quoteAsset,
+        range,
+        cached?.etag ?? null,
+        controller.signal,
+        spreadQuery.compareVenue,
+      );
+      if (result.status === "updated") {
+        spreadCache.current.set(key, {
+          history: result.history,
+          etag: result.etag,
+          loadedAt: Date.now(),
+        });
+        return result.history;
+      }
+      if (cached) {
+        spreadCache.current.set(key, {
+          ...cached,
+          etag: result.etag,
+          loadedAt: Date.now(),
+        });
+        return cached.history;
+      }
+      return null;
+    };
+    const load = async () => {
+      try {
+        if (yieldMode === "cross") {
+          const result = await fetchFundingRates(fundingCache.current.etag, controller.signal);
+          if (!active) return;
+          if (result.status === "updated") {
+            fundingCache.current = { items: result.snapshot.data, etag: result.etag };
+          }
+          const yield_ = crossExchangeWindowYield(
+            matchFundingOpportunity(fundingCache.current.items, legAInstrument),
+            matchFundingOpportunity(fundingCache.current.items, legBInstrument),
+          );
+          if (active) {
+            setYieldMetrics(yield_ ?? { value24h: null, value7d: null });
+          }
+          return;
+        }
+        const [history24h, history7d] = await Promise.all([
+          loadCachedRange("24h"),
+          loadCachedRange("7d"),
+        ]);
+        if (!active) return;
+        setYieldMetrics({
+          value24h:
+            history24h?.availability === "available"
+              ? annualizeBasisAvgBps(history24h.summary.avgBps, "24h")
+              : null,
+          value7d:
+            history7d?.availability === "available"
+              ? annualizeBasisAvgBps(history7d.summary.avgBps, "7d")
+              : null,
+        });
+      } catch {
+        if (!controller.signal.aborted && active) {
+          setYieldMetrics({ value24h: null, value7d: null });
+        }
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), SPREAD_REFRESH_MS);
+    return () => {
+      active = false;
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [spreadQuery, yieldMode, legAInstrument, legBInstrument, spreadRetry]);
+
+  const targetValue = Number(targetNotional);
+  const orderValue = Number(orderNotional);
+  const maxDeltaValue = Number(maxDeltaNotional);
+  const notionalConstraintError =
+    orderValue > 0 && maxDeltaValue > orderValue
+      ? "最大未对冲敞口不能大于单笔订单金额"
+      : orderValue > 0 && targetValue > 0 && orderValue > targetValue
+        ? "单笔订单金额不能大于目标仓位"
+        : "";
+  const parametersValid = [targetValue, orderValue, maxDeltaValue].every((value) => value > 0) &&
+    orderValue <= targetValue &&
+    maxDeltaValue <= orderValue &&
+    [askThreshold, bidThreshold].every((value) => Number.isFinite(Number(value)));
   const canCreate =
     !busy &&
     !pairError &&
@@ -456,47 +779,117 @@ export function ArbitrageTradingView() {
           `${legAInstrument?.baseAsset}/${legAInstrument?.quoteAsset} 配对有效 · Ask: A 多 / B 空 · Bid: A 空 / B 多`}
       </div>
 
-      <section className="grid items-start gap-3 xl:grid-cols-[minmax(0,1.65fr)_minmax(300px,0.75fr)]">
+      <section className="grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_240px]">
         <div className="min-w-0 space-y-3">
           <div className="min-w-0 rounded-xl border bg-card">
-            <div className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
-            <div>
-              <div className="flex items-center gap-2 text-sm font-medium">
-                <TrendingUp className="size-4 text-primary" />
-                价差走势
+            <div className="space-y-3 border-b px-4 py-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="mr-auto min-w-0">
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <TrendingUp className="size-4 text-primary" />
+                    价差走势
+                  </div>
+                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                    {spreadQuery?.formula ?? "Leg A / Leg B 配对后展示 Best Ask 价差"}
+                  </p>
+                </div>
+                <div className="flex shrink-0 rounded-lg border bg-muted/30 p-0.5">
+                  {periods.map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => setPeriod(item)}
+                      className={cn(
+                        "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                        period === item
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {item}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">
-                Leg B − Leg A · Funding spread (bps) · 静态预览
-              </p>
+              <div
+                className={cn(
+                  "grid w-full min-w-0 divide-x rounded-lg border bg-muted/20",
+                  yieldMode ? "grid-cols-5" : "grid-cols-3",
+                )}
+              >
+                <HeaderMetric
+                  label="当前"
+                  value={spreadSummary ? formatBps(spreadSummary.currentBps) : "—"}
+                />
+                <HeaderMetric
+                  label="周期均值"
+                  value={spreadSummary ? formatBps(spreadSummary.avgBps) : "—"}
+                />
+                <HeaderMetric
+                  label="覆盖率"
+                  value={spreadSummary ? formatCoverage(spreadSummary.coverage) : "—"}
+                />
+                {yieldMode ? (
+                  <>
+                    <HeaderMetric
+                      label={yieldMode === "basis" ? "24H 差值年化" : "24H 窗口年化"}
+                      value={
+                        yieldMetrics.value24h == null
+                          ? "—"
+                          : formatPercent(yieldMetrics.value24h, 1)
+                      }
+                      valueClassName={rateColor(yieldMetrics.value24h)}
+                    />
+                    <HeaderMetric
+                      label={yieldMode === "basis" ? "7D 差值年化" : "7D 窗口年化"}
+                      value={
+                        yieldMetrics.value7d == null
+                          ? "—"
+                          : formatPercent(yieldMetrics.value7d, 1)
+                      }
+                      valueClassName={rateColor(yieldMetrics.value7d)}
+                    />
+                  </>
+                ) : null}
+              </div>
             </div>
-            <div className="mr-auto grid min-w-[330px] grid-cols-3 divide-x rounded-lg border bg-muted/20">
-              <HeaderAprMetric label="即时 APR" value="+18.42%" />
-              <HeaderAprMetric label="24H APR" value="+15.76%" />
-              <HeaderAprMetric label="7D APR" value="+12.31%" />
-            </div>
-            <div className="flex rounded-lg border bg-muted/30 p-0.5">
-              {periods.map((item) => (
+            {!spreadQuery ? (
+              <SpreadChartState>
+                {pairError
+                  ? "Leg A / Leg B 的 Symbol 配对有效后展示价差走势"
+                  : "当前组合类型暂无 Best Ask 价差历史"}
+              </SpreadChartState>
+            ) : spreadLoading && !visibleSpreadHistory ? (
+              <SpreadChartState>
+                <RefreshCw className="size-4 animate-spin" />
+                正在加载价差走势…
+              </SpreadChartState>
+            ) : spreadError && !visibleSpreadHistory ? (
+              <SpreadChartState>
+                <span>{spreadError}</span>
                 <button
-                  key={item}
                   type="button"
-                  onClick={() => setPeriod(item)}
-                  className={cn(
-                    "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
-                    period === item
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
+                  className="inline-flex items-center gap-1 text-foreground"
+                  onClick={() => {
+                    spreadCache.current.delete(spreadCacheKey(spreadQuery, period));
+                    setSpreadRetry((value) => value + 1);
+                  }}
                 >
-                  {item}
+                  <RefreshCw className="size-3" />
+                  重试
                 </button>
-              ))}
-            </div>
-            </div>
-            <SpreadChart
-              values={spreadSeries[period]}
-              askThreshold={Number(askThreshold)}
-              bidThreshold={Number(bidThreshold)}
-            />
+              </SpreadChartState>
+            ) : visibleSpreadHistory?.availability === "unavailable" ? (
+              <SpreadChartState>当前组合暂无对应 Best Ask BBO 数据</SpreadChartState>
+            ) : visibleSpreadHistory && visibleSpreadHistory.points.length === 0 ? (
+              <SpreadChartState>当前周期暂无配对价差</SpreadChartState>
+            ) : visibleSpreadHistory ? (
+              <SpreadChart
+                values={visibleSpreadHistory.points.map((point) => point.spreadBps)}
+                askThreshold={Number(askThreshold)}
+                bidThreshold={Number(bidThreshold)}
+              />
+            ) : null}
           </div>
           <ArbitrageCombinationList
             view={combinationView}
@@ -518,15 +911,15 @@ export function ArbitrageTradingView() {
           />
         </div>
 
-        <div className="rounded-xl border bg-card">
-          <div className="flex items-center gap-2 border-b px-4 py-3">
-            <Gauge className="size-4 text-primary" />
-            <div>
+        <div className="min-w-0 rounded-xl border bg-card xl:min-w-[240px] xl:max-w-[240px]">
+          <div className="flex items-center gap-2 border-b px-3 py-3">
+            <Gauge className="size-4 shrink-0 text-primary" />
+            <div className="min-w-0">
               <h3 className="text-sm font-medium">组合执行参数</h3>
               <p className="text-[11px] text-muted-foreground">USDT 名义仓位与触发规则</p>
             </div>
           </div>
-          <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+          <div className="grid gap-3 p-3">
             <Field label="目标仓位">
               <UnitInput value={targetNotional} onChange={setTargetNotional} unit="USDT" />
             </Field>
@@ -566,7 +959,7 @@ export function ArbitrageTradingView() {
               </select>
             </Field>
           </div>
-          <div className="border-t p-4">
+          <div className="border-t p-3">
             <div className="mb-3 flex items-start gap-2 rounded-lg bg-muted/35 px-3 py-2 text-[11px] text-muted-foreground">
               <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-primary" />
               <span>创建前将再次校验合约、方向、Quote Asset 与最大订单金额。</span>
@@ -575,8 +968,20 @@ export function ArbitrageTradingView() {
               <Play data-icon="inline-start" />
               {busy ? "正在创建…" : "创建套利组合"}
             </Button>
-            {message ? (
-              <p className="mt-2 text-center text-[11px] text-positive">{message}</p>
+            {notionalConstraintError ? (
+              <p className="mt-2 text-center text-[11px] text-destructive">
+                {notionalConstraintError}
+              </p>
+            ) : message ? (
+              <p className={cn(
+                "mt-2 text-center text-[11px]",
+                message.includes("失败") || message.includes("invalid")
+                  ? "text-destructive"
+                  : "text-positive",
+              )}
+              >
+                {message}
+              </p>
             ) : null}
           </div>
         </div>
@@ -763,7 +1168,7 @@ function ArbitrageCombinationList({
               <th className="px-3 py-2.5 text-right font-medium">实时 Bid Spread</th>
               <th className="px-3 py-2.5 text-right font-medium">实时 Ask Spread</th>
               <th className="px-3 py-2.5 text-right font-medium">目标仓位</th>
-              <th className="px-3 py-2.5 text-right font-medium">已完成仓位</th>
+              <th className="px-3 py-2.5 text-right font-medium">当前仓位</th>
               <th className="px-3 py-2.5 font-medium">运行状态</th>
               <th className="px-4 py-2.5 text-right font-medium">操作</th>
             </tr>
@@ -772,7 +1177,7 @@ function ArbitrageCombinationList({
             {rows.map((item) => {
               const progress = Math.min(
                 100,
-                Math.max(0, (Number(item.completedNotional) / Number(item.targetNotional)) * 100),
+                Math.max(0, (Math.abs(Number(item.positionNotional)) / Number(item.targetNotional)) * 100),
               );
               const expanded = detailID === item.id;
               return (
@@ -801,7 +1206,7 @@ function ArbitrageCombinationList({
                       {formatDecimal(item.targetNotional, " USDT")}
                     </td>
                     <td className="px-3 py-3 text-right">
-                      <div className="font-mono">{formatDecimal(item.completedNotional, " USDT")}</div>
+                      <div className="font-mono">{formatSignedNotional(item.positionNotional)}</div>
                       <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted">
                         <div
                           className="h-full rounded-full bg-primary"
@@ -809,7 +1214,7 @@ function ArbitrageCombinationList({
                         />
                       </div>
                     </td>
-                    <td className="px-3 py-3"><CombinationStatus status={item.status} /></td>
+                    <td className="px-3 py-3"><CombinationStatus item={item} /></td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex justify-end gap-1">
                         <Button
@@ -867,22 +1272,47 @@ function ArbitrageCombinationList({
   );
 }
 
-function CombinationStatus({ status }: { status: ArbitrageCombination["status"] }) {
-  const labels = { running: "运行中", closing: "关闭中", closed: "已关闭", failed: "失败" };
+function CombinationStatus({ item }: { item: ArbitrageCombination }) {
+  const label = combinationRuntimeLabel(item);
   return (
     <Badge
       variant="outline"
       className={cn(
-        status === "running" &&
+        item.status === "running" &&
           "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-        status === "closing" &&
+        item.status === "closing" &&
           "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-        status === "failed" && "border-destructive/30 bg-destructive/10 text-destructive",
+        (item.status === "failed" || item.positionUncertain) &&
+          "border-destructive/30 bg-destructive/10 text-destructive",
       )}
     >
-      {labels[status]}
+      {label}
     </Badge>
   );
+}
+
+function combinationRuntimeLabel(item: ArbitrageCombination): string {
+  if (item.status === "closing") return "关闭中";
+  if (item.status === "closed") return "已关闭";
+  if (item.status === "failed") return "失败";
+  if (item.positionUncertain) return "仓位待核对";
+  if (item.nextRetryAt && Date.parse(item.nextRetryAt) > Date.now()) return "退避重试";
+  const position = Number(item.positionNotional);
+  const target = Number(item.targetNotional);
+  if (Number.isFinite(position) && Number.isFinite(target) && target > 0) {
+    if (position >= target) return "等待 Bid 平仓";
+    if (position <= -target) return "等待 Ask 平仓";
+    if (position > 0) return "持有正套";
+    if (position < 0) return "持有反套";
+  }
+  return "运行中";
+}
+
+function formatSignedNotional(value: string): string {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return `${value} USDT`;
+  const prefix = amount > 0 ? "+" : "";
+  return `${prefix}${formatDecimal(value, " USDT")}`;
 }
 
 function CombinationDetail({
@@ -909,7 +1339,11 @@ function CombinationDetail({
         />
         <DetailItem label="Ask 方向" value="买 Leg A / 卖 Leg B" />
         <DetailItem label="Bid 方向" value="卖 Leg A / 买 Leg B" />
-        <DetailItem label="目标 / 已完成" value={`${detail.targetNotional} / ${detail.completedNotional} USDT`} />
+        <DetailItem
+          label="目标 / 当前仓位"
+          value={`${detail.targetNotional} / ${detail.positionNotional} USDT`}
+        />
+        <DetailItem label="累计成交" value={`${detail.cumulativeTurnoverNotional} USDT`} />
         <DetailItem label="Ask / Bid 阈值" value={`${detail.askThresholdBps} / ${detail.bidThresholdBps} bps`} />
         <DetailItem label="单笔 / 最大敞口" value={`${detail.orderNotional} / ${detail.maxDeltaNotional} USDT`} />
         <DetailItem
@@ -954,6 +1388,14 @@ function DetailItem({ label, value }: { label: string; value: string }) {
   );
 }
 
+function SpreadChartState({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex h-[232px] items-center justify-center gap-2 px-4 text-xs text-muted-foreground">
+      {children}
+    </div>
+  );
+}
+
 function SpreadChart({
   values,
   askThreshold,
@@ -969,7 +1411,8 @@ function SpreadChart({
   const validThresholds = [askThreshold, bidThreshold].filter(Number.isFinite);
   const min = Math.min(...values, ...validThresholds, -10) - 3;
   const max = Math.max(...values, ...validThresholds, 20) + 3;
-  const x = (index: number) => padding + (index / (values.length - 1)) * (width - padding * 2);
+  const x = (index: number) =>
+    padding + (index / Math.max(values.length - 1, 1)) * (width - padding * 2);
   const y = (value: number) =>
     padding + ((max - value) / (max - min)) * (height - padding * 2);
   const path = values
@@ -979,7 +1422,7 @@ function SpreadChart({
 
   return (
     <div className="px-2 py-3">
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-52 w-full" role="img" aria-label="价差走势静态预览">
+      <svg viewBox={`0 0 ${width} ${height}`} className="h-52 w-full" role="img" aria-label="Best Ask 价差走势">
         <defs>
           <linearGradient id="spread-area" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.28" />
@@ -1041,13 +1484,23 @@ function ThresholdLine({
   );
 }
 
-function HeaderAprMetric({ label, value }: { label: string; value: string }) {
+function HeaderMetric({
+  label,
+  value,
+  valueClassName,
+}: {
+  label: string;
+  value: string;
+  valueClassName?: string;
+}) {
   return (
-    <div className="px-3 py-1.5">
-      <div className="text-[9px] font-medium tracking-wide text-muted-foreground uppercase">
+    <div className="min-w-0 px-2 py-1.5 sm:px-3">
+      <div className="truncate text-[9px] font-medium tracking-wide text-muted-foreground uppercase">
         {label}
       </div>
-      <div className="mt-0.5 font-mono text-sm font-semibold text-positive">{value}</div>
+      <div className={cn("mt-0.5 truncate font-mono text-sm font-semibold", valueClassName)}>
+        {value}
+      </div>
     </div>
   );
 }

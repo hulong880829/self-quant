@@ -1,3 +1,28 @@
+# Backend stack. Interpolated ${VAR} values come from the shell or
+# `--env-file` (typically backend/.env). Container secrets/config also
+# load from env_file: ../.env; environment: entries override localhost
+# network defaults so services use Compose DNS. aggdata uses host
+# networking to reach the loopback MDS gateway.
+#
+# Default: infrastructure + all Go services.
+# Infrastructure only (the `infra` workflow for host `go run` debugging):
+#   docker compose --env-file ../.env up -d postgres redis clickhouse
+
+x-backend: &backend
+  image: selfquant-backend:local
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  env_file:
+    - ../.env
+  restart: unless-stopped
+
+x-grpc-health: &grpc-health
+  interval: 5s
+  timeout: 3s
+  retries: 10
+  start_period: 45s
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -9,6 +34,7 @@ services:
       - "5432:5432"
     volumes:
       - selfquant-postgres:/var/lib/postgresql/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U selfquant -d selfquant"]
       interval: 5s
@@ -20,14 +46,16 @@ services:
     ports:
       - "6379:6379"
     command: redis-server --save ""
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  # Optional: crypto BBO storage for mds_shm_consumer --clickhouse-bbo (runs on the host).
-  # Generate TLS certs first: backend/deploy/clickhouse/generate-certs.sh
+  # Optional: crypto BBO storage for host-side mds_shm_consumer --clickhouse-bbo
+  # and compose-side spread/funding ranking. Generate TLS certs first:
+  # backend/deploy/clickhouse/generate-certs.sh
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
     ports:
@@ -47,6 +75,7 @@ services:
       nofile:
         soft: 262144
         hard: 262144
+    restart: unless-stopped
     healthcheck:
       test:
         [
@@ -57,157 +86,194 @@ services:
       timeout: 3s
       retries: 10
 
-  trader-service:
-    image: golang:1.25
-    working_dir: /app
-    command: go run ./cmd/trader-service
-    volumes:
-      - ..:/app
+  funding-service:
+    <<: *backend
+    command: ["/out/funding-service"]
     environment:
       DATABASE_URL: postgres://selfquant:selfquant@postgres:5432/selfquant?sslmode=disable
-      TRADER_GRPC_ADDRESS: :9095
-      ACCOUNT_GRPC_TARGET: host.docker.internal:9091
-      BINANCE_PORTFOLIO_API_URL: ${BINANCE_PORTFOLIO_API_URL:-https://papi.binance.com}
-      OKX_ACCOUNT_API_URL: ${OKX_ACCOUNT_API_URL:-https://www.okx.com}
-      BYBIT_ACCOUNT_API_URL: ${BYBIT_ACCOUNT_API_URL:-https://api.bybit.com}
-      BITGET_ACCOUNT_API_URL: ${BITGET_ACCOUNT_API_URL:-https://api.bitget.com}
-      GATE_ACCOUNT_API_URL: ${GATE_ACCOUNT_API_URL:-https://api.gateio.ws}
-      TRADER_HTTP_TIMEOUT: ${TRADER_HTTP_TIMEOUT:-12s}
-      TRADER_INTERNAL_TOKEN: ${TRADER_INTERNAL_TOKEN:?TRADER_INTERNAL_TOKEN is required}
-      TRADER_RECONCILE_INTERVAL: ${TRADER_RECONCILE_INTERVAL:-1s}
-      TRADER_RECONCILE_BATCH_SIZE: ${TRADER_RECONCILE_BATCH_SIZE:-20}
-      TRADER_RECONCILE_WORKERS: ${TRADER_RECONCILE_WORKERS:-3}
-      TRADER_ARBITRAGE_SCHEDULE_INTERVAL: ${TRADER_ARBITRAGE_SCHEDULE_INTERVAL:-100ms}
-      TRADER_ARBITRAGE_SCHEDULE_LEASE: ${TRADER_ARBITRAGE_SCHEDULE_LEASE:-30s}
-      TRADER_ARBITRAGE_SCHEDULE_BATCH: ${TRADER_ARBITRAGE_SCHEDULE_BATCH:-50}
-      TRADER_ARBITRAGE_SCHEDULE_WORKERS: ${TRADER_ARBITRAGE_SCHEDULE_WORKERS:-8}
-      TRADER_ARBITRAGE_BBO_STALE: ${TRADER_ARBITRAGE_BBO_STALE:-2s}
-      TRADER_ARBITRAGE_REPRICE_TICKS: ${TRADER_ARBITRAGE_REPRICE_TICKS:-2}
-      TRADER_ARBITRAGE_OBSERVER_INTERVAL: ${TRADER_ARBITRAGE_OBSERVER_INTERVAL:-200ms}
-      TRADER_ARBITRAGE_IOC_PROTECTION_TICKS: ${TRADER_ARBITRAGE_IOC_PROTECTION_TICKS:-3}
-      TRADER_ARBITRAGE_IOC_RETRIES: ${TRADER_ARBITRAGE_IOC_RETRIES:-3}
-      TRADER_ARBITRAGE_ORDER_STREAM_ENABLED: ${TRADER_ARBITRAGE_ORDER_STREAM_ENABLED:-true}
-      BINANCE_ORDER_WS_URL: ${BINANCE_ORDER_WS_URL:-}
-      OKX_ORDER_WS_URL: ${OKX_ORDER_WS_URL:-}
-      BYBIT_ORDER_WS_URL: ${BYBIT_ORDER_WS_URL:-}
-      BITGET_ORDER_WS_URL: ${BITGET_ORDER_WS_URL:-}
-      GATE_ORDER_WS_URL: ${GATE_ORDER_WS_URL:-}
-      TRADER_ORDER_STREAM_RECONNECT_INITIAL: ${TRADER_ORDER_STREAM_RECONNECT_INITIAL:-250ms}
-      TRADER_ORDER_STREAM_RECONNECT_MAX: ${TRADER_ORDER_STREAM_RECONNECT_MAX:-30s}
-      TRADER_ORDER_STREAM_HEARTBEAT: ${TRADER_ORDER_STREAM_HEARTBEAT:-15s}
-      TRADER_ORDER_STREAM_STALE: ${TRADER_ORDER_STREAM_STALE:-45s}
-      TRADER_ORDER_STREAM_LISTEN_KEY_REFRESH: ${TRADER_ORDER_STREAM_LISTEN_KEY_REFRESH:-30m}
-      TRADER_ORDER_STREAM_REST_AUDIT: ${TRADER_ORDER_STREAM_REST_AUDIT:-30s}
-      TRADER_ORDER_STREAM_SESSION_IDLE: ${TRADER_ORDER_STREAM_SESSION_IDLE:-5m}
-      TRADER_ARBITRAGE_MAX_ACTIVE_PER_ACCOUNT: ${TRADER_ARBITRAGE_MAX_ACTIVE_PER_ACCOUNT:-4}
-      TRADER_ARBITRAGE_MAX_ACTIVE_PER_VENUE: ${TRADER_ARBITRAGE_MAX_ACTIVE_PER_VENUE:-16}
-      TRADER_ARBITRAGE_RETENTION: ${TRADER_ARBITRAGE_RETENTION:-168h}
-      TRADER_ARBITRAGE_CLEANUP_INTERVAL: ${TRADER_ARBITRAGE_CLEANUP_INTERVAL:-1h}
-      TRADER_ARBITRAGE_CLEANUP_BATCH: ${TRADER_ARBITRAGE_CLEANUP_BATCH:-100}
-      TRADER_ARBITRAGE_CLEANUP_MAX_BATCHES: ${TRADER_ARBITRAGE_CLEANUP_MAX_BATCHES:-10}
-      TRADER_ARBITRAGE_DRY_RUN: ${TRADER_ARBITRAGE_DRY_RUN:-true}
-      DEVELOPMENT: ${DEVELOPMENT:-false}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "9095:9095"
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  ai-service:
-    image: golang:1.25
-    working_dir: /app
-    command: go run ./cmd/ai-service
-    volumes:
-      - ..:/app
-    environment:
-      DATABASE_URL: postgres://selfquant:selfquant@postgres:5432/selfquant?sslmode=disable
-      AI_GRPC_ADDRESS: :9096
-      ACCOUNT_GRPC_TARGET: host.docker.internal:9091
-      FUNDING_GRPC_TARGET: host.docker.internal:9090
-      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
-      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openrouter/free}
-      OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-https://self-quant.local}
-      OPENROUTER_TITLE: ${OPENROUTER_TITLE:-Self Quant}
-      AI_HTTP_TIMEOUT: ${AI_HTTP_TIMEOUT:-90s}
-      AI_MAX_INPUT_ROUNDS: ${AI_MAX_INPUT_ROUNDS:-12}
-      AI_MAX_INPUT_CHARS: ${AI_MAX_INPUT_CHARS:-16000}
-      AI_MAX_OUTPUT_TOKENS: ${AI_MAX_OUTPUT_TOKENS:-2048}
-      AI_CONTEXT_MAX_SYMBOL_ROWS: ${AI_CONTEXT_MAX_SYMBOL_ROWS:-24}
-      AI_CONTEXT_MAX_ROWS: ${AI_CONTEXT_MAX_ROWS:-40}
-      AI_CONTEXT_MIN_TURNOVER_USD: ${AI_CONTEXT_MIN_TURNOVER_USD:-5000000}
-      AI_CONTEXT_MAX_CHARS: ${AI_CONTEXT_MAX_CHARS:-8000}
-      AI_CONVERSATION_RETENTION: ${AI_CONVERSATION_RETENTION:-168h}
-      AI_CONVERSATION_LEASE: ${AI_CONVERSATION_LEASE:-2m}
-      AI_CLEANUP_INTERVAL: ${AI_CLEANUP_INTERVAL:-1h}
-      AI_CLEANUP_BATCH: ${AI_CLEANUP_BATCH:-500}
-      AI_CLEANUP_MAX_BATCHES: ${AI_CLEANUP_MAX_BATCHES:-10}
-      AI_CHAT_INPUT_TOKEN_BUDGET: ${AI_CHAT_INPUT_TOKEN_BUDGET:-12000}
-      AI_RECENT_MESSAGE_PAIRS: ${AI_RECENT_MESSAGE_PAIRS:-6}
-      AI_SUMMARY_TRIGGER_TOKENS: ${AI_SUMMARY_TRIGGER_TOKENS:-4000}
-      AI_SUMMARY_MAX_CHARS: ${AI_SUMMARY_MAX_CHARS:-2000}
-      AI_SUMMARY_MAX_OUTPUT_TOKENS: ${AI_SUMMARY_MAX_OUTPUT_TOKENS:-512}
-      AI_MAX_CONVERSATIONS_PER_USER: ${AI_MAX_CONVERSATIONS_PER_USER:-5}
-      AI_MAX_RAW_MESSAGES_PER_CONVERSATION: ${AI_MAX_RAW_MESSAGES_PER_CONVERSATION:-1000}
-      DEVELOPMENT: ${DEVELOPMENT:-false}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "9096:9096"
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  spread-service:
-    image: golang:1.25
-    working_dir: /app
-    command: go run ./cmd/spread-service
-    volumes:
-      - ..:/app
-    environment:
-      SPREAD_GRPC_ADDRESS: :9097
+      FUNDING_GRPC_ADDRESS: :9090
       CLICKHOUSE_ADDR: clickhouse:9000
-      CLICKHOUSE_DATABASE: market_data
-      CLICKHOUSE_TABLE: crypto_bbo
-      CLICKHOUSE_USER: bbo_writer
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_BBO_PASSWORD:-changeme}
       CLICKHOUSE_TLS: "false"
-      CLICKHOUSE_QUERY_TIMEOUT: ${CLICKHOUSE_QUERY_TIMEOUT:-5s}
-      CLICKHOUSE_POOL_SIZE: ${CLICKHOUSE_POOL_SIZE:-8}
-      SPREAD_MAX_CONCURRENT_QUERIES: ${SPREAD_MAX_CONCURRENT_QUERIES:-8}
-      SPREAD_CACHE_TTL: ${SPREAD_CACHE_TTL:-30s}
-      DEVELOPMENT: ${DEVELOPMENT:-false}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_BBO_PASSWORD:-changeme}
     ports:
-      - "9097:9097"
+      - "9090:9090"
     depends_on:
+      postgres:
+        condition: service_healthy
       clickhouse:
         condition: service_healthy
+    healthcheck:
+      <<: *grpc-health
+      test: ["CMD", "/out/grpc-health-probe", "-addr=:9090"]
+
+  account-service:
+    <<: *backend
+    command: ["/out/account-service"]
+    environment:
+      DATABASE_URL: postgres://selfquant:selfquant@postgres:5432/selfquant?sslmode=disable
+      ACCOUNT_GRPC_ADDRESS: :9091
+    ports:
+      - "9091:9091"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      <<: *grpc-health
+      test: ["CMD", "/out/grpc-health-probe", "-addr=:9091"]
+
+  polymarket-service:
+    <<: *backend
+    command: ["/out/polymarket-service"]
+    environment:
+      DATABASE_URL: postgres://selfquant:selfquant@postgres:5432/selfquant?sslmode=disable
+      POLYMARKET_GRPC_ADDRESS: :9092
+      ACCOUNT_GRPC_TARGET: account-service:9091
+    ports:
+      - "9092:9092"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      account-service:
+        condition: service_healthy
+    healthcheck:
+      <<: *grpc-health
+      test: ["CMD", "/out/grpc-health-probe", "-addr=:9092"]
 
   report-service:
-    image: golang:1.25
-    working_dir: /app
-    command: go run ./cmd/report-service
-    volumes:
-      - ..:/app
+    <<: *backend
+    command: ["/out/report-service"]
     environment:
       DATABASE_URL: postgres://selfquant:selfquant@postgres:5432/selfquant?sslmode=disable
       REPORT_GRPC_ADDRESS: :9094
-      ACCOUNT_GRPC_TARGET: host.docker.internal:9091
-      REPORT_TIMEZONE: Asia/Shanghai
+      ACCOUNT_GRPC_TARGET: account-service:9091
       REPORT_INTERNAL_TOKEN: ${REPORT_INTERNAL_TOKEN:?REPORT_INTERNAL_TOKEN is required}
-      DEVELOPMENT: ${DEVELOPMENT:-false}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     ports:
       - "9094:9094"
     depends_on:
       postgres:
         condition: service_healthy
+      account-service:
+        condition: service_healthy
+    healthcheck:
+      <<: *grpc-health
+      test: ["CMD", "/out/grpc-health-probe", "-addr=:9094"]
+
+  trader-service:
+    <<: *backend
+    command: ["/out/trader-service"]
+    environment:
+      DATABASE_URL: postgres://selfquant:selfquant@postgres:5432/selfquant?sslmode=disable
+      TRADER_GRPC_ADDRESS: :9095
+      ACCOUNT_GRPC_TARGET: account-service:9091
+      TRADER_INTERNAL_TOKEN: ${TRADER_INTERNAL_TOKEN:?TRADER_INTERNAL_TOKEN is required}
+    ports:
+      - "9095:9095"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      account-service:
+        condition: service_healthy
+    healthcheck:
+      <<: *grpc-health
+      test: ["CMD", "/out/grpc-health-probe", "-addr=:9095"]
+
+  ai-service:
+    <<: *backend
+    command: ["/out/ai-service"]
+    environment:
+      DATABASE_URL: postgres://selfquant:selfquant@postgres:5432/selfquant?sslmode=disable
+      AI_GRPC_ADDRESS: :9096
+      ACCOUNT_GRPC_TARGET: account-service:9091
+      FUNDING_GRPC_TARGET: funding-service:9090
+    ports:
+      - "9096:9096"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      account-service:
+        condition: service_healthy
+      funding-service:
+        condition: service_healthy
+    healthcheck:
+      <<: *grpc-health
+      test: ["CMD", "/out/grpc-health-probe", "-addr=:9096"]
+
+  spread-service:
+    <<: *backend
+    command: ["/out/spread-service"]
+    environment:
+      SPREAD_GRPC_ADDRESS: :9097
+      CLICKHOUSE_ADDR: clickhouse:9000
+      CLICKHOUSE_TLS: "false"
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_BBO_PASSWORD:-changeme}
+    ports:
+      - "9097:9097"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      <<: *grpc-health
+      test: ["CMD", "/out/grpc-health-probe", "-addr=:9097"]
+
+  # Host network: C++ MDS gateway binds 127.0.0.1:9443, which is not
+  # reachable via docker0 / host.docker.internal.
+  aggdata-service:
+    <<: *backend
+    command: ["/out/aggdata-service"]
+    network_mode: host
+    environment:
+      DATABASE_URL: postgres://selfquant:selfquant@127.0.0.1:5432/selfquant?sslmode=disable
+      AGGDATA_HTTP_ADDRESS: :9093
+      AGGDATA_MDS_GATEWAY_URL: ws://127.0.0.1:9443/v1/market-data
+      AGGDATA_RECORDING_DIR: /data/aggdata
+      MDS_GATEWAY_TOKEN: ${MDS_GATEWAY_TOKEN:?MDS_GATEWAY_TOKEN is required}
+    volumes:
+      - ${AGGDATA_RECORDING_DIR:-/tmp/marketdata/crypto}:/data/aggdata
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/wget", "-qO-", "http://127.0.0.1:9093/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  api-gateway:
+    <<: *backend
+    command: ["/out/api-gateway"]
+    environment:
+      API_HTTP_ADDRESS: :8080
+      FUNDING_GRPC_TARGET: funding-service:9090
+      ACCOUNT_GRPC_TARGET: account-service:9091
+      POLYMARKET_GRPC_TARGET: polymarket-service:9092
+      REPORT_GRPC_TARGET: report-service:9094
+      TRADER_GRPC_TARGET: trader-service:9095
+      AI_GRPC_TARGET: ai-service:9096
+      SPREAD_GRPC_TARGET: spread-service:9097
+    ports:
+      - "8080:8080"
+    depends_on:
+      funding-service:
+        condition: service_healthy
+      account-service:
+        condition: service_healthy
+      polymarket-service:
+        condition: service_healthy
+      report-service:
+        condition: service_healthy
+      trader-service:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+      spread-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/wget", "-qO-", "http://127.0.0.1:8080/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
 
 volumes:
   selfquant-postgres:

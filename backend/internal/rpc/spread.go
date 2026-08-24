@@ -34,14 +34,16 @@ func (s *SpreadServer) GetBasisSpreadHistory(
 		return nil, status.Error(codes.InvalidArgument, "range is required")
 	}
 	history, err := s.service.GetHistory(ctx, spread.HistoryRequest{
-		Venue: request.GetVenue(), BaseAsset: request.GetBaseAsset(),
-		QuoteAsset: request.GetQuoteAsset(), Range: parsedRange,
+		Venue: request.GetVenue(), CompareVenue: request.GetCompareVenue(),
+		BaseAsset: request.GetBaseAsset(), QuoteAsset: request.GetQuoteAsset(),
+		Range: parsedRange,
 	})
 	if err != nil {
 		return nil, mapSpreadError(err)
 	}
 	response := &spreadv1.GetBasisSpreadHistoryResponse{
-		Venue: history.Venue, BaseAsset: history.BaseAsset, QuoteAsset: history.QuoteAsset,
+		Venue: history.Venue, CompareVenue: history.CompareVenue,
+		BaseAsset: history.BaseAsset, QuoteAsset: history.QuoteAsset,
 		CanonicalSymbol: history.CanonicalSymbol, Range: request.GetRange(),
 		ResolutionSeconds: int32(history.ResolutionSeconds),
 		Availability:      protoAvailability(history.Availability),

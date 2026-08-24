@@ -65,7 +65,8 @@ func (s *Service) CreateArbitrageCombination(
 		BidThresholdBps: normalized.BidThresholdBps,
 		TargetNotional:  normalized.TargetNotional, OrderNotional: normalized.OrderNotional,
 		MaxDeltaNotional: normalized.MaxDeltaNotional, ExecutionMode: normalized.ExecutionMode,
-		MakerLeg: normalized.MakerLeg, Status: "running", CompletedNotional: "0",
+		MakerLeg: normalized.MakerLeg, Status: "running",
+		PositionNotional: "0", CumulativeTurnoverNotional: "0",
 		MarketDataStale: true,
 		LegA:            arbitrageLeg(accountA, instrumentA),
 		LegB:            arbitrageLeg(accountB, instrumentB),
@@ -200,7 +201,7 @@ func normalizeArbitrageInput(input CreateArbitrageInput) (CreateArbitrageInput, 
 	}
 	maxDelta, deltaErr := decimal.NewFromString(strings.TrimSpace(input.MaxDeltaNotional))
 	if askErr != nil || bidErr != nil || targetErr != nil || orderErr != nil || deltaErr != nil ||
-		!ask.IsPositive() || !bid.IsNegative() || !target.IsPositive() || !order.IsPositive() ||
+		!target.IsPositive() || !order.IsPositive() ||
 		!maxDelta.IsPositive() || order.GreaterThan(target) || maxDelta.GreaterThan(order) {
 		return CreateArbitrageInput{}, ErrInvalidArgument
 	}

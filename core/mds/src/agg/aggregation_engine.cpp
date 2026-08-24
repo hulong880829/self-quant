@@ -228,7 +228,17 @@ bool AggregationEngine::update_bbo(
     return false;
   }
   auto &member = members_[slot];
-  const bool rejoined = !member.bbo_valid;
+  const auto input_generation = record.header.book_generation;
+  const bool generation_changed =
+      member.generation != 0 && input_generation != 0 &&
+      member.generation != input_generation;
+  const bool rejoined = !member.bbo_valid || generation_changed;
+  if (generation_changed) {
+    member.book_valid = false;
+  }
+  if (input_generation != 0) {
+    member.generation = input_generation;
+  }
   member.bbo = record;
   member.bbo_ingress_ns = ingress_mono_ns;
   member.bbo_valid = true;
@@ -264,6 +274,12 @@ bool AggregationEngine::update_book(std::size_t slot,
     return false;
   }
   auto &member = members_[slot];
+  const bool generation_changed =
+      member.generation != 0 && input.generation != 0 &&
+      member.generation != input.generation;
+  if (generation_changed) {
+    member.bbo_valid = false;
+  }
   const auto bid_count = std::min(input.bids.size(), kLevelsPerMember);
   const auto ask_count = std::min(input.asks.size(), kLevelsPerMember);
   std::copy_n(input.bids.begin(), bid_count, member.bids.begin());
@@ -272,9 +288,10 @@ bool AggregationEngine::update_book(std::size_t slot,
   member.ask_count = ask_count;
   member.book_ingress_ns = input.ingress_mono_ns;
   member.book_exchange_ts_ns = input.exchange_ts_ns;
-  const bool rejoined =
-      !member.book_valid || member.generation != input.generation;
-  member.generation = input.generation;
+  const bool rejoined = !member.book_valid || generation_changed;
+  if (input.generation != 0) {
+    member.generation = input.generation;
+  }
   member.book_valid = true;
   if (rejoined) {
     ++generation_;

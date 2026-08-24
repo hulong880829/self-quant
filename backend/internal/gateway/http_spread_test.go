@@ -36,9 +36,10 @@ func (s *testSpreadServer) GetBasisSpreadHistory(
 	}
 	now := time.Date(2026, 8, 22, 7, 0, 0, 0, time.UTC)
 	return &spreadv1.GetBasisSpreadHistoryResponse{
-		Venue: request.GetVenue(), BaseAsset: request.GetBaseAsset(),
-		QuoteAsset: request.GetQuoteAsset(), CanonicalSymbol: "BTCUSDT",
-		Range: request.GetRange(), ResolutionSeconds: 60,
+		Venue: request.GetVenue(), CompareVenue: request.GetCompareVenue(),
+		BaseAsset: request.GetBaseAsset(), QuoteAsset: request.GetQuoteAsset(),
+		CanonicalSymbol: "BTCUSDT",
+		Range:           request.GetRange(), ResolutionSeconds: 60,
 		Availability: spreadv1.BasisSpreadAvailability_BASIS_SPREAD_AVAILABILITY_AVAILABLE,
 		AsOf:         timestamppb.New(now),
 		Points: []*spreadv1.BasisSpreadPoint{{
@@ -117,6 +118,37 @@ func TestBasisSpreadHistoryContractAndETag(t *testing.T) {
 	router.ServeHTTP(second, repeat)
 	if second.Code != http.StatusNotModified {
 		t.Fatalf("status=%d body=%s", second.Code, second.Body.String())
+	}
+}
+
+func TestBasisSpreadHistoryForwardsCompareVenue(t *testing.T) {
+	router := spreadRouter(t, &testSpreadServer{})
+	request := httptest.NewRequest(
+		http.MethodGet, "/api/v1/basis-spreads/binance/BTC/USDT/history?range=24h&compareVenue=okx", nil,
+	)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["venue"] != "binance" || payload["compareVenue"] != "okx" {
+		t.Fatalf("payload=%v", payload)
+	}
+}
+
+func TestBasisSpreadHistoryRejectsSameCompareVenue(t *testing.T) {
+	router := spreadRouter(t, &testSpreadServer{})
+	request := httptest.NewRequest(
+		http.MethodGet, "/api/v1/basis-spreads/binance/BTC/USDT/history?range=24h&compareVenue=binance", nil,
+	)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

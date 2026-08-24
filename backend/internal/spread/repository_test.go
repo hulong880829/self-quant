@@ -11,7 +11,7 @@ import (
 )
 
 func TestHistoryQueryUsesBucketAggregation(t *testing.T) {
-	query := historyQuery("market_data", "crypto_bbo", 60)
+	query := historyQuery("market_data", "crypto_bbo", 60, "")
 	for _, fragment := range []string{
 		"PREWHERE venue = @venue",
 		"canonical_symbol = @symbol",
@@ -27,6 +27,28 @@ func TestHistoryQueryUsesBucketAggregation(t *testing.T) {
 	}
 	if strings.Contains(query, "JOIN") {
 		t.Fatal("query should not self-join")
+	}
+}
+
+func TestHistoryQueryUsesCrossVenuePerpetualAsks(t *testing.T) {
+	query := historyQuery("market_data", "crypto_bbo", 60, "okx")
+	for _, fragment := range []string{
+		"PREWHERE venue IN (@venue, @compare_venue)",
+		"product = 'perpetual'",
+		"argMaxIf(ask_price, ts, venue = @venue)",
+		"argMaxIf(ask_price, ts, venue = @compare_venue)",
+		"INTERVAL 60 SECOND",
+		"HAVING bucket >= @from AND bucket < @to",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("query missing %q:\n%s", fragment, query)
+		}
+	}
+	if strings.Contains(query, "JOIN") {
+		t.Fatal("query should not self-join")
+	}
+	if strings.Contains(query, "product = 'spot'") {
+		t.Fatal("cross-venue query should not read spot")
 	}
 }
 

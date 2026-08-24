@@ -31,13 +31,17 @@ import {
 } from "./orderbook-provider";
 
 const market = {
-  profile: "five-venues",
+  profile: "agg_spot_usdt_binance-bitget-bybit-gate-okx",
   symbol: "BTCUSDT",
   baseAsset: "BTC",
   quoteAsset: "USDT",
   priceScale: 1,
   quantityScale: 1,
   hasOrderBook: true,
+};
+const perpetualMarket = {
+  ...market,
+  profile: "agg_perp_usdt_binance-bitget-bybit-gate-okx",
 };
 
 const initialLevel = {
@@ -111,6 +115,11 @@ function Probe() {
   const value = useOrderbook();
   return (
     <div>
+      <span data-testid="profile">{value.selectedMarket?.profile ?? ""}</span>
+      <span data-testid="product">{value.selectedProduct}</span>
+      <button type="button" onClick={() => value.selectProduct("PERPETUAL")}>
+        perpetual
+      </button>
       <span data-testid="loading">{String(value.loading)}</span>
       <span data-testid="levels">{value.levels.length}</span>
       <span data-testid="exchange">{value.levels[0]?.exchange ?? ""}</span>
@@ -237,6 +246,12 @@ describe("OrderbookProvider", () => {
     await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
     const socket = MockWebSocket.instances[0]!;
     act(() => socket.open());
+    expect(JSON.parse(socket.sent[0]!)).toMatchObject({
+      op: "subscribe",
+      profile: market.profile,
+      symbol: market.symbol,
+      channel: "orderbook",
+    });
 
     apiMocks.decodeFrame.mockReturnValueOnce({
       ...snapshot,
@@ -308,6 +323,48 @@ describe("OrderbookProvider", () => {
       expect(MockWebSocket.instances).toHaveLength(2);
     });
     expect(firstSocket.closed).toBe(true);
+  });
+
+  it("keeps spot and perpetual state isolated by profile and symbol", async () => {
+    apiMocks.fetchMarkets.mockResolvedValue([market, perpetualMarket]);
+    apiMocks.fetchSnapshot.mockImplementation(async (selected) => ({
+      ...snapshot,
+      sequence: selected.profile === market.profile ? 10n : 20n,
+    }));
+    apiMocks.fetchHistory.mockResolvedValue(historyResult);
+    render(
+      <OrderbookProvider>
+        <Probe />
+      </OrderbookProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("profile").textContent).toBe(market.profile);
+      expect(MockWebSocket.instances).toHaveLength(1);
+    });
+    act(() => screen.getByRole("button", { name: "perpetual" }).click());
+    await waitFor(() => {
+      expect(screen.getByTestId("profile").textContent).toBe(
+        perpetualMarket.profile,
+      );
+      expect(screen.getByTestId("product").textContent).toBe("PERPETUAL");
+      expect(MockWebSocket.instances).toHaveLength(2);
+    });
+
+    expect(apiMocks.fetchSnapshot).toHaveBeenLastCalledWith(
+      perpetualMarket,
+      expect.any(AbortSignal),
+    );
+    expect(apiMocks.fetchHistory).toHaveBeenLastCalledWith(
+      perpetualMarket,
+      expect.any(AbortSignal),
+    );
+    const secondSocket = MockWebSocket.instances[1]!;
+    act(() => secondSocket.open());
+    expect(JSON.parse(secondSocket.sent[0]!)).toMatchObject({
+      profile: perpetualMarket.profile,
+      symbol: perpetualMarket.symbol,
+    });
   });
 });
 

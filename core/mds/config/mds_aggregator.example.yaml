@@ -2,7 +2,10 @@
 shared_memory:
   prefix: /selfquant.mds
   output:
-    ring_bytes: 1048576
+    # Ring memory grows by symbol x enabled output topic. Use an explicit
+    # 33554432-byte ring for high-churn production books. A StrategyFrame
+    # external_shm segment must declare the same ring_bytes/max_record_bytes.
+    ring_bytes: 4194304
     max_record_bytes: 32768
     max_readers: 32
     unlink_on_shutdown: false

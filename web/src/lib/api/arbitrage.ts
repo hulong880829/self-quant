@@ -25,7 +25,11 @@ export interface ArbitrageCombination {
   askThresholdBps: string;
   bidThresholdBps: string;
   targetNotional: string;
-  completedNotional: string;
+  positionNotional: string;
+  cumulativeTurnoverNotional: string;
+  consecutiveFailures: number;
+  nextRetryAt: string;
+  positionUncertain: boolean;
   orderNotional: string;
   maxDeltaNotional: string;
   preferredLeg: ArbitragePreferredLeg;
@@ -106,6 +110,13 @@ function integer(value: unknown, path: string): number {
   return value;
 }
 
+function nonNegativeInteger(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${path} 必须是非负整数`);
+  }
+  return value;
+}
+
 function decimalString(value: unknown, path: string): string {
   if (typeof value !== "string" || value.trim() === "" || !Number.isFinite(Number(value))) {
     throw new Error(`${path} 必须是 decimal string`);
@@ -165,7 +176,17 @@ export function mapArbitrageCombination(
     askThresholdBps: decimalString(item.askThresholdBps, `${path}.askThresholdBps`),
     bidThresholdBps: decimalString(item.bidThresholdBps, `${path}.bidThresholdBps`),
     targetNotional: decimalString(item.targetNotional, `${path}.targetNotional`),
-    completedNotional: decimalString(item.completedNotional, `${path}.completedNotional`),
+    positionNotional: decimalString(item.positionNotional, `${path}.positionNotional`),
+    cumulativeTurnoverNotional: decimalString(
+      item.cumulativeTurnoverNotional,
+      `${path}.cumulativeTurnoverNotional`,
+    ),
+    consecutiveFailures: nonNegativeInteger(
+      item.consecutiveFailures,
+      `${path}.consecutiveFailures`,
+    ),
+    nextRetryAt: text(item.nextRetryAt, `${path}.nextRetryAt`, true),
+    positionUncertain: boolean(item.positionUncertain, `${path}.positionUncertain`),
     orderNotional: decimalString(item.orderNotional, `${path}.orderNotional`),
     maxDeltaNotional: decimalString(item.maxDeltaNotional, `${path}.maxDeltaNotional`),
     preferredLeg: oneOf(item.preferredLeg, ["a", "b"], `${path}.preferredLeg`),

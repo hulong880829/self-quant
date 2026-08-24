@@ -20,6 +20,7 @@ type dryRunStore struct {
 	item       ArbitrageCombination
 	eventTypes []string
 	claims     int
+	claim      bool
 }
 
 func (s *dryRunStore) LeaseArbitrageCombinations(
@@ -60,18 +61,30 @@ func (s *dryRunStore) AppendArbitrageEvent(
 }
 
 func (s *dryRunStore) ClaimArbitrageExecution(
-	context.Context, ArbitrageExecution,
+	_ context.Context, execution ArbitrageExecution,
 ) (ArbitrageExecution, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.claims++
-	return ArbitrageExecution{}, false, nil
+	return execution, s.claim, nil
 }
 
 func (s *dryRunStore) GetActiveArbitrageExecution(
-	context.Context, string, string,
+	context.Context, string,
 ) (ArbitrageExecution, error) {
 	return ArbitrageExecution{}, ErrNotFound
+}
+
+func (s *dryRunStore) GetArbitrageCombinationByOwner(
+	_ context.Context, _, _ string,
+) (ArbitrageCombination, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.item, nil
+}
+
+func (s *dryRunStore) RenewArbitrageLease(context.Context, string, time.Duration) (bool, error) {
+	return true, nil
 }
 
 type schedulerConnection struct {
@@ -97,6 +110,23 @@ func (c *schedulerConnection) Close() error {
 type schedulerConnector struct {
 	mu          sync.Mutex
 	connections map[marketdata.Key]*schedulerConnection
+}
+
+type schedulerRunner struct {
+	executed chan ArbitrageExecution
+}
+
+func (r *schedulerRunner) Execute(
+	_ context.Context,
+	_ ArbitrageCombination,
+	execution ArbitrageExecution,
+	_, _ marketdata.BBO,
+) {
+	r.executed <- execution
+}
+
+func (*schedulerRunner) CloseCombination(context.Context, ArbitrageCombination) error {
+	return nil
 }
 
 func (c *schedulerConnector) Connect(
@@ -149,7 +179,8 @@ func TestArbitrageSchedulerDryRunRecordsTriggerWithoutClaimingExecution(t *testi
 	store := &dryRunStore{item: ArbitrageCombination{
 		ID: "46c5b9e3-3fdd-4930-b529-c2d902b61731", OwnerUsername: "admin",
 		Status: "running", AskThresholdBps: "12", BidThresholdBps: "-8",
-		CompletedNotional: "0", MarketDataStale: true,
+		TargetNotional: "10000", OrderNotional: "500", PositionNotional: "0",
+		MarketDataStale: true,
 		LegA: ArbitrageLeg{
 			TradingAccountID: 1, Exchange: "binance",
 			ContractType: "perpetual", ExchangeSymbol: "BTCUSDT",
@@ -188,5 +219,283 @@ func TestArbitrageSchedulerDryRunRecordsTriggerWithoutClaimingExecution(t *testi
 	}
 	if len(store.eventTypes) != 1 || store.eventTypes[0] != "dry_run_trigger" {
 		t.Fatalf("events=%v", store.eventTypes)
+	}
+}
+
+func TestArbitrageSchedulerLiveModeClaimsAndExecutesFreshTrigger(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	keyA, _ := marketdata.NewKey("bybit", "perpetual", "COTIUSDT")
+	keyB, _ := marketdata.NewKey("bitget", "perpetual", "COTIUSDT")
+	connectionA := &schedulerConnection{reads: make(chan []byte, 2), done: make(chan struct{})}
+	connectionB := &schedulerConnection{reads: make(chan []byte, 2), done: make(chan struct{})}
+	connector := &schedulerConnector{connections: map[marketdata.Key]*schedulerConnection{
+		keyA: connectionA, keyB: connectionB,
+	}}
+	parser := func(key marketdata.Key, payload []byte, received time.Time) (marketdata.BBO, bool, error) {
+		parts := strings.Split(string(payload), ",")
+		return marketdata.BBO{
+			Key: key, BidPrice: parts[0], AskPrice: parts[1],
+			VenueTimestamp: received, ReceiveTimestamp: received,
+		}, true, nil
+	}
+	market, err := marketdata.New(marketdata.Options{
+		Connector: connector,
+		Parsers: map[string]marketdata.Parser{
+			"bybit": parser, "bitget": parser,
+		},
+		StaleAfter: time.Second, ReconnectInitial: time.Hour, ReconnectMax: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer market.Close()
+	store := &dryRunStore{claim: true, item: ArbitrageCombination{
+		ID: "46c5b9e3-3fdd-4930-b529-c2d902b61732", OwnerUsername: "admin",
+		Status: "running", AskThresholdBps: "10", BidThresholdBps: "-10",
+		TargetNotional: "10000", OrderNotional: "500", PositionNotional: "0",
+		MarketDataStale: true,
+		LegA: ArbitrageLeg{
+			TradingAccountID: 1, Exchange: "bybit",
+			ContractType: "perpetual", ExchangeSymbol: "COTIUSDT",
+		},
+		LegB: ArbitrageLeg{
+			TradingAccountID: 2, Exchange: "bitget",
+			ContractType: "perpetual", ExchangeSymbol: "COTIUSDT",
+		},
+	}}
+	runner := &schedulerRunner{executed: make(chan ArbitrageExecution, 1)}
+	scheduler := NewArbitrageScheduler(
+		store, market, runner, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	scheduler.runOnce(ctx)
+	connectionA.reads <- []byte("100,100.1")
+	connectionB.reads <- []byte("100.3,100.4")
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, errA := market.Latest(keyA); errA == nil {
+			if _, errB := market.Latest(keyB); errB == nil {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("BBO fixtures were not consumed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	scheduler.runOnce(ctx)
+	defer scheduler.closeAll()
+
+	select {
+	case execution := <-runner.executed:
+		if execution.Direction != "ask" || execution.RequestedNotional != "500" ||
+			execution.PositionEffect != "open" || execution.ReduceOnly {
+			t.Fatalf("execution=%+v", execution)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("live trigger was not executed")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.claims != 1 {
+		t.Fatalf("claims=%d", store.claims)
+	}
+}
+
+func TestArbitrageSchedulerDoesNotTriggerWithStaleLeg(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	keyA, _ := marketdata.NewKey("bybit", "perpetual", "COTIUSDT")
+	keyB, _ := marketdata.NewKey("bitget", "perpetual", "COTIUSDT")
+	connectionA := &schedulerConnection{reads: make(chan []byte, 1), done: make(chan struct{})}
+	connectionB := &schedulerConnection{reads: make(chan []byte, 1), done: make(chan struct{})}
+	connector := &schedulerConnector{connections: map[marketdata.Key]*schedulerConnection{
+		keyA: connectionA, keyB: connectionB,
+	}}
+	market, err := marketdata.New(marketdata.Options{
+		Connector: connector,
+		Parsers: map[string]marketdata.Parser{
+			"bybit": func(key marketdata.Key, payload []byte, received time.Time) (marketdata.BBO, bool, error) {
+				return marketdata.BBO{
+					Key: key, BidPrice: "100", AskPrice: "100",
+					ReceiveTimestamp: received,
+				}, true, nil
+			},
+			"bitget": testStaleParser,
+		},
+		StaleAfter: time.Millisecond, ReconnectInitial: time.Hour, ReconnectMax: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer market.Close()
+	store := &dryRunStore{claim: true, item: ArbitrageCombination{
+		ID: "46c5b9e3-3fdd-4930-b529-c2d902b61733", OwnerUsername: "admin",
+		Status: "running", AskThresholdBps: "-100", BidThresholdBps: "100",
+		TargetNotional: "10000", OrderNotional: "500", PositionNotional: "0",
+		LegA: ArbitrageLeg{TradingAccountID: 1, Exchange: "bybit", ContractType: "perpetual", ExchangeSymbol: "COTIUSDT"},
+		LegB: ArbitrageLeg{TradingAccountID: 2, Exchange: "bitget", ContractType: "perpetual", ExchangeSymbol: "COTIUSDT"},
+	}}
+	runner := &schedulerRunner{executed: make(chan ArbitrageExecution, 1)}
+	scheduler := NewArbitrageScheduler(
+		store, market, runner, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	scheduler.runOnce(ctx)
+	connectionA.reads <- []byte("fresh")
+	connectionB.reads <- []byte("stale")
+	deadline := time.Now().Add(time.Second)
+	for market.Stats().Updates < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("BBO fixtures were not consumed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	scheduler.runOnce(ctx)
+	scheduler.closeAll()
+
+	select {
+	case <-runner.executed:
+		t.Fatal("stale BBO triggered execution")
+	default:
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.claims != 0 {
+		t.Fatalf("stale BBO claims=%d", store.claims)
+	}
+}
+
+func testStaleParser(key marketdata.Key, _ []byte, received time.Time) (marketdata.BBO, bool, error) {
+	return marketdata.BBO{
+		Key: key, BidPrice: "101", AskPrice: "101",
+		ReceiveTimestamp: received.Add(-time.Second),
+	}, true, nil
+}
+
+func TestArbitrageSchedulerSkipsAskAtPositiveCap(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	keyA, _ := marketdata.NewKey("bybit", "perpetual", "COTIUSDT")
+	keyB, _ := marketdata.NewKey("bitget", "perpetual", "COTIUSDT")
+	connectionA := &schedulerConnection{reads: make(chan []byte, 2), done: make(chan struct{})}
+	connectionB := &schedulerConnection{reads: make(chan []byte, 2), done: make(chan struct{})}
+	connector := &schedulerConnector{connections: map[marketdata.Key]*schedulerConnection{
+		keyA: connectionA, keyB: connectionB,
+	}}
+	parser := func(key marketdata.Key, payload []byte, received time.Time) (marketdata.BBO, bool, error) {
+		parts := strings.Split(string(payload), ",")
+		return marketdata.BBO{
+			Key: key, BidPrice: parts[0], AskPrice: parts[1],
+			VenueTimestamp: received, ReceiveTimestamp: received,
+		}, true, nil
+	}
+	market, err := marketdata.New(marketdata.Options{
+		Connector:  connector,
+		Parsers:    map[string]marketdata.Parser{"bybit": parser, "bitget": parser},
+		StaleAfter: time.Second, ReconnectInitial: time.Hour, ReconnectMax: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer market.Close()
+	store := &dryRunStore{claim: true, item: ArbitrageCombination{
+		ID: "46c5b9e3-3fdd-4930-b529-c2d902b61736", OwnerUsername: "admin",
+		Status: "running", AskThresholdBps: "10", BidThresholdBps: "-10",
+		TargetNotional: "10000", OrderNotional: "500", PositionNotional: "10000",
+		LegA: ArbitrageLeg{TradingAccountID: 1, Exchange: "bybit", ContractType: "perpetual", ExchangeSymbol: "COTIUSDT"},
+		LegB: ArbitrageLeg{TradingAccountID: 2, Exchange: "bitget", ContractType: "perpetual", ExchangeSymbol: "COTIUSDT"},
+	}}
+	runner := &schedulerRunner{executed: make(chan ArbitrageExecution, 1)}
+	scheduler := NewArbitrageScheduler(
+		store, market, runner, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	scheduler.runOnce(ctx)
+	connectionA.reads <- []byte("100,100.1")
+	connectionB.reads <- []byte("100.3,100.4")
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, errA := market.Latest(keyA); errA == nil {
+			if _, errB := market.Latest(keyB); errB == nil {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("BBO fixtures were not consumed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	scheduler.runOnce(ctx)
+	scheduler.closeAll()
+	select {
+	case <-runner.executed:
+		t.Fatal("capped ask position triggered execution")
+	default:
+	}
+	if store.claims != 0 {
+		t.Fatalf("capped claims=%d", store.claims)
+	}
+}
+
+func TestArbitrageSchedulerSkipsDuringBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	keyA, _ := marketdata.NewKey("bybit", "perpetual", "COTIUSDT")
+	keyB, _ := marketdata.NewKey("bitget", "perpetual", "COTIUSDT")
+	connectionA := &schedulerConnection{reads: make(chan []byte, 2), done: make(chan struct{})}
+	connectionB := &schedulerConnection{reads: make(chan []byte, 2), done: make(chan struct{})}
+	connector := &schedulerConnector{connections: map[marketdata.Key]*schedulerConnection{
+		keyA: connectionA, keyB: connectionB,
+	}}
+	parser := func(key marketdata.Key, payload []byte, received time.Time) (marketdata.BBO, bool, error) {
+		parts := strings.Split(string(payload), ",")
+		return marketdata.BBO{
+			Key: key, BidPrice: parts[0], AskPrice: parts[1],
+			VenueTimestamp: received, ReceiveTimestamp: received,
+		}, true, nil
+	}
+	market, err := marketdata.New(marketdata.Options{
+		Connector:  connector,
+		Parsers:    map[string]marketdata.Parser{"bybit": parser, "bitget": parser},
+		StaleAfter: time.Second, ReconnectInitial: time.Hour, ReconnectMax: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer market.Close()
+	store := &dryRunStore{claim: true, item: ArbitrageCombination{
+		ID: "46c5b9e3-3fdd-4930-b529-c2d902b61737", OwnerUsername: "admin",
+		Status: "running", AskThresholdBps: "10", BidThresholdBps: "-10",
+		TargetNotional: "10000", OrderNotional: "500", PositionNotional: "0",
+		NextRetryAt: time.Now().UTC().Add(time.Hour),
+		LegA:        ArbitrageLeg{TradingAccountID: 1, Exchange: "bybit", ContractType: "perpetual", ExchangeSymbol: "COTIUSDT"},
+		LegB:        ArbitrageLeg{TradingAccountID: 2, Exchange: "bitget", ContractType: "perpetual", ExchangeSymbol: "COTIUSDT"},
+	}}
+	runner := &schedulerRunner{executed: make(chan ArbitrageExecution, 1)}
+	scheduler := NewArbitrageScheduler(
+		store, market, runner, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	scheduler.runOnce(ctx)
+	connectionA.reads <- []byte("100,100.1")
+	connectionB.reads <- []byte("100.3,100.4")
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, errA := market.Latest(keyA); errA == nil {
+			if _, errB := market.Latest(keyB); errB == nil {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("BBO fixtures were not consumed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	scheduler.runOnce(ctx)
+	scheduler.closeAll()
+	if store.claims != 0 {
+		t.Fatalf("backoff claims=%d", store.claims)
 	}
 }

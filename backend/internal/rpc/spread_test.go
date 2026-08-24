@@ -13,20 +13,22 @@ import (
 )
 
 type stubSpreadService struct {
+	last    spread.HistoryRequest
 	history spread.History
 	err     error
 }
 
-func (s stubSpreadService) GetHistory(
+func (s *stubSpreadService) GetHistory(
 	_ context.Context,
-	_ spread.HistoryRequest,
+	request spread.HistoryRequest,
 ) (spread.History, error) {
+	s.last = request
 	return s.history, s.err
 }
 
 func TestSpreadServerMapsHistory(t *testing.T) {
 	now := time.Date(2026, 8, 22, 7, 0, 0, 0, time.UTC)
-	server := NewSpreadServer(stubSpreadService{history: spread.History{
+	server := NewSpreadServer(&stubSpreadService{history: spread.History{
 		Venue: "binance", BaseAsset: "BTC", QuoteAsset: "USDT",
 		CanonicalSymbol: "BTCUSDT", Range: spread.Range1h, ResolutionSeconds: 5,
 		Availability: spread.AvailabilityAvailable, AsOf: now,
@@ -58,8 +60,27 @@ func TestSpreadServerMapsHistory(t *testing.T) {
 	}
 }
 
+func TestSpreadServerForwardsCompareVenue(t *testing.T) {
+	stub := &stubSpreadService{history: spread.History{
+		Venue: "binance", CompareVenue: "okx", BaseAsset: "BTC", QuoteAsset: "USDT",
+		CanonicalSymbol: "BTCUSDT", Range: spread.Range24h, ResolutionSeconds: 60,
+		Availability: spread.AvailabilityAvailable, AsOf: time.Date(2026, 8, 22, 7, 0, 0, 0, time.UTC),
+	}}
+	server := NewSpreadServer(stub)
+	response, err := server.GetBasisSpreadHistory(context.Background(), &spreadv1.GetBasisSpreadHistoryRequest{
+		Venue: "binance", CompareVenue: "okx", BaseAsset: "BTC", QuoteAsset: "USDT",
+		Range: spreadv1.BasisSpreadRange_BASIS_SPREAD_RANGE_24H,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stub.last.CompareVenue != "okx" || response.GetCompareVenue() != "okx" {
+		t.Fatalf("last=%+v response=%v", stub.last, response)
+	}
+}
+
 func TestSpreadServerRejectsMissingRange(t *testing.T) {
-	server := NewSpreadServer(stubSpreadService{})
+	server := NewSpreadServer(&stubSpreadService{})
 	_, err := server.GetBasisSpreadHistory(context.Background(), &spreadv1.GetBasisSpreadHistoryRequest{
 		Venue: "binance", BaseAsset: "BTC", QuoteAsset: "USDT",
 	})

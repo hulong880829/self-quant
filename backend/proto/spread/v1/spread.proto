@@ -30,6 +30,7 @@ message GetBasisSpreadHistoryRequest {
   string base_asset = 2;
   string quote_asset = 3;
   BasisSpreadRange range = 4;
+  string compare_venue = 5;
 }
 
 message BasisSpreadPoint {
@@ -59,4 +60,5 @@ message GetBasisSpreadHistoryResponse {
   google.protobuf.Timestamp as_of = 8;
   repeated BasisSpreadPoint points = 9;
   BasisSpreadSummary summary = 10;
+  string compare_venue = 11;
 }

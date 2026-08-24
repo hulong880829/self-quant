@@ -12,12 +12,12 @@ import (
 )
 
 type Service struct {
-	store      HistoryStore
-	cacheTTL   time.Duration
-	queries    *semaphore.Weighted
-	group      singleflight.Group
-	mu         sync.Mutex
-	cache      map[string]cachedHistory
+	store    HistoryStore
+	cacheTTL time.Duration
+	queries  *semaphore.Weighted
+	group    singleflight.Group
+	mu       sync.Mutex
+	cache    map[string]cachedHistory
 }
 
 type cachedHistory struct {
@@ -74,8 +74,8 @@ func (s *Service) GetHistory(ctx context.Context, request HistoryRequest) (Histo
 }
 
 func cacheKey(request HistoryRequest) string {
-	return request.Venue + "|" + CanonicalSymbol(request.BaseAsset, request.QuoteAsset) +
-		"|" + string(request.Range)
+	return request.Venue + "|" + request.CompareVenue + "|" +
+		CanonicalSymbol(request.BaseAsset, request.QuoteAsset) + "|" + string(request.Range)
 }
 
 func (s *Service) cached(key string) (History, bool) {

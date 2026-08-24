@@ -132,6 +132,10 @@ message ListFundingOpportunitiesResponse {
   google.protobuf.Timestamp server_time = 4;
   google.protobuf.Timestamp calculated_at = 5;
   bool stale = 6;
+  string status = 7;
+  google.protobuf.Timestamp last_successful_at = 8;
+  google.protobuf.Timestamp data_through = 9;
+  uint64 generation = 10;
 }
 
 message GetFundingHistoryRequest {

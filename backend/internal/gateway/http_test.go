@@ -28,7 +28,9 @@ import (
 
 type testFundingServer struct {
 	fundingv1.UnimplementedFundingServiceServer
-	err error
+	err               error
+	opportunityStatus string
+	opportunityStale  bool
 }
 
 func (s *testFundingServer) ListFundingRates(
@@ -131,7 +133,9 @@ func (s *testFundingServer) ListFundingOpportunities(
 			UpdatedAt: timestamppb.New(now),
 		}},
 		Total: 1, SnapshotVersion: "rank-123", ServerTime: timestamppb.New(now),
-		CalculatedAt: timestamppb.New(now), Stale: false,
+		CalculatedAt: timestamppb.New(now), LastSuccessfulAt: timestamppb.New(now),
+		DataThrough: timestamppb.New(now.Add(-time.Minute)), Generation: 7,
+		Status: s.opportunityStatus, Stale: s.opportunityStale,
 	}, nil
 }
 
@@ -443,6 +447,22 @@ func TestFundingOpportunityContractAndETag(t *testing.T) {
 	router.ServeHTTP(notModifiedRecorder, notModified)
 	if notModifiedRecorder.Code != http.StatusNotModified {
 		t.Fatalf("status=%d body=%s", notModifiedRecorder.Code, notModifiedRecorder.Body.String())
+	}
+}
+
+func TestStaleFundingOpportunityNeverReturnsNotModified(t *testing.T) {
+	router := testRouter(t, &testFundingServer{
+		opportunityStatus: "stale", opportunityStale: true,
+	}, nil)
+	target := "/api/v1/funding-opportunities?period=1h"
+	first := httptest.NewRecorder()
+	router.ServeHTTP(first, httptest.NewRequest(http.MethodGet, target, nil))
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.Header.Set("If-None-Match", first.Header().Get("ETag"))
+	second := httptest.NewRecorder()
+	router.ServeHTTP(second, request)
+	if second.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", second.Code, second.Body.String())
 	}
 }
 

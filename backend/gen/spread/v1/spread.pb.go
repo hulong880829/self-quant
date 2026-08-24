@@ -135,6 +135,7 @@ type GetBasisSpreadHistoryRequest struct {
 	BaseAsset     string                 `protobuf:"bytes,2,opt,name=base_asset,json=baseAsset,proto3" json:"base_asset,omitempty"`
 	QuoteAsset    string                 `protobuf:"bytes,3,opt,name=quote_asset,json=quoteAsset,proto3" json:"quote_asset,omitempty"`
 	Range         BasisSpreadRange       `protobuf:"varint,4,opt,name=range,proto3,enum=spread.v1.BasisSpreadRange" json:"range,omitempty"`
+	CompareVenue  string                 `protobuf:"bytes,5,opt,name=compare_venue,json=compareVenue,proto3" json:"compare_venue,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -195,6 +196,13 @@ func (x *GetBasisSpreadHistoryRequest) GetRange() BasisSpreadRange {
 		return x.Range
 	}
 	return BasisSpreadRange_BASIS_SPREAD_RANGE_UNSPECIFIED
+}
+
+func (x *GetBasisSpreadHistoryRequest) GetCompareVenue() string {
+	if x != nil {
+		return x.CompareVenue
+	}
+	return ""
 }
 
 type BasisSpreadPoint struct {
@@ -361,6 +369,7 @@ type GetBasisSpreadHistoryResponse struct {
 	AsOf              *timestamppb.Timestamp  `protobuf:"bytes,8,opt,name=as_of,json=asOf,proto3" json:"as_of,omitempty"`
 	Points            []*BasisSpreadPoint     `protobuf:"bytes,9,rep,name=points,proto3" json:"points,omitempty"`
 	Summary           *BasisSpreadSummary     `protobuf:"bytes,10,opt,name=summary,proto3" json:"summary,omitempty"`
+	CompareVenue      string                  `protobuf:"bytes,11,opt,name=compare_venue,json=compareVenue,proto3" json:"compare_venue,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -465,18 +474,26 @@ func (x *GetBasisSpreadHistoryResponse) GetSummary() *BasisSpreadSummary {
 	return nil
 }
 
+func (x *GetBasisSpreadHistoryResponse) GetCompareVenue() string {
+	if x != nil {
+		return x.CompareVenue
+	}
+	return ""
+}
+
 var File_spread_v1_spread_proto protoreflect.FileDescriptor
 
 const file_spread_v1_spread_proto_rawDesc = "" +
 	"\n" +
-	"\x16spread/v1/spread.proto\x12\tspread.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa7\x01\n" +
+	"\x16spread/v1/spread.proto\x12\tspread.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\x01\n" +
 	"\x1cGetBasisSpreadHistoryRequest\x12\x14\n" +
 	"\x05venue\x18\x01 \x01(\tR\x05venue\x12\x1d\n" +
 	"\n" +
 	"base_asset\x18\x02 \x01(\tR\tbaseAsset\x12\x1f\n" +
 	"\vquote_asset\x18\x03 \x01(\tR\n" +
 	"quoteAsset\x121\n" +
-	"\x05range\x18\x04 \x01(\x0e2\x1b.spread.v1.BasisSpreadRangeR\x05range\"\xb7\x01\n" +
+	"\x05range\x18\x04 \x01(\x0e2\x1b.spread.v1.BasisSpreadRangeR\x05range\x12#\n" +
+	"\rcompare_venue\x18\x05 \x01(\tR\fcompareVenue\"\xb7\x01\n" +
 	"\x10BasisSpreadPoint\x12*\n" +
 	"\x02ts\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x12\x1d\n" +
 	"\n" +
@@ -490,7 +507,7 @@ const file_spread_v1_spread_proto_rawDesc = "" +
 	"\amin_bps\x18\x02 \x01(\tR\x06minBps\x12\x17\n" +
 	"\amax_bps\x18\x03 \x01(\tR\x06maxBps\x12\x17\n" +
 	"\aavg_bps\x18\x04 \x01(\tR\x06avgBps\x12\x1a\n" +
-	"\bcoverage\x18\x05 \x01(\tR\bcoverage\"\xe9\x03\n" +
+	"\bcoverage\x18\x05 \x01(\tR\bcoverage\"\x8e\x04\n" +
 	"\x1dGetBasisSpreadHistoryResponse\x12\x14\n" +
 	"\x05venue\x18\x01 \x01(\tR\x05venue\x12\x1d\n" +
 	"\n" +
@@ -504,7 +521,8 @@ const file_spread_v1_spread_proto_rawDesc = "" +
 	"\x05as_of\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x04asOf\x123\n" +
 	"\x06points\x18\t \x03(\v2\x1b.spread.v1.BasisSpreadPointR\x06points\x127\n" +
 	"\asummary\x18\n" +
-	" \x01(\v2\x1d.spread.v1.BasisSpreadSummaryR\asummary*\xbe\x01\n" +
+	" \x01(\v2\x1d.spread.v1.BasisSpreadSummaryR\asummary\x12#\n" +
+	"\rcompare_venue\x18\v \x01(\tR\fcompareVenue*\xbe\x01\n" +
 	"\x10BasisSpreadRange\x12\"\n" +
 	"\x1eBASIS_SPREAD_RANGE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15BASIS_SPREAD_RANGE_1H\x10\x01\x12\x19\n" +

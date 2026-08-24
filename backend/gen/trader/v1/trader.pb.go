@@ -2031,29 +2031,33 @@ func (x *ArbitrageLeg) GetQuoteAsset() string {
 }
 
 type ArbitrageCombination struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	Id                  string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	IdempotencyKey      string                 `protobuf:"bytes,2,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	LegA                *ArbitrageLeg          `protobuf:"bytes,3,opt,name=leg_a,json=legA,proto3" json:"leg_a,omitempty"`
-	LegB                *ArbitrageLeg          `protobuf:"bytes,4,opt,name=leg_b,json=legB,proto3" json:"leg_b,omitempty"`
-	AskThresholdBps     string                 `protobuf:"bytes,5,opt,name=ask_threshold_bps,json=askThresholdBps,proto3" json:"ask_threshold_bps,omitempty"`
-	BidThresholdBps     string                 `protobuf:"bytes,6,opt,name=bid_threshold_bps,json=bidThresholdBps,proto3" json:"bid_threshold_bps,omitempty"`
-	TargetNotional      string                 `protobuf:"bytes,7,opt,name=target_notional,json=targetNotional,proto3" json:"target_notional,omitempty"`
-	OrderNotional       string                 `protobuf:"bytes,8,opt,name=order_notional,json=orderNotional,proto3" json:"order_notional,omitempty"`
-	MaxDeltaNotional    string                 `protobuf:"bytes,9,opt,name=max_delta_notional,json=maxDeltaNotional,proto3" json:"max_delta_notional,omitempty"`
-	ExecutionMode       string                 `protobuf:"bytes,10,opt,name=execution_mode,json=executionMode,proto3" json:"execution_mode,omitempty"`
-	MakerLeg            string                 `protobuf:"bytes,11,opt,name=maker_leg,json=makerLeg,proto3" json:"maker_leg,omitempty"`
-	Status              string                 `protobuf:"bytes,12,opt,name=status,proto3" json:"status,omitempty"`
-	CompletedNotional   string                 `protobuf:"bytes,13,opt,name=completed_notional,json=completedNotional,proto3" json:"completed_notional,omitempty"`
-	CurrentAskSpreadBps string                 `protobuf:"bytes,14,opt,name=current_ask_spread_bps,json=currentAskSpreadBps,proto3" json:"current_ask_spread_bps,omitempty"`
-	CurrentBidSpreadBps string                 `protobuf:"bytes,15,opt,name=current_bid_spread_bps,json=currentBidSpreadBps,proto3" json:"current_bid_spread_bps,omitempty"`
-	MarketDataStale     bool                   `protobuf:"varint,16,opt,name=market_data_stale,json=marketDataStale,proto3" json:"market_data_stale,omitempty"`
-	ErrorMessage        string                 `protobuf:"bytes,17,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
-	CreatedAt           *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt           *timestamppb.Timestamp `protobuf:"bytes,19,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	ClosedAt            *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=closed_at,json=closedAt,proto3" json:"closed_at,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	Id                         string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	IdempotencyKey             string                 `protobuf:"bytes,2,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	LegA                       *ArbitrageLeg          `protobuf:"bytes,3,opt,name=leg_a,json=legA,proto3" json:"leg_a,omitempty"`
+	LegB                       *ArbitrageLeg          `protobuf:"bytes,4,opt,name=leg_b,json=legB,proto3" json:"leg_b,omitempty"`
+	AskThresholdBps            string                 `protobuf:"bytes,5,opt,name=ask_threshold_bps,json=askThresholdBps,proto3" json:"ask_threshold_bps,omitempty"`
+	BidThresholdBps            string                 `protobuf:"bytes,6,opt,name=bid_threshold_bps,json=bidThresholdBps,proto3" json:"bid_threshold_bps,omitempty"`
+	TargetNotional             string                 `protobuf:"bytes,7,opt,name=target_notional,json=targetNotional,proto3" json:"target_notional,omitempty"`
+	OrderNotional              string                 `protobuf:"bytes,8,opt,name=order_notional,json=orderNotional,proto3" json:"order_notional,omitempty"`
+	MaxDeltaNotional           string                 `protobuf:"bytes,9,opt,name=max_delta_notional,json=maxDeltaNotional,proto3" json:"max_delta_notional,omitempty"`
+	ExecutionMode              string                 `protobuf:"bytes,10,opt,name=execution_mode,json=executionMode,proto3" json:"execution_mode,omitempty"`
+	MakerLeg                   string                 `protobuf:"bytes,11,opt,name=maker_leg,json=makerLeg,proto3" json:"maker_leg,omitempty"`
+	Status                     string                 `protobuf:"bytes,12,opt,name=status,proto3" json:"status,omitempty"`
+	PositionNotional           string                 `protobuf:"bytes,13,opt,name=position_notional,json=positionNotional,proto3" json:"position_notional,omitempty"`
+	CurrentAskSpreadBps        string                 `protobuf:"bytes,14,opt,name=current_ask_spread_bps,json=currentAskSpreadBps,proto3" json:"current_ask_spread_bps,omitempty"`
+	CurrentBidSpreadBps        string                 `protobuf:"bytes,15,opt,name=current_bid_spread_bps,json=currentBidSpreadBps,proto3" json:"current_bid_spread_bps,omitempty"`
+	MarketDataStale            bool                   `protobuf:"varint,16,opt,name=market_data_stale,json=marketDataStale,proto3" json:"market_data_stale,omitempty"`
+	ErrorMessage               string                 `protobuf:"bytes,17,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	CreatedAt                  *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt                  *timestamppb.Timestamp `protobuf:"bytes,19,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	ClosedAt                   *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=closed_at,json=closedAt,proto3" json:"closed_at,omitempty"`
+	CumulativeTurnoverNotional string                 `protobuf:"bytes,21,opt,name=cumulative_turnover_notional,json=cumulativeTurnoverNotional,proto3" json:"cumulative_turnover_notional,omitempty"`
+	ConsecutiveFailures        int32                  `protobuf:"varint,22,opt,name=consecutive_failures,json=consecutiveFailures,proto3" json:"consecutive_failures,omitempty"`
+	NextRetryAt                *timestamppb.Timestamp `protobuf:"bytes,23,opt,name=next_retry_at,json=nextRetryAt,proto3" json:"next_retry_at,omitempty"`
+	PositionUncertain          bool                   `protobuf:"varint,24,opt,name=position_uncertain,json=positionUncertain,proto3" json:"position_uncertain,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *ArbitrageCombination) Reset() {
@@ -2170,9 +2174,9 @@ func (x *ArbitrageCombination) GetStatus() string {
 	return ""
 }
 
-func (x *ArbitrageCombination) GetCompletedNotional() string {
+func (x *ArbitrageCombination) GetPositionNotional() string {
 	if x != nil {
-		return x.CompletedNotional
+		return x.PositionNotional
 	}
 	return ""
 }
@@ -2224,6 +2228,34 @@ func (x *ArbitrageCombination) GetClosedAt() *timestamppb.Timestamp {
 		return x.ClosedAt
 	}
 	return nil
+}
+
+func (x *ArbitrageCombination) GetCumulativeTurnoverNotional() string {
+	if x != nil {
+		return x.CumulativeTurnoverNotional
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetConsecutiveFailures() int32 {
+	if x != nil {
+		return x.ConsecutiveFailures
+	}
+	return 0
+}
+
+func (x *ArbitrageCombination) GetNextRetryAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.NextRetryAt
+	}
+	return nil
+}
+
+func (x *ArbitrageCombination) GetPositionUncertain() bool {
+	if x != nil {
+		return x.PositionUncertain
+	}
+	return false
 }
 
 type CreateArbitrageCombinationRequest struct {
@@ -2542,6 +2574,9 @@ type ArbitrageExecution struct {
 	ErrorMessage       string                 `protobuf:"bytes,8,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
 	CreatedAt          *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt          *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	RequestedNotional  string                 `protobuf:"bytes,11,opt,name=requested_notional,json=requestedNotional,proto3" json:"requested_notional,omitempty"`
+	PositionEffect     string                 `protobuf:"bytes,12,opt,name=position_effect,json=positionEffect,proto3" json:"position_effect,omitempty"`
+	ReduceOnly         bool                   `protobuf:"varint,13,opt,name=reduce_only,json=reduceOnly,proto3" json:"reduce_only,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -2644,6 +2679,27 @@ func (x *ArbitrageExecution) GetUpdatedAt() *timestamppb.Timestamp {
 		return x.UpdatedAt
 	}
 	return nil
+}
+
+func (x *ArbitrageExecution) GetRequestedNotional() string {
+	if x != nil {
+		return x.RequestedNotional
+	}
+	return ""
+}
+
+func (x *ArbitrageExecution) GetPositionEffect() string {
+	if x != nil {
+		return x.PositionEffect
+	}
+	return ""
+}
+
+func (x *ArbitrageExecution) GetReduceOnly() bool {
+	if x != nil {
+		return x.ReduceOnly
+	}
+	return false
 }
 
 type ArbitrageEvent struct {
@@ -3149,7 +3205,7 @@ const file_trader_v1_trader_proto_rawDesc = "" +
 	"\n" +
 	"base_asset\x18\b \x01(\tR\tbaseAsset\x12\x1f\n" +
 	"\vquote_asset\x18\t \x01(\tR\n" +
-	"quoteAsset\"\xf6\x06\n" +
+	"quoteAsset\"\xd8\b\n" +
 	"\x14ArbitrageCombination\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\x12,\n" +
@@ -3163,8 +3219,8 @@ const file_trader_v1_trader_proto_rawDesc = "" +
 	"\x0eexecution_mode\x18\n" +
 	" \x01(\tR\rexecutionMode\x12\x1b\n" +
 	"\tmaker_leg\x18\v \x01(\tR\bmakerLeg\x12\x16\n" +
-	"\x06status\x18\f \x01(\tR\x06status\x12-\n" +
-	"\x12completed_notional\x18\r \x01(\tR\x11completedNotional\x123\n" +
+	"\x06status\x18\f \x01(\tR\x06status\x12+\n" +
+	"\x11position_notional\x18\r \x01(\tR\x10positionNotional\x123\n" +
 	"\x16current_ask_spread_bps\x18\x0e \x01(\tR\x13currentAskSpreadBps\x123\n" +
 	"\x16current_bid_spread_bps\x18\x0f \x01(\tR\x13currentBidSpreadBps\x12*\n" +
 	"\x11market_data_stale\x18\x10 \x01(\bR\x0fmarketDataStale\x12#\n" +
@@ -3173,7 +3229,11 @@ const file_trader_v1_trader_proto_rawDesc = "" +
 	"created_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\x13 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x127\n" +
-	"\tclosed_at\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\bclosedAt\"\xca\x04\n" +
+	"\tclosed_at\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\bclosedAt\x12@\n" +
+	"\x1ccumulative_turnover_notional\x18\x15 \x01(\tR\x1acumulativeTurnoverNotional\x121\n" +
+	"\x14consecutive_failures\x18\x16 \x01(\x05R\x13consecutiveFailures\x12>\n" +
+	"\rnext_retry_at\x18\x17 \x01(\v2\x1a.google.protobuf.TimestampR\vnextRetryAt\x12-\n" +
+	"\x12position_uncertain\x18\x18 \x01(\bR\x11positionUncertain\"\xca\x04\n" +
 	"!CreateArbitrageCombinationRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x126\n" +
 	"\x18leg_a_trading_account_id\x18\x02 \x01(\x03R\x14legATradingAccountId\x12-\n" +
@@ -3198,7 +3258,7 @@ const file_trader_v1_trader_proto_rawDesc = "" +
 	"\vcombination\x18\x01 \x01(\v2\x1f.trader.v1.ArbitrageCombinationR\vcombination\x12(\n" +
 	"\x06orders\x18\x02 \x03(\v2\x10.trader.v1.OrderR\x06orders\x12J\n" +
 	"\x11recent_executions\x18\x03 \x03(\v2\x1d.trader.v1.ArbitrageExecutionR\x10recentExecutions\x12>\n" +
-	"\rrecent_events\x18\x04 \x03(\v2\x19.trader.v1.ArbitrageEventR\frecentEvents\"\xae\x03\n" +
+	"\rrecent_events\x18\x04 \x03(\v2\x19.trader.v1.ArbitrageEventR\frecentEvents\"\xa7\x04\n" +
 	"\x12ArbitrageExecution\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1c\n" +
 	"\tdirection\x18\x02 \x01(\tR\tdirection\x12\x16\n" +
@@ -3212,7 +3272,11 @@ const file_trader_v1_trader_proto_rawDesc = "" +
 	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\x89\x01\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12-\n" +
+	"\x12requested_notional\x18\v \x01(\tR\x11requestedNotional\x12'\n" +
+	"\x0fposition_effect\x18\f \x01(\tR\x0epositionEffect\x12\x1f\n" +
+	"\vreduce_only\x18\r \x01(\bR\n" +
+	"reduceOnly\"\x89\x01\n" +
 	"\x0eArbitrageEvent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x18\n" +
@@ -3339,50 +3403,51 @@ var file_trader_v1_trader_proto_depIdxs = []int32{
 	35, // 28: trader.v1.ArbitrageCombination.created_at:type_name -> google.protobuf.Timestamp
 	35, // 29: trader.v1.ArbitrageCombination.updated_at:type_name -> google.protobuf.Timestamp
 	35, // 30: trader.v1.ArbitrageCombination.closed_at:type_name -> google.protobuf.Timestamp
-	24, // 31: trader.v1.CreateArbitrageCombinationResponse.combination:type_name -> trader.v1.ArbitrageCombination
-	24, // 32: trader.v1.GetArbitrageCombinationResponse.combination:type_name -> trader.v1.ArbitrageCombination
-	1,  // 33: trader.v1.GetArbitrageCombinationResponse.orders:type_name -> trader.v1.Order
-	29, // 34: trader.v1.GetArbitrageCombinationResponse.recent_executions:type_name -> trader.v1.ArbitrageExecution
-	30, // 35: trader.v1.GetArbitrageCombinationResponse.recent_events:type_name -> trader.v1.ArbitrageEvent
-	35, // 36: trader.v1.ArbitrageExecution.created_at:type_name -> google.protobuf.Timestamp
-	35, // 37: trader.v1.ArbitrageExecution.updated_at:type_name -> google.protobuf.Timestamp
-	35, // 38: trader.v1.ArbitrageEvent.created_at:type_name -> google.protobuf.Timestamp
-	24, // 39: trader.v1.ListArbitrageCombinationsResponse.items:type_name -> trader.v1.ArbitrageCombination
-	35, // 40: trader.v1.ListArbitrageCombinationsResponse.server_time:type_name -> google.protobuf.Timestamp
-	24, // 41: trader.v1.CloseArbitrageCombinationResponse.combination:type_name -> trader.v1.ArbitrageCombination
-	3,  // 42: trader.v1.TraderService.ListInstruments:input_type -> trader.v1.ListInstrumentsRequest
-	5,  // 43: trader.v1.TraderService.PlaceOrder:input_type -> trader.v1.PlaceOrderRequest
-	7,  // 44: trader.v1.TraderService.GetOrder:input_type -> trader.v1.GetOrderRequest
-	9,  // 45: trader.v1.TraderService.ListOrders:input_type -> trader.v1.ListOrdersRequest
-	11, // 46: trader.v1.TraderService.CancelOrder:input_type -> trader.v1.CancelOrderRequest
-	13, // 47: trader.v1.TraderService.CreateTwap:input_type -> trader.v1.CreateTwapRequest
-	15, // 48: trader.v1.TraderService.GetTwap:input_type -> trader.v1.GetTwapRequest
-	17, // 49: trader.v1.TraderService.ListTwaps:input_type -> trader.v1.ListTwapsRequest
-	19, // 50: trader.v1.TraderService.ListTwapOrders:input_type -> trader.v1.ListTwapOrdersRequest
-	21, // 51: trader.v1.TraderService.CancelTwap:input_type -> trader.v1.CancelTwapRequest
-	25, // 52: trader.v1.TraderService.CreateArbitrageCombination:input_type -> trader.v1.CreateArbitrageCombinationRequest
-	27, // 53: trader.v1.TraderService.GetArbitrageCombination:input_type -> trader.v1.GetArbitrageCombinationRequest
-	31, // 54: trader.v1.TraderService.ListArbitrageCombinations:input_type -> trader.v1.ListArbitrageCombinationsRequest
-	33, // 55: trader.v1.TraderService.CloseArbitrageCombination:input_type -> trader.v1.CloseArbitrageCombinationRequest
-	4,  // 56: trader.v1.TraderService.ListInstruments:output_type -> trader.v1.ListInstrumentsResponse
-	6,  // 57: trader.v1.TraderService.PlaceOrder:output_type -> trader.v1.PlaceOrderResponse
-	8,  // 58: trader.v1.TraderService.GetOrder:output_type -> trader.v1.GetOrderResponse
-	10, // 59: trader.v1.TraderService.ListOrders:output_type -> trader.v1.ListOrdersResponse
-	12, // 60: trader.v1.TraderService.CancelOrder:output_type -> trader.v1.CancelOrderResponse
-	14, // 61: trader.v1.TraderService.CreateTwap:output_type -> trader.v1.CreateTwapResponse
-	16, // 62: trader.v1.TraderService.GetTwap:output_type -> trader.v1.GetTwapResponse
-	18, // 63: trader.v1.TraderService.ListTwaps:output_type -> trader.v1.ListTwapsResponse
-	20, // 64: trader.v1.TraderService.ListTwapOrders:output_type -> trader.v1.ListTwapOrdersResponse
-	22, // 65: trader.v1.TraderService.CancelTwap:output_type -> trader.v1.CancelTwapResponse
-	26, // 66: trader.v1.TraderService.CreateArbitrageCombination:output_type -> trader.v1.CreateArbitrageCombinationResponse
-	28, // 67: trader.v1.TraderService.GetArbitrageCombination:output_type -> trader.v1.GetArbitrageCombinationResponse
-	32, // 68: trader.v1.TraderService.ListArbitrageCombinations:output_type -> trader.v1.ListArbitrageCombinationsResponse
-	34, // 69: trader.v1.TraderService.CloseArbitrageCombination:output_type -> trader.v1.CloseArbitrageCombinationResponse
-	56, // [56:70] is the sub-list for method output_type
-	42, // [42:56] is the sub-list for method input_type
-	42, // [42:42] is the sub-list for extension type_name
-	42, // [42:42] is the sub-list for extension extendee
-	0,  // [0:42] is the sub-list for field type_name
+	35, // 31: trader.v1.ArbitrageCombination.next_retry_at:type_name -> google.protobuf.Timestamp
+	24, // 32: trader.v1.CreateArbitrageCombinationResponse.combination:type_name -> trader.v1.ArbitrageCombination
+	24, // 33: trader.v1.GetArbitrageCombinationResponse.combination:type_name -> trader.v1.ArbitrageCombination
+	1,  // 34: trader.v1.GetArbitrageCombinationResponse.orders:type_name -> trader.v1.Order
+	29, // 35: trader.v1.GetArbitrageCombinationResponse.recent_executions:type_name -> trader.v1.ArbitrageExecution
+	30, // 36: trader.v1.GetArbitrageCombinationResponse.recent_events:type_name -> trader.v1.ArbitrageEvent
+	35, // 37: trader.v1.ArbitrageExecution.created_at:type_name -> google.protobuf.Timestamp
+	35, // 38: trader.v1.ArbitrageExecution.updated_at:type_name -> google.protobuf.Timestamp
+	35, // 39: trader.v1.ArbitrageEvent.created_at:type_name -> google.protobuf.Timestamp
+	24, // 40: trader.v1.ListArbitrageCombinationsResponse.items:type_name -> trader.v1.ArbitrageCombination
+	35, // 41: trader.v1.ListArbitrageCombinationsResponse.server_time:type_name -> google.protobuf.Timestamp
+	24, // 42: trader.v1.CloseArbitrageCombinationResponse.combination:type_name -> trader.v1.ArbitrageCombination
+	3,  // 43: trader.v1.TraderService.ListInstruments:input_type -> trader.v1.ListInstrumentsRequest
+	5,  // 44: trader.v1.TraderService.PlaceOrder:input_type -> trader.v1.PlaceOrderRequest
+	7,  // 45: trader.v1.TraderService.GetOrder:input_type -> trader.v1.GetOrderRequest
+	9,  // 46: trader.v1.TraderService.ListOrders:input_type -> trader.v1.ListOrdersRequest
+	11, // 47: trader.v1.TraderService.CancelOrder:input_type -> trader.v1.CancelOrderRequest
+	13, // 48: trader.v1.TraderService.CreateTwap:input_type -> trader.v1.CreateTwapRequest
+	15, // 49: trader.v1.TraderService.GetTwap:input_type -> trader.v1.GetTwapRequest
+	17, // 50: trader.v1.TraderService.ListTwaps:input_type -> trader.v1.ListTwapsRequest
+	19, // 51: trader.v1.TraderService.ListTwapOrders:input_type -> trader.v1.ListTwapOrdersRequest
+	21, // 52: trader.v1.TraderService.CancelTwap:input_type -> trader.v1.CancelTwapRequest
+	25, // 53: trader.v1.TraderService.CreateArbitrageCombination:input_type -> trader.v1.CreateArbitrageCombinationRequest
+	27, // 54: trader.v1.TraderService.GetArbitrageCombination:input_type -> trader.v1.GetArbitrageCombinationRequest
+	31, // 55: trader.v1.TraderService.ListArbitrageCombinations:input_type -> trader.v1.ListArbitrageCombinationsRequest
+	33, // 56: trader.v1.TraderService.CloseArbitrageCombination:input_type -> trader.v1.CloseArbitrageCombinationRequest
+	4,  // 57: trader.v1.TraderService.ListInstruments:output_type -> trader.v1.ListInstrumentsResponse
+	6,  // 58: trader.v1.TraderService.PlaceOrder:output_type -> trader.v1.PlaceOrderResponse
+	8,  // 59: trader.v1.TraderService.GetOrder:output_type -> trader.v1.GetOrderResponse
+	10, // 60: trader.v1.TraderService.ListOrders:output_type -> trader.v1.ListOrdersResponse
+	12, // 61: trader.v1.TraderService.CancelOrder:output_type -> trader.v1.CancelOrderResponse
+	14, // 62: trader.v1.TraderService.CreateTwap:output_type -> trader.v1.CreateTwapResponse
+	16, // 63: trader.v1.TraderService.GetTwap:output_type -> trader.v1.GetTwapResponse
+	18, // 64: trader.v1.TraderService.ListTwaps:output_type -> trader.v1.ListTwapsResponse
+	20, // 65: trader.v1.TraderService.ListTwapOrders:output_type -> trader.v1.ListTwapOrdersResponse
+	22, // 66: trader.v1.TraderService.CancelTwap:output_type -> trader.v1.CancelTwapResponse
+	26, // 67: trader.v1.TraderService.CreateArbitrageCombination:output_type -> trader.v1.CreateArbitrageCombinationResponse
+	28, // 68: trader.v1.TraderService.GetArbitrageCombination:output_type -> trader.v1.GetArbitrageCombinationResponse
+	32, // 69: trader.v1.TraderService.ListArbitrageCombinations:output_type -> trader.v1.ListArbitrageCombinationsResponse
+	34, // 70: trader.v1.TraderService.CloseArbitrageCombination:output_type -> trader.v1.CloseArbitrageCombinationResponse
+	57, // [57:71] is the sub-list for method output_type
+	43, // [43:57] is the sub-list for method input_type
+	43, // [43:43] is the sub-list for extension type_name
+	43, // [43:43] is the sub-list for extension extendee
+	0,  // [0:43] is the sub-list for field type_name
 }
 
 func init() { file_trader_v1_trader_proto_init() }

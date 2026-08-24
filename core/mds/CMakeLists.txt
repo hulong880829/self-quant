@@ -356,7 +356,7 @@ if(MDS_BUILD_TESTS)
   add_test(NAME mds_venue_connection_sharding_loopback_tests
     COMMAND mds_venue_connection_sharding_loopback_tests)
   set_tests_properties(
-    mds_venue_connection_sharding_loopback_tests PROPERTIES TIMEOUT 20)
+    mds_venue_connection_sharding_loopback_tests PROPERTIES TIMEOUT 30)
   add_executable(mds_polymarket_protocol_tests
     tests/polymarket_protocol_tests.cpp)
   target_include_directories(mds_polymarket_protocol_tests PRIVATE

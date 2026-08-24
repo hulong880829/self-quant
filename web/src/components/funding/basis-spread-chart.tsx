@@ -34,8 +34,14 @@ export function resetBasisSpreadCacheForTests() {
   historyCache.clear();
 }
 
-function cacheKey(venue: string, baseAsset: string, quoteAsset: string, range: BasisSpreadRange) {
-  return `${venue.toLowerCase()}|${baseAsset.toUpperCase()}|${quoteAsset.toUpperCase()}|${range}`;
+function cacheKey(
+  venue: string,
+  baseAsset: string,
+  quoteAsset: string,
+  range: BasisSpreadRange,
+  compareVenue?: string,
+) {
+  return `${venue.toLowerCase()}|${(compareVenue ?? "").toLowerCase()}|${baseAsset.toUpperCase()}|${quoteAsset.toUpperCase()}|${range}`;
 }
 
 function formatBps(value: number) {
@@ -65,21 +71,28 @@ export function BasisSpreadPanel({
   venue,
   baseAsset,
   quoteAsset,
+  compareVenue,
 }: {
   venue: string;
   baseAsset: string;
   quoteAsset: string;
+  compareVenue?: string;
 }) {
   const [range, setRange] = React.useState<BasisSpreadRange>("24h");
   const [history, setHistory] = React.useState<BasisSpreadHistory | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const etagRef = React.useRef<string | null>(null);
   const retryControllerRef = React.useRef<AbortController | null>(null);
+  const crossVenue = Boolean(compareVenue);
+  const title = crossVenue ? "跨所 Best Ask 价差" : "期现 Best Ask 价差";
+  const formula = crossVenue
+    ? `${venue} Ask / ${compareVenue} Ask - 1 · ${baseAsset}/${quoteAsset}`
+    : `Perpetual Ask / Spot Ask - 1 · ${baseAsset}/${quoteAsset}`;
 
   const load = React.useCallback(
     async (signal: AbortSignal) => {
       await Promise.resolve();
-      const key = cacheKey(venue, baseAsset, quoteAsset, range);
+      const key = cacheKey(venue, baseAsset, quoteAsset, range, compareVenue);
       const existing = historyCache.get(key);
       if (existing && Date.now() - existing.loadedAt < CACHE_TTL_MS) {
         etagRef.current = existing.etag;
@@ -95,6 +108,7 @@ export function BasisSpreadPanel({
           range,
           etagRef.current,
           signal,
+          compareVenue,
         );
         if (signal.aborted) return;
         if (result.status === "unchanged") {
@@ -117,12 +131,13 @@ export function BasisSpreadPanel({
         setError(reason instanceof Error ? reason.message : "期现价差加载失败");
       }
     },
-    [venue, baseAsset, quoteAsset, range],
+    [venue, baseAsset, quoteAsset, range, compareVenue],
   );
 
   React.useEffect(() => {
     const controller = new AbortController();
-    etagRef.current = historyCache.get(cacheKey(venue, baseAsset, quoteAsset, range))?.etag ?? null;
+    etagRef.current =
+      historyCache.get(cacheKey(venue, baseAsset, quoteAsset, range, compareVenue))?.etag ?? null;
     const immediate = window.setTimeout(() => {
       void load(controller.signal);
     }, 0);
@@ -135,20 +150,18 @@ export function BasisSpreadPanel({
       window.clearTimeout(immediate);
       window.clearInterval(timer);
     };
-  }, [load, venue, baseAsset, quoteAsset, range]);
+  }, [load, venue, baseAsset, quoteAsset, range, compareVenue]);
 
   return (
     <section
       className="space-y-3"
-      aria-label="期现 Best Ask 价差"
+      aria-label={title}
       style={{ minHeight: DETAIL_HEIGHT_PX - 48 }}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h3 className="text-sm font-medium">期现 Best Ask 价差</h3>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">
-            Perpetual Ask / Spot Ask - 1 · {baseAsset}/{quoteAsset}
-          </p>
+          <h3 className="text-sm font-medium">{title}</h3>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">{formula}</p>
         </div>
         <div className="flex items-center gap-1 rounded-md border bg-muted/40 p-0.5">
           {periods.map((item) => (
@@ -184,7 +197,7 @@ export function BasisSpreadPanel({
       {!history && !error ? (
         <div className="flex h-44 items-center justify-center text-xs text-muted-foreground">
           <LoaderCircle className="mr-2 size-3.5 animate-spin" />
-          加载期现价差
+          {crossVenue ? "加载跨所价差" : "加载期现价差"}
         </div>
       ) : error && !history ? (
         <div className="flex h-44 flex-col items-center justify-center gap-2 text-xs text-amber-600 dark:text-amber-300">
@@ -204,14 +217,14 @@ export function BasisSpreadPanel({
         </div>
       ) : history?.availability === "unavailable" ? (
         <div className="flex h-44 items-center justify-center text-xs text-muted-foreground">
-          该交易所暂无对应 Spot BBO 数据
+          {crossVenue ? "该组合暂无对应永续 BBO 数据" : "该交易所暂无对应 Spot BBO 数据"}
         </div>
       ) : history && history.points.length === 0 ? (
         <div className="flex h-44 items-center justify-center text-xs text-muted-foreground">
           当前周期暂无配对价差
         </div>
       ) : history ? (
-        <SpreadLineChart history={history} />
+        <SpreadLineChart history={history} label={title} />
       ) : null}
     </section>
   );
@@ -226,7 +239,13 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function SpreadLineChart({ history }: { history: BasisSpreadHistory }) {
+function SpreadLineChart({
+  history,
+  label,
+}: {
+  history: BasisSpreadHistory;
+  label: string;
+}) {
   const width = 920;
   const height = 188;
   const margin = { top: 12, right: 16, bottom: 28, left: 48 };
@@ -269,7 +288,7 @@ function SpreadLineChart({ history }: { history: BasisSpreadHistory }) {
       className="h-44 w-full"
       overflow="hidden"
       role="img"
-      aria-label="期现 Best Ask 价差走势，北京时间，缺失时段断线显示"
+      aria-label={`${label}走势，北京时间，缺失时段断线显示`}
     >
       <defs>
         <clipPath id={clipId}>

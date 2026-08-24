@@ -16,6 +16,8 @@ int main() {
   assert(!runtime.failed());
   assert(runtime.error().empty());
   assert(!output.str().empty());
+  assert(output.str().find("recovery_deadline_ms=30000") !=
+         std::string::npos);
   assert(output.str().find("max_continuous_recovery_ms=300000") !=
          std::string::npos);
   assert(!runtime.resolved_segments().empty());

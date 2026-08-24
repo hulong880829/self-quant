@@ -2,7 +2,9 @@
 #include "../examples/shm_consumer.cpp"
 #undef main
 
+#include <array>
 #include <cassert>
+#include <chrono>
 
 namespace {
 
@@ -106,10 +108,68 @@ void unknown_types_advance_transport_only() {
          mds::consume::SequenceError::Bus);
 }
 
+void aggregate_overrun_retains_last_good() {
+  const auto unique =
+      std::to_string(::getpid()) + "." +
+      std::to_string(std::chrono::steady_clock::now()
+                         .time_since_epoch()
+                         .count());
+  transport::RingOptions options;
+  options.name = "/mds.consumer.catchup." + unique;
+  options.ring_bytes = 4096;
+  options.max_record_bytes = 512;
+  options.max_readers = 2;
+  options.unlink_on_close = true;
+  auto opened = transport::SharedRing::open(options);
+  assert(opened);
+
+  Segment segment;
+  segment.name = options.name;
+  segment.ring = std::move(opened.value);
+  segment.aggregate_topic = consume::AggregateTopic::AggBbo;
+  segment.latest_state = std::make_unique<consume::AggregateLatestState>(0);
+  const auto marker =
+      transport::process_start_marker(static_cast<std::uint32_t>(::getpid()));
+  assert(register_reader(segment, marker));
+
+  wire::AggBboRecord record{};
+  record.raw_cross_bps = 7;
+  segment.latest_state->publish(
+      record, {.ring_epoch = segment.epoch,
+               .ring_sequence = 10,
+               .receive_mono_ns = 100});
+  segment.last_validated_ring_sequence = 10;
+
+  std::array<std::byte, 400> payload{};
+  for (std::size_t index = 0; index < 32; ++index) {
+    assert(segment.ring.publish(999, payload));
+  }
+  transport::ReadLease lease;
+  const auto read_error = segment.ring.try_read(segment.reader, lease);
+  assert(read_error == mds::api::ErrorCode::SubscriptionRejected ||
+         read_error == mds::api::ErrorCode::RecordOverwritten);
+  assert(resync_after_overrun(segment, "test-overrun"));
+
+  consume::AggBboSnapshot snapshot{};
+  assert(segment.latest_state->snapshot(snapshot));
+  assert(snapshot.status.ready);
+  assert(snapshot.status.receive.ring_sequence == 10);
+  assert(snapshot.cross_window.sample_count == 0);
+  assert(segment.aggregate_catchups == 1);
+  assert(segment.aggregate_window_gaps == 1);
+
+  invalidate_and_resync(segment, "test-corruption");
+  assert(segment.latest_state->snapshot(snapshot));
+  assert(!snapshot.status.ready);
+  assert(segment.aggregate_hard_resets == 1);
+  (void)segment.ring.unregister_reader(segment.reader);
+}
+
 }  // namespace
 
 int main() {
   build_interleaved_books();
   unknown_types_advance_transport_only();
+  aggregate_overrun_retains_last_good();
   return 0;
 }

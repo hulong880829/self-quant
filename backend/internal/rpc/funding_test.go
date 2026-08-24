@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	fundingv1 "selfquant/backend/gen/funding/v1"
 	"selfquant/backend/internal/funding"
 	"selfquant/backend/internal/funding/ranking"
@@ -147,5 +149,50 @@ func TestFundingServerFiltersRankingSnapshot(t *testing.T) {
 	if item.GetGlobalSymbol() != "BTCUSDT" || item.GetRank() != 1 ||
 		item.GetLongLeg().GetExchange() != "binance" {
 		t.Fatalf("item=%+v", item)
+	}
+	if response.GetStatus() != "ready" || response.GetGeneration() == 0 ||
+		response.GetLastSuccessfulAt() == nil || response.GetDataThrough() == nil {
+		t.Fatalf("snapshot metadata=%+v", response)
+	}
+}
+
+func TestListFundingOpportunitiesHonorsCanceledContext(t *testing.T) {
+	server := NewFundingServer(funding.NewSnapshotStore(), nil, time.Minute, ranking.NewSnapshotStore())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := server.ListFundingOpportunities(
+		ctx, &fundingv1.ListFundingOpportunitiesRequest{Period: "1h"},
+	)
+	if status.Code(err) != codes.Canceled {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func BenchmarkListFundingOpportunitiesMemory(b *testing.B) {
+	rankings := ranking.NewSnapshotStore()
+	now := time.Now().UTC()
+	items := make([]ranking.Opportunity, 1000)
+	for index := range items {
+		items[index] = ranking.Opportunity{
+			Rank: index + 1, GlobalSymbol: "BTCUSDT", Period: ranking.Period1h,
+			Long: ranking.Leg{
+				Exchange: "binance", SourceUpdatedAt: now, PositionNotionalUSD: 1_000_000,
+			},
+			Short: ranking.Leg{
+				Exchange: "okx", SourceUpdatedAt: now, PositionNotionalUSD: 1_000_000,
+			},
+			MinPositionNotionalUSD: 1_000_000, MinTurnover24hUSD: 1_000_000,
+			UpdatedAt: now,
+		}
+	}
+	rankings.Replace(ranking.Period1h, items, now)
+	server := NewFundingServer(funding.NewSnapshotStore(), nil, time.Minute, rankings)
+	request := &fundingv1.ListFundingOpportunitiesRequest{Period: "1h", Limit: 200}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := server.ListFundingOpportunities(context.Background(), request); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

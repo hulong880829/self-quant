@@ -134,6 +134,12 @@ struct InstrumentMetadata {
   bool refine_book_tick{};
 };
 
+[[nodiscard]] bool decimal_to_turnover(std::string_view value,
+                                       std::uint64_t &turnover) noexcept;
+[[nodiscard]] bool decimal_product_to_turnover(
+    std::string_view quantity, std::string_view price,
+    std::uint64_t &turnover) noexcept;
+
 struct NormalizedEvent {
   AdapterEventType type{AdapterEventType::Ignored};
   std::array<char, 33> symbol{};
@@ -278,6 +284,17 @@ class VenueAdapter {
   metadata_request(std::span<const StreamRequest>) const {
     return metadata_request();
   }
+  [[nodiscard]] virtual HttpRequestSpec
+  discovery_metadata_request(std::string_view cursor) const {
+    (void)cursor;
+    return metadata_request();
+  }
+  virtual bool discovery_metadata_next_cursor(
+      std::string_view, std::string &cursor, std::string &error) {
+    cursor.clear();
+    error.clear();
+    return true;
+  }
   virtual bool build_metadata_request_batches(
       std::span<const StreamRequest> requests,
       std::vector<MetadataRequestBatch> &batches,
@@ -301,6 +318,16 @@ class VenueAdapter {
       std::string_view json, std::span<const StreamRequest> requests,
       std::vector<InstrumentMetadata> &metadata, std::string &error) {
     return parse_metadata(json, requests, metadata, error);
+  }
+  [[nodiscard]] virtual HttpRequestSpec
+  discovery_turnover_request() const {
+    return {};
+  }
+  virtual bool enrich_discovery_turnover(
+      std::string_view, std::span<InstrumentMetadata>,
+      std::string &error) {
+    error = "24h turnover discovery is unsupported";
+    return false;
   }
 
   [[nodiscard]] virtual bool needs_rest_snapshot() const noexcept {

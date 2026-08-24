@@ -12,7 +12,7 @@ func TestTraderArbitrageDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if config.ArbitrageScheduleInterval != 100*time.Millisecond ||
-		config.ArbitrageBBOStale != 2*time.Second ||
+		config.ArbitrageBBOStale != 60*time.Second ||
 		config.ArbitrageRepriceTicks != 2 ||
 		!config.ArbitrageOrderStreamEnabled ||
 		config.OrderStreamReconnectInitial != 250*time.Millisecond ||

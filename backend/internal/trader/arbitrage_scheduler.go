@@ -49,7 +49,7 @@ type arbitrageRuntime struct {
 	nextRenew   time.Time
 	lastPersist time.Time
 	lastSignal  string
-	resumed     map[string]bool
+	resumed     bool
 }
 
 func NewArbitrageScheduler(
@@ -163,7 +163,6 @@ func (s *ArbitrageScheduler) subscribe(
 	return &arbitrageRuntime{
 		combination: item, cancel: cancel, legA: subA, legB: subB,
 		nextRenew: time.Now().UTC().Add(s.lease / 3),
-		resumed:   make(map[string]bool),
 	}, nil
 }
 
@@ -235,6 +234,19 @@ func (s *ArbitrageScheduler) process(ctx context.Context, runtime *arbitrageRunt
 	if s.resumeActive(ctx, runtime, bboA, bboB) {
 		return
 	}
+	if refreshed, err := s.store.GetArbitrageCombinationByOwner(
+		ctx, runtime.combination.OwnerUsername, runtime.combination.ID,
+	); err == nil {
+		runtime.combination = refreshed
+	}
+	if runtime.combination.PositionUncertain {
+		return
+	}
+	if !runtime.combination.NextRetryAt.IsZero() &&
+		!runtime.combination.NextRetryAt.Equal(time.Unix(0, 0).UTC()) &&
+		now.Before(runtime.combination.NextRetryAt) {
+		return
+	}
 	askThreshold, _ := decimal.NewFromString(runtime.combination.AskThresholdBps)
 	bidThreshold, _ := decimal.NewFromString(runtime.combination.BidThresholdBps)
 	direction := arbitrageTriggered(ask, bid, askThreshold, bidThreshold)
@@ -242,11 +254,19 @@ func (s *ArbitrageScheduler) process(ctx context.Context, runtime *arbitrageRunt
 		runtime.lastSignal = ""
 		return
 	}
+	position, _ := decimal.NewFromString(runtime.combination.PositionNotional)
+	target, _ := decimal.NewFromString(runtime.combination.TargetNotional)
+	order, _ := decimal.NewFromString(runtime.combination.OrderNotional)
+	plan, ok := planArbitragePosition(position, target, order, direction)
+	if !ok {
+		return
+	}
 	s.triggers.Add(1)
 	if s.dryRun {
 		if runtime.lastSignal != direction {
 			_ = s.store.AppendArbitrageEvent(ctx, runtime.combination.ID, "", "dry_run_trigger", map[string]any{
 				"direction": direction, "askSpreadBps": ask.String(), "bidSpreadBps": bid.String(),
+				"positionEffect": plan.Effect, "requestedNotional": plan.RequestedNotional.String(),
 			})
 			s.logger.Info("arbitrage dry-run trigger",
 				"combination_id", runtime.combination.ID, "direction", direction,
@@ -261,7 +281,9 @@ func (s *ArbitrageScheduler) process(ctx context.Context, runtime *arbitrageRunt
 		TriggerAskSpread: ask.String(), TriggerBidSpread: bid.String(),
 		TriggerLegABid: aBid.String(), TriggerLegAAsk: aAsk.String(),
 		TriggerLegBBid: bBid.String(), TriggerLegBAsk: bAsk.String(),
-		TargetBaseQuantity: "0", LegAFilledQuantity: "0", LegBFilledQuantity: "0",
+		TargetBaseQuantity: "0", RequestedNotional: plan.RequestedNotional.String(),
+		PositionEffect: plan.Effect, ReduceOnly: plan.ReduceOnly,
+		LegAFilledQuantity: "0", LegBFilledQuantity: "0",
 		DeltaNotional: "0",
 	})
 	if err != nil || !claimed || s.runner == nil {
@@ -323,42 +345,42 @@ func (s *ArbitrageScheduler) resumeActive(
 	runtime *arbitrageRuntime,
 	bboA, bboB marketdata.BBO,
 ) bool {
-	active := false
-	for _, direction := range []string{"ask", "bid"} {
-		if runtime.resumed[direction] {
-			continue
-		}
-		execution, err := s.store.GetActiveArbitrageExecution(
-			ctx, runtime.combination.ID, direction,
-		)
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				runtime.resumed[direction] = true
-			}
-			continue
-		}
-		active = true
-		runtime.resumed[direction] = true
-		if s.runner == nil {
-			continue
-		}
-		select {
-		case s.workerGate <- struct{}{}:
-			if !s.acquireExecutionCapacity(runtime.combination) {
-				<-s.workerGate
-				runtime.resumed[direction] = false
-				continue
-			}
-			go func(execution ArbitrageExecution) {
-				defer func() { <-s.workerGate }()
-				defer s.releaseExecutionCapacity(runtime.combination)
-				s.runner.Execute(ctx, runtime.combination, execution, bboA, bboB)
-			}(execution)
-		default:
-			runtime.resumed[direction] = false
-		}
+	if runtime.resumed {
+		return false
 	}
-	return active
+	execution, err := s.store.GetActiveArbitrageExecution(ctx, runtime.combination.ID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			runtime.resumed = true
+		}
+		return false
+	}
+	now := time.Now().UTC()
+	if !runtime.combination.NextRetryAt.IsZero() &&
+		!runtime.combination.NextRetryAt.Equal(time.Unix(0, 0).UTC()) &&
+		now.Before(runtime.combination.NextRetryAt) {
+		return true
+	}
+	if s.runner == nil {
+		runtime.resumed = true
+		return true
+	}
+	select {
+	case s.workerGate <- struct{}{}:
+		if !s.acquireExecutionCapacity(runtime.combination) {
+			<-s.workerGate
+			return true
+		}
+		runtime.resumed = true
+		go func(execution ArbitrageExecution) {
+			defer func() { <-s.workerGate }()
+			defer s.releaseExecutionCapacity(runtime.combination)
+			s.runner.Execute(ctx, runtime.combination, execution, bboA, bboB)
+		}(execution)
+		return true
+	default:
+		return true
+	}
 }
 
 func (s *ArbitrageScheduler) acquireExecutionCapacity(item ArbitrageCombination) bool {

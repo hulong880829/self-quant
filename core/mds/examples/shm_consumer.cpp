@@ -291,7 +291,15 @@ struct Segment {
   bool have_live_agg_book{};
   consume::AggregateTopic aggregate_topic{consume::AggregateTopic::Unsupported};
   std::unique_ptr<consume::AggregateLatestState> latest_state;
+  consume::AggregateWatchdog aggregate_watchdog;
   std::uint64_t last_validated_ring_sequence{};
+  std::uint64_t last_heartbeat_ns{};
+  std::uint64_t records_drained{};
+  std::uint64_t drain_limit_hits{};
+  std::uint64_t aggregate_catchups{};
+  std::uint64_t aggregate_hard_resets{};
+  std::uint64_t aggregate_stale_events{};
+  std::uint64_t aggregate_window_gaps{};
 };
 
 SnapshotView &snapshot_for(Segment &segment,
@@ -952,14 +960,15 @@ bool parse_options(int argc, char **argv, Options &options) {
 }
 
 bool register_reader(Segment &segment, std::uint64_t marker) {
-  auto registered =
-      segment.ring.register_reader(marker, utils::runtime::Timestamp::NowMono());
+  const auto now = utils::runtime::Timestamp::NowMono();
+  auto registered = segment.ring.register_reader(marker, now);
   if (!registered) {
     std::cerr << segment.name << ": " << registered.message << '\n';
     return false;
   }
   segment.reader = registered.value;
   segment.epoch = segment.ring.epoch();
+  segment.last_heartbeat_ns = now;
   segment.sequences.reset();
   return true;
 }
@@ -970,6 +979,7 @@ void clear_live_aggregate(Segment &segment) noexcept {
   segment.live_agg_bbo_ring_sequence = 0;
   segment.live_agg_book_ring_sequence = 0;
   if (segment.latest_state != nullptr) {
+    segment.aggregate_watchdog.on_hard_reset();
     segment.latest_state->reset(
         segment.aggregate_topic,
         {.ring_epoch = segment.ring.epoch(),
@@ -980,6 +990,26 @@ void clear_live_aggregate(Segment &segment) noexcept {
   segment.last_validated_ring_sequence = 0;
 }
 
+bool catch_up_aggregate(Segment &segment, std::string_view reason) {
+  if (segment.aggregate_topic == consume::AggregateTopic::Unsupported ||
+      segment.latest_state == nullptr) {
+    return false;
+  }
+  segment.sequences.reset();
+  if (segment.aggregate_topic == consume::AggregateTopic::AggBbo) {
+    segment.latest_state->interrupt_bbo_window();
+    ++segment.aggregate_window_gaps;
+  }
+  const auto resynced = segment.ring.resync_to_latest(segment.reader);
+  if (!resynced) {
+    return false;
+  }
+  ++segment.aggregate_catchups;
+  std::cerr << segment.name << ": aggregate catch-up reason=" << reason
+            << " retained=last-good\n";
+  return true;
+}
+
 bool recover_reader(Segment &segment, std::uint64_t marker,
                     bool epoch_changed) {
   (void)segment.ring.unregister_reader(segment.reader);
@@ -987,6 +1017,9 @@ bool recover_reader(Segment &segment, std::uint64_t marker,
   segment.instruments.clear();
   segment.selected_instruments.clear();
   clear_live_aggregate(segment);
+  if (segment.latest_state != nullptr) {
+    ++segment.aggregate_hard_resets;
+  }
   if (!register_reader(segment, marker)) {
     return false;
   }
@@ -1002,6 +1035,9 @@ bool invalidate_and_resync(Segment &segment, std::string_view reason) {
   segment.selected_instruments.clear();
   segment.sequences.reset();
   clear_live_aggregate(segment);
+  if (segment.latest_state != nullptr) {
+    ++segment.aggregate_hard_resets;
+  }
   const auto resynced = segment.ring.resync_to_latest(segment.reader);
   if (!resynced) {
     return false;
@@ -1009,6 +1045,13 @@ bool invalidate_and_resync(Segment &segment, std::string_view reason) {
   std::cerr << segment.name << ": discarded invalid view reason=" << reason
             << " and resumed at latest\n";
   return true;
+}
+
+bool resync_after_overrun(Segment &segment, std::string_view reason) {
+  if (segment.aggregate_topic != consume::AggregateTopic::Unsupported) {
+    return catch_up_aggregate(segment, reason);
+  }
+  return invalidate_and_resync(segment, reason);
 }
 
 std::string_view sequence_error_name(
@@ -1184,6 +1227,9 @@ int main(int argc, char **argv) {
     }
     segment.aggregate_topic = consume::aggregate_topic_from_segment(name);
     if (segment.aggregate_topic != consume::AggregateTopic::Unsupported) {
+      segment.aggregate_watchdog = consume::AggregateWatchdog(
+          consumer_config.ingestion.stale_after_ms * 1'000'000ULL,
+          consumer_config.ingestion.hard_reset_after_ms * 1'000'000ULL);
       const auto window_interval_ns =
           command_line.record
               ? consumer_config.recording.sample_interval_ms * 1'000'000ULL
@@ -1358,22 +1404,54 @@ int main(int argc, char **argv) {
           }
           continue;
         }
+        segment.last_heartbeat_ns = now;
       }
-      if (check_heartbeat && segment.latest_state != nullptr &&
-          segment.aggregate_topic == consume::AggregateTopic::AggBbo) {
-        segment.latest_state->service_bbo_window_rollover(
-            {.ring_epoch = segment.epoch,
-             .ring_sequence = segment.last_validated_ring_sequence,
-             .receive_mono_ns = now,
-             .receive_wall_ns = wall_now_ns()});
+      if (check_heartbeat && segment.latest_state != nullptr) {
+        const auto watchdog_action = segment.aggregate_watchdog.poll(now);
+        if (watchdog_action == consume::AggregateWatchdogAction::Stale) {
+          ++segment.aggregate_stale_events;
+          std::cerr << segment.name << ": aggregate stream is stale\n";
+        } else if (watchdog_action ==
+                   consume::AggregateWatchdogAction::HardReset) {
+          clear_live_aggregate(segment);
+          ++segment.aggregate_hard_resets;
+          std::cerr << segment.name
+                    << ": aggregate stream stalled; published hard reset\n";
+        }
+        if (segment.aggregate_topic == consume::AggregateTopic::AggBbo) {
+          segment.latest_state->service_bbo_window_rollover(
+              {.ring_epoch = segment.epoch,
+               .ring_sequence = segment.last_validated_ring_sequence,
+               .receive_mono_ns = now,
+               .receive_wall_ns = wall_now_ns()});
+        }
       }
+      std::size_t drained = 0;
+      for (; drained < consumer_config.ingestion.max_drain_records; ++drained) {
+        if (drained != 0 && (drained & 63U) == 0) {
+          const auto drain_now = utils::runtime::Timestamp::NowMono();
+          if (drain_now - segment.last_heartbeat_ns >= 500'000'000ULL) {
+            const auto heartbeat =
+                segment.ring.heartbeat(segment.reader, drain_now);
+            if (!heartbeat) {
+              if (!recover_reader(segment, marker, false)) {
+                return 1;
+              }
+              break;
+            }
+            segment.last_heartbeat_ns = drain_now;
+          }
+        }
       transport::ReadLease lease;
       const auto read_error = segment.ring.try_read(segment.reader, lease);
       if (read_error != mds::api::ErrorCode::Ok) {
         if (read_error == mds::api::ErrorCode::SubscriptionRejected ||
-            read_error == mds::api::ErrorCode::RecordOverwritten ||
-            read_error == mds::api::ErrorCode::InternalError) {
-          if (!invalidate_and_resync(segment, "ring-read")) {
+            read_error == mds::api::ErrorCode::RecordOverwritten) {
+          if (!resync_after_overrun(segment, "ring-read")) {
+            return 1;
+          }
+        } else if (read_error == mds::api::ErrorCode::InternalError) {
+          if (!invalidate_and_resync(segment, "ring-corrupt")) {
             return 1;
           }
         } else if (read_error == mds::api::ErrorCode::InvalidHandle) {
@@ -1385,17 +1463,22 @@ int main(int argc, char **argv) {
                     << static_cast<unsigned>(read_error) << '\n';
           return 1;
         }
-        continue;
+        break;
       }
 
       consumed = true;
       const auto &view = lease.view();
       std::vector<std::byte> clickhouse_payload;
-      if (clickhouse_recorder != nullptr) {
+      const auto incoming_type = static_cast<md::MessageType>(view.type);
+      if (clickhouse_recorder != nullptr &&
+          (incoming_type == md::MessageType::InstrumentCatalog ||
+           incoming_type == md::MessageType::Bbo ||
+           incoming_type == md::MessageType::Ticker)) {
         clickhouse_payload.assign(view.payload.begin(), view.payload.end());
       }
       transport::RecordView stable_view{view.type, view.sequence, view.epoch,
                                         {}};
+      bool segment_resynced = false;
       const auto finish = [&](const auto &record,
                               wire::CodecError decode_error) -> bool {
         const auto &header = record_header(record);
@@ -1407,14 +1490,21 @@ int main(int argc, char **argv) {
         const auto committed = lease.commit();
         if (!committed) {
           if (committed.error == mds::api::ErrorCode::InvalidHandle) {
+            segment_resynced = true;
             return recover_reader(segment, marker, false);
           }
+          if (committed.error == mds::api::ErrorCode::RecordOverwritten) {
+            segment_resynced = true;
+            return resync_after_overrun(segment, "ring-commit");
+          }
+          segment_resynced = true;
           return invalidate_and_resync(segment, "ring-commit");
         }
         if (decode_error != wire::CodecError::Ok) {
           std::cerr << segment.name << ": rejected ring_seq="
                     << stable_view.sequence
                     << " wire=" << codec_error_name(decode_error) << '\n';
+          segment_resynced = true;
           return invalidate_and_resync(segment, "wire-decode");
         }
         if (!invalid_reason.empty()) {
@@ -1422,6 +1512,7 @@ int main(int argc, char **argv) {
                     << stable_view.sequence << " bus_seq="
                     << header.bus_seq << " reason=" << invalid_reason
                     << '\n';
+          segment_resynced = true;
           return invalidate_and_resync(segment, invalid_reason);
         }
         segment.sequences.accept(stable_view.sequence, header);
@@ -1431,7 +1522,7 @@ int main(int argc, char **argv) {
             .ring_sequence = stable_view.sequence,
             .receive_mono_ns = utils::runtime::Timestamp::NowMono(),
             .receive_wall_ns = wall_now_ns()};
-        if (clickhouse_recorder != nullptr) {
+        if (clickhouse_recorder != nullptr && !clickhouse_payload.empty()) {
           clickhouse_recorder->consume(clickhouse_payload,
                                        receive.receive_mono_ns);
         }
@@ -1440,6 +1531,7 @@ int main(int argc, char **argv) {
           if (segment.latest_state != nullptr &&
               segment.aggregate_topic == consume::AggregateTopic::AggBbo) {
             segment.latest_state->publish(record, receive);
+            segment.aggregate_watchdog.on_ready(receive.receive_mono_ns);
           }
         } else if constexpr (std::is_same_v<DecodedRecord,
                                             wire::AggOrderBookRecord>) {
@@ -1447,6 +1539,7 @@ int main(int argc, char **argv) {
               segment.aggregate_topic ==
                   consume::AggregateTopic::AggOrderBook) {
             segment.latest_state->publish(record, receive);
+            segment.aggregate_watchdog.on_ready(receive.receive_mono_ns);
           }
         }
         const auto message_type =
@@ -1531,18 +1624,25 @@ int main(int argc, char **argv) {
                   : mds::examples::SequenceError::None;
           const auto committed = lease.commit();
           if (!committed) {
-            handled =
-                committed.error == mds::api::ErrorCode::InvalidHandle
-                    ? recover_reader(segment, marker, false)
-                    : invalidate_and_resync(segment, "ring-commit");
+            segment_resynced = true;
+            if (committed.error == mds::api::ErrorCode::InvalidHandle) {
+              handled = recover_reader(segment, marker, false);
+            } else if (committed.error ==
+                       mds::api::ErrorCode::RecordOverwritten) {
+              handled = resync_after_overrun(segment, "ring-commit");
+            } else {
+              handled = invalidate_and_resync(segment, "ring-commit");
+            }
             break;
           }
           if (decoded != wire::CodecError::UnknownMessageType ||
               view.type != header.message_type) {
+            segment_resynced = true;
             handled = invalidate_and_resync(segment, "wire-decode");
             break;
           }
           if (sequence_error != mds::examples::SequenceError::None) {
+            segment_resynced = true;
             handled = invalidate_and_resync(
                 segment, sequence_error_name(sequence_error));
             break;
@@ -1555,6 +1655,14 @@ int main(int argc, char **argv) {
       }
       if (!handled) {
         return 1;
+      }
+      ++segment.records_drained;
+      if (segment_resynced) {
+        break;
+      }
+      }
+      if (drained == consumer_config.ingestion.max_drain_records) {
+        ++segment.drain_limit_hits;
       }
     }
     if (heartbeat_due) {
@@ -1610,6 +1718,14 @@ int main(int argc, char **argv) {
               << metrics.stale_skips << '\n';
   }
   for (auto &segment : segments) {
+    std::cerr << segment.name << ": consumption metrics records_drained="
+              << segment.records_drained
+              << " drain_limit_hits=" << segment.drain_limit_hits
+              << " aggregate_catchups=" << segment.aggregate_catchups
+              << " aggregate_stale=" << segment.aggregate_stale_events
+              << " aggregate_hard_resets=" << segment.aggregate_hard_resets
+              << " aggregate_window_gaps=" << segment.aggregate_window_gaps
+              << '\n';
     (void)segment.ring.unregister_reader(segment.reader);
   }
 #if defined(MDS_HAS_ZSTD)

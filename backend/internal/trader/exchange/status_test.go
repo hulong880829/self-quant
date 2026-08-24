@@ -121,7 +121,7 @@ func TestParseBitgetOrderUsesUTAOrderInfoFields(t *testing.T) {
 	}
 }
 
-func TestBitgetMarketPerpetualUsesIOCAndPosSide(t *testing.T) {
+func TestBitgetOneWayPayloads(t *testing.T) {
 	var body string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		raw, _ := io.ReadAll(request.Body)
@@ -131,32 +131,43 @@ func TestBitgetMarketPerpetualUsesIOCAndPosSide(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	_, err := newBitget(server.Client(), server.URL).PlaceOrder(context.Background(), Credentials{
-		APIKey: "key", APISecret: "secret", Passphrase: "phrase",
-	}, OrderRequest{
+	adapter := newBitget(server.Client(), server.URL)
+	creds := Credentials{APIKey: "key", APISecret: "secret", Passphrase: "phrase"}
+	if _, err := adapter.PlaceOrder(context.Background(), creds, OrderRequest{
 		Instrument:    Instrument{ContractType: "perpetual", ExchangeSymbol: "HYPEUSDT", SettleAsset: "USDT"},
 		ClientOrderID: "clid", Side: "sell", OrderType: "market", Quantity: "0.5",
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"orderType":"market"`, `"timeInForce":"ioc"`, `"posSide":"short"`} {
+	for _, want := range []string{`"orderType":"market"`, `"marginMode":"crossed"`, `"reduceOnly":"no"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body=%s missing %s", body, want)
 		}
 	}
-
-	_, err = newBitget(server.Client(), server.URL).PlaceOrder(context.Background(), Credentials{
-		APIKey: "key", APISecret: "secret", Passphrase: "phrase",
-	}, OrderRequest{
-		Instrument:    Instrument{ContractType: "spot", ExchangeSymbol: "HYPEUSDT"},
-		ClientOrderID: "clid", Side: "sell", OrderType: "market", Quantity: "0.5",
-	})
-	if err != nil {
+	for _, banned := range []string{`"posSide"`, `"timeInForce"`} {
+		if strings.Contains(body, banned) {
+			t.Fatalf("body=%s unexpectedly contains %s", body, banned)
+		}
+	}
+	if _, err := adapter.PlaceOrder(context.Background(), creds, OrderRequest{
+		Instrument:    Instrument{ContractType: "perpetual", ExchangeSymbol: "HYPEUSDT", SettleAsset: "USDT"},
+		ClientOrderID: "clid", Side: "buy", OrderType: "limit", Quantity: "0.5", Price: "1",
+		ReduceOnly: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(body, `"posSide"`) {
-		t.Fatalf("spot should omit posSide: %s", body)
+	if !strings.Contains(body, `"reduceOnly":"yes"`) || strings.Contains(body, `"posSide"`) {
+		t.Fatalf("reduce-only body=%s", body)
+	}
+	if _, err := adapter.PlaceOrder(context.Background(), creds, OrderRequest{
+		Instrument:    Instrument{ContractType: "spot", ExchangeSymbol: "HYPEUSDT"},
+		ClientOrderID: "clid", Side: "sell", OrderType: "market", Quantity: "0.5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, `"posSide"`) || strings.Contains(body, `"marginMode"`) ||
+		strings.Contains(body, `"reduceOnly"`) {
+		t.Fatalf("spot should omit futures fields: %s", body)
 	}
 }
 

@@ -24,7 +24,7 @@ type bitgetEnvelope[T any] struct {
 }
 type bitgetInstrument struct {
 	Symbol, BaseCoin, QuoteCoin, SymbolStatus, SymbolType, FundingRateInterval string
-	SettleCoin, SizeMultiplier, PriceEndStep, MinTradeNum                      string
+	SettleCoin, SizeMultiplier, PriceEndStep, PricePlace, MinTradeNum          string
 	SupportMarginCoins                                                         []string
 }
 
@@ -78,6 +78,9 @@ func parseBitgetInstruments(items []bitgetInstrument) []Instrument {
 		}
 		size, _ := parseFloat(item.SizeMultiplier)
 		tick, _ := parseFloat(item.PriceEndStep)
+		if placeStep := precisionStep(item.PricePlace); placeStep > 0 {
+			tick *= placeStep
+		}
 		step, _ := parseFloat(item.MinTradeNum)
 		settle := bitgetSettleAsset(item)
 		model, sizeUnit := "linear", "base"

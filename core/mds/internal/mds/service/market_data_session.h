@@ -45,6 +45,10 @@ struct MarketDataMetrics {
   std::uint64_t ws_shards_reconnecting{};
   std::uint64_t last_reconnect_shard{};
   std::uint64_t reconnects{};
+  std::uint64_t connection_rebuild_attempts{};
+  std::uint64_t connection_rebuild_successes{};
+  std::uint64_t connection_rebuild_failures{};
+  std::uint64_t connection_degraded_duration_ms{};
   std::uint64_t resyncs{};
   std::uint64_t snapshot_bridge_gaps{};
   std::uint64_t live_sequence_gaps{};
@@ -63,6 +67,9 @@ struct MarketDataMetrics {
   std::uint64_t subscription_requests{};
   std::uint64_t subscription_rejections{};
   std::uint64_t budget_reconnects{};
+  std::uint64_t budget_deferrals{};
+  std::uint64_t cooldown_deferrals{};
+  std::uint64_t recovery_deadline_extensions{};
   std::uint64_t discovery_requests{};
   std::uint64_t discovery_failures{};
   std::uint64_t market_rollovers{};

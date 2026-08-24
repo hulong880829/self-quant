@@ -75,3 +75,22 @@ func TestServiceRejectsInvalidVenue(t *testing.T) {
 		t.Fatal("cross-venue request was accepted")
 	}
 }
+
+func TestServiceCacheKeyIncludesCompareVenue(t *testing.T) {
+	store := &fakeStore{history: History{Venue: "binance", CompareVenue: "okx"}}
+	service := NewService(store, time.Minute, 1)
+	ctx := context.Background()
+	if _, err := service.GetHistory(ctx, HistoryRequest{
+		Venue: "binance", BaseAsset: "BTC", QuoteAsset: "USDT", Range: Range1h,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.GetHistory(ctx, HistoryRequest{
+		Venue: "binance", CompareVenue: "okx", BaseAsset: "BTC", QuoteAsset: "USDT", Range: Range1h,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if store.calls.Load() != 2 {
+		t.Fatalf("calls=%d", store.calls.Load())
+	}
+}

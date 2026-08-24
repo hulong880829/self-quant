@@ -15,6 +15,14 @@ segments:
   #   selector:
   #     symbol: BTCUSDT
 
+ingestion:
+  # These watchdogs start only after the first ready aggregate image. A short
+  # stall keeps the last-good image; a sustained stall emits one hard reset.
+  stale_after_ms: 5000
+  hard_reset_after_ms: 10000
+  # Bound each segment's work per poll so hot symbols cannot starve others.
+  max_drain_records: 512
+
 gateway:
   listen_address: 127.0.0.1
   port: 9443

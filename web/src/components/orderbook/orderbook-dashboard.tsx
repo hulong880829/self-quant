@@ -17,6 +17,10 @@ import {
   useOrderbook,
 } from "@/components/orderbook/orderbook-provider";
 import {
+  aggdataMarketKey,
+  aggdataProductFromProfile,
+} from "@/lib/api/aggdata";
+import {
   aggregateBookLevels,
   calculateSpreadBps,
   calculateSpreadCcdf,
@@ -185,10 +189,12 @@ export function SpreadChart({
   );
 }
 
-function DashboardContent() {
+export function DashboardContent() {
   const {
     markets,
-    selectedSymbol,
+    selectedMarket,
+    selectedProduct,
+    selectProduct,
     selectMarket,
     levels,
     automaticIncrement,
@@ -207,13 +213,17 @@ function DashboardContent() {
     lastUpdateAt,
     retry,
   } = useOrderbook();
-  const market = markets.find((item) => item.symbol === selectedSymbol);
+  const market = selectedMarket;
+  const selectedMarketKey = market ? aggdataMarketKey(market) : "";
+  const filteredMarkets = markets.filter(
+    (item) => aggdataProductFromProfile(item.profile) === selectedProduct,
+  );
   const [manualSelection, setManualSelection] = React.useState<{
-    symbol: string;
+    marketKey: string;
     increment: FixedDecimal;
   } | null>(null);
   const manualIncrement =
-    manualSelection?.symbol === selectedSymbol
+    manualSelection?.marketKey === selectedMarketKey
       ? manualSelection.increment
       : null;
   const tick = React.useMemo(() => inferEffectiveTick(levels), [levels]);
@@ -256,10 +266,30 @@ function DashboardContent() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="flex min-w-0 flex-wrap items-end gap-3">
             <label>
+              <span className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">合约类型</span>
+              <span className="relative block">
+                <select
+                  value={selectedProduct}
+                  onChange={(event) => {
+                    setManualSelection(null);
+                    selectProduct(event.target.value as "SPOT" | "PERPETUAL");
+                  }}
+                  className="h-10 min-w-32 appearance-none rounded-md border bg-background px-3 pr-9 text-sm outline-none"
+                >
+                  <option value="SPOT">现货</option>
+                  <option value="PERPETUAL">永续</option>
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              </span>
+            </label>
+            <label>
               <span className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">交易标的</span>
               <span className="relative block">
-                <select value={selectedSymbol} disabled={markets.length === 0} onChange={(event) => selectMarket(event.target.value)} className="h-10 min-w-44 appearance-none rounded-md border bg-background px-3 pr-9 font-mono text-sm outline-none">
-                  {markets.map((item) => <option key={item.symbol} value={item.symbol}>{item.symbol}</option>)}
+                <select value={selectedMarketKey} disabled={filteredMarkets.length === 0} onChange={(event) => selectMarket(event.target.value)} className="h-10 min-w-44 appearance-none rounded-md border bg-background px-3 pr-9 font-mono text-sm outline-none">
+                  {filteredMarkets.map((item) => {
+                    const marketKey = aggdataMarketKey(item);
+                    return <option key={marketKey} value={marketKey}>{item.symbol}</option>;
+                  })}
                 </select>
                 <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               </span>
@@ -274,7 +304,7 @@ function DashboardContent() {
                     const selected = increments.find((item) => `${item.mantissa}:${item.scale}` === event.target.value);
                     setManualSelection(
                       selected
-                        ? { symbol: selectedSymbol, increment: selected }
+                        ? { marketKey: selectedMarketKey, increment: selected }
                         : null,
                     );
                   }}
@@ -313,7 +343,7 @@ function DashboardContent() {
           <div className={cn("overflow-hidden rounded-xl border bg-card/85 shadow-sm", stale && "opacity-75")}>
             <div className="flex items-center justify-between border-b px-4 py-3.5">
               <div>
-                <h2 className="text-sm font-semibold">{selectedSymbol || "—"} 聚合盘口</h2>
+                <h2 className="text-sm font-semibold">{market?.symbol || "—"} 聚合盘口</h2>
                 <p className="mt-1 text-[11px] text-muted-foreground">{increment ? `${formatFixed(increment)} ${market?.quoteAsset ?? ""}` : "等待有效价格档位"} · ask 向上 / bid 向下聚合</p>
               </div>
               <span className="text-[10px] text-muted-foreground">{venueCount} VENUES</span>

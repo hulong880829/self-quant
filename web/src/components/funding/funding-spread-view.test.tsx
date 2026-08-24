@@ -1,13 +1,45 @@
 // @vitest-environment jsdom
 
 import * as React from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { FundingSpread } from "@/types/market";
 
 vi.mock("@/hooks/use-element-width", () => ({
   useElementWidth: () => [{ current: null }, 1400],
+}));
+
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: ({ count }: { count: number }) => ({
+    getVirtualItems: () =>
+      Array.from({ length: count }, (_, index) => ({
+        index,
+        key: index,
+        start: index * 64,
+        end: (index + 1) * 64,
+        size: 64,
+      })),
+    getTotalSize: () => count * 64,
+  }),
+}));
+
+vi.mock("@/components/funding/basis-spread-chart", () => ({
+  BasisSpreadPanel: ({
+    venue,
+    compareVenue,
+    baseAsset,
+    quoteAsset,
+  }: {
+    venue: string;
+    compareVenue?: string;
+    baseAsset: string;
+    quoteAsset: string;
+  }) => (
+    <section aria-label="跨所 Best Ask 价差">
+      <span>{`${venue}/${compareVenue}-${baseAsset}-${quoteAsset}`}</span>
+    </section>
+  ),
 }));
 
 import { FundingSpreadView } from "./funding-spread-view";
@@ -63,5 +95,17 @@ describe("FundingSpreadView", () => {
     expect(screen.getByText("可用容量（较小腿）")).not.toBeNull();
     expect(screen.getAllByText("8h").length).toBeGreaterThan(0);
     expect(screen.getAllByText("4h").length).toBeGreaterThan(0);
+  });
+
+  it("expands a cross-exchange chart under the selected row", () => {
+    render(<FundingSpreadView data={[spread]} loading={false} />);
+    expect(screen.queryByLabelText("跨所 Best Ask 价差")).toBeNull();
+    const row = screen.getByText("永续对冲").closest("tr");
+    expect(row).not.toBeNull();
+    fireEvent.click(row!);
+    expect(screen.getByLabelText("跨所 Best Ask 价差")).not.toBeNull();
+    expect(screen.getByText("OKX/Binance-BTC-USDT")).not.toBeNull();
+    fireEvent.click(row!);
+    expect(screen.queryByLabelText("跨所 Best Ask 价差")).toBeNull();
   });
 });

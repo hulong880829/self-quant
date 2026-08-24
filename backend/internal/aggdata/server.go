@@ -146,6 +146,14 @@ func (s *Server) markets(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]any{"markets": s.store.Markets()})
 }
 
+func (s *Server) lookupMarket(request *http.Request) (*liveMarket, error) {
+	profile := strings.TrimSpace(request.URL.Query().Get("profile"))
+	if profile != "" {
+		return s.store.LookupProfile(profile, request.PathValue("symbol"))
+	}
+	return s.store.Lookup(request.PathValue("symbol"))
+}
+
 func (s *Server) snapshot(writer http.ResponseWriter, request *http.Request) {
 	depth := 20
 	if raw := request.URL.Query().Get("depth"); raw != "" {
@@ -156,7 +164,7 @@ func (s *Server) snapshot(writer http.ResponseWriter, request *http.Request) {
 		}
 		depth = parsed
 	}
-	market, err := s.store.Lookup(request.PathValue("symbol"))
+	market, err := s.lookupMarket(request)
 	if err != nil {
 		writeJSON(writer, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
@@ -185,7 +193,7 @@ func (s *Server) spreadHistory(writer http.ResponseWriter, request *http.Request
 	if bpsType == "" {
 		bpsType = "gated"
 	}
-	market, err := s.store.Lookup(request.PathValue("symbol"))
+	market, err := s.lookupMarket(request)
 	if err != nil {
 		writeJSON(writer, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
@@ -233,14 +241,7 @@ func (s *Server) fairPriceHistory(writer http.ResponseWriter, request *http.Requ
 		})
 		return
 	}
-	profile := strings.TrimSpace(request.URL.Query().Get("profile"))
-	var market *liveMarket
-	var err error
-	if profile == "" {
-		market, err = s.store.Lookup(request.PathValue("symbol"))
-	} else {
-		market, err = s.store.LookupProfile(profile, request.PathValue("symbol"))
-	}
+	market, err := s.lookupMarket(request)
 	if err != nil {
 		writeJSON(writer, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return

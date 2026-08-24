@@ -84,7 +84,53 @@ vi.mock("@/components/funding/funding-provider", () => ({
       },
       hasStaleSources: false,
     },
-    spreadSnapshot: null,
+    spreadSnapshot: {
+      data: [
+        {
+          id: "BTCUSDT-binance-okx",
+          symbol: "BTCUSDT",
+          baseAsset: "BTC",
+          quoteAsset: "USDT",
+          longLeg: {
+            exchange: "Binance",
+            exchangeSymbol: "BTCUSDT",
+            fundingRate: 0.01,
+            settlementIntervalHours: 8,
+            nextSettlementAt: "2026-08-20T00:00:00Z",
+            positionNotional: 5_000_000,
+            dailyVolume: 20_000_000,
+            latestPrice: 60_000,
+            updatedAt: "2026-08-19T15:00:00Z",
+            stale: false,
+          },
+          shortLeg: {
+            exchange: "OKX",
+            exchangeSymbol: "BTC-USDT-SWAP",
+            fundingRate: 0.02,
+            settlementIntervalHours: 4,
+            nextSettlementAt: "2026-08-20T00:00:00Z",
+            positionNotional: 4_000_000,
+            dailyVolume: 30_000_000,
+            latestPrice: 60_010,
+            updatedAt: "2026-08-19T15:00:00Z",
+            stale: false,
+          },
+          spreadAnnualized: 10.95,
+          spread24hAnnualized: 7.3,
+          spread7dAnnualized: 5.2,
+          minPositionNotional: 4_000_000,
+          minDailyVolume: 20_000_000,
+          updatedAt: "2026-08-19T15:00:00Z",
+          stale: false,
+        },
+      ],
+      meta: {
+        total: 1,
+        snapshotVersion: "test-spread",
+        serverTime: "2026-08-19T15:00:00Z",
+      },
+      hasStaleSources: false,
+    },
     loading: false,
     refreshing: false,
     error: null,
@@ -103,15 +149,21 @@ vi.mock("@/components/funding/basis-spread-chart", () => ({
     venue,
     baseAsset,
     quoteAsset,
+    compareVenue,
   }: {
     venue: string;
     baseAsset: string;
     quoteAsset: string;
+    compareVenue?: string;
   }) => (
-    <section aria-label="期现 Best Ask 价差">
-      <h3>期现 Best Ask 价差</h3>
+    <section aria-label={compareVenue ? "跨所 Best Ask 价差" : "期现 Best Ask 价差"}>
+      <h3>{compareVenue ? "跨所 Best Ask 价差" : "期现 Best Ask 价差"}</h3>
       <button type="button">1h</button>
-      <span>{`${venue}-${baseAsset}-${quoteAsset}`}</span>
+      <span>
+        {compareVenue
+          ? `${venue}/${compareVenue}-${baseAsset}-${quoteAsset}`
+          : `${venue}-${baseAsset}-${quoteAsset}`}
+      </span>
     </section>
   ),
 }));
@@ -164,10 +216,15 @@ describe("FundingDashboard single-exchange detail", () => {
     expect(screen.getByText("选择合约后查看详情")).not.toBeNull();
   });
 
-  it("does not render the basis chart in cross-exchange mode", () => {
+  it("expands a cross-exchange basis chart after clicking a spread row", () => {
     render(<FundingDashboard />);
     fireEvent.click(screen.getByRole("button", { name: "跨所" }));
-    expect(screen.queryByLabelText("期现 Best Ask 价差")).toBeNull();
-    expect(screen.queryByText("期现 Best Ask 价差")).toBeNull();
+    expect(screen.queryByLabelText("跨所 Best Ask 价差")).toBeNull();
+    const row = screen.getByText("永续对冲").closest("tr");
+    expect(row).not.toBeNull();
+    fireEvent.click(row!);
+    expect(screen.getByLabelText("跨所 Best Ask 价差")).not.toBeNull();
+    expect(screen.getByText("OKX/Binance-BTC-USDT")).not.toBeNull();
+    expect(screen.getByText("跨所资金费套利")).not.toBeNull();
   });
 });

@@ -69,6 +69,9 @@ func (a *okxAdapter) PlaceOrder(ctx context.Context, credentials Credentials, re
 			body["ordType"] = "ioc"
 		}
 	}
+	if request.Instrument.ContractType != "spot" && request.ReduceOnly {
+		body["reduceOnly"] = "true"
+	}
 	raw, err := a.signed(ctx, http.MethodPost, "/api/v5/trade/order", credentials, compactJSON(body), nil)
 	if err != nil {
 		return Result{}, err

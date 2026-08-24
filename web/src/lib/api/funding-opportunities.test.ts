@@ -54,6 +54,10 @@ function responseBody() {
       serverTime: "2026-08-22T12:00:01Z",
       calculatedAt: "2026-08-22T12:00:00Z",
       stale: false,
+      status: "ready",
+      lastSuccessfulAt: "2026-08-22T12:00:00Z",
+      dataThrough: "2026-08-22T11:59:00Z",
+      generation: 4,
     },
   };
 }
@@ -73,7 +77,13 @@ describe("funding opportunity ranking API", () => {
       longLeg: { exchange: "Binance", fundingRate: 0.01 },
       shortLeg: { exchange: "OKX" },
     });
-    expect(snapshot.meta).toMatchObject({ snapshotVersion: "rank-1", stale: false });
+    expect(snapshot.meta).toMatchObject({
+      snapshotVersion: "rank-1",
+      stale: false,
+      status: "ready",
+      generation: 4,
+      dataThrough: "2026-08-22T11:59:00Z",
+    });
   });
 
   it("sends server filters and ETag, then handles 304 without parsing", async () => {

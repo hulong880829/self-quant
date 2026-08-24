@@ -172,6 +172,7 @@ enum class Protocol {
   BinanceAckOnly,
   BinanceMalformed,
   BinanceClose,
+  BinanceMetadataFailOnce,
   Bitget,
   GateDirtyQuantity
 };
@@ -232,6 +233,9 @@ class Server {
   unsigned gate_snapshot_requests() const {
     return gate_snapshot_requests_.load();
   }
+  unsigned metadata_requests() const {
+    return metadata_requests_.load();
+  }
   void close_btc_connection() { ++btc_close_requests_; }
 
  private:
@@ -265,6 +269,17 @@ class Server {
   }
 
   void metadata(SSL *ssl, const std::string &request) {
+    const auto metadata_request = ++metadata_requests_;
+    if (protocol_ == Protocol::BinanceMetadataFailOnce &&
+        metadata_request == 1) {
+      static constexpr std::string_view body = "{}";
+      const auto response =
+          "HTTP/1.1 503 Service Unavailable\r\nContent-Length: " +
+          std::to_string(body.size()) +
+          "\r\nConnection: close\r\n\r\n" + std::string(body);
+      (void)write_all(ssl, response);
+      return;
+    }
     static constexpr std::string_view binance_body =
         R"({"timezone":"UTC","symbols":[{"symbol":"BTCUSDT","status":"TRADING","baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT","contractType":"PERPETUAL","pricePrecision":2,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.01","minPrice":"0.01","maxPrice":"1000000.00"},{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001","maxQty":"100000.000"}]},{"symbol":"ETHUSDT","status":"TRADING","baseAsset":"ETH","quoteAsset":"USDT","marginAsset":"USDT","contractType":"PERPETUAL","pricePrecision":2,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.01","minPrice":"0.01","maxPrice":"1000000.00"},{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001","maxQty":"100000.000"}]}]})";
     static constexpr std::string_view bitget_body =
@@ -453,6 +468,7 @@ class Server {
   std::atomic<unsigned> gate_sol_updates_{};
   std::atomic<unsigned> gate_connections_{};
   std::atomic<unsigned> gate_snapshot_requests_{};
+  std::atomic<unsigned> metadata_requests_{};
   Protocol protocol_{};
   std::thread acceptor_;
   std::vector<std::thread> workers_;
@@ -748,20 +764,23 @@ void test_binance_ticker_only_ack_is_live() {
   manager.stop();
 }
 
-void test_continuous_recovery_timeout_fails_connection() {
+void test_continuous_recovery_timeout_isolates_connection() {
   Certificate identity;
   auto tls = client_context(identity);
-  Server server(identity, Protocol::BinanceAckOnly);
+  Server stalled_server(identity, Protocol::BinanceAckOnly);
+  Server healthy_server(identity);
   mds::service::VenueConnectionManager manager(tls);
   mds::service::VenueConnectionOptions options;
   options.venue = utils::md::Venue::Binance;
   options.product = utils::md::ProductType::Perpetual;
-  options.websocket_endpoint = server.endpoint("wss", "/ws");
-  options.rest_endpoint = server.endpoint("https");
+  options.websocket_endpoint = stalled_server.endpoint("wss", "/ws");
+  options.rest_endpoint = stalled_server.endpoint("https");
   options.connect_timeout = 1s;
   options.request_timeout = 1s;
   options.idle_timeout = 5s;
-  options.max_continuous_recovery_duration = 250ms;
+  options.max_continuous_recovery_duration = 100ms;
+  options.reconnect_base = 20ms;
+  options.reconnect_max = 40ms;
   mds::service::SymbolStreamOptions stream;
   stream.symbol = "BTCUSDT";
   stream.orderbook = true;
@@ -777,22 +796,93 @@ void test_continuous_recovery_timeout_fails_connection() {
 
   auto created = manager.create(std::move(options));
   assert(created);
+  auto *stalled = created.value;
+
+  mds::service::VenueConnectionOptions healthy_options;
+  healthy_options.venue = utils::md::Venue::Binance;
+  healthy_options.product = utils::md::ProductType::Spot;
+  healthy_options.websocket_endpoint =
+      healthy_server.endpoint("wss", "/ws");
+  healthy_options.rest_endpoint = healthy_server.endpoint("https");
+  healthy_options.connect_timeout = 1s;
+  healthy_options.request_timeout = 1s;
+  healthy_options.idle_timeout = 5s;
+  mds::service::SymbolStreamOptions healthy_stream;
+  healthy_stream.symbol = "ETHUSDT";
+  healthy_stream.ticker = true;
+  healthy_stream.ticker_channel = "bookTicker";
+  healthy_stream.ring_layout = mds::publish::RingLayout::Multiplex;
+  healthy_stream.shard_count = 1;
+  healthy_stream.shm_prefix =
+      "/mds.binance.recovery.healthy." + std::to_string(::getpid());
+  healthy_stream.multiplex_ring.ring_bytes = 64U << 10U;
+  healthy_stream.multiplex_ring.max_record_bytes = 4096;
+  healthy_stream.multiplex_ring.max_readers = 4;
+  healthy_stream.multiplex_ring.unlink_on_close = true;
+  healthy_options.streams.push_back(std::move(healthy_stream));
+  auto healthy_created = manager.create(std::move(healthy_options));
+  assert(healthy_created);
+  auto *healthy = healthy_created.value;
+
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline &&
+         (stalled->metrics().connection_rebuild_attempts < 1 ||
+          healthy->state() != mds::service::MarketDataState::Live ||
+          healthy->metrics().ticker_updates < 3)) {
+    (void)manager.run_once(5);
+  }
+  assert(stalled->state() != mds::service::MarketDataState::Failed);
+  assert(stalled->metrics().connection_rebuild_attempts >= 1);
+  assert(stalled->metrics().connection_rebuild_successes == 0);
+  assert(healthy->state() == mds::service::MarketDataState::Live);
+  assert(healthy->metrics().ticker_updates >= 3);
+  assert(healthy->metrics().connection_rebuild_attempts == 0);
+  manager.stop();
+}
+
+void test_metadata_failure_rebuilds_connection() {
+  Certificate identity;
+  auto tls = client_context(identity);
+  Server server(identity, Protocol::BinanceMetadataFailOnce);
+  mds::service::VenueConnectionManager manager(tls);
+  mds::service::VenueConnectionOptions options;
+  options.venue = utils::md::Venue::Binance;
+  options.product = utils::md::ProductType::Perpetual;
+  options.websocket_endpoint = server.endpoint("wss", "/ws");
+  options.rest_endpoint = server.endpoint("https");
+  options.connect_timeout = 1s;
+  options.request_timeout = 1s;
+  options.idle_timeout = 5s;
+  options.reconnect_base = 20ms;
+  options.reconnect_max = 40ms;
+  mds::service::SymbolStreamOptions stream;
+  stream.symbol = "BTCUSDT";
+  stream.ticker = true;
+  stream.ticker_channel = "bookTicker";
+  stream.ring_layout = mds::publish::RingLayout::Multiplex;
+  stream.shard_count = 1;
+  stream.shm_prefix =
+      "/mds.binance.metadata.rebuild." + std::to_string(::getpid());
+  stream.multiplex_ring.ring_bytes = 64U << 10U;
+  stream.multiplex_ring.max_record_bytes = 4096;
+  stream.multiplex_ring.max_readers = 4;
+  stream.multiplex_ring.unlink_on_close = true;
+  options.streams.push_back(std::move(stream));
+
+  auto created = manager.create(std::move(options));
+  assert(created);
   auto *connection = created.value;
   const auto deadline = std::chrono::steady_clock::now() + 3s;
   while (std::chrono::steady_clock::now() < deadline &&
-         connection->state() != mds::service::MarketDataState::Failed) {
+         (connection->state() != mds::service::MarketDataState::Live ||
+          connection->metrics().connection_rebuild_successes == 0)) {
     (void)manager.run_once(5);
   }
-  assert(connection->state() == mds::service::MarketDataState::Failed);
-  if (connection->error_message().find(
-          "continuous recovery timeout symbol=BTCUSDT") ==
-      std::string_view::npos) {
-    std::cerr << "unexpected recovery timeout error: "
-              << connection->error_message() << '\n';
-  }
-  assert(connection->error_message().find(
-             "continuous recovery timeout symbol=BTCUSDT") !=
-         std::string_view::npos);
+  assert(connection->state() == mds::service::MarketDataState::Live);
+  assert(server.metadata_requests() >= 2);
+  assert(connection->metrics().connection_rebuild_attempts >= 1);
+  assert(connection->metrics().connection_rebuild_successes == 1);
+  assert(connection->metrics().connection_rebuild_failures == 0);
   manager.stop();
 }
 
@@ -1057,6 +1147,7 @@ void test_gate_dirty_quantity_resyncs_only_sol() {
   assert(connection->metrics().resyncs == 1);
   assert(connection->metrics().dirty_data_resyncs == 1);
   assert(connection->metrics().reconnects == 0);
+  assert(connection->metrics().budget_reconnects == 0);
   assert(connection->metrics().ws_shards_live == 1);
   assert(std::string_view(connection->metrics().last_resync_symbol.data()) ==
          "SOLUSDT");
@@ -1080,7 +1171,8 @@ int main() {
   std::signal(SIGPIPE, SIG_IGN);
   test_binance_shard_reconnect();
   test_binance_ticker_only_ack_is_live();
-  test_continuous_recovery_timeout_fails_connection();
+  test_continuous_recovery_timeout_isolates_connection();
+  test_metadata_failure_rebuilds_connection();
   test_binance_malformed_json_reconnect();
   test_binance_close_detail_reconnect();
   test_bitget_malformed_json_reconnect();

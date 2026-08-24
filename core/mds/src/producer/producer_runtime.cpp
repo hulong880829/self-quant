@@ -11,6 +11,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <map>
 #include <poll.h>
 #include <regex>
 #include <set>
@@ -155,14 +156,15 @@ std::string canonical_symbol(utils::md::Venue venue,
   return symbol;
 }
 
-std::vector<std::string> discover_venue_symbols(utils::md::Venue venue,
-                                                std::string_view json) {
+std::vector<std::string> discover_venue_symbols(
+    utils::md::Venue venue, utils::md::ProductType product,
+    std::string_view json) {
   std::string_view field{"symbol"};
   if (venue == utils::md::Venue::Okx) {
     field = "instId";
-  }
-  if (venue == utils::md::Venue::Gate ||
-      venue == utils::md::Venue::Hyperliquid) {
+  } else if (venue == utils::md::Venue::Gate) {
+    field = product == utils::md::ProductType::Spot ? "id" : "name";
+  } else if (venue == utils::md::Venue::Hyperliquid) {
     field = "name";
   }
   const std::regex expression(
@@ -174,6 +176,27 @@ std::vector<std::string> discover_venue_symbols(utils::md::Venue venue,
     unique.insert((*it)[1].str());
   }
   return {unique.begin(), unique.end()};
+}
+
+bool same_instrument_metadata(
+    const exchange::InstrumentMetadata &left,
+    const exchange::InstrumentMetadata &right) noexcept {
+  return left.canonical_symbol == right.canonical_symbol &&
+         left.venue_symbol == right.venue_symbol &&
+         left.base_asset == right.base_asset &&
+         left.quote_asset == right.quote_asset &&
+         left.settle_asset == right.settle_asset &&
+         left.price_scale == right.price_scale &&
+         left.quantity_scale == right.quantity_scale &&
+         left.tick_size == right.tick_size &&
+         left.lot_size == right.lot_size &&
+         left.contract_multiplier == right.contract_multiplier &&
+         left.turnover_24h == right.turnover_24h &&
+         left.contract_multiplier_scale ==
+             right.contract_multiplier_scale &&
+         left.signature_type == right.signature_type &&
+         left.negative_risk == right.negative_risk &&
+         left.refine_book_tick == right.refine_book_tick;
 }
 
 bool expand_product_discovery(ProducerConfig &config, std::string &error) {
@@ -202,34 +225,84 @@ bool expand_product_discovery(ProducerConfig &config, std::string &error) {
         error = "product discovery adapter is unavailable";
         return false;
       }
-      std::string json;
-      if (!fetch_metadata(connection.endpoint, adapter->metadata_request(),
-                          json, error)) {
-        return false;
-      }
-      const auto symbols =
-          discover_venue_symbols(connection.endpoint.venue, json);
-      if (symbols.empty()) {
-        error = "product discovery metadata contained no symbols";
-        return false;
-      }
-      std::vector<std::string> canonical;
-      std::vector<exchange::StreamRequest> requests;
-      canonical.reserve(symbols.size());
-      requests.reserve(symbols.size());
-      for (const auto &venue_symbol : symbols) {
-        canonical.push_back(canonical_symbol(
+      std::map<std::string, exchange::InstrumentMetadata>
+          metadata_by_symbol;
+      DiscoveryPaginationGuard pagination;
+      while (!pagination.complete()) {
+        if (!pagination.begin_page(error)) {
+          return false;
+        }
+        std::string json;
+        if (!fetch_metadata(
+                connection.endpoint,
+                adapter->discovery_metadata_request(
+                    pagination.cursor()),
+                json, error)) {
+          return false;
+        }
+        const auto symbols = discover_venue_symbols(
             connection.endpoint.venue, connection.endpoint.product,
-            venue_symbol));
-        requests.push_back({canonical.back(), venue_symbol,
-                            stream.ticker_channel, stream.orderbook_channel,
-                            stream.subscribe_ticker,
-                            stream.subscribe_orderbook,
-                            stream.effective_interval_ms});
+            json);
+        std::string next_cursor;
+        if (!adapter->discovery_metadata_next_cursor(
+                json, next_cursor, error)) {
+          return false;
+        }
+        if (!pagination.accept_page(
+                !symbols.empty(), std::move(next_cursor), error)) {
+          return false;
+        }
+        std::vector<std::string> canonical;
+        std::vector<exchange::StreamRequest> requests;
+        canonical.reserve(symbols.size());
+        requests.reserve(symbols.size());
+        for (const auto &venue_symbol : symbols) {
+          canonical.push_back(canonical_symbol(
+              connection.endpoint.venue,
+              connection.endpoint.product, venue_symbol));
+          requests.push_back(
+              {canonical.back(), venue_symbol,
+               stream.ticker_channel, stream.orderbook_channel,
+               stream.subscribe_ticker, stream.subscribe_orderbook,
+               stream.effective_interval_ms});
+        }
+        std::vector<exchange::InstrumentMetadata> page_metadata;
+        if (!adapter->parse_discovery_metadata(
+                json, requests, page_metadata, error)) {
+          return false;
+        }
+        for (auto &instrument : page_metadata) {
+          const auto [found, inserted] =
+              metadata_by_symbol.try_emplace(
+                  instrument.venue_symbol, instrument);
+          if (!inserted &&
+              !same_instrument_metadata(found->second, instrument)) {
+            error = "conflicting product discovery metadata for symbol " +
+                    instrument.venue_symbol;
+            return false;
+          }
+        }
       }
       std::vector<exchange::InstrumentMetadata> metadata;
-      if (!adapter->parse_discovery_metadata(json, requests, metadata, error)) {
-        return false;
+      metadata.reserve(metadata_by_symbol.size());
+      for (auto &[venue_symbol, instrument] : metadata_by_symbol) {
+        (void)venue_symbol;
+        metadata.push_back(std::move(instrument));
+      }
+      if (stream.discovery->minimum_turnover != 0) {
+        const auto turnover_request =
+            adapter->discovery_turnover_request();
+        if (turnover_request.target.empty()) {
+          error = "24h turnover discovery is unsupported";
+          return false;
+        }
+        std::string turnover_json;
+        if (!fetch_metadata(connection.endpoint, turnover_request,
+                            turnover_json, error) ||
+            !adapter->enrich_discovery_turnover(
+                turnover_json, metadata, error)) {
+          return false;
+        }
       }
       const auto reconciled =
           reconcile_universe(*stream.discovery, metadata, {});
@@ -321,6 +394,8 @@ service::VenueConnectionOptions convert(const ConnectionSpec &connection) {
       connection.endpoint.snapshot_rate_limit_backoff_ms;
   result.snapshot_ban_backoff_ms =
       connection.endpoint.snapshot_ban_backoff_ms;
+  result.recovery_deadline =
+      std::chrono::milliseconds(connection.endpoint.recovery_deadline_ms);
   result.max_continuous_recovery_duration =
       std::chrono::milliseconds(
           connection.endpoint.max_continuous_recovery_ms);
@@ -384,6 +459,8 @@ void print_effective(std::ostream &output, const ProducerConfig &config) {
     for (const auto &stream : connection.streams) {
       output << "stream venue=" << venue << " product=" << product
              << " symbol=" << stream.symbol
+             << " recovery_deadline_ms="
+             << connection.endpoint.recovery_deadline_ms
              << " max_continuous_recovery_ms="
              << connection.endpoint.max_continuous_recovery_ms
              << " ticker=" << (stream.subscribe_ticker ? "on" : "off");
@@ -634,8 +711,11 @@ class ProducerRuntime::Impl {
     }
     for (std::size_t index = 0; index < connections_.size(); ++index) {
       const auto *connection = connections_[index];
-      if (connection->state() != service::MarketDataState::Failed ||
-          failure_reported_[index]) {
+      if (connection->state() != service::MarketDataState::Failed) {
+        failure_reported_[index] = false;
+        continue;
+      }
+      if (failure_reported_[index]) {
         continue;
       }
       failure_reported_[index] = true;
@@ -646,8 +726,9 @@ class ProducerRuntime::Impl {
           std::string(exchange::product_name(connection->product())) +
           " reason=" + std::string(connection->error_message()) +
           " targets=" + targets(connection->streams());
-      set_failure(std::move(message));
-      return -1;
+      if (options_.error_output != nullptr) {
+        *options_.error_output << message << '\n';
+      }
     }
     return result;
   }
@@ -669,6 +750,14 @@ class ProducerRuntime::Impl {
             << " ws_shards_live=" << metrics.ws_shards_live
             << " ws_shards_reconnecting=" << metrics.ws_shards_reconnecting
             << " reconnects=" << metrics.reconnects
+            << " connection_rebuild_attempts="
+            << metrics.connection_rebuild_attempts
+            << " connection_rebuild_successes="
+            << metrics.connection_rebuild_successes
+            << " connection_rebuild_failures="
+            << metrics.connection_rebuild_failures
+            << " connection_degraded_duration_ms="
+            << metrics.connection_degraded_duration_ms
             << " last_reconnect_shard=" << metrics.last_reconnect_shard
             << " resyncs=" << metrics.resyncs
             << " parse_errors=" << metrics.parse_errors
@@ -679,6 +768,10 @@ class ProducerRuntime::Impl {
             << " depth=" << metrics.depth_updates
             << " ticker=" << metrics.ticker_updates
             << " subscription_requests=" << metrics.subscription_requests
+            << " budget_deferrals=" << metrics.budget_deferrals
+            << " cooldown_deferrals=" << metrics.cooldown_deferrals
+            << " recovery_deadline_extensions="
+            << metrics.recovery_deadline_extensions
             << " snapshot_bridge_gaps=" << metrics.snapshot_bridge_gaps
             << " live_sequence_gaps=" << metrics.live_sequence_gaps
             << " invalid_images=" << metrics.invalid_images

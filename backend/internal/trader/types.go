@@ -76,6 +76,7 @@ type Order struct {
 	ArbitrageExecutionID string
 	ArbitrageLeg         string
 	ArbitrageRole        string
+	ReduceOnly           bool
 }
 
 type PlaceOrderInput struct {

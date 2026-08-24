@@ -43,6 +43,9 @@ int main() {
   assert(example.value.segments.size() == 2);
   assert(example.value.gateway.publish_interval_ms == 50);
   assert(example.value.gateway.depth == 50);
+  assert(example.value.ingestion.stale_after_ms == 5000);
+  assert(example.value.ingestion.hard_reset_after_ms == 10000);
+  assert(example.value.ingestion.max_drain_records == 512);
   assert(example.value.recording.sample_interval_ms == 200);
   assert(example.value.recording.retention_hours == 24);
   assert(example.value.recording.depth == 50);
@@ -141,6 +144,45 @@ int main() {
   const auto unknown = write_temp(
       config_with(kBbo, auth + "  unexpected: true\n"), "unknown");
   assert(!mds::consumer::load_config(unknown.string(), true, false));
+
+  const auto ingestion = write_temp(
+      "segments:\n"
+      "  - /test.agg_perp_usdt_binance-okx.btcusdt.aggbbo.2\n"
+      "ingestion:\n"
+      "  stale_after_ms: 7000\n"
+      "  hard_reset_after_ms: 12000\n"
+      "  max_drain_records: 1024\n",
+      "ingestion");
+  const auto loaded_ingestion =
+      mds::consumer::load_config(ingestion.string(), false, false);
+  assert(loaded_ingestion);
+  assert(loaded_ingestion.value.ingestion.stale_after_ms == 7000);
+  assert(loaded_ingestion.value.ingestion.hard_reset_after_ms == 12000);
+  assert(loaded_ingestion.value.ingestion.max_drain_records == 1024);
+
+  const auto bad_ingestion_order = write_temp(
+      "segments:\n"
+      "  - /test.agg_perp_usdt_binance-okx.btcusdt.aggbbo.2\n"
+      "ingestion: {stale_after_ms: 10000, hard_reset_after_ms: 10000}\n",
+      "ingestion-order");
+  assert(!mds::consumer::load_config(bad_ingestion_order.string(), false,
+                                     false));
+
+  const auto bad_ingestion_batch = write_temp(
+      "segments:\n"
+      "  - /test.agg_perp_usdt_binance-okx.btcusdt.aggbbo.2\n"
+      "ingestion: {max_drain_records: 0}\n",
+      "ingestion-batch");
+  assert(!mds::consumer::load_config(bad_ingestion_batch.string(), false,
+                                     false));
+
+  const auto unknown_ingestion = write_temp(
+      "segments:\n"
+      "  - /test.agg_perp_usdt_binance-okx.btcusdt.aggbbo.2\n"
+      "ingestion: {unexpected: true}\n",
+      "ingestion-unknown");
+  assert(!mds::consumer::load_config(unknown_ingestion.string(), false,
+                                     false));
 
   const auto public_without_auth = write_temp(
       config_with(kBbo, "  listen_address: 0.0.0.0\n"), "public");
