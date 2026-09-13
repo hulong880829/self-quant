@@ -17,6 +17,11 @@
 
 namespace net {
 
+struct WebSocketHeader {
+  std::string_view name;
+  std::string_view value;
+};
+
 enum class WebSocketClientState : std::uint8_t {
   Idle,
   TcpConnecting,
@@ -50,6 +55,8 @@ public:
   WebSocketClientState
   check_timeout(Clock::time_point now = Clock::now()) noexcept;
   void reset() noexcept;
+  bool set_upgrade_headers(
+      std::span<const WebSocketHeader> headers) noexcept;
   void set_origin(std::string origin) { origin_ = std::move(origin); }
   void set_secure(bool secure) noexcept { secure_ = secure; }
   void set_socket_options(SocketOptions options) noexcept {
@@ -108,6 +115,7 @@ private:
   std::vector<std::byte> request_;
   std::vector<std::byte> tls_receive_;
   std::vector<char> host_;
+  std::vector<std::pair<std::string, std::string>> upgrade_headers_;
   std::string origin_;
   std::vector<std::byte> close_payload_;
   FrameCallback callback_;

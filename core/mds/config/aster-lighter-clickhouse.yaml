@@ -1,0 +1,45 @@
+clickhouse_bbo:
+  host: 127.0.0.1
+  service: "8443"
+  database: market_data
+  table: crypto_bbo
+  user: bbo_writer
+  password_env: CLICKHOUSE_BBO_PASSWORD
+
+  shm_prefix: /selfquant.mds.bbo
+  sample_interval_ms: 1000
+  stale_cutoff_ms: 5000
+  flush_interval_ms: 1000
+  request_timeout_ms: 5000
+  batch_rows: 5000
+  queue_rows: 50000
+  unresolved_rows: 4096
+
+  # Production scope remains perpetual BBO only. Spot ticker segments can be
+  # enabled independently later by adding explicit selectors.
+  selectors:
+    - venue: aster
+      product: perpetual
+      shard: 0
+    - venue: aster
+      product: perpetual
+      shard: 1
+    - venue: aster
+      product: perpetual
+      shard: 2
+    - venue: aster
+      product: perpetual
+      shard: 3
+
+    - venue: lighter
+      product: perpetual
+      shard: 0
+    - venue: lighter
+      product: perpetual
+      shard: 1
+    - venue: lighter
+      product: perpetual
+      shard: 2
+    - venue: lighter
+      product: perpetual
+      shard: 3

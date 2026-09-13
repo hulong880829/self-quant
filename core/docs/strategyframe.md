@@ -137,6 +137,13 @@ thread returns `InvalidThread`. The current runtime has one lane (`lane=1`).
 - `query_open_orders(account)` and `query_positions(account)` start
   account-routed asynchronous venue queries. Snapshot and completion callbacks
   are authoritative query results and never overwrite the local managers.
+- The `(account, instrument_id)` overloads issue a fixed-size
+  `SingleInstrument` query carrying the venue-native symbol/token reference.
+  Unknown identities are counted and held in the fixed reconciliation
+  quarantine with `instrument_id == 0`; they do not fail the rest of a query.
+- `execution_ready(instrument_id)` means catalog notification, Execution
+  Directory acknowledgement, and adapter readiness are all complete. It does
+  not depend on order-book liveness.
 - `oms_status(adapter_kind)` returns the latest cached venue-status update or
   `NotFound` before one has arrived.
 - `params()` exposes immutable typed strategy parameters.
@@ -146,7 +153,7 @@ thread returns `InvalidThread`. The current runtime has one lane (`lane=1`).
 
 MDS subscriptions are frozen by the YAML configuration before `run()` starts;
 the current context intentionally does not mutate producer subscriptions after
-the MDS readers and OMS registry have been initialized.
+the MDS readers and OMS Execution Directory have been initialized.
 
 Mutating the managers can invalidate the ordering and contents represented by
 previously returned spans. Treat spans as callback-local views.
@@ -303,16 +310,18 @@ oms:
     position_table: 1024
     fill_dedup: 8192
     timer_table: 1024
+    instrument_directory: 4096
 ```
 
-`session_epoch`, `event_budget`, `metric_sample_rate` and
-`startup_timeout_ns` must be nonzero. Every capacity must be a power of two and
-at least two. The session epoch becomes part of each 16-byte `OrderToken`; use
-a process/run-unique nonzero value to reduce stale-token ambiguity.
+`session_epoch`, `event_budget`, `metric_sample_rate`,
+`retire_deferred_warning_count` and `startup_timeout_ns` must be nonzero.
+Every capacity must be a power of two and at least two. The session epoch
+becomes part of each 16-byte `OrderToken`; use a process/run-unique nonzero
+value to reduce stale-token ambiguity.
 
-`oms.instruments` accepts venue/product/symbol, fixed-point scales, tick/lot
-sizes and Polymarket metadata. The runtime seeds the OMS registry from this
-list and merges later MDS metadata without losing execution identifiers.
+`oms.instruments` is a compatibility validation list. Executable instruments
+come from MDS catalog records and are registered in the fixed-capacity OMS
+Execution Directory without changing frozen routes on existing orders.
 Polymarket condition IDs accept 32-byte hex and token IDs accept either
 32-byte hex or decimal uint256 text.
 

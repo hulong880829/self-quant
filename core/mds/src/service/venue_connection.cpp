@@ -3,6 +3,7 @@
 #include "mds/book/book_pipeline.h"
 #include "mds/exchange/capabilities.h"
 #include "mds/exchange/polymarket/polymarket_adapter.h"
+#include "mds/exchange/symbol_policy.h"
 #include "net/http_client.h"
 #include "net/websocket_client.h"
 #include "mds/publish/wire_publisher.h"
@@ -17,11 +18,14 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <ctime>
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <set>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <random>
@@ -35,6 +39,33 @@ namespace {
 using Clock = MarketDataSession::Clock;
 using Product = utils::md::ProductType;
 using Venue = utils::md::Venue;
+
+constexpr std::array<net::HttpHeader, 1> kGateDecimalHttpHeaders{{
+    {"X-Gate-Size-Decimal", "1"},
+}};
+constexpr std::array<net::WebSocketHeader, 1> kGateDecimalWsHeaders{{
+    {"X-Gate-Size-Decimal", "1"},
+}};
+
+bool is_gate_perpetual(Venue venue, Product product) noexcept {
+  return venue == Venue::Gate && product == Product::Perpetual;
+}
+
+std::span<const net::HttpHeader>
+gate_decimal_http_headers(Venue venue, Product product) noexcept {
+  if (is_gate_perpetual(venue, product)) {
+    return kGateDecimalHttpHeaders;
+  }
+  return {};
+}
+
+std::span<const net::WebSocketHeader>
+gate_decimal_ws_headers(Venue venue, Product product) noexcept {
+  if (is_gate_perpetual(venue, product)) {
+    return kGateDecimalWsHeaders;
+  }
+  return {};
+}
 
 struct Endpoint {
   std::string host;
@@ -65,17 +96,135 @@ Endpoint parse_endpoint(std::string_view configured) {
   return result;
 }
 
+bool start_http_request(
+    net::HttpClient &client, const Endpoint &endpoint,
+    const exchange::HttpRequestSpec &request,
+    std::span<const net::HttpHeader> headers,
+    Clock::time_point deadline) noexcept {
+  const auto method =
+      request.method == exchange::HttpRequestSpec::Method::Post
+          ? net::HttpMethod::Post
+          : net::HttpMethod::Get;
+  return client.start_request(
+      endpoint.host, endpoint.service,
+      net::HttpRequest{
+          method,
+          request.target,
+          request.content_type,
+          {reinterpret_cast<const std::byte *>(request.body.data()),
+           request.body.size()},
+          headers,
+      },
+      deadline);
+}
+
 std::uint64_t clock_ticks() noexcept {
   return static_cast<std::uint64_t>(
       Clock::now().time_since_epoch().count());
 }
 
+std::string utc_timestamp() {
+  const auto now = std::chrono::system_clock::now();
+  const auto time = std::chrono::system_clock::to_time_t(now);
+  std::tm utc{};
+  gmtime_r(&time, &utc);
+  char date[32]{};
+  std::strftime(date, sizeof(date), "%Y-%m-%dT%H:%M:%S", &utc);
+  const auto milliseconds =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          now.time_since_epoch())
+          .count() %
+      1000;
+  char result[40]{};
+  std::snprintf(result, sizeof(result), "%s.%03lldZ", date,
+                static_cast<long long>(milliseconds));
+  return result;
+}
+
+std::string_view failure_category_name(
+    exchange::ParseFailureCategory value) noexcept {
+  using Category = exchange::ParseFailureCategory;
+  switch (value) {
+    case Category::None:
+      return "none";
+    case Category::DirtyData:
+      return "dirty_data";
+    case Category::SequenceGap:
+      return "sequence_gap";
+    case Category::Protocol:
+      return "protocol";
+    case Category::ConfigurationMetadata:
+      return "configuration_metadata";
+  }
+  return "unknown";
+}
+
+std::string_view failure_scope_name(
+    exchange::ParseFailureScope value) noexcept {
+  using Scope = exchange::ParseFailureScope;
+  switch (value) {
+    case Scope::None:
+      return "none";
+    case Scope::Symbol:
+      return "symbol";
+    case Scope::Shard:
+      return "shard";
+    case Scope::Venue:
+      return "venue";
+  }
+  return "unknown";
+}
+
+std::string_view failure_code_name(
+    exchange::ParseFailureCode value) noexcept {
+  using Code = exchange::ParseFailureCode;
+  switch (value) {
+    case Code::None:
+      return "none";
+    case Code::MalformedPayload:
+      return "malformed_payload";
+    case Code::InvalidSymbol:
+      return "invalid_symbol";
+    case Code::InvalidPrice:
+      return "invalid_price";
+    case Code::InvalidQuantity:
+      return "invalid_quantity";
+    case Code::CapacityExceeded:
+      return "capacity_exceeded";
+    case Code::SequenceDiscontinuity:
+      return "sequence_discontinuity";
+    case Code::UnsupportedMessage:
+      return "unsupported_message";
+    case Code::MetadataUnavailable:
+      return "metadata_unavailable";
+    case Code::ScaleMismatch:
+      return "scale_mismatch";
+  }
+  return "unknown";
+}
+
 template <std::size_t Size>
-void copy_text(std::array<char, Size> &destination,
+bool copy_text(std::array<char, Size> &destination,
                std::string_view source) noexcept {
-  const auto count = std::min(source.size(), Size - 1);
-  std::memcpy(destination.data(), source.data(), count);
-  destination[count] = '\0';
+  destination.fill('\0');
+  if (source.size() >= Size) {
+    return false;
+  }
+  std::memcpy(destination.data(), source.data(), source.size());
+  destination[source.size()] = '\0';
+  return true;
+}
+
+std::string truncated_cursor_hash(std::string_view cursor) {
+  std::uint64_t hash = 14695981039346656037ULL;
+  for (const char raw : cursor) {
+    hash ^= static_cast<unsigned char>(raw);
+    hash *= 1099511628211ULL;
+  }
+  char digits[17];
+  std::snprintf(digits, sizeof(digits), "%016llx",
+                static_cast<unsigned long long>(hash));
+  return {digits, 8};
 }
 
 std::string escape_diagnostic_bytes(std::string_view value) {
@@ -142,11 +291,13 @@ std::string venue_symbol(Venue venue, Product product,
     }
   }
   if (venue == Venue::Hyperliquid && product == Product::Perpetual) {
-    constexpr std::string_view suffix = "USDT";
-    if (canonical.size() > suffix.size() &&
-        canonical.substr(canonical.size() - suffix.size()) == suffix) {
-      return std::string(
-          canonical.substr(0, canonical.size() - suffix.size()));
+    for (const auto suffix :
+         {std::string_view{"USDC"}, std::string_view{"USDT"}}) {
+      if (canonical.size() > suffix.size() &&
+          canonical.substr(canonical.size() - suffix.size()) == suffix) {
+        return std::string(
+            canonical.substr(0, canonical.size() - suffix.size()));
+      }
     }
   }
   if (venue == Venue::Hyperliquid && product == Product::Spot) {
@@ -160,6 +311,19 @@ std::string venue_symbol(Venue venue, Product product,
         result.append(quote);
         return result;
       }
+    }
+  }
+  if (venue == Venue::Lighter && canonical.ends_with("USDC") &&
+      canonical.size() > std::string_view{"USDC"}.size()) {
+    const auto base =
+        canonical.substr(0, canonical.size() - std::string_view{"USDC"}.size());
+    if (product == Product::Perpetual) {
+      return std::string(base);
+    }
+    if (product == Product::Spot) {
+      std::string result(base);
+      result.append("/USDC");
+      return result;
     }
   }
   return std::string(canonical);
@@ -248,6 +412,17 @@ bool terminal(net::HttpClientState state) noexcept {
          state == net::HttpClientState::Failed;
 }
 
+std::chrono::milliseconds outbound_send_spacing(
+    Venue venue, Product product) noexcept {
+  if (venue == Venue::Bitget) {
+    return std::chrono::milliseconds(125);
+  }
+  if (venue == Venue::Aster && product == Product::Spot) {
+    return std::chrono::milliseconds(250);
+  }
+  return std::chrono::milliseconds(0);
+}
+
 }  // namespace
 
 std::vector<std::vector<std::size_t>> PartitionWebSocketSymbols(
@@ -288,6 +463,16 @@ std::vector<std::vector<std::size_t>> PartitionWebSocketSymbols(
 
 class VenueConnection::Impl {
  public:
+  enum class SymbolResubscribeMode : std::uint8_t {
+    UnsubscribeThenSubscribe,
+    SubscribeOnly,
+  };
+
+  enum class ReconnectKind : std::uint8_t {
+    Failure,
+    ServerExpiration,
+  };
+
   struct WsShard {
     WsShard(std::size_t shard_id, net::SharedSslContext tls,
             Venue venue, Product product, std::size_t max_levels)
@@ -310,6 +495,8 @@ class VenueConnection::Impl {
     std::vector<std::size_t> symbol_indices;
     std::vector<exchange::StreamRequest> requests;
     std::vector<std::string> batches;
+    std::vector<std::size_t> batch_symbol_indices;
+    std::vector<std::size_t> batch_pending_acknowledgements;
     std::unique_ptr<exchange::NormalizedEvent> event;
     exchange::ParseFailure parse_failure;
     SubscriptionBudget budget;
@@ -324,6 +511,7 @@ class VenueConnection::Impl {
     Clock::time_point next_budget_retry{};
     std::size_t id{};
     std::size_t next_batch{};
+    std::size_t next_batch_to_send{};
     std::size_t pending_acknowledgements{};
     std::uint32_t reconnect_attempt{};
     int registered_fd{-1};
@@ -335,6 +523,7 @@ class VenueConnection::Impl {
     bool all_subscribed{};
     bool open_seen{};
     bool connection_started{};
+    bool subscription_isolation_mode{};
     MarketDataState state{MarketDataState::Stopped};
   };
 
@@ -371,8 +560,12 @@ class VenueConnection::Impl {
     WsSnapshotRecovery ws_snapshot_recovery;
     Clock::time_point last_resubscribe{};
     Clock::time_point resubscribe_not_before{};
+    Clock::time_point metadata_refresh_not_before{};
+    Clock::time_point last_metadata_refresh_attempt{};
     Clock::time_point recovery_started{};
     std::uint32_t consecutive_snapshot_failures{};
+    std::uint32_t consecutive_metadata_refresh_failures{};
+    std::uint32_t subscription_rate_limit_retries{};
     std::uint32_t catalog_generation{};
     bool metadata_ready{};
     bool image_ready{};
@@ -382,6 +575,15 @@ class VenueConnection::Impl {
     bool snapshot_quarantined{};
     bool needs_snapshot{};
     bool resubscribe_pending{};
+    bool rate_limit_recovery_active{};
+    bool resubscribe_ticker{};
+    bool resubscribe_orderbook{};
+    SymbolResubscribeMode resubscribe_mode{
+        SymbolResubscribeMode::UnsubscribeThenSubscribe};
+    bool quarantined{};
+    bool scale_mismatch_seen{};
+    bool metadata_refresh_pending{};
+    bool metadata_refresh_quarantined{};
     std::size_t shard_id{};
   };
 
@@ -395,14 +597,47 @@ class VenueConnection::Impl {
       options_.instrument_manager =
           std::make_shared<instrument::InstrumentManager>();
     }
+    std::vector<std::string> config_quarantine_examples;
+    std::erase_if(options_.streams, [&](const auto &stream) {
+      const auto mapped = stream.venue_symbol.empty()
+                              ? venue_symbol(options_.venue, options_.product,
+                                             stream.symbol)
+                              : stream.venue_symbol;
+      if (exchange::valid_utf8_symbol(stream.symbol) &&
+          exchange::valid_utf8_symbol(mapped)) {
+        return false;
+      }
+      ++metrics_.config_symbol_quarantines;
+      if (config_quarantine_examples.size() < 3U) {
+        config_quarantine_examples.push_back(stream.symbol);
+      }
+      return true;
+    });
+    if (metrics_.config_symbol_quarantines != 0) {
+      std::cerr << utc_timestamp() << ' '
+                << exchange::venue_name(options_.venue)
+                << " config symbols quarantined product="
+                << exchange::product_name(options_.product)
+                << " count=" << metrics_.config_symbol_quarantines;
+      for (const auto &example : config_quarantine_examples) {
+        std::cerr << " example=" << escape_diagnostic_bytes(example);
+      }
+      std::cerr << '\n';
+    }
     std::size_t max_levels = 20;
     symbols_.reserve(options_.streams.size());
     requests_.reserve(options_.streams.size());
+    metadata_refresh_queue_.reserve(options_.streams.size());
+    metadata_refresh_active_symbols_.reserve(options_.streams.size());
+    metadata_refresh_requests_.reserve(options_.streams.size());
     for (auto &stream : options_.streams) {
       max_levels = std::max(max_levels, stream.max_levels_per_message);
       SymbolRuntime runtime;
-      runtime.venue_symbol =
-          venue_symbol(options_.venue, options_.product, stream.symbol);
+      runtime.venue_symbol = stream.venue_symbol.empty()
+                                 ? venue_symbol(options_.venue,
+                                                options_.product,
+                                                stream.symbol)
+                                 : stream.venue_symbol;
       runtime.options = stream;
       runtime.pending.reserve(64);
       symbols_.push_back(std::move(runtime));
@@ -449,6 +684,45 @@ class VenueConnection::Impl {
   exchange::VenueAdapter &metadata_adapter() noexcept {
     return metadata_adapter_ ? *metadata_adapter_
                              : *ws_shards_.front().adapter;
+  }
+
+  [[nodiscard]] bool can_adopt_multiplex_publishers(
+      const Impl &source) const noexcept {
+    if (options_.venue != source.options_.venue ||
+        options_.product != source.options_.product ||
+        options_.streams.empty() || source.options_.streams.empty()) {
+      return false;
+    }
+    const auto &destination = options_.streams.front();
+    const auto &origin = source.options_.streams.front();
+    if (destination.ring_layout == publish::RingLayout::PerSymbol ||
+        destination.shm_prefix != origin.shm_prefix ||
+        destination.ring_layout != origin.ring_layout ||
+        destination.shard_count != origin.shard_count) {
+      return false;
+    }
+    const auto same_ring = [](const transport::RingOptions &left,
+                              const transport::RingOptions &right) {
+      return left.backend == right.backend && left.mode == right.mode &&
+             left.hugetlbfs_mount == right.hugetlbfs_mount &&
+             left.ring_bytes == right.ring_bytes &&
+             left.max_record_bytes == right.max_record_bytes &&
+             left.max_readers == right.max_readers &&
+             left.create == right.create &&
+             left.allow_hugepage_fallback ==
+                 right.allow_hugepage_fallback &&
+             left.unlink_on_close == right.unlink_on_close;
+    };
+    return same_ring(destination.multiplex_ring,
+                     origin.multiplex_ring);
+  }
+
+  void adopt_multiplex_publishers(Impl &source) noexcept {
+    if (!can_adopt_multiplex_publishers(source)) {
+      return;
+    }
+    multiplex_ticker_ = std::move(source.multiplex_ticker_);
+    multiplex_book_ = std::move(source.multiplex_book_);
   }
 
   WsShard &shard_for(const SymbolRuntime &symbol) noexcept {
@@ -515,6 +789,7 @@ class VenueConnection::Impl {
       shard.connect_at = now + startup_stagger * shard.id;
       shard.state = MarketDataState::Connecting;
     }
+    metadata_http_purpose_ = MetadataHttpPurpose::Startup;
     if (!begin_metadata(now) ||
         !begin_connection(ws_shards_.front(), now)) {
       const auto message = error_;
@@ -644,6 +919,10 @@ class VenueConnection::Impl {
         symbol.last_ticker_sequence, 0,
         symbol.ticker_live ? utils::md::BookState::Live
                            : utils::md::BookState::Building);
+    if (symbol.latest_bbo) {
+      symbol.latest_bbo->header.bbo_origin =
+          utils::md::BboOrigin::TickerStream;
+    }
     if (!publisher.publish_instrument_catalog(header, symbol.catalog) ||
         !publisher.publish_instrument(header, symbol.instrument) ||
         (symbol.latest_bbo &&
@@ -678,8 +957,10 @@ class VenueConnection::Impl {
     metadata_batches_.clear();
     metadata_.clear();
     metadata_batch_index_ = 0;
+    reset_metadata_pagination();
+    metadata_bootstrap_started_ = now;
     auto &adapter = metadata_adapter();
-    if (!adapter.build_metadata_request_batches(
+    if (!adapter.build_bootstrap_metadata_request_batches(
             requests_, metadata_batches_, error_) ||
         metadata_batches_.empty()) {
       if (error_.empty()) {
@@ -687,6 +968,11 @@ class VenueConnection::Impl {
       }
       return false;
     }
+    metadata_bootstrap_paginated_ =
+        std::any_of(metadata_batches_.begin(), metadata_batches_.end(),
+                    [](const exchange::MetadataRequestBatch &batch) {
+                      return batch.cursor_paginated;
+                    });
     metadata_.reserve(symbols_.size());
     return start_metadata_batch(now);
   }
@@ -710,6 +996,7 @@ class VenueConnection::Impl {
               << " metadata refresh scheduled product="
               << exchange::product_name(options_.product)
               << " reason=" << escape_diagnostic_bytes(reason) << '\n';
+    metadata_http_purpose_ = MetadataHttpPurpose::VenueRefresh;
     if (!begin_metadata(now)) {
       fail(error_.empty() ? "failed to refresh venue metadata" : error_);
       return false;
@@ -730,21 +1017,20 @@ class VenueConnection::Impl {
       error_ = "invalid metadata request batch range";
       return false;
     }
+    if (batch.cursor_paginated) {
+      constexpr std::size_t kMaximumMetadataPages = 64;
+      if (metadata_page_count_ >= kMaximumMetadataPages) {
+        error_ = "Bybit metadata pagination exceeded page limit";
+        return false;
+      }
+      ++metadata_page_count_;
+    }
     const auto endpoint = parse_endpoint(options_.rest_endpoint);
     const auto &request = batch.http;
-    bool started{};
-    if (request.method == exchange::HttpRequestSpec::Method::Post) {
-      started = metadata_http_.start_post(
-          endpoint.host, endpoint.service, request.target,
-          request.content_type,
-          {reinterpret_cast<const std::byte *>(request.body.data()),
-           request.body.size()},
-          now + options_.request_timeout);
-    } else {
-      started = metadata_http_.start_get(
-          endpoint.host, endpoint.service, request.target,
-          now + options_.request_timeout);
-    }
+    const bool started = start_http_request(
+        metadata_http_, endpoint, request,
+        gate_decimal_http_headers(options_.venue, options_.product),
+        now + options_.request_timeout);
     if (!started) {
       error_ = std::string(metadata_http_.error_message());
       return false;
@@ -753,8 +1039,221 @@ class VenueConnection::Impl {
     return true;
   }
 
+  bool request_symbol_metadata_refresh(
+      SymbolRuntime &symbol, Clock::time_point now) {
+    if (options_.venue == Venue::Polymarket ||
+        symbol.metadata_refresh_quarantined) {
+      return true;
+    }
+    if (symbol.metadata_refresh_pending) {
+      ++metrics_.metadata_refresh_coalesced;
+      return true;
+    }
+    const auto index = static_cast<std::size_t>(
+        &symbol - symbols_.data());
+    if (index >= symbols_.size()) {
+      return false;
+    }
+    constexpr auto cooldown = std::chrono::seconds(1);
+    symbol.metadata_refresh_pending = true;
+    symbol.metadata_refresh_not_before = now;
+    if (symbol.last_metadata_refresh_attempt != Clock::time_point{}) {
+      symbol.metadata_refresh_not_before = std::max(
+          symbol.metadata_refresh_not_before,
+          symbol.last_metadata_refresh_attempt + cooldown);
+      if (symbol.metadata_refresh_not_before > now) {
+        ++metrics_.cooldown_deferrals;
+      }
+    }
+    metadata_refresh_queue_.push_back(index);
+    return true;
+  }
+
+  void clear_active_metadata_refresh() noexcept {
+    if (metadata_fd_ >= 0) {
+      loop_.remove(metadata_fd_);
+      metadata_fd_ = -1;
+    }
+    metadata_http_.reset();
+    metadata_http_purpose_ = MetadataHttpPurpose::Idle;
+    metadata_refresh_active_symbols_.clear();
+    metadata_refresh_requests_.clear();
+    metadata_refresh_batches_.clear();
+    metadata_refresh_batch_index_ = 0;
+  }
+
+  void metadata_refresh_backoff(
+      std::string_view reason, Clock::time_point now,
+      std::optional<std::chrono::milliseconds> forced_delay =
+          std::nullopt,
+      bool quarantine = false) {
+    ++metrics_.metadata_refresh_failures;
+    const std::string bounded_reason(reason.substr(0, 512));
+    for (const auto symbol_index : metadata_refresh_active_symbols_) {
+      if (symbol_index >= symbols_.size()) {
+        continue;
+      }
+      auto &symbol = symbols_[symbol_index];
+      if (!symbol.metadata_refresh_pending) {
+        continue;
+      }
+      ++symbol.consecutive_metadata_refresh_failures;
+      if (quarantine ||
+          symbol.consecutive_metadata_refresh_failures >=
+              options_.snapshot_max_consecutive_failures) {
+        if (!symbol.metadata_refresh_quarantined) {
+          symbol.metadata_refresh_quarantined = true;
+          ++metrics_.metadata_symbol_quarantines;
+          std::cerr
+              << utc_timestamp() << ' '
+              << exchange::venue_name(options_.venue)
+              << " symbol metadata refresh quarantined product="
+              << exchange::product_name(options_.product)
+              << " symbol="
+              << escape_diagnostic_bytes(symbol.options.symbol)
+              << " reason="
+              << escape_diagnostic_bytes(bounded_reason) << '\n';
+        }
+        symbol.metadata_refresh_pending = false;
+        continue;
+      }
+      const auto exponent = std::min<std::uint32_t>(
+          symbol.consecutive_metadata_refresh_failures - 1U, 16U);
+      const auto multiplier = std::uint64_t{1} << exponent;
+      const auto raw =
+          std::uint64_t{options_.snapshot_failure_backoff_ms} *
+          multiplier;
+      const auto capped = std::min<std::uint64_t>(
+          raw, options_.snapshot_failure_backoff_max_ms);
+      const auto jitter =
+          (capped / 8U) *
+          (symbol.consecutive_metadata_refresh_failures % 3U);
+      auto delay = std::chrono::milliseconds(
+          std::min<std::uint64_t>(
+              capped + jitter,
+              options_.snapshot_failure_backoff_max_ms));
+      if (forced_delay) {
+        delay = std::max(delay, *forced_delay);
+      }
+      constexpr auto cooldown = std::chrono::seconds(1);
+      symbol.metadata_refresh_not_before =
+          std::max(now + delay,
+                   symbol.last_metadata_refresh_attempt + cooldown);
+      metadata_refresh_queue_.push_back(symbol_index);
+    }
+    if (!bounded_reason.empty()) {
+      std::cerr << exchange::venue_name(options_.venue)
+                << " symbol metadata refresh deferred product="
+                << exchange::product_name(options_.product)
+                << " reason="
+                << escape_diagnostic_bytes(bounded_reason) << '\n';
+    }
+    clear_active_metadata_refresh();
+  }
+
+  bool start_symbol_metadata_batch(Clock::time_point now) {
+    if (metadata_refresh_batch_index_ >=
+        metadata_refresh_batches_.size()) {
+      return false;
+    }
+    const auto &batch =
+        metadata_refresh_batches_[metadata_refresh_batch_index_];
+    if (batch.request_count == 0 ||
+        batch.request_offset > metadata_refresh_requests_.size() ||
+        batch.request_count >
+            metadata_refresh_requests_.size() - batch.request_offset) {
+      return false;
+    }
+    const auto endpoint = parse_endpoint(options_.rest_endpoint);
+    const auto &request = batch.http;
+    const bool started = start_http_request(
+        metadata_http_, endpoint, request,
+        gate_decimal_http_headers(options_.venue, options_.product),
+        now + options_.request_timeout);
+    if (!started) {
+      return false;
+    }
+    ++metrics_.metadata_refresh_requests;
+    sync_http_registration(HttpKind::Metadata);
+    return true;
+  }
+
+  void drive_symbol_metadata_refresh(Clock::time_point now) {
+    if (!metadata_ready_ ||
+        metadata_http_purpose_ != MetadataHttpPurpose::Idle ||
+        metadata_refresh_queue_.empty()) {
+      return;
+    }
+    metadata_refresh_active_symbols_.clear();
+    std::erase_if(
+        metadata_refresh_queue_,
+        [this, now](std::size_t symbol_index) {
+          if (symbol_index >= symbols_.size()) {
+            return true;
+          }
+          auto &symbol = symbols_[symbol_index];
+          if (!symbol.metadata_refresh_pending ||
+              symbol.metadata_refresh_quarantined) {
+            return true;
+          }
+          if (now < symbol.metadata_refresh_not_before) {
+            return false;
+          }
+          symbol.last_metadata_refresh_attempt = now;
+          metadata_refresh_active_symbols_.push_back(symbol_index);
+          return true;
+        });
+    if (metadata_refresh_active_symbols_.empty()) {
+      return;
+    }
+    metadata_refresh_requests_.clear();
+    for (const auto symbol_index :
+         metadata_refresh_active_symbols_) {
+      metadata_refresh_requests_.push_back(requests_[symbol_index]);
+    }
+    metadata_refresh_batches_.clear();
+    std::string build_error;
+    if (!metadata_adapter().build_metadata_request_batches(
+            metadata_refresh_requests_, metadata_refresh_batches_,
+            build_error) ||
+        metadata_refresh_batches_.empty()) {
+      metadata_http_purpose_ = MetadataHttpPurpose::SymbolRefresh;
+      metadata_refresh_backoff(
+          build_error.empty()
+              ? "venue produced no symbol metadata refresh request"
+              : build_error,
+          now);
+      return;
+    }
+    metadata_refresh_batch_index_ = 0;
+    metadata_http_purpose_ = MetadataHttpPurpose::SymbolRefresh;
+    if (!start_symbol_metadata_batch(now)) {
+      metadata_refresh_backoff(
+          metadata_http_.error_message().empty()
+              ? std::string_view(
+                    "failed to start symbol metadata refresh")
+              : metadata_http_.error_message(),
+          now);
+    }
+  }
+
   bool begin_connection(WsShard &shard, Clock::time_point now) {
+    if (options_.connection_attempt_budget &&
+        !options_.connection_attempt_budget->allow(now)) {
+      shard.connect_at =
+          options_.connection_attempt_budget->retry_at(now);
+      ++metrics_.cooldown_deferrals;
+      return true;
+    }
+    if (options_.connection_attempt_budget) {
+      options_.connection_attempt_budget->record(now);
+    }
     const auto endpoint = parse_endpoint(options_.websocket_endpoint);
+    if (!shard.websocket->set_upgrade_headers(
+            gate_decimal_ws_headers(options_.venue, options_.product))) {
+      error_ = "invalid WebSocket upgrade headers";
+      return false;
+    }
     if (!shard.websocket->start(
             endpoint.host, endpoint.service, endpoint.target,
             now + options_.connect_timeout)) {
@@ -767,6 +1266,7 @@ class VenueConnection::Impl {
     shard.login_sent = false;
     shard.login_acked = false;
     shard.next_batch = 0;
+    shard.next_batch_to_send = 0;
     shard.pending_acknowledgements = 0;
     shard.awaiting_ack = false;
     shard.all_subscribed = false;
@@ -780,6 +1280,12 @@ class VenueConnection::Impl {
   }
 
   enum class HttpKind : std::uint8_t { Metadata, Snapshot, Discovery };
+  enum class MetadataHttpPurpose : std::uint8_t {
+    Idle,
+    Startup,
+    VenueRefresh,
+    SymbolRefresh,
+  };
 
   net::HttpClient &http(HttpKind kind) noexcept {
     switch (kind) {
@@ -871,15 +1377,31 @@ class VenueConnection::Impl {
     }
   }
 
+  void schedule_terminal_reconnect(
+      WsShard &shard, Clock::time_point now = Clock::now()) {
+    const bool has_pending_reason =
+        !shard.pending_reconnect_reason.empty();
+    const auto close_code = shard.websocket->close_code();
+    const std::string close_reason(shard.websocket->close_reason());
+    const std::string reason =
+        has_pending_reason
+            ? std::move(shard.pending_reconnect_reason)
+            : std::string(shard.websocket->error_message());
+    shard.pending_reconnect_reason.clear();
+    const auto kind =
+        !has_pending_reason && options_.venue == Venue::Hyperliquid &&
+                close_code.has_value() && *close_code == 1000 &&
+                close_reason == "Expired"
+            ? ReconnectKind::ServerExpiration
+            : ReconnectKind::Failure;
+    schedule_reconnect(shard, reason, now, kind);
+  }
+
   void on_ws_event(WsShard &shard, std::uint32_t events) {
     shard.websocket->on_event(events);
     sync_ws_registration(shard);
     if (terminal(shard.websocket->state())) {
-      const auto reason = shard.pending_reconnect_reason.empty()
-                              ? std::string(shard.websocket->error_message())
-                              : std::move(shard.pending_reconnect_reason);
-      shard.pending_reconnect_reason.clear();
-      schedule_reconnect(shard, reason);
+      schedule_terminal_reconnect(shard);
     }
   }
 
@@ -907,9 +1429,15 @@ class VenueConnection::Impl {
         discovery_failed(client.error_message());
       } else if (kind == HttpKind::Snapshot) {
         snapshot_backoff(client.error_message(), Clock::now());
+      } else if (metadata_http_purpose_ ==
+                 MetadataHttpPurpose::SymbolRefresh) {
+        metadata_refresh_backoff(
+            client.error_message(), Clock::now());
       } else {
-        fail(std::string("metadata HTTP: ") +
-             std::string(client.error_message()));
+        fail_metadata_response(
+            "http",
+            std::string("metadata HTTP: ") +
+                std::string(client.error_message()));
       }
     }
   }
@@ -917,7 +1445,8 @@ class VenueConnection::Impl {
   void log_ws_diagnostic(const WsShard &shard, std::string_view kind,
                          std::string_view reason, std::string_view payload,
                          std::string_view symbol = {}) const {
-    std::cerr << exchange::venue_name(options_.venue) << " websocket "
+    std::cerr << utc_timestamp() << ' '
+              << exchange::venue_name(options_.venue) << " websocket "
               << kind << " failed product="
               << exchange::product_name(options_.product)
               << " shard=" << shard.id
@@ -926,7 +1455,12 @@ class VenueConnection::Impl {
     if (!symbol.empty()) {
       std::cerr << " symbol=" << escape_diagnostic_bytes(symbol);
     }
-    std::cerr << " payload_bytes=" << payload.size()
+    std::cerr << " failure_code="
+              << failure_code_name(shard.parse_failure.code)
+              << " category="
+              << failure_category_name(shard.parse_failure.category)
+              << " scope=" << failure_scope_name(shard.parse_failure.scope)
+              << " payload_bytes=" << payload.size()
               << " error=" << escape_diagnostic_bytes(reason)
               << " payload=" << escape_diagnostic_bytes(payload) << '\n';
   }
@@ -967,6 +1501,29 @@ class VenueConnection::Impl {
                   ? ResyncReason::LiveSequenceGap
                   : ResyncReason::DirtyData,
               reason);
+        }
+      }
+      if (shard.parse_failure.category ==
+              exchange::ParseFailureCategory::ConfigurationMetadata &&
+          shard.parse_failure.scope ==
+              exchange::ParseFailureScope::Symbol &&
+          shard.parse_failure.code ==
+              exchange::ParseFailureCode::ScaleMismatch &&
+          shard.parse_failure.has_symbol()) {
+        auto *symbol = find_symbol(
+            shard, shard.parse_failure.symbol_view());
+        if (symbol != nullptr && symbol->metadata_ready) {
+          ++metrics_.scale_mismatch_frames;
+          if (!symbol->scale_mismatch_seen) {
+            symbol->scale_mismatch_seen = true;
+            ++metrics_.scale_mismatch_symbols;
+            log_ws_diagnostic(
+                shard, "scale-mismatch", reason, json,
+                shard.parse_failure.symbol_view());
+          }
+          (void)request_symbol_metadata_refresh(
+              *symbol, Clock::now());
+          return true;
         }
       }
       if (shard.parse_failure.category ==
@@ -1036,18 +1593,361 @@ class VenueConnection::Impl {
     return true;
   }
 
+  bool rebuild_subscription_batches(WsShard &shard, bool isolate,
+                                    std::string &error) {
+    shard.batches.clear();
+    shard.batch_symbol_indices.clear();
+    if (!isolate &&
+        shard.adapter->subscription_send_window() == 1U) {
+      if (!shard.adapter->build_subscription_batches(
+              shard.requests, shard.batches, error) ||
+          shard.batches.empty()) {
+        return false;
+      }
+      shard.batch_symbol_indices.assign(
+          shard.batches.size(), std::numeric_limits<std::size_t>::max());
+      return true;
+    }
+    for (std::size_t index = 0; index < shard.requests.size(); ++index) {
+      std::vector<std::string> symbol_batches;
+      const auto request =
+          std::span<const exchange::StreamRequest>(&shard.requests[index], 1);
+      if (!shard.adapter->build_subscription_batches(
+              request, symbol_batches, error) ||
+          symbol_batches.empty()) {
+        return false;
+      }
+      for (auto &batch : symbol_batches) {
+        shard.batches.push_back(std::move(batch));
+        shard.batch_symbol_indices.push_back(shard.symbol_indices[index]);
+      }
+    }
+    return !shard.batches.empty();
+  }
+
+  void reset_subscription_cursor(WsShard &shard) noexcept {
+    shard.next_batch = 0;
+    shard.next_batch_to_send = 0;
+    shard.pending_acknowledgements = 0;
+    shard.batch_pending_acknowledgements.assign(
+        shard.batches.size(), 0);
+    shard.awaiting_ack = false;
+    shard.acknowledgement_deadline = {};
+    shard.all_subscribed = false;
+  }
+
+  [[nodiscard]] bool has_pending_symbol_subscription(
+      const WsShard &shard) const noexcept {
+    return std::any_of(
+        shard.symbol_indices.begin(), shard.symbol_indices.end(),
+        [this](std::size_t symbol_index) {
+          if (symbol_index >= symbols_.size()) {
+            return false;
+          }
+          const auto &symbol = symbols_[symbol_index];
+          return symbol.resubscribe_pending ||
+                 symbol.rate_limit_recovery_active;
+        });
+  }
+
+  void complete_subscriptions_if_ready(
+      WsShard &shard, Clock::time_point now) {
+    const bool batches_complete =
+        !shard.awaiting_ack &&
+        shard.next_batch == shard.batches.size() &&
+        shard.next_batch_to_send == shard.batches.size();
+    if (!batches_complete || has_pending_symbol_subscription(shard)) {
+      shard.all_subscribed = false;
+      return;
+    }
+    shard.all_subscribed = true;
+    shard.deadlines.subscriptions_ready(
+        now, shard.deadlines.reached_live_once()
+                 ? options_.recovery_deadline
+                 : options_.request_timeout);
+    update_live_state();
+  }
+
+  std::optional<std::size_t> settle_subscription_acknowledgement(
+      WsShard &shard, std::string_view symbol) {
+    if (!shard.awaiting_ack || shard.pending_acknowledgements == 0) {
+      return std::nullopt;
+    }
+    auto acknowledged_batch = shard.next_batch_to_send;
+    if (!symbol.empty()) {
+      for (std::size_t index = shard.next_batch;
+           index < shard.next_batch_to_send; ++index) {
+        if (index >= shard.batch_pending_acknowledgements.size() ||
+            shard.batch_pending_acknowledgements[index] == 0 ||
+            index >= shard.batch_symbol_indices.size()) {
+          continue;
+        }
+        const auto symbol_index = shard.batch_symbol_indices[index];
+        if (symbol_index >= symbols_.size()) {
+          continue;
+        }
+        if (symbols_[symbol_index].venue_symbol == symbol ||
+            symbols_[symbol_index].options.symbol == symbol) {
+          acknowledged_batch = index;
+          break;
+        }
+      }
+    }
+    if (acknowledged_batch == shard.next_batch_to_send) {
+      for (std::size_t index = shard.next_batch;
+           index < shard.next_batch_to_send; ++index) {
+        if (index < shard.batch_pending_acknowledgements.size() &&
+            shard.batch_pending_acknowledgements[index] != 0) {
+          acknowledged_batch = index;
+          break;
+        }
+      }
+    }
+    if (acknowledged_batch >= shard.next_batch_to_send ||
+        acknowledged_batch >=
+            shard.batch_pending_acknowledgements.size() ||
+        shard.batch_pending_acknowledgements[acknowledged_batch] == 0 ||
+        shard.pending_acknowledgements == 0) {
+      return std::nullopt;
+    }
+    --shard.batch_pending_acknowledgements[acknowledged_batch];
+    --shard.pending_acknowledgements;
+    while (shard.next_batch < shard.next_batch_to_send &&
+           shard.next_batch <
+               shard.batch_pending_acknowledgements.size() &&
+           shard.batch_pending_acknowledgements[shard.next_batch] == 0) {
+      ++shard.next_batch;
+    }
+    shard.awaiting_ack = shard.pending_acknowledgements != 0;
+    shard.acknowledgement_deadline =
+        shard.awaiting_ack ? Clock::now() + options_.request_timeout
+                           : Clock::time_point{};
+    return acknowledged_batch;
+  }
+
+  void complete_rate_limit_recovery(
+      WsShard &shard, std::size_t acknowledged_batch) {
+    if (acknowledged_batch >=
+            shard.batch_pending_acknowledgements.size() ||
+        shard.batch_pending_acknowledgements[acknowledged_batch] != 0 ||
+        acknowledged_batch >= shard.batch_symbol_indices.size()) {
+      return;
+    }
+    const auto symbol_index =
+        shard.batch_symbol_indices[acknowledged_batch];
+    if (symbol_index >= symbols_.size()) {
+      return;
+    }
+    auto &symbol = symbols_[symbol_index];
+    if (!symbol.rate_limit_recovery_active ||
+        symbol.resubscribe_pending) {
+      return;
+    }
+    symbol.rate_limit_recovery_active = false;
+    symbol.subscription_rate_limit_retries = 0;
+    symbol.resubscribe_mode =
+        SymbolResubscribeMode::UnsubscribeThenSubscribe;
+    symbol.resubscribe_ticker = false;
+    symbol.resubscribe_orderbook = false;
+  }
+
+  bool quarantine_subscription_symbol(WsShard &shard,
+                                      std::size_t symbol_index,
+                                      std::string_view reason) {
+    if (symbol_index >= symbols_.size()) {
+      return false;
+    }
+    auto &symbol = symbols_[symbol_index];
+    if (!symbol.quarantined) {
+      symbol.quarantined = true;
+      ++metrics_.subscription_symbol_quarantines;
+      std::cerr << utc_timestamp() << ' '
+                << exchange::venue_name(options_.venue)
+                << " subscription symbol quarantined product="
+                << exchange::product_name(options_.product)
+                << " shard=" << shard.id
+                << " symbol="
+                << escape_diagnostic_bytes(symbol.options.symbol)
+                << " reason=" << escape_diagnostic_bytes(reason) << '\n';
+    }
+    for (std::size_t index = 0; index < shard.symbol_indices.size();) {
+      if (shard.symbol_indices[index] == symbol_index) {
+        shard.symbol_indices.erase(
+            shard.symbol_indices.begin() +
+            static_cast<std::ptrdiff_t>(index));
+        shard.requests.erase(
+            shard.requests.begin() + static_cast<std::ptrdiff_t>(index));
+      } else {
+        ++index;
+      }
+    }
+    if (std::none_of(symbols_.begin(), symbols_.end(),
+                     [](const SymbolRuntime &item) {
+                       return !item.quarantined && item.metadata_ready;
+                     })) {
+      error_ = "venue subscriptions produced no usable symbols";
+      return false;
+    }
+    if (shard.requests.empty()) {
+      shard.batches.clear();
+      shard.batch_symbol_indices.clear();
+      reset_subscription_cursor(shard);
+      shard.all_subscribed = true;
+      shard.state = MarketDataState::Live;
+      shard.deadlines.mark_live();
+      update_live_state();
+      return true;
+    }
+    std::string build_error;
+    if (!rebuild_subscription_batches(shard, true, build_error)) {
+      error_ = build_error.empty()
+                   ? "failed to rebuild isolated subscription batches"
+                   : std::move(build_error);
+      return false;
+    }
+    shard.subscription_isolation_mode = true;
+    reset_subscription_cursor(shard);
+    shard.state = MarketDataState::Subscribing;
+    return true;
+  }
+
+  bool handle_subscription_rate_limit(
+      WsShard &shard, const exchange::NormalizedEvent &event,
+      std::string_view reason) {
+    const auto found = std::find_if(
+        shard.symbol_indices.begin(), shard.symbol_indices.end(),
+        [&](std::size_t index) {
+          return index < symbols_.size() &&
+                 (symbols_[index].venue_symbol == event.symbol_view() ||
+                  symbols_[index].options.symbol == event.symbol_view());
+        });
+    if (event.symbol_view().empty() ||
+        found == shard.symbol_indices.end()) {
+      schedule_reconnect(
+          shard,
+          "Bitget rate-limit rejection omitted a known subscription symbol");
+      return false;
+    }
+    auto stream = event.subscription_stream;
+    auto &symbol = symbols_[*found];
+    if (stream == exchange::SubscriptionStream::Unknown) {
+      if (symbol.options.ticker && !symbol.options.orderbook) {
+        stream = exchange::SubscriptionStream::Ticker;
+      } else if (!symbol.options.ticker && symbol.options.orderbook) {
+        stream = exchange::SubscriptionStream::Orderbook;
+      } else {
+        schedule_reconnect(
+            shard,
+            "Bitget rate-limit rejection omitted the subscription channel");
+        return false;
+      }
+    }
+    if (!settle_subscription_acknowledgement(
+             shard, event.symbol_view())
+             .has_value()) {
+      schedule_reconnect(
+          shard,
+          "Bitget rate-limit rejection did not match a pending acknowledgement");
+      return false;
+    }
+    constexpr std::uint32_t maximum_retries = 5;
+    ++metrics_.subscription_rate_limit_deferrals;
+    ++symbol.subscription_rate_limit_retries;
+    symbol.rate_limit_recovery_active = true;
+    shard.all_subscribed = false;
+    begin_recovery(shard, Clock::now());
+    if (symbol.subscription_rate_limit_retries > maximum_retries) {
+      symbol.resubscribe_pending = false;
+      std::cerr << utc_timestamp() << ' '
+                << exchange::venue_name(options_.venue)
+                << " subscription rate-limit retries exhausted product="
+                << exchange::product_name(options_.product)
+                << " shard=" << shard.id
+                << " symbol="
+                << escape_diagnostic_bytes(symbol.options.symbol)
+                << " retries=" << symbol.subscription_rate_limit_retries
+                << " reason=" << escape_diagnostic_bytes(reason) << '\n';
+      return true;
+    }
+    return queue_symbol_resubscribe(
+        shard, symbol, Clock::now(),
+        SymbolResubscribeMode::SubscribeOnly, stream);
+  }
+
   bool dispatch_adapter_event(
       WsShard &shard,
       const exchange::NormalizedEvent &event,
       std::string_view parse_error) {
+    metrics_.numeric_tail_normalizations += event.normalized_tail_fields;
     switch (event.type) {
     case exchange::AdapterEventType::SubscribeError:
       ++metrics_.subscription_rejections;
-      schedule_reconnect(
-          shard,
-          parse_error.empty() ? "venue rejected subscription or login"
-                              : parse_error);
-      return false;
+      if (shard.requires_login && shard.login_sent && !shard.login_acked) {
+        schedule_reconnect(
+            shard, parse_error.empty() ? "venue rejected public login"
+                                       : parse_error);
+        return false;
+      }
+      if (event.subscribe_error_kind ==
+          exchange::SubscribeErrorKind::TransientRateLimit) {
+        return handle_subscription_rate_limit(
+            shard, event,
+            parse_error.empty()
+                ? std::string_view{"Bitget subscription rate limited"}
+                : parse_error);
+      }
+      {
+        std::size_t rejected = std::numeric_limits<std::size_t>::max();
+        if (!event.symbol_view().empty()) {
+          const auto found = std::find_if(
+              shard.symbol_indices.begin(), shard.symbol_indices.end(),
+              [&](std::size_t index) {
+                return symbols_[index].venue_symbol == event.symbol_view() ||
+                       symbols_[index].options.symbol == event.symbol_view();
+              });
+          if (found != shard.symbol_indices.end()) {
+            rejected = *found;
+          }
+        }
+        if (rejected == std::numeric_limits<std::size_t>::max() &&
+            shard.next_batch < shard.batch_symbol_indices.size() &&
+            shard.batch_symbol_indices[shard.next_batch] !=
+                std::numeric_limits<std::size_t>::max()) {
+          rejected = shard.batch_symbol_indices[shard.next_batch];
+        }
+        if (rejected == std::numeric_limits<std::size_t>::max() &&
+            shard.requests.size() == 1U) {
+          rejected = shard.symbol_indices.front();
+        }
+        const auto reason =
+            parse_error.empty() ? std::string_view{"venue rejected subscription"}
+                                : parse_error;
+        if (rejected != std::numeric_limits<std::size_t>::max()) {
+          if (!quarantine_subscription_symbol(shard, rejected, reason)) {
+            schedule_reconnect(shard, error_.empty() ? reason : error_);
+            return false;
+          }
+          if (shard.adapter->subscription_send_window() > 1U) {
+            schedule_reconnect(
+                shard,
+                "restarting windowed subscriptions after rejection");
+            return false;
+          }
+          return true;
+        }
+        std::string build_error;
+        if (!rebuild_subscription_batches(shard, true, build_error)) {
+          schedule_reconnect(
+              shard, build_error.empty()
+                         ? "failed to isolate rejected subscription batch"
+                         : build_error);
+          return false;
+        }
+        shard.subscription_isolation_mode = true;
+        reset_subscription_cursor(shard);
+        shard.state = MarketDataState::Subscribing;
+        return true;
+      }
     case exchange::AdapterEventType::SubscribeAck:
       if (shard.requires_login && shard.login_sent &&
           !shard.login_acked) {
@@ -1056,23 +1956,14 @@ class VenueConnection::Impl {
         shard.awaiting_ack = false;
         shard.acknowledgement_deadline = {};
       } else if (shard.awaiting_ack) {
-        if (shard.pending_acknowledgements > 1) {
-          --shard.pending_acknowledgements;
-          return true;
+        const auto acknowledged_batch =
+            settle_subscription_acknowledgement(
+                shard, event.symbol_view());
+        if (acknowledged_batch.has_value()) {
+          complete_rate_limit_recovery(
+              shard, *acknowledged_batch);
         }
-        shard.pending_acknowledgements = 0;
-        shard.awaiting_ack = false;
-        shard.acknowledgement_deadline = {};
-        ++shard.next_batch;
-        if (shard.next_batch == shard.batches.size()) {
-          shard.all_subscribed = true;
-          shard.deadlines.subscriptions_ready(
-              Clock::now(),
-              shard.deadlines.reached_live_once()
-                  ? options_.recovery_deadline
-                  : options_.request_timeout);
-          update_live_state();
-        }
+        complete_subscriptions_if_ready(shard, Clock::now());
       }
       return true;
     case exchange::AdapterEventType::Bbo:
@@ -1083,7 +1974,11 @@ class VenueConnection::Impl {
     case exchange::AdapterEventType::InstrumentUpdate:
       return process_instrument_update(shard, event);
     case exchange::AdapterEventType::Pong:
+      return true;
     case exchange::AdapterEventType::Ignored:
+      if (event.ignore_reason == exchange::IgnoreReason::OneSidedBook) {
+        ++metrics_.one_sided_book_frames;
+      }
       return true;
     }
     return true;
@@ -1208,6 +2103,7 @@ class VenueConnection::Impl {
                                 event.exchange_time_ms,
                                 utils::md::BookState::Live);
       utils::md::BboEvent bbo{header, event.bid, event.ask};
+      bbo.header.bbo_origin = utils::md::BboOrigin::TickerStream;
       if (symbol->ticker_publisher &&
           !symbol->ticker_publisher->publish_bbo(bbo)) {
         ++metrics_.publish_errors;
@@ -1415,7 +2311,8 @@ class VenueConnection::Impl {
         !publish_complete_book(*symbol, event.final_sequence,
                                event.exchange_time_ms)) {
       ++metrics_.publish_errors;
-      fail("failed to publish bridged orderbook image");
+      fail(error_.empty() ? "failed to publish bridged orderbook image"
+                          : error_);
       return false;
     }
     symbol->awaiting_snapshot_bridge = false;
@@ -1487,6 +2384,8 @@ class VenueConnection::Impl {
       case ResyncReason::DirtyData:
         ++metrics_.dirty_data_resyncs;
         break;
+      case ResyncReason::ScaleMismatch:
+        break;
       case ResyncReason::None:
         break;
     }
@@ -1546,9 +2445,25 @@ class VenueConnection::Impl {
 
   bool queue_symbol_resubscribe(WsShard &shard,
                                 SymbolRuntime &symbol,
-                                Clock::time_point now) {
-    constexpr auto cooldown = std::chrono::seconds(1);
-    auto not_before = now;
+                                Clock::time_point now,
+                                SymbolResubscribeMode mode =
+                                    SymbolResubscribeMode::
+                                        UnsubscribeThenSubscribe,
+                                exchange::SubscriptionStream stream =
+                                    exchange::SubscriptionStream::Unknown) {
+    auto cooldown = std::chrono::seconds(1);
+    if (mode == SymbolResubscribeMode::SubscribeOnly) {
+      const auto exponent = std::min<std::uint32_t>(
+          symbol.subscription_rate_limit_retries > 0
+              ? symbol.subscription_rate_limit_retries - 1
+              : 0,
+          5);
+      cooldown = std::chrono::seconds(1U << exponent);
+    }
+    auto not_before =
+        mode == SymbolResubscribeMode::SubscribeOnly
+            ? now + cooldown
+            : now;
     if (symbol.last_resubscribe != Clock::time_point{}) {
       not_before = std::max(not_before, symbol.last_resubscribe + cooldown);
       if (not_before > now) {
@@ -1558,10 +2473,29 @@ class VenueConnection::Impl {
     if (symbol.resubscribe_pending) {
       symbol.resubscribe_not_before =
           std::max(symbol.resubscribe_not_before, not_before);
+      if (mode == SymbolResubscribeMode::SubscribeOnly &&
+          symbol.resubscribe_mode ==
+              SymbolResubscribeMode::SubscribeOnly) {
+        symbol.resubscribe_ticker =
+            symbol.resubscribe_ticker ||
+            stream == exchange::SubscriptionStream::Ticker;
+        symbol.resubscribe_orderbook =
+            symbol.resubscribe_orderbook ||
+            stream == exchange::SubscriptionStream::Orderbook;
+      }
       return true;
     }
     symbol.resubscribe_pending = true;
     symbol.resubscribe_not_before = not_before;
+    symbol.resubscribe_mode = mode;
+    symbol.resubscribe_ticker =
+        mode == SymbolResubscribeMode::UnsubscribeThenSubscribe
+            ? symbol.options.ticker
+            : stream == exchange::SubscriptionStream::Ticker;
+    symbol.resubscribe_orderbook =
+        mode == SymbolResubscribeMode::UnsubscribeThenSubscribe
+            ? symbol.options.orderbook
+            : stream == exchange::SubscriptionStream::Orderbook;
     shard.all_subscribed = false;
     begin_recovery(shard, now);
     return true;
@@ -1581,8 +2515,8 @@ class VenueConnection::Impl {
       const exchange::StreamRequest request{
           symbol.options.symbol, symbol.venue_symbol,
           symbol.options.ticker_channel,
-          symbol.options.orderbook_channel, symbol.options.ticker,
-          symbol.options.orderbook,
+          symbol.options.orderbook_channel, symbol.resubscribe_ticker,
+          symbol.resubscribe_orderbook,
           symbol.options.update_interval_ms};
       std::vector<std::string> subscribe;
       std::vector<std::string> unsubscribe;
@@ -1590,20 +2524,35 @@ class VenueConnection::Impl {
       if (!shard.adapter->build_subscription_batches(
               std::span<const exchange::StreamRequest>(&request, 1),
               subscribe, build_error) ||
-          !shard.adapter->build_unsubscription_batches(
-              std::span<const exchange::StreamRequest>(&request, 1),
-              unsubscribe, build_error) ||
-          unsubscribe.size() != subscribe.size() || subscribe.empty()) {
+          subscribe.empty()) {
         fail(
             build_error.empty() ? "failed to build symbol resubscription"
                                 : build_error);
         return false;
       }
+      if (symbol.resubscribe_mode ==
+              SymbolResubscribeMode::UnsubscribeThenSubscribe &&
+          (!shard.adapter->build_unsubscription_batches(
+               std::span<const exchange::StreamRequest>(&request, 1),
+               unsubscribe, build_error) ||
+           unsubscribe.size() != subscribe.size())) {
+        fail(
+            build_error.empty() ? "failed to build symbol unsubscription"
+                                : build_error);
+        return false;
+      }
       shard.batches.clear();
+      shard.batch_symbol_indices.clear();
       shard.next_batch = 0;
+      shard.next_batch_to_send = 0;
       for (std::size_t index = 0; index < subscribe.size(); ++index) {
-        shard.batches.push_back(std::move(unsubscribe[index]));
+        if (symbol.resubscribe_mode ==
+            SymbolResubscribeMode::UnsubscribeThenSubscribe) {
+          shard.batches.push_back(std::move(unsubscribe[index]));
+          shard.batch_symbol_indices.push_back(symbol_index);
+        }
         shard.batches.push_back(std::move(subscribe[index]));
+        shard.batch_symbol_indices.push_back(symbol_index);
       }
       symbol.resubscribe_pending = false;
       symbol.resubscribe_not_before = {};
@@ -1797,9 +2746,27 @@ class VenueConnection::Impl {
     const auto header = make_header(
         symbol.instrument.instrument_id, symbol.generation, sequence,
         exchange_time_ms, utils::md::BookState::Live);
-    return symbol.book_publisher->publish_snapshot(
-               header, symbol.pipeline->book()) &&
-           symbol.pipeline->PublishCanonical(header);
+    const auto snapshot = symbol.book_publisher->publish_snapshot(
+        header, symbol.pipeline->book());
+    if (!snapshot) {
+      error_ = "failed to publish complete orderbook snapshot";
+      if (!snapshot.message.empty()) {
+        error_.append(": ");
+        error_.append(snapshot.message);
+      }
+      return false;
+    }
+    if (!symbol.pipeline->book().Bbo(symbol.instrument.instrument_id)) {
+      error_ = "failed to publish complete orderbook BBO: book has no "
+               "two-sided top";
+      return false;
+    }
+    if (!symbol.pipeline->PublishCanonical(header)) {
+      error_ = "failed to publish complete orderbook BBO record";
+      return false;
+    }
+    error_.clear();
+    return true;
   }
 
   void handle_snapshot(std::string_view json) {
@@ -1836,9 +2803,11 @@ class VenueConnection::Impl {
       const auto decision = bridge.Observe(
           pending.first, pending.final,
           pending.strict_previous_sequence, pending.previous);
-      const bool is_binance = options_.venue == Venue::Binance;
+      const bool is_binance_compatible =
+          options_.venue == Venue::Binance ||
+          options_.venue == Venue::Aster;
       const bool retry_lagging_snapshot =
-          is_binance ||
+          is_binance_compatible ||
           (options_.venue == Venue::Gate &&
            options_.product == Product::Spot);
       if (ShouldRetryLaggingSnapshot(
@@ -1863,7 +2832,8 @@ class VenueConnection::Impl {
       }
     }
     symbol.lagging_snapshot_retries.reset();
-    if (!process_market_event(shard, *snapshot_event_, false)) {
+    if (!process_market_event(shard, *snapshot_event_, false) ||
+        !symbol.image_ready) {
       return;
     }
     std::uint64_t final_sequence = symbol.last_book_sequence;
@@ -1893,7 +2863,8 @@ class VenueConnection::Impl {
       if (!publish_complete_book(
               symbol, final_sequence, final_time_ms)) {
         ++metrics_.publish_errors;
-        fail("failed to publish rebuilt orderbook image");
+        fail(error_.empty() ? "failed to publish rebuilt orderbook image"
+                            : error_);
         return;
       }
       symbol.book_live = true;
@@ -1901,7 +2872,385 @@ class VenueConnection::Impl {
     }
   }
 
+  std::optional<std::size_t> metadata_refresh_symbol_index(
+      const exchange::StreamRequest &request) const noexcept {
+    for (std::size_t index = 0; index < symbols_.size(); ++index) {
+      const auto &symbol = symbols_[index];
+      if (symbol.venue_symbol == request.venue_symbol ||
+          symbol.options.symbol == request.canonical_symbol) {
+        return index;
+      }
+    }
+    return std::nullopt;
+  }
+
+  void handle_symbol_metadata(std::string_view json) {
+    if (metadata_refresh_batch_index_ >=
+        metadata_refresh_batches_.size()) {
+      metadata_refresh_backoff(
+          "unexpected symbol metadata response", Clock::now());
+      return;
+    }
+    const auto status = metadata_http_.response().status_code();
+    const auto action =
+        classify_snapshot_http(options_.venue, status, json);
+    if (action != SnapshotHttpAction::Parse) {
+      std::string reason = "symbol metadata HTTP ";
+      reason.append(std::to_string(status));
+      if (!json.empty()) {
+        reason.append(" body=");
+        reason.append(json.substr(0, 256));
+      }
+      if (action == SnapshotHttpAction::CooldownVenue ||
+          action == SnapshotHttpAction::BanCooldownVenue) {
+        ++metrics_.metadata_refresh_rate_limits;
+        auto delay = parse_retry_after(
+            metadata_http_.response().header_value("retry-after"));
+        if (delay == std::chrono::milliseconds{}) {
+          delay = std::chrono::milliseconds(
+              action == SnapshotHttpAction::BanCooldownVenue
+                  ? options_.snapshot_ban_backoff_ms
+                  : options_.snapshot_rate_limit_backoff_ms);
+        }
+        metadata_refresh_backoff(reason, Clock::now(), delay);
+      } else {
+        metadata_refresh_backoff(
+            reason, Clock::now(), std::nullopt,
+            action == SnapshotHttpAction::QuarantineSymbol);
+      }
+      return;
+    }
+
+    const auto &batch =
+        metadata_refresh_batches_[metadata_refresh_batch_index_];
+    if (batch.request_offset > metadata_refresh_requests_.size() ||
+        batch.request_count >
+            metadata_refresh_requests_.size() - batch.request_offset) {
+      metadata_refresh_backoff(
+          "invalid symbol metadata batch range", Clock::now());
+      return;
+    }
+    const auto batch_requests =
+        std::span<const exchange::StreamRequest>(
+            metadata_refresh_requests_)
+            .subspan(batch.request_offset, batch.request_count);
+    auto validator = exchange::make_venue_adapter(
+        options_.venue, options_.product, 20);
+    if (!validator) {
+      metadata_refresh_backoff(
+          "failed to create symbol metadata validator", Clock::now());
+      return;
+    }
+    std::vector<exchange::InstrumentMetadata> parsed;
+    parsed.reserve(batch.request_count);
+    std::string parse_error;
+    if (!validator->upsert_metadata(
+            json, batch_requests, parsed, parse_error)) {
+      metadata_refresh_backoff(
+          parse_error.empty()
+              ? std::string_view(
+                    "failed to parse symbol metadata refresh")
+              : std::string_view(parse_error),
+          Clock::now());
+      return;
+    }
+
+    for (const auto &request : batch_requests) {
+      const auto symbol_index =
+          metadata_refresh_symbol_index(request);
+      if (!symbol_index) {
+        metadata_refresh_backoff(
+            "metadata refresh references unknown symbol", Clock::now());
+        return;
+      }
+      const auto &symbol = symbols_[*symbol_index];
+      const auto found = std::find_if(
+          parsed.begin(), parsed.end(),
+          [&request](
+              const exchange::InstrumentMetadata &entry) {
+            return entry.venue_symbol == request.venue_symbol ||
+                   entry.canonical_symbol ==
+                       request.canonical_symbol;
+          });
+      std::string capacity_error;
+      if (found == parsed.end() || found->tick_size <= 0 ||
+          !metadata_fits_fixed_fields(
+              symbol, *found, capacity_error)) {
+        metadata_refresh_backoff(
+            found == parsed.end()
+                ? std::string_view(
+                      "metadata refresh omitted requested symbol")
+                : std::string_view(capacity_error),
+            Clock::now());
+        return;
+      }
+    }
+
+    std::vector<exchange::InstrumentMetadata> ignored;
+    if (!metadata_adapter().upsert_metadata(
+            json, batch_requests, ignored, parse_error)) {
+      metadata_refresh_backoff(
+          parse_error.empty()
+              ? std::string_view(
+                    "failed to update authoritative adapter metadata")
+              : std::string_view(parse_error),
+          Clock::now());
+      return;
+    }
+
+    for (auto &shard : ws_shards_) {
+      std::vector<exchange::StreamRequest> shard_requests;
+      for (const auto &request : batch_requests) {
+        const auto symbol_index =
+            metadata_refresh_symbol_index(request);
+        if (symbol_index &&
+            symbols_[*symbol_index].shard_id == shard.id) {
+          shard_requests.push_back(request);
+        }
+      }
+      if (shard_requests.empty()) {
+        continue;
+      }
+      ignored.clear();
+      std::string shard_error;
+      if (!shard.adapter->upsert_metadata(
+              json, shard_requests, ignored, shard_error)) {
+        metadata_refresh_backoff(
+            shard_error.empty()
+                ? std::string_view(
+                      "failed to update shard adapter metadata")
+                : std::string_view(shard_error),
+            Clock::now());
+        return;
+      }
+    }
+
+    for (const auto &request : batch_requests) {
+      const auto symbol_index =
+          *metadata_refresh_symbol_index(request);
+      auto &symbol = symbols_[symbol_index];
+      const auto found = std::find_if(
+          parsed.begin(), parsed.end(),
+          [&request](
+              const exchange::InstrumentMetadata &entry) {
+            return entry.venue_symbol == request.venue_symbol ||
+                   entry.canonical_symbol ==
+                       request.canonical_symbol;
+          });
+      if (!open_symbol(symbol, *found, false)) {
+        metadata_refresh_backoff(
+            error_.empty()
+                ? std::string_view(
+                      "failed to apply refreshed symbol metadata")
+                : std::string_view(error_),
+            Clock::now());
+        return;
+      }
+      symbol.metadata_refresh_pending = false;
+      symbol.metadata_refresh_quarantined = false;
+      symbol.consecutive_metadata_refresh_failures = 0;
+      symbol.metadata_refresh_not_before = {};
+      symbol.scale_mismatch_seen = false;
+      ++metrics_.metadata_refresh_successes;
+      auto &shard = shard_for(symbol);
+      if (!resync_symbol(
+              shard, symbol, ResyncReason::ScaleMismatch,
+              "symbol metadata scale refreshed")) {
+        return;
+      }
+    }
+
+    ++metadata_refresh_batch_index_;
+    if (metadata_refresh_batch_index_ <
+        metadata_refresh_batches_.size()) {
+      if (!start_symbol_metadata_batch(Clock::now())) {
+        metadata_refresh_backoff(
+            metadata_http_.error_message().empty()
+                ? std::string_view(
+                      "failed to start next symbol metadata batch")
+                : metadata_http_.error_message(),
+            Clock::now());
+      }
+      return;
+    }
+    clear_active_metadata_refresh();
+  }
+
+  void reset_metadata_pagination() noexcept {
+    metadata_page_count_ = 0;
+    seen_metadata_cursors_.clear();
+    metadata_bootstrap_started_ = {};
+    metadata_bootstrap_paginated_ = false;
+  }
+
+  [[nodiscard]] bool paginated_bootstrap_active() const noexcept {
+    return metadata_http_purpose_ != MetadataHttpPurpose::SymbolRefresh &&
+           metadata_bootstrap_paginated_;
+  }
+
+  void current_pagination_cursor(bool &present,
+                                 std::string_view &cursor) const noexcept {
+    present = false;
+    cursor = {};
+    if (metadata_batch_index_ >= metadata_batches_.size()) {
+      return;
+    }
+    const auto &batch = metadata_batches_[metadata_batch_index_];
+    present = !batch.page_cursor.empty();
+    cursor = batch.page_cursor;
+  }
+
+  void log_metadata_bootstrap_failure(std::string_view stage,
+                                      std::string_view reason,
+                                      bool cursor_present,
+                                      std::string_view cursor) const {
+    if (!metadata_bootstrap_paginated_) {
+      return;
+    }
+    std::cerr << utc_timestamp() << ' '
+              << exchange::venue_name(options_.venue)
+              << " metadata bootstrap failed product="
+              << exchange::product_name(options_.product)
+              << " page=" << metadata_page_count_
+              << " cursor_present=" << (cursor_present ? 1 : 0);
+    if (cursor_present) {
+      std::cerr << " cursor_hash=" << truncated_cursor_hash(cursor);
+    }
+    std::cerr << " requested_symbols=" << symbols_.size()
+              << " matched_symbols=" << metadata_.size()
+              << " stage=" << stage
+              << " reason=" << escape_diagnostic_bytes(reason) << '\n';
+  }
+
+  void log_metadata_bootstrap_success() const {
+    if (!metadata_bootstrap_paginated_) {
+      return;
+    }
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            Clock::now() - metadata_bootstrap_started_)
+            .count();
+    std::cerr << utc_timestamp() << ' '
+              << exchange::venue_name(options_.venue)
+              << " metadata bootstrap completed product="
+              << exchange::product_name(options_.product)
+              << " mode=bulk_paginated"
+              << " requested_symbols=" << symbols_.size()
+              << " pages=" << metadata_page_count_
+              << " matched_symbols=" << metadata_.size()
+              << " elapsed_ms=" << elapsed << '\n';
+  }
+
+  void fail_paginated_metadata(std::string_view stage, std::string reason,
+                               bool cursor_present, std::string_view cursor) {
+    log_metadata_bootstrap_failure(stage, reason, cursor_present, cursor);
+    fail(reason);
+  }
+
+  void fail_metadata_response(std::string_view stage, std::string reason) {
+    if (!paginated_bootstrap_active()) {
+      fail(reason);
+      return;
+    }
+    bool cursor_present = false;
+    std::string_view cursor;
+    current_pagination_cursor(cursor_present, cursor);
+    fail_paginated_metadata(stage, std::move(reason), cursor_present, cursor);
+  }
+
+  bool accept_paginated_metadata_page(
+      const std::vector<exchange::InstrumentMetadata> &parsed) {
+    for (std::size_t index = 0; index < parsed.size(); ++index) {
+      const auto &symbol = parsed[index].venue_symbol;
+      for (std::size_t prior = 0; prior < index; ++prior) {
+        if (parsed[prior].venue_symbol == symbol) {
+          fail_paginated_metadata(
+              "duplicate_symbol",
+              "Bybit metadata pagination duplicated symbol: " + symbol,
+              false, {});
+          return false;
+        }
+      }
+      for (const auto &existing : metadata_) {
+        if (existing.venue_symbol == symbol) {
+          fail_paginated_metadata(
+              "duplicate_symbol",
+              "Bybit metadata pagination duplicated symbol: " + symbol,
+              false, {});
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  bool finish_or_continue_metadata_pagination(std::string_view json) {
+    auto &batch = metadata_batches_[metadata_batch_index_];
+    std::string cursor;
+    std::string cursor_error;
+    if (!metadata_adapter().discovery_metadata_next_cursor(
+            json, cursor, cursor_error)) {
+      fail_paginated_metadata(
+          "cursor",
+          cursor_error.empty() ? std::string("failed to parse nextPageCursor")
+                               : std::move(cursor_error),
+          false, {});
+      return false;
+    }
+    bool list_empty = false;
+    std::string list_error;
+    if (!metadata_adapter().metadata_page_list_empty(json, list_empty,
+                                                     list_error)) {
+      fail_paginated_metadata(
+          "page_list",
+          list_error.empty() ? std::string("failed to inspect metadata page")
+                             : std::move(list_error),
+          !cursor.empty(), cursor);
+      return false;
+    }
+    if (list_empty && !cursor.empty()) {
+      fail_paginated_metadata(
+          "empty_page",
+          "Bybit metadata pagination returned an empty page before "
+          "pagination completed",
+          true, cursor);
+      return false;
+    }
+    if (cursor.empty()) {
+      return true;
+    }
+    if (!seen_metadata_cursors_.insert(cursor).second) {
+      fail_paginated_metadata(
+          "cursor", "Bybit metadata pagination cursor repeated", true, cursor);
+      return false;
+    }
+    if (!metadata_adapter().apply_metadata_page_cursor(batch, cursor,
+                                                       cursor_error)) {
+      fail_paginated_metadata(
+          "cursor",
+          cursor_error.empty()
+              ? std::string("failed to apply metadata page cursor")
+              : std::move(cursor_error),
+          true, cursor);
+      return false;
+    }
+    if (!start_metadata_batch(Clock::now())) {
+      fail_paginated_metadata(
+          "page_limit",
+          error_.empty() ? std::string("failed to start next metadata page")
+                         : error_,
+          true, cursor);
+      return false;
+    }
+    return false;
+  }
+
   void handle_metadata(std::string_view json) {
+    if (metadata_http_purpose_ ==
+        MetadataHttpPurpose::SymbolRefresh) {
+      handle_symbol_metadata(json);
+      return;
+    }
     if (metadata_batch_index_ >= metadata_batches_.size()) {
       fail("unexpected venue metadata response");
       return;
@@ -1912,26 +3261,86 @@ class VenueConnection::Impl {
             .subspan(batch.request_offset, batch.request_count);
     std::vector<exchange::InstrumentMetadata> parsed;
     parsed.reserve(batch.request_count);
-    std::string parse_error;
     if (metadata_http_.response().status_class() !=
-            net::HttpStatusClass::Success ||
-        !metadata_adapter().parse_discovery_metadata(
-            json, batch_requests, parsed, parse_error)) {
-      std::string reason =
-          parse_error.empty() ? "failed to parse venue metadata" : parse_error;
-      if (metadata_http_.response().status_class() !=
-          net::HttpStatusClass::Success) {
-        reason.append(" HTTP ");
-        reason.append(
-            std::to_string(metadata_http_.response().status_code()));
-      }
-      fail(std::string("metadata: ") + reason);
+        net::HttpStatusClass::Success) {
+      std::string reason{"HTTP "};
+      reason.append(
+          std::to_string(metadata_http_.response().status_code()));
+      fail_metadata_response("http", std::string("metadata: ") + reason);
       return;
     }
-    for (auto &entry : parsed) {
-      metadata_.push_back(std::move(entry));
+    auto outcome = metadata_adapter().parse_metadata_response(
+        json, batch_requests, parsed);
+    if (outcome.kind ==
+        exchange::MetadataResponseKind::ConnectionFailure) {
+      fail_metadata_response(
+          "parse",
+          std::string("metadata: ") +
+              (outcome.reason.empty()
+                   ? "failed to parse venue metadata"
+                   : outcome.reason));
+      return;
     }
-    if (options_.venue != Venue::Polymarket) {
+    const bool symbol_unavailable =
+        outcome.kind ==
+        exchange::MetadataResponseKind::SymbolUnavailable;
+    if (symbol_unavailable) {
+      if (batch.request_count != 1) {
+        fail_metadata_response(
+            "parse",
+            "metadata adapter returned symbol unavailability for "
+            "a multi-symbol batch");
+        return;
+      }
+      auto &symbol = symbols_[batch.request_offset];
+      if (!symbol.quarantined) {
+        symbol.quarantined = true;
+        ++metrics_.metadata_symbol_quarantines;
+      }
+      std::cerr
+          << utc_timestamp() << ' '
+          << exchange::venue_name(options_.venue)
+          << " metadata symbol quarantined product="
+          << exchange::product_name(options_.product)
+          << " symbol="
+          << escape_diagnostic_bytes(symbol.options.symbol)
+          << " reason="
+          << escape_diagnostic_bytes(
+                 outcome.reason.empty()
+                     ? std::string_view("symbol unavailable")
+                     : std::string_view(outcome.reason))
+          << '\n';
+    } else {
+      if (batch.cursor_paginated) {
+        std::string repeated;
+        std::string repeated_error;
+        if (!metadata_adapter().metadata_page_repeated_venue_symbol(
+                json, repeated, repeated_error)) {
+          fail_paginated_metadata(
+              "duplicate_symbol",
+              repeated_error.empty()
+                  ? std::string("failed to inspect metadata page symbols")
+                  : std::move(repeated_error),
+              false, {});
+          return;
+        }
+        if (!repeated.empty()) {
+          fail_paginated_metadata(
+              "duplicate_symbol",
+              "Bybit metadata pagination duplicated symbol: " + repeated,
+              false, {});
+          return;
+        }
+        if (!accept_paginated_metadata_page(parsed)) {
+          return;
+        }
+      }
+      for (auto &entry : parsed) {
+        metadata_.push_back(std::move(entry));
+      }
+    }
+    if (!symbol_unavailable &&
+        options_.venue != Venue::Polymarket) {
       const auto batch_end = batch.request_offset + batch.request_count;
       for (auto &shard : ws_shards_) {
         std::vector<exchange::StreamRequest> shard_batch_requests;
@@ -1946,22 +3355,31 @@ class VenueConnection::Impl {
         }
         std::vector<exchange::InstrumentMetadata> shard_metadata;
         std::string shard_error;
-        if (!shard.adapter->parse_metadata(
+        if (!shard.adapter->upsert_metadata(
                 json, shard_batch_requests, shard_metadata, shard_error)) {
-          fail("ws shard " + std::to_string(shard.id) +
-               ": failed to initialize adapter metadata: " +
-               shard_error);
+          fail_metadata_response(
+              "upsert",
+              "ws shard " + std::to_string(shard.id) +
+                  ": failed to initialize adapter metadata: " +
+                  shard_error);
           return;
         }
+      }
+    }
+    if (!symbol_unavailable && batch.cursor_paginated) {
+      if (!finish_or_continue_metadata_pagination(json)) {
+        return;
       }
     }
     ++metadata_batch_index_;
     if (metadata_batch_index_ < metadata_batches_.size()) {
       if (!start_metadata_batch(Clock::now())) {
-        fail(error_);
+        fail_metadata_response("request", error_);
       }
       return;
     }
+    std::vector<std::string_view> quarantine_examples;
+    quarantine_examples.reserve(3);
     for (auto &symbol : symbols_) {
       const auto found = std::find_if(
           metadata_.begin(), metadata_.end(),
@@ -1971,18 +3389,58 @@ class VenueConnection::Impl {
           });
       if (found == metadata_.end() || found->tick_size <= 0 ||
           found->venue_symbol.empty()) {
-        if (error_.empty()) {
-          error_ = "requested symbol was not found in venue metadata: ";
-          error_.append(symbol.options.symbol);
+        if (!symbol.quarantined) {
+          symbol.quarantined = true;
+          ++metrics_.metadata_symbol_quarantines;
+          if (quarantine_examples.size() < 3U) {
+            quarantine_examples.push_back(symbol.options.symbol);
+          }
         }
-        fail(error_);
-        return;
+        continue;
       }
       symbol.venue_symbol = found->venue_symbol;
+      if ((options_.venue == Venue::Hyperliquid ||
+           options_.venue == Venue::Lighter) &&
+          !found->canonical_symbol.empty()) {
+        symbol.options.symbol = found->canonical_symbol;
+      }
+      std::string capacity_error;
+      if (!metadata_fits_fixed_fields(symbol, *found, capacity_error)) {
+        symbol.quarantined = true;
+        ++metrics_.metadata_symbol_quarantines;
+        if (quarantine_examples.size() < 3U) {
+          quarantine_examples.push_back(symbol.options.symbol);
+        }
+        continue;
+      }
       if (!open_symbol(symbol, *found)) {
-        fail(error_);
+        fail_metadata_response("open_symbol", error_);
         return;
       }
+      symbol.metadata_refresh_pending = false;
+      symbol.metadata_refresh_quarantined = false;
+      symbol.consecutive_metadata_refresh_failures = 0;
+      symbol.metadata_refresh_not_before = {};
+      symbol.scale_mismatch_seen = false;
+    }
+    if (metrics_.metadata_symbol_quarantines != 0) {
+      std::cerr << utc_timestamp() << ' '
+                << exchange::venue_name(options_.venue)
+                << " metadata symbols quarantined product="
+                << exchange::product_name(options_.product)
+                << " count=" << metrics_.metadata_symbol_quarantines;
+      for (const auto example : quarantine_examples) {
+        std::cerr << " example=" << escape_diagnostic_bytes(example);
+      }
+      std::cerr << '\n';
+    }
+    if (std::none_of(symbols_.begin(), symbols_.end(),
+                     [](const SymbolRuntime &symbol) {
+                       return !symbol.quarantined && symbol.metadata_ready;
+                     })) {
+      fail_metadata_response(
+          "complete", "venue metadata produced no usable symbols");
+      return;
     }
     requests_.clear();
     for (const auto &symbol : symbols_) {
@@ -1994,29 +3452,52 @@ class VenueConnection::Impl {
            symbol.options.update_interval_ms});
     }
     for (auto &shard : ws_shards_) {
+      std::erase_if(shard.symbol_indices, [this](std::size_t symbol_index) {
+        return symbols_[symbol_index].quarantined;
+      });
       shard.requests.clear();
       shard.requests.reserve(shard.symbol_indices.size());
+      if (shard.symbol_indices.empty()) {
+        shard.batches.clear();
+        shard.next_batch = 0;
+        shard.next_batch_to_send = 0;
+        shard.pending_acknowledgements = 0;
+        shard.awaiting_ack = false;
+        shard.all_subscribed = true;
+        shard.state = MarketDataState::Live;
+        shard.deadlines.mark_live();
+        continue;
+      }
       for (const auto symbol_index : shard.symbol_indices) {
         shard.requests.push_back(requests_[symbol_index]);
       }
-      shard.batches.clear();
-      if (!shard.adapter->build_subscription_batches(
-              shard.requests, shard.batches, error_) ||
-          shard.batches.empty()) {
-        fail(error_.empty()
-                 ? "venue produced no subscription batches for shard " +
-                       std::to_string(shard.id)
-                 : "ws shard " + std::to_string(shard.id) + ": " + error_);
+      if (!rebuild_subscription_batches(shard, false, error_)) {
+        fail_metadata_response(
+            "subscribe",
+            error_.empty()
+                ? "venue produced no subscription batches for shard " +
+                      std::to_string(shard.id)
+                : "ws shard " + std::to_string(shard.id) + ": " + error_);
         return;
       }
       shard.next_batch = 0;
+      shard.next_batch_to_send = 0;
       shard.pending_acknowledgements = 0;
       shard.awaiting_ack = false;
       shard.all_subscribed = false;
+      shard.subscription_isolation_mode = false;
     }
+    log_metadata_bootstrap_success();
     metadata_batches_.clear();
     metadata_.clear();
     metadata_batch_index_ = 0;
+    reset_metadata_pagination();
+    metadata_refresh_queue_.clear();
+    metadata_refresh_active_symbols_.clear();
+    metadata_refresh_requests_.clear();
+    metadata_refresh_batches_.clear();
+    metadata_refresh_batch_index_ = 0;
+    metadata_http_purpose_ = MetadataHttpPurpose::Idle;
     metadata_ready_ = true;
     if (auto *adapter = polymarket()) {
       if (const auto *market = adapter->resolved_market(
@@ -2035,8 +3516,38 @@ class VenueConnection::Impl {
     update_aggregate_state();
   }
 
+  bool metadata_fits_fixed_fields(
+      const SymbolRuntime &symbol,
+      const exchange::InstrumentMetadata &metadata,
+      std::string &reason) const {
+    const auto fits = [](std::size_t capacity, std::string_view value) {
+      return value.size() < capacity;
+    };
+    if (!exchange::valid_utf8_symbol(symbol.canonical_identity.empty()
+                                         ? symbol.options.symbol
+                                         : symbol.canonical_identity) ||
+        !exchange::valid_utf8_symbol(symbol.venue_symbol)) {
+      reason = "symbol is invalid UTF-8 or exceeds 31-byte wire capacity";
+      return false;
+    }
+    if (!fits(symbol.instrument.base_asset.size(), metadata.base_asset) ||
+        !fits(symbol.instrument.quote_asset.size(), metadata.quote_asset) ||
+        !fits(symbol.instrument.settle_asset.size(), metadata.settle_asset)) {
+      reason = "asset exceeds 15-byte fixed capacity";
+      return false;
+    }
+    const auto key = instrument::InstrumentManager::canonical_key(
+        options_.venue, options_.product, symbol.options.symbol);
+    if (!fits(symbol.instrument.instrument_key.size(), key)) {
+      reason = "instrument key exceeds fixed capacity";
+      return false;
+    }
+    return true;
+  }
+
   bool open_symbol(SymbolRuntime &symbol,
-                   const exchange::InstrumentMetadata &metadata) {
+                   const exchange::InstrumentMetadata &metadata,
+                   bool publish_catalog = true) {
     symbol.metadata = metadata;
     symbol.canonical_identity = symbol.options.symbol;
     if (options_.venue == Venue::Polymarket) {
@@ -2085,14 +3596,18 @@ class VenueConnection::Impl {
     symbol.instrument.contract_multiplier = metadata.contract_multiplier;
     symbol.instrument.contract_multiplier_scale =
         metadata.contract_multiplier_scale;
-    copy_text(symbol.instrument.base_asset, metadata.base_asset);
-    copy_text(symbol.instrument.quote_asset, metadata.quote_asset);
-    copy_text(symbol.instrument.settle_asset, metadata.settle_asset);
-    copy_text(symbol.instrument.canonical_symbol, symbol.canonical_identity);
-    copy_text(symbol.instrument.venue_symbol, symbol.venue_symbol);
     const auto key = instrument::InstrumentManager::canonical_key(
         options_.venue, options_.product, symbol.canonical_identity);
-    copy_text(symbol.instrument.instrument_key, key);
+    if (!copy_text(symbol.instrument.base_asset, metadata.base_asset) ||
+        !copy_text(symbol.instrument.quote_asset, metadata.quote_asset) ||
+        !copy_text(symbol.instrument.settle_asset, metadata.settle_asset) ||
+        !copy_text(symbol.instrument.canonical_symbol,
+                   symbol.canonical_identity) ||
+        !copy_text(symbol.instrument.venue_symbol, symbol.venue_symbol) ||
+        !copy_text(symbol.instrument.instrument_key, key)) {
+      error_ = "instrument metadata exceeds fixed wire capacity";
+      return false;
+    }
 
     symbol.catalog = {};
     auto &catalog = symbol.catalog;
@@ -2109,17 +3624,28 @@ class VenueConnection::Impl {
     catalog.contract_multiplier = symbol.instrument.contract_multiplier;
     catalog.signature_type = metadata.signature_type;
     catalog.negative_risk = metadata.negative_risk ? 1 : 0;
-    copy_text(catalog.base_asset, metadata.base_asset);
-    copy_text(catalog.quote_asset, metadata.quote_asset);
-    copy_text(catalog.settle_asset, metadata.settle_asset);
-    copy_text(catalog.canonical_symbol, symbol.canonical_identity);
-    copy_text(catalog.venue_symbol, symbol.venue_symbol);
+    if (!copy_text(catalog.base_asset, metadata.base_asset) ||
+        !copy_text(catalog.quote_asset, metadata.quote_asset) ||
+        !copy_text(catalog.settle_asset, metadata.settle_asset) ||
+        !copy_text(catalog.canonical_symbol, symbol.canonical_identity) ||
+        !copy_text(catalog.venue_symbol, symbol.venue_symbol)) {
+      error_ = "instrument catalog metadata exceeds fixed wire capacity";
+      return false;
+    }
     if (auto *poly = polymarket()) {
       if (const auto *market = poly->resolved_market(
               exchange::polymarket::ResolveSlot::Current)) {
-        copy_text(catalog.market_slug, market->slug.view());
-        copy_text(catalog.condition_id, market->condition_id.view());
-        copy_text(catalog.outcome, symbol.options.polymarket_outcome);
+        const auto outcome =
+            symbol.options.polymarket_outcome == "DOWN"
+                ? exchange::polymarket::Outcome::Down
+                : exchange::polymarket::Outcome::Up;
+        if (!copy_text(catalog.venue_symbol, market->token(outcome)) ||
+            !copy_text(catalog.market_slug, market->slug.view()) ||
+            !copy_text(catalog.condition_id, market->condition_id.view()) ||
+            !copy_text(catalog.outcome, symbol.options.polymarket_outcome)) {
+          error_ = "Polymarket catalog metadata exceeds fixed wire capacity";
+          return false;
+        }
         if (market->window.end_unix > 0) {
           catalog.expiry_unix_ns =
               static_cast<std::uint64_t>(market->window.end_unix) *
@@ -2162,7 +3688,9 @@ class VenueConnection::Impl {
           options_.venue == Venue::Polymarket);
     }
     symbol.metadata_ready = true;
-    (void)publish_catalog_barrier(symbol);
+    if (publish_catalog) {
+      (void)publish_catalog_barrier(symbol);
+    }
     return true;
   }
 
@@ -2332,6 +3860,7 @@ class VenueConnection::Impl {
     shard.batches.push_back(std::move(unsubscribe));
     shard.batches.push_back(std::move(subscribe));
     shard.next_batch = 0;
+    shard.next_batch_to_send = 0;
     shard.pending_acknowledgements = 0;
     shard.awaiting_ack = false;
     shard.all_subscribed = false;
@@ -2443,9 +3972,17 @@ class VenueConnection::Impl {
       discovery_http_.check_timeout(now);
     }
     if (terminal(metadata_http_.state())) {
-      fail(std::string("metadata HTTP: ") +
-           std::string(metadata_http_.error_message()));
-      return;
+      if (metadata_http_purpose_ ==
+          MetadataHttpPurpose::SymbolRefresh) {
+        metadata_refresh_backoff(
+            metadata_http_.error_message(), now);
+      } else {
+        fail_metadata_response(
+            "http",
+            std::string("metadata HTTP: ") +
+                std::string(metadata_http_.error_message()));
+        return;
+      }
     }
     if (snapshot_active_ && terminal(snapshot_http_.state())) {
       snapshot_backoff(snapshot_http_.error_message(), now);
@@ -2453,6 +3990,7 @@ class VenueConnection::Impl {
     if (discovery_active_ && terminal(discovery_http_.state())) {
       discovery_failed(discovery_http_.error_message());
     }
+    drive_symbol_metadata_refresh(now);
     drive_polymarket_resolution(now);
     for (auto &shard : ws_shards_) {
       if (!shard.connection_started &&
@@ -2468,8 +4006,7 @@ class VenueConnection::Impl {
         shard.websocket->check_timeout(now);
       }
       if (terminal(shard.websocket->state())) {
-        schedule_reconnect(
-            shard, shard.websocket->error_message(), now);
+        schedule_terminal_reconnect(shard, now);
       }
       if (shard.state == MarketDataState::ReconnectWait &&
           now >= shard.reconnect_at) {
@@ -2496,8 +4033,8 @@ class VenueConnection::Impl {
                   ? MarketDataState::Authenticating
                   : MarketDataState::Subscribing;
         }
-        drive_outbound(shard, now);
         drive_heartbeat(shard, now);
+        drive_outbound(shard, now);
         if (now - shard.last_message >= options_.idle_timeout) {
           if (options_.venue == Venue::Polymarket) {
             ++metrics_.heartbeat_timeouts;
@@ -2615,6 +4152,28 @@ class VenueConnection::Impl {
     }
   }
 
+  bool allow_client_message(WsShard &shard,
+                            Clock::time_point now) {
+    if (!options_.client_message_budget) {
+      return true;
+    }
+    if (options_.client_message_budget->allow(
+            now, options_.client_message_limit_per_minute)) {
+      return true;
+    }
+    ++metrics_.global_budget_deferrals;
+    shard.next_budget_retry =
+        options_.client_message_budget->retry_at(
+            now, options_.client_message_limit_per_minute);
+    return false;
+  }
+
+  void record_client_message(Clock::time_point now) noexcept {
+    if (options_.client_message_budget) {
+      options_.client_message_budget->record(now);
+    }
+  }
+
   void drive_outbound(WsShard &shard, Clock::time_point now) {
     if (!shard.websocket->can_send_data()) {
       return;
@@ -2628,15 +4187,16 @@ class VenueConnection::Impl {
       shard.next_budget_retry = {};
     }
     const auto spacing =
-        options_.venue == Venue::Bitget
-            ? std::chrono::milliseconds(100)
-            : std::chrono::milliseconds(0);
+        outbound_send_spacing(options_.venue, options_.product);
     if (shard.last_data_send != Clock::time_point{} &&
         now - shard.last_data_send < spacing) {
       return;
     }
     std::string_view send_error;
     if (shard.requires_login && !shard.login_sent) {
+      if (!allow_client_message(shard, now)) {
+        return;
+      }
       if (!shard.budget.allow(now, subscription_limit())) {
         ++metrics_.budget_deferrals;
         shard.next_budget_retry =
@@ -2665,6 +4225,7 @@ class VenueConnection::Impl {
       shard.acknowledgement_deadline =
           now + options_.request_timeout;
       shard.budget.record(now);
+      record_client_message(now);
       shard.next_budget_retry = {};
       shard.last_data_send = now;
       ++metrics_.subscription_requests;
@@ -2681,15 +4242,34 @@ class VenueConnection::Impl {
     if (!append_pending_symbol_resubscribe(shard, now)) {
       return;
     }
-    if (!shard.awaiting_ack &&
-        shard.next_batch < shard.batches.size()) {
+    const auto send_window =
+        shard.subscription_isolation_mode
+            ? std::size_t{1}
+            : std::max<std::size_t>(
+                  1, shard.adapter->subscription_send_window());
+    if (shard.batch_pending_acknowledgements.size() !=
+        shard.batches.size()) {
+      shard.batch_pending_acknowledgements.assign(
+          shard.batches.size(), 0);
+    } else if (shard.next_batch_to_send == 0 &&
+               shard.pending_acknowledgements == 0) {
+      std::fill(shard.batch_pending_acknowledgements.begin(),
+                shard.batch_pending_acknowledgements.end(), 0);
+    }
+    if (shard.next_batch_to_send < shard.batches.size() &&
+        shard.next_batch_to_send - shard.next_batch <
+            send_window) {
+      if (!allow_client_message(shard, now)) {
+        return;
+      }
       if (!shard.budget.allow(now, subscription_limit())) {
         ++metrics_.budget_deferrals;
         shard.next_budget_retry =
             shard.budget.retry_at(now, subscription_limit());
         return;
       }
-      const auto &batch = shard.batches[shard.next_batch];
+      const auto &batch =
+          shard.batches[shard.next_batch_to_send];
       const auto bytes = std::span<const std::byte>(
           reinterpret_cast<const std::byte *>(batch.data()), batch.size());
       if (!shard.websocket->send(
@@ -2698,27 +4278,32 @@ class VenueConnection::Impl {
         return;
       }
       shard.budget.record(now);
+      record_client_message(now);
       shard.next_budget_retry = {};
-      shard.pending_acknowledgements =
+      const auto acknowledgements =
           shard.adapter->expected_subscription_acks(batch);
+      const bool was_awaiting = shard.awaiting_ack;
+      shard.pending_acknowledgements += acknowledgements;
+      shard.batch_pending_acknowledgements
+          [shard.next_batch_to_send] = acknowledgements;
       shard.awaiting_ack = shard.pending_acknowledgements != 0;
-      if (shard.awaiting_ack) {
+      ++shard.next_batch_to_send;
+      if (acknowledgements == 0) {
+        while (shard.next_batch < shard.next_batch_to_send &&
+               shard.batch_pending_acknowledgements[shard.next_batch] ==
+                   0) {
+          ++shard.next_batch;
+        }
+      } else if (!was_awaiting) {
         shard.acknowledgement_deadline =
             now + options_.request_timeout;
-      } else {
+      }
+      if (!shard.awaiting_ack) {
         shard.acknowledgement_deadline = {};
-        ++shard.next_batch;
-        if (shard.next_batch == shard.batches.size()) {
-          shard.all_subscribed = true;
-          shard.deadlines.subscriptions_ready(
-              now, shard.deadlines.reached_live_once()
-                       ? options_.recovery_deadline
-                       : options_.request_timeout);
-          update_live_state();
-        }
       }
       shard.last_data_send = now;
       ++metrics_.subscription_requests;
+      complete_subscriptions_if_ready(shard, now);
     }
   }
 
@@ -2739,11 +4324,17 @@ class VenueConnection::Impl {
     }
     if (options_.venue == Venue::Bitget &&
         shard.last_data_send != Clock::time_point{} &&
-        now - shard.last_data_send < std::chrono::milliseconds(100)) {
+        now - shard.last_data_send <
+            outbound_send_spacing(options_.venue, options_.product)) {
       return;
     }
     if (!shard.websocket->can_send_data() &&
         shard.heartbeat.kind != exchange::HeartbeatKind::Rfc6455Ping) {
+      return;
+    }
+    if (shard.heartbeat.kind !=
+            exchange::HeartbeatKind::Rfc6455Ping &&
+        !allow_client_message(shard, now)) {
       return;
     }
     std::string_view send_error;
@@ -2765,6 +4356,7 @@ class VenueConnection::Impl {
     }
     if (shard.heartbeat.kind !=
         exchange::HeartbeatKind::Rfc6455Ping) {
+      record_client_message(now);
       shard.last_data_send = now;
     }
     shard.last_heartbeat = now;
@@ -2773,6 +4365,7 @@ class VenueConnection::Impl {
   bool symbol_ready(const SymbolRuntime &symbol) const noexcept {
     return RecoveryStreamReady(
         symbol.options.ticker, symbol.ticker_live,
+        symbol.options.ticker_requires_first_data,
         symbol.options.orderbook, symbol.metadata_ready,
         symbol.image_ready, symbol.book_live,
         symbol.awaiting_snapshot_bridge);
@@ -2896,7 +4489,8 @@ class VenueConnection::Impl {
   }
 
   void schedule_reconnect(WsShard &shard, std::string_view reason,
-                          Clock::time_point now = Clock::now()) {
+                          Clock::time_point now = Clock::now(),
+                          ReconnectKind kind = ReconnectKind::Failure) {
     if (!started_ || state_ == MarketDataState::Failed) {
       return;
     }
@@ -2905,6 +4499,7 @@ class VenueConnection::Impl {
     }
     error_ = "ws shard " + std::to_string(shard.id) + ": ";
     error_.append(reason);
+    shard.pending_reconnect_reason.clear();
     if (shard.registered_fd >= 0) {
       loop_.remove(shard.registered_fd);
       shard.registered_fd = -1;
@@ -2916,22 +4511,20 @@ class VenueConnection::Impl {
     shard.login_sent = false;
     shard.login_acked = false;
     shard.next_batch = 0;
+    shard.next_batch_to_send = 0;
     shard.pending_acknowledgements = 0;
     shard.awaiting_ack = false;
     shard.all_subscribed = false;
     shard.deadlines.reset_connection();
     shard.acknowledgement_deadline = {};
     shard.last_data_send = {};
-    std::vector<std::string> reconnect_batches;
     std::string build_error;
-    if (!shard.adapter->build_subscription_batches(
-            shard.requests, reconnect_batches, build_error) ||
-        reconnect_batches.empty()) {
+    if (!rebuild_subscription_batches(
+            shard, shard.subscription_isolation_mode, build_error)) {
       fail(build_error.empty() ? "failed to rebuild subscriptions"
                                : build_error);
       return;
     }
-    shard.batches = std::move(reconnect_batches);
     for (const auto symbol_index : shard.symbol_indices) {
       auto &symbol = symbols_[symbol_index];
       ++symbol.generation;
@@ -2950,6 +4543,12 @@ class VenueConnection::Impl {
       symbol.consecutive_snapshot_failures = 0;
       symbol.resubscribe_pending = false;
       symbol.resubscribe_not_before = {};
+      symbol.rate_limit_recovery_active = false;
+      symbol.subscription_rate_limit_retries = 0;
+      symbol.resubscribe_ticker = false;
+      symbol.resubscribe_orderbook = false;
+      symbol.resubscribe_mode =
+          SymbolResubscribeMode::UnsubscribeThenSubscribe;
       symbol.needs_snapshot =
           symbol.options.orderbook &&
           shard.adapter->needs_rest_snapshot();
@@ -2960,30 +4559,47 @@ class VenueConnection::Impl {
     }
     ++metrics_.reconnects;
     metrics_.last_reconnect_shard = shard.id;
-    const auto exponent =
-        std::min<std::uint32_t>(shard.reconnect_attempt++, 10);
-    auto delay = options_.reconnect_base * (1U << exponent);
-    delay = std::min(delay, options_.reconnect_max);
-    if (delay.count() > 0) {
-      const auto range =
-          std::max<std::int64_t>(1, delay.count() / 4);
+    std::chrono::milliseconds delay{};
+    if (kind == ReconnectKind::ServerExpiration) {
+      ++metrics_.server_expirations;
       const auto mixed =
           (static_cast<std::uint64_t>(shard.id + 1) *
                0x9e3779b97f4a7c15ULL) ^
-          (static_cast<std::uint64_t>(shard.reconnect_attempt) *
+          (static_cast<std::uint64_t>(metrics_.server_expirations) *
                0xbf58476d1ce4e5b9ULL);
-      const auto jitter = std::chrono::milliseconds(
-          static_cast<std::int64_t>(mixed %
-                                    static_cast<std::uint64_t>(range)));
-      delay = std::min(options_.reconnect_max, delay + jitter);
+      delay = std::chrono::milliseconds(
+          200 + static_cast<std::int64_t>(mixed % 601U));
+    } else {
+      const auto exponent =
+          std::min<std::uint32_t>(shard.reconnect_attempt++, 10);
+      delay = options_.reconnect_base * (1U << exponent);
+      delay = std::min(delay, options_.reconnect_max);
+      if (delay.count() > 0) {
+        const auto range =
+            std::max<std::int64_t>(1, delay.count() / 4);
+        const auto mixed =
+            (static_cast<std::uint64_t>(shard.id + 1) *
+                 0x9e3779b97f4a7c15ULL) ^
+            (static_cast<std::uint64_t>(shard.reconnect_attempt) *
+                 0xbf58476d1ce4e5b9ULL);
+        const auto jitter = std::chrono::milliseconds(
+            static_cast<std::int64_t>(
+                mixed % static_cast<std::uint64_t>(range)));
+        delay = std::min(options_.reconnect_max, delay + jitter);
+      }
     }
     shard.reconnect_at = now + delay;
     shard.state = MarketDataState::ReconnectWait;
-    std::cerr << exchange::venue_name(options_.venue)
+    std::cerr << utc_timestamp() << ' '
+              << exchange::venue_name(options_.venue)
               << " websocket reconnect scheduled product="
               << exchange::product_name(options_.product)
               << " shard=" << shard.id
               << " attempt=" << shard.reconnect_attempt
+              << " reconnect_kind="
+              << (kind == ReconnectKind::ServerExpiration
+                      ? "server_expiration"
+                      : "failure")
               << " delay_ms=" << delay.count()
               << " reason=" << error_ << '\n';
     update_aggregate_state();
@@ -3020,6 +4636,7 @@ class VenueConnection::Impl {
       shard.login_sent = false;
       shard.login_acked = false;
       shard.next_batch = 0;
+      shard.next_batch_to_send = 0;
       shard.pending_acknowledgements = 0;
       shard.awaiting_ack = false;
       shard.all_subscribed = false;
@@ -3042,6 +4659,13 @@ class VenueConnection::Impl {
     metadata_batches_.clear();
     metadata_.clear();
     metadata_batch_index_ = 0;
+    reset_metadata_pagination();
+    metadata_refresh_queue_.clear();
+    metadata_refresh_active_symbols_.clear();
+    metadata_refresh_requests_.clear();
+    metadata_refresh_batches_.clear();
+    metadata_refresh_batch_index_ = 0;
+    metadata_http_purpose_ = MetadataHttpPurpose::Idle;
     metadata_ready_ = false;
     snapshot_active_ = false;
     discovery_active_ = false;
@@ -3065,6 +4689,18 @@ class VenueConnection::Impl {
         symbol.lagging_snapshot_retries.reset();
         symbol.snapshot_quarantined = false;
         symbol.consecutive_snapshot_failures = 0;
+        symbol.resubscribe_pending = false;
+        symbol.resubscribe_not_before = {};
+        symbol.rate_limit_recovery_active = false;
+        symbol.subscription_rate_limit_retries = 0;
+        symbol.resubscribe_ticker = false;
+        symbol.resubscribe_orderbook = false;
+        symbol.resubscribe_mode =
+            SymbolResubscribeMode::UnsubscribeThenSubscribe;
+        symbol.metadata_refresh_pending = false;
+        symbol.metadata_refresh_quarantined = false;
+        symbol.consecutive_metadata_refresh_failures = 0;
+        symbol.metadata_refresh_not_before = {};
         symbol.needs_snapshot =
             symbol.options.orderbook &&
             shard_for(symbol).adapter->needs_rest_snapshot();
@@ -3113,6 +4749,7 @@ class VenueConnection::Impl {
       shard.connect_at = now + startup_stagger * shard.id;
       shard.state = MarketDataState::Connecting;
     }
+    metadata_http_purpose_ = MetadataHttpPurpose::Startup;
     if (!begin_metadata(now) ||
         !begin_connection(ws_shards_.front(), now)) {
       const std::string reason =
@@ -3167,6 +4804,13 @@ class VenueConnection::Impl {
     metadata_batches_.clear();
     metadata_.clear();
     metadata_batch_index_ = 0;
+    reset_metadata_pagination();
+    metadata_refresh_queue_.clear();
+    metadata_refresh_active_symbols_.clear();
+    metadata_refresh_requests_.clear();
+    metadata_refresh_batches_.clear();
+    metadata_refresh_batch_index_ = 0;
+    metadata_http_purpose_ = MetadataHttpPurpose::Idle;
     connection_rebuild_pending_ = false;
     connection_rebuild_attempt_ = 0;
     connection_rebuild_at_ = {};
@@ -3191,6 +4835,12 @@ class VenueConnection::Impl {
   std::vector<exchange::StreamRequest> requests_;
   std::vector<exchange::MetadataRequestBatch> metadata_batches_;
   std::vector<exchange::InstrumentMetadata> metadata_;
+  std::set<std::string> seen_metadata_cursors_;
+  std::vector<std::size_t> metadata_refresh_queue_;
+  std::vector<std::size_t> metadata_refresh_active_symbols_;
+  std::vector<exchange::StreamRequest> metadata_refresh_requests_;
+  std::vector<exchange::MetadataRequestBatch>
+      metadata_refresh_batches_;
   std::unique_ptr<exchange::NormalizedEvent> snapshot_event_;
   MarketDataMetrics metrics_{};
   std::atomic<MarketDataState> state_{MarketDataState::Stopped};
@@ -3201,7 +4851,10 @@ class VenueConnection::Impl {
   Clock::time_point next_discovery_attempt_{};
   Clock::time_point connection_rebuild_at_{};
   Clock::time_point connection_degraded_since_{};
+  Clock::time_point metadata_bootstrap_started_{};
   std::size_t metadata_batch_index_{};
+  std::size_t metadata_page_count_{};
+  std::size_t metadata_refresh_batch_index_{};
   std::size_t snapshot_symbol_{};
   std::size_t next_snapshot_symbol_{};
   int metadata_fd_{-1};
@@ -3216,7 +4869,10 @@ class VenueConnection::Impl {
   std::int64_t active_market_window_{};
   exchange::polymarket::ResolveSlot discovery_slot_{
       exchange::polymarket::ResolveSlot::Next};
+  MetadataHttpPurpose metadata_http_purpose_{
+      MetadataHttpPurpose::Idle};
   bool metadata_ready_{};
+  bool metadata_bootstrap_paginated_{};
   bool snapshot_active_{};
   bool discovery_active_{};
   bool connection_rebuild_pending_{};
@@ -3283,6 +4939,11 @@ std::optional<std::size_t> VenueConnection::websocket_shard(
   return found->shard_id;
 }
 
+void VenueConnection::adopt_multiplex_publishers(
+    VenueConnection &source) noexcept {
+  impl_->adopt_multiplex_publishers(*source.impl_);
+}
+
 VenueConnectionManager::VenueConnectionManager() {
   std::string error;
   tls_ = net::make_client_ssl_context(error);
@@ -3292,15 +4953,49 @@ VenueConnectionManager::VenueConnectionManager(
     net::SharedSslContext tls)
     : tls_(std::move(tls)) {}
 
-api::Result<VenueConnection *> VenueConnectionManager::create(
-    VenueConnectionOptions options, bool start_immediately) {
+api::Result<void> VenueConnectionManager::prepare_options(
+    VenueConnectionOptions &options) {
   if (!tls_) {
-    return {.value = nullptr,
-            .error = api::ErrorCode::InternalError,
+    return {.error = api::ErrorCode::InternalError,
             .message = "TLS context is unavailable"};
   }
   if (!options.instrument_manager) {
     options.instrument_manager = instrument_manager_;
+  }
+  if (options.venue == Venue::Lighter) {
+    const auto limit = options.client_message_limit_per_minute;
+    if (limit == 0 ||
+        limit > ClientMessageBudget::kMaximumLimit) {
+      return {.error = api::ErrorCode::InvalidConfig,
+              .message = "invalid Lighter client message limit"};
+    }
+    if (lighter_message_limit_ != 0 &&
+        lighter_message_limit_ != limit) {
+      return {.error = api::ErrorCode::InvalidConfig,
+              .message =
+                  "Lighter connections must share one client message limit"};
+    }
+    if (!lighter_message_budget_) {
+      lighter_message_budget_ =
+          std::make_shared<ClientMessageBudget>();
+      lighter_message_limit_ = limit;
+    }
+    options.client_message_budget = lighter_message_budget_;
+    if (!lighter_connection_budget_) {
+      lighter_connection_budget_ =
+          std::make_shared<ConnectionAttemptBudget>();
+    }
+    options.connection_attempt_budget = lighter_connection_budget_;
+  }
+  return {};
+}
+
+api::Result<VenueConnection *> VenueConnectionManager::create(
+    VenueConnectionOptions options, bool start_immediately) {
+  const auto prepared = prepare_options(options);
+  if (!prepared) {
+    return {.value = nullptr, .error = prepared.error,
+            .message = prepared.message};
   }
   auto connection =
       std::make_unique<VenueConnection>(loop_, tls_, std::move(options));
@@ -3312,6 +5007,50 @@ api::Result<VenueConnection *> VenueConnectionManager::create(
     }
   }
   connections_.push_back(std::move(connection));
+  return {.value = pointer};
+}
+
+api::Result<VenueConnection *> VenueConnectionManager::replace(
+    VenueConnection *current, VenueConnectionOptions options,
+    bool start_immediately) {
+  const auto found = std::find_if(
+      connections_.begin(), connections_.end(),
+      [current](const auto &entry) { return entry.get() == current; });
+  if (found == connections_.end()) {
+    return {.value = nullptr,
+            .error = api::ErrorCode::InvalidHandle,
+            .message = "venue connection replacement target is unavailable"};
+  }
+  const auto prepared = prepare_options(options);
+  if (!prepared) {
+    return {.value = nullptr, .error = prepared.error,
+            .message = prepared.message};
+  }
+  std::unique_ptr<VenueConnection> replacement;
+  try {
+    replacement =
+        std::make_unique<VenueConnection>(loop_, tls_, std::move(options));
+  } catch (const std::exception &exception) {
+    return {.value = nullptr,
+            .error = api::ErrorCode::InternalError,
+            .message = std::string("failed to construct replacement: ") +
+                       exception.what()};
+  } catch (...) {
+    return {.value = nullptr,
+            .error = api::ErrorCode::InternalError,
+            .message = "failed to construct replacement"};
+  }
+  auto *pointer = replacement.get();
+  current->stop();
+  replacement->adopt_multiplex_publishers(*current);
+  *found = std::move(replacement);
+  if (start_immediately) {
+    const auto started = pointer->start();
+    if (!started) {
+      return {.value = pointer, .error = started.error,
+              .message = started.message};
+    }
+  }
   return {.value = pointer};
 }
 

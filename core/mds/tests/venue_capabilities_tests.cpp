@@ -79,8 +79,21 @@ int main() {
       Venue::Hyperliquid, ProductType::Perpetual, "l2Book-slow",
       std::nullopt, resolved, error));
 
+  assert(mds::exchange::resolve_orderbook_channel(
+      Venue::Aster, ProductType::Spot, "", 100, resolved, error));
+  assert(resolved.capability.channel == "depth");
+  assert(resolved.capability.bootstrap ==
+         mds::exchange::BookBootstrap::RestSnapshotThenDelta);
+  assert(mds::exchange::resolve_orderbook_channel(
+      Venue::Lighter, ProductType::Perpetual, "", std::nullopt, resolved,
+      error));
+  assert(resolved.capability.channel == "order_book");
+  assert(resolved.capability.bootstrap ==
+         mds::exchange::BookBootstrap::WsSnapshotThenDelta);
+
   for (const auto venue :
-       {Venue::Okx, Venue::Bybit, Venue::Bitget, Venue::Gate}) {
+       {Venue::Okx, Venue::Bybit, Venue::Bitget, Venue::Gate,
+        Venue::Aster, Venue::Lighter}) {
     assert(mds::exchange::capabilities(venue, ProductType::Spot));
     assert(mds::exchange::capabilities(venue,
                                        ProductType::Perpetual));
@@ -93,6 +106,13 @@ int main() {
                                      ProductType::BinaryOption));
   assert(mds::exchange::parse_venue("polymarket") ==
          Venue::Polymarket);
+  assert(mds::exchange::parse_venue("ASTER") == Venue::Aster);
+  assert(mds::exchange::parse_venue("lighter") == Venue::Lighter);
+  assert(static_cast<unsigned>(Venue::Aster) == 9);
+  assert(static_cast<unsigned>(Venue::Lighter) == 10);
+  assert(mds::exchange::capabilities(
+             Venue::Lighter, ProductType::Spot)
+             ->ticker.requires_first_data_before_ready);
   assert(mds::exchange::parse_product("BINARY_OPTION") ==
          ProductType::BinaryOption);
   assert(mds::exchange::resolve_orderbook_channel(

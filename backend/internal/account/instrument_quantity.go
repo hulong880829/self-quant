@@ -74,6 +74,8 @@ func convertBaseQuantity(
 ) (decimal.Decimal, bool) {
 	category := strings.ToLower(position.ProductCategory)
 	switch strings.ToLower(position.Exchange) {
+	case "hyperliquid", "aster", "lighter":
+		return raw, true
 	case "binance":
 		if category == "um" {
 			return raw, true

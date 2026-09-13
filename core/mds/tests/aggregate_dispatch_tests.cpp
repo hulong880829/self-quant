@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -17,19 +18,21 @@ Record patterned(std::uint64_t value) {
   words.fill(value);
   Record record{};
   std::memcpy(&record, words.data(), sizeof(record));
+  if constexpr (std::is_same_v<Record,
+                               utils::md::wire::AggOrderBookRecord>) {
+    record.header.state =
+        static_cast<std::uint8_t>(utils::md::BookState::Live);
+    record.active_mask = 1;
+    record.bid_count = 1;
+    record.ask_count = 1;
+  }
   return record;
 }
 
 template <typename Record>
-bool has_single_pattern(const Record &record) {
-  std::array<std::uint64_t, sizeof(Record) / sizeof(std::uint64_t)> words{};
-  std::memcpy(words.data(), &record, sizeof(record));
-  for (const auto word : words) {
-    if (word != words.front()) {
-      return false;
-    }
-  }
-  return true;
+bool matches_pattern(const Record &record, std::uint64_t value) {
+  const auto expected = patterned<Record>(value);
+  return std::memcmp(&record, &expected, sizeof(record)) == 0;
 }
 
 template <typename Record, typename Snapshot>
@@ -57,7 +60,8 @@ void concurrent_no_torn(std::uint64_t publications) {
         if (state.snapshot(snapshot, 16)) {
           if (!snapshot.status.ready ||
               snapshot.status.receive.ring_sequence == 0 ||
-              !has_single_pattern(snapshot.record)) {
+              !matches_pattern(snapshot.record,
+                               snapshot.status.receive.ring_sequence)) {
             failed.store(true, std::memory_order_relaxed);
             return;
           }
@@ -74,7 +78,7 @@ void concurrent_no_torn(std::uint64_t publications) {
   Snapshot final_snapshot{};
   assert(state.snapshot(final_snapshot, 16));
   assert(final_snapshot.status.receive.ring_sequence == publications);
-  assert(has_single_pattern(final_snapshot.record));
+  assert(matches_pattern(final_snapshot.record, publications));
 }
 
 void concurrent_rollover_requests() {
@@ -110,6 +114,84 @@ void concurrent_rollover_requests() {
   }
   recorder_done.store(true, std::memory_order_release);
   writer.join();
+}
+
+void test_orderbook_rejection_preserves_last_good() {
+  using mds::consume::AggOrderBookSnapshot;
+  using mds::consume::AggregateLatestState;
+  using mds::consume::AggregateWatchdog;
+  using mds::consume::AggregateWatchdogAction;
+  using utils::md::BookState;
+  using utils::md::wire::AggOrderBookRecord;
+
+  AggregateLatestState state;
+  AggOrderBookRecord valid{};
+  valid.header.state = static_cast<std::uint8_t>(BookState::Live);
+  valid.header.instrument_id = 101;
+  valid.active_mask = 1;
+  valid.bid_count = 1;
+  valid.ask_count = 1;
+  valid.bids[0].price = 10'000;
+  valid.asks[0].price = 10'100;
+  assert(state.publish(valid, {.ring_epoch = 3,
+                               .ring_sequence = 10,
+                               .receive_mono_ns = 1'000,
+                               .receive_wall_ns = 2'000}));
+
+  AggOrderBookSnapshot last_good{};
+  assert(state.snapshot(last_good));
+  const auto assert_rejected = [&](AggOrderBookRecord rejected,
+                                   std::uint64_t ring_sequence) {
+    assert(!state.publish(rejected, {.ring_epoch = 9,
+                                     .ring_sequence = ring_sequence,
+                                     .receive_mono_ns = ring_sequence,
+                                     .receive_wall_ns = ring_sequence + 1}));
+    AggOrderBookSnapshot after{};
+    assert(state.snapshot(after));
+    assert(after.status.generation == last_good.status.generation);
+    assert(after.status.receive.ring_epoch ==
+           last_good.status.receive.ring_epoch);
+    assert(after.status.receive.ring_sequence ==
+           last_good.status.receive.ring_sequence);
+    assert(std::memcmp(&after.record, &last_good.record,
+                       sizeof(after.record)) == 0);
+  };
+
+  auto rejected = valid;
+  rejected.header.state = static_cast<std::uint8_t>(BookState::Building);
+  assert_rejected(rejected, 11);
+  rejected = valid;
+  rejected.active_mask = 0;
+  assert_rejected(rejected, 12);
+  rejected = valid;
+  rejected.bid_count = 0;
+  assert_rejected(rejected, 13);
+  rejected = valid;
+  rejected.ask_count = 0;
+  assert_rejected(rejected, 14);
+
+  AggregateWatchdog watchdog(5'000, 10'000);
+  watchdog.on_ready(1'000);
+  rejected = valid;
+  rejected.active_mask = 0;
+  if (state.publish(rejected, {.ring_sequence = 15,
+                               .receive_mono_ns = 3'000})) {
+    watchdog.on_ready(3'000);
+  }
+  assert(watchdog.poll(6'000) == AggregateWatchdogAction::Stale);
+  assert(watchdog.poll(11'000) == AggregateWatchdogAction::HardReset);
+
+  valid.header.source_seq = 2;
+  assert(state.publish(valid, {.ring_epoch = 3,
+                               .ring_sequence = 16,
+                               .receive_mono_ns = 12'000}));
+  watchdog.on_ready(12'000);
+  assert(!watchdog.stale());
+  assert(!watchdog.hard_reset_latched());
+  AggOrderBookSnapshot recovered{};
+  assert(state.snapshot(recovered));
+  assert(recovered.status.generation == last_good.status.generation + 1);
+  assert(recovered.status.receive.ring_sequence == 16);
 }
 
 }  // namespace
@@ -225,10 +307,18 @@ int main() {
   eth_bbo_record.header.instrument_id = 202;
   AggOrderBookRecord btc_book_record{};
   btc_book_record.header.instrument_id = 303;
+  btc_book_record.header.state =
+      static_cast<std::uint8_t>(utils::md::BookState::Live);
+  btc_book_record.active_mask = 1;
   btc_book_record.bid_count = 11;
+  btc_book_record.ask_count = 1;
   AggOrderBookRecord eth_book_record{};
   eth_book_record.header.instrument_id = 404;
+  eth_book_record.header.state =
+      static_cast<std::uint8_t>(utils::md::BookState::Live);
+  eth_book_record.active_mask = 1;
   eth_book_record.bid_count = 22;
+  eth_book_record.ask_count = 1;
   btc_bbo.publish(btc_bbo_record, {.ring_sequence = 1});
   eth_bbo.publish(eth_bbo_record, {.ring_sequence = 2});
   btc_book.publish(btc_book_record, {.ring_sequence = 3});
@@ -279,6 +369,7 @@ int main() {
   assert(watchdog.poll(60'000) ==
          mds::consume::AggregateWatchdogAction::None);
 
+  test_orderbook_rejection_preserves_last_good();
   concurrent_no_torn<AggBboRecord, AggBboSnapshot>(10'000);
   concurrent_no_torn<AggOrderBookRecord, AggOrderBookSnapshot>(4'000);
   concurrent_rollover_requests();

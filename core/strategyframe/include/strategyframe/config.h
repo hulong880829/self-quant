@@ -17,6 +17,12 @@ enum class MdsSourceMode : std::uint8_t {
   SelfHosted = 2,
   Replay = 3,
 };
+enum class BboPolicy : std::uint8_t {
+  TickerOnly = 1,
+  OrderBookOnly = 2,
+  NewestExchangeTime = 3,
+  LegacyPassthrough = 4,
+};
 enum class ThreadingMode : std::uint8_t {
   SingleThread = 1,
   MultiIoThread = 2,
@@ -43,6 +49,8 @@ struct SegmentConfig {
 
 struct MdsConfig {
   MdsSourceMode source{MdsSourceMode::ExternalSharedMemory};
+  BboPolicy bbo_policy{BboPolicy::LegacyPassthrough};
+  std::uint64_t bbo_policy_starvation_ns{2'000'000'000ULL};
   std::vector<SegmentConfig> segments{};
   std::string producer_config_path{};
   std::vector<InstrumentSelector> required_instruments{};
@@ -77,6 +85,7 @@ struct CapacityConfig {
   std::uint32_t position_table{1024};
   std::uint32_t fill_dedup{8192};
   std::uint32_t timer_table{1024};
+  std::uint32_t instrument_directory{4096};
 };
 
 struct MemoryConfig {
@@ -167,6 +176,7 @@ struct StrategyFrameConfig {
   std::uint32_t session_epoch{1};
   std::uint32_t event_budget{64};
   std::uint32_t metric_sample_rate{100};
+  std::uint32_t retire_deferred_warning_count{10};
   std::uint64_t startup_timeout_ns{10'000'000'000ULL};
 };
 

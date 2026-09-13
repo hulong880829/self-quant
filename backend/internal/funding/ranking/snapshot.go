@@ -20,6 +20,34 @@ func NewSnapshotStore() *SnapshotStore {
 	return store
 }
 
+func (s *SnapshotStore) Restore(snapshot Snapshot) error {
+	slot := s.slot(snapshot.Period)
+	if slot == nil {
+		return ErrInvalidPeriod
+	}
+	if err := validatePersistedSnapshot(snapshot, CurrentModelVersion); err != nil {
+		return err
+	}
+	copied := snapshot
+	copied.Items = cloneOpportunities(snapshot.Items)
+	copied.RejectionSummary = cloneRejections(snapshot.RejectionSummary)
+	copied.Status = SnapshotStale
+	copied.Stale = true
+	advanceGeneration(&s.generation, copied.Generation)
+	freshness := s.freshness.Add(1)
+	copied.FreshnessGeneration = freshness
+	copied.Version = fmt.Sprintf("%d-%d", copied.Generation, freshness)
+	for {
+		current := slot.Load()
+		if current != nil && current.Generation > copied.Generation {
+			return nil
+		}
+		if slot.CompareAndSwap(current, &copied) {
+			return nil
+		}
+	}
+}
+
 func (s *SnapshotStore) Replace(period Period, items []Opportunity, now time.Time) {
 	s.ReplaceWithDataThrough(period, items, now, now)
 }
@@ -27,15 +55,28 @@ func (s *SnapshotStore) Replace(period Period, items []Opportunity, now time.Tim
 func (s *SnapshotStore) ReplaceWithDataThrough(
 	period Period, items []Opportunity, now, dataThrough time.Time,
 ) {
+	s.ReplaceComputed(period, items, nil, now, dataThrough)
+}
+
+func (s *SnapshotStore) ReplaceComputed(
+	period Period,
+	items []Opportunity,
+	rejections map[string]int,
+	now, dataThrough time.Time,
+) {
+	slot := s.slot(period)
+	if slot == nil {
+		return
+	}
 	copied := cloneOpportunities(items)
 	generation := s.generation.Add(1)
 	freshness := s.freshness.Add(1)
 	now = now.UTC()
-	s.slot(period).Store(&Snapshot{
+	slot.Store(&Snapshot{
 		Period: period, Items: copied, Generation: generation, FreshnessGeneration: freshness,
 		Version: fmt.Sprintf("%d-%d", generation, freshness), Status: SnapshotReady,
 		CalculatedAt: now, LastSuccessfulAt: now, DataThrough: dataThrough.UTC(),
-		Stale: false,
+		Stale: false, RejectionSummary: cloneRejections(rejections),
 	})
 }
 
@@ -53,6 +94,9 @@ func (s *SnapshotStore) MarkUnavailable(period Period) {
 
 func (s *SnapshotStore) markStatus(period Period, status SnapshotStatus) {
 	slot := s.slot(period)
+	if slot == nil {
+		return
+	}
 	for {
 		current := slot.Load()
 		freshness := s.freshness.Add(1)
@@ -74,7 +118,11 @@ func (s *SnapshotStore) markStatus(period Period, status SnapshotStatus) {
 }
 
 func (s *SnapshotStore) View(period Period) *Snapshot {
-	if snapshot := s.slot(period).Load(); snapshot != nil {
+	slot := s.slot(period)
+	if slot == nil {
+		return &Snapshot{Period: period, Status: SnapshotUnavailable, Stale: true}
+	}
+	if snapshot := slot.Load(); snapshot != nil {
 		return snapshot
 	}
 	return &Snapshot{Period: period, Status: SnapshotUnavailable, Stale: true}
@@ -85,14 +133,34 @@ func (s *SnapshotStore) Get(period Period) Snapshot {
 }
 
 func (s *SnapshotStore) slot(period Period) *atomic.Pointer[Snapshot] {
-	if slot := s.slots[period]; slot != nil {
-		return slot
-	}
-	return s.slots[Period1h]
+	return s.slots[period]
 }
 
 func cloneOpportunities(items []Opportunity) []Opportunity {
+	if len(items) > 100 {
+		items = items[:100]
+	}
 	result := make([]Opportunity, len(items))
 	copy(result, items)
 	return result
+}
+
+func cloneRejections(values map[string]int) map[string]int {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make(map[string]int, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
+func advanceGeneration(counter *atomic.Uint64, target uint64) {
+	for {
+		current := counter.Load()
+		if current >= target || counter.CompareAndSwap(current, target) {
+			return
+		}
+	}
 }

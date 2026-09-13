@@ -15,20 +15,96 @@ import (
 type binanceAdapter struct {
 	client *http.Client
 	base   string
+	spot   string
 }
 
 func newBinance(client *http.Client, base string) Adapter {
 	if base == "" {
 		base = "https://papi.binance.com"
 	}
-	return &binanceAdapter{client: client, base: strings.TrimRight(base, "/")}
+	return &binanceAdapter{
+		client: client,
+		base:   strings.TrimRight(base, "/"),
+		spot:   "https://api.binance.com",
+	}
 }
 
 func (a *binanceAdapter) signedGet(ctx context.Context, path string, credentials Credentials, target any) error {
-	query := url.Values{"timestamp": {strconv.FormatInt(time.Now().UnixMilli(), 10)}, "recvWindow": {"5000"}}
+	return a.signedGetHost(ctx, a.base, path, nil, credentials, target)
+}
+
+func (a *binanceAdapter) signedGetHost(
+	ctx context.Context,
+	host, path string,
+	extra url.Values,
+	credentials Credentials,
+	target any,
+) error {
+	query := url.Values{
+		"timestamp":  {strconv.FormatInt(time.Now().UnixMilli(), 10)},
+		"recvWindow": {"5000"},
+	}
+	for key, values := range extra {
+		query[key] = values
+	}
 	unsigned := query.Encode()
-	rawURL := a.base + path + "?" + unsigned + "&signature=" + hmacHex256(credentials.APISecret, unsigned)
+	rawURL := host + path + "?" + unsigned + "&signature=" + hmacHex256(credentials.APISecret, unsigned)
 	return getJSON(ctx, a.client, rawURL, http.Header{"X-Mbx-Apikey": {credentials.APIKey}}, target)
+}
+
+func (a *binanceAdapter) AccountFeeRates(
+	ctx context.Context,
+	credentials Credentials,
+) (AccountFeeRates, error) {
+	result := AccountFeeRates{Source: "venue"}
+	var spot []struct {
+		Symbol          string `json:"symbol"`
+		MakerCommission string `json:"makerCommission"`
+		TakerCommission string `json:"takerCommission"`
+	}
+	spotErr := a.signedGetHost(
+		ctx, a.spot, "/sapi/v1/asset/tradeFee",
+		url.Values{"symbol": {"BTCUSDT"}}, credentials, &spot,
+	)
+	if spotErr != nil {
+		result.Spot = unknownMarket()
+	} else if len(spot) == 0 {
+		return AccountFeeRates{}, fmt.Errorf("binance spot trade fee empty")
+	} else {
+		fee, err := parseMarketFee(spot[0].MakerCommission, spot[0].TakerCommission)
+		if err != nil {
+			return AccountFeeRates{}, fmt.Errorf("binance spot trade fee: %w", err)
+		}
+		result.Spot = fee
+	}
+
+	var contract struct {
+		MakerCommissionRate string `json:"makerCommissionRate"`
+		TakerCommissionRate string `json:"takerCommissionRate"`
+	}
+	contractErr := a.signedGetHost(
+		ctx, a.base, "/papi/v1/um/commissionRate",
+		url.Values{"symbol": {"BTCUSDT"}}, credentials, &contract,
+	)
+	if contractErr != nil {
+		result.Contract = unknownMarket()
+	} else {
+		fee, err := parseMarketFee(contract.MakerCommissionRate, contract.TakerCommissionRate)
+		if err != nil {
+			return AccountFeeRates{}, fmt.Errorf("binance contract commission: %w", err)
+		}
+		result.Contract = fee
+	}
+	if spotErr != nil && contractErr != nil {
+		return AccountFeeRates{}, fmt.Errorf("binance fee rates: spot %v; contract %v", spotErr, contractErr)
+	}
+	if spotErr != nil {
+		return result, fmt.Errorf("binance spot trade fee: %w", spotErr)
+	}
+	if contractErr != nil {
+		return result, fmt.Errorf("binance contract commission: %w", contractErr)
+	}
+	return result, nil
 }
 
 func (a *binanceAdapter) Snapshot(ctx context.Context, credentials Credentials) (Snapshot, error) {

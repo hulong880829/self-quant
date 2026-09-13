@@ -154,8 +154,9 @@ OrderTable::OrderTable(std::size_t capacity)
 
 OrderTable::~OrderTable() { delete impl_; }
 
-api::Error OrderTable::Insert(const api::NewOrderRequest& request,
+api::Error OrderTable::Insert(const api::SubmitOrderRequest& submitted,
                               api::OrderHandle& handle) noexcept {
+  const auto& request = submitted.order;
   if (request.token.sequence == 0 || !ValidId(request.client_order_id) ||
       request.quantity.value <= 0)
     return api::Error::InvalidArgument;
@@ -170,6 +171,7 @@ api::Error OrderTable::Insert(const api::NewOrderRequest& request,
   if (generation == 0) generation = 1;
   record = {};
   record.request = request;
+  record.routing = submitted.routing;
   record.status = api::OrderStatus::PendingSubmit;
   record.inflight = api::InflightAction::Submit;
   record.remaining_quantity = request.quantity.value;
@@ -188,16 +190,6 @@ api::Error OrderTable::Insert(const api::NewOrderRequest& request,
     return api::Error::CapacityExceeded;
   }
   ++size_;
-  return api::Error::Ok;
-}
-
-api::Error OrderTable::Insert(const api::PreparedOrderRequest& request,
-                              api::OrderHandle& handle) noexcept {
-  const api::Error result = Insert(request.order, handle);
-  if (result != api::Error::Ok) return result;
-  OrderRecord* record = Lookup(handle);
-  if (record == nullptr) return api::Error::StaleHandle;
-  record->routing = request.routing;
   return api::Error::Ok;
 }
 

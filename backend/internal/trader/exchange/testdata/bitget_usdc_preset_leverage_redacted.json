@@ -1,0 +1,17 @@
+{
+  "category": "USDC-FUTURES",
+  "symbol": "BTCPERP",
+  "leverage": "4",
+  "marginMode": "cross",
+  "venueCode": "00000",
+  "venueMsg": "success",
+  "estMaxOpen": "250000000",
+  "requiredMargin": "0",
+  "marginChange": "0",
+  "markPrice": "78080.9",
+  "lastPrice": null,
+  "estMaxOpenTimesMarkPrice": "19520225000000.0000",
+  "conclusion": "quote_notional",
+  "probedAt": "2026-09-10T07:53:33Z",
+  "notes": "Read-only GET /api/v3/account/pre-set-leverage. Credentials not stored."
+}

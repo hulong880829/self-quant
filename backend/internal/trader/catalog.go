@@ -88,12 +88,31 @@ func (c *postgresInstrumentCatalog) refresh(ctx context.Context) error {
 	}
 	rows, err := c.pool.Query(ctx, `
 		SELECT id, exchange, contract_type, exchange_symbol, base_asset, quote_asset,
-		       settle_asset, COALESCE(contract_size::text, ''),
-		       COALESCE(price_tick::text, ''), COALESCE(quantity_step::text, ''), metadata
+		       settle_asset, COALESCE(trim_scale(contract_size)::text, ''),
+		       COALESCE(trim_scale(price_tick)::text, ''),
+		       COALESCE(trim_scale(quantity_step)::text, ''),
+		       COALESCE(trim_scale(min_quantity)::text, ''),
+		       COALESCE(trim_scale(min_notional)::text, ''),
+		       min_quantity_status, min_notional_status,
+		       COALESCE(trim_scale(max_quantity)::text, ''), max_quantity_status,
+		       COALESCE(trim_scale(market_quantity_step)::text, ''),
+		       market_quantity_step_status,
+		       COALESCE(trim_scale(market_min_quantity)::text, ''),
+		       market_min_quantity_status,
+		       COALESCE(trim_scale(market_max_quantity)::text, ''),
+		       market_max_quantity_status,
+		       COALESCE(trim_scale(market_min_notional)::text, ''),
+		       market_min_notional_status,
+		       metadata
 		FROM instruments
 		WHERE active=TRUE AND status='active'
-		  AND contract_type IN ('spot', 'perpetual')
-		  AND exchange IN ('binance', 'okx', 'bybit', 'bitget', 'gate')`)
+		  AND (
+		    (contract_type IN ('spot', 'perpetual')
+		      AND exchange IN ('binance', 'okx', 'bybit', 'bitget', 'gate'))
+		    OR
+		    (contract_type='perpetual'
+		      AND exchange IN ('hyperliquid', 'lighter', 'aster'))
+		  )`)
 	if err != nil {
 		return fmt.Errorf("load trader instruments: %w", err)
 	}
@@ -105,7 +124,14 @@ func (c *postgresInstrumentCatalog) refresh(ctx context.Context) error {
 		if err := rows.Scan(
 			&item.ID, &item.Exchange, &item.ContractType, &item.ExchangeSymbol,
 			&item.BaseAsset, &item.QuoteAsset, &item.SettleAsset, &item.ContractSize,
-			&item.PriceTick, &item.QuantityStep, &metadata,
+			&item.PriceTick, &item.QuantityStep, &item.MinQuantity, &item.MinNotional,
+			&item.MinQuantityStatus, &item.MinNotionalStatus,
+			&item.MaxQuantity, &item.MaxQuantityStatus,
+			&item.MarketQuantityStep, &item.MarketQuantityStepStatus,
+			&item.MarketMinQuantity, &item.MarketMinQuantityStatus,
+			&item.MarketMaxQuantity, &item.MarketMaxQuantityStatus,
+			&item.MarketMinNotional, &item.MarketMinNotionalStatus,
+			&metadata,
 		); err != nil {
 			return fmt.Errorf("scan trader instrument: %w", err)
 		}
@@ -128,6 +154,35 @@ func (c *postgresInstrumentCatalog) refresh(ctx context.Context) error {
 				continue
 			}
 			item.QuantityStep = baseStep
+			if item.MinQuantityStatus == exchange.ConstraintKnown {
+				baseMinimum, err := exchange.BaseQuantityStep(
+					toVenueInstrument(item), item.MinQuantity,
+				)
+				if err != nil {
+					item.MinQuantity = ""
+					item.MinQuantityStatus = exchange.ConstraintUnknown
+				} else {
+					item.MinQuantity = baseMinimum
+				}
+			}
+			convertBaseRule := func(value *string, status *string) {
+				if *status != exchange.ConstraintKnown {
+					return
+				}
+				baseValue, convertErr := exchange.BaseQuantityStep(
+					toVenueInstrument(item), *value,
+				)
+				if convertErr != nil {
+					*value = ""
+					*status = exchange.ConstraintUnknown
+					return
+				}
+				*value = baseValue
+			}
+			convertBaseRule(&item.MaxQuantity, &item.MaxQuantityStatus)
+			convertBaseRule(&item.MarketQuantityStep, &item.MarketQuantityStepStatus)
+			convertBaseRule(&item.MarketMinQuantity, &item.MarketMinQuantityStatus)
+			convertBaseRule(&item.MarketMaxQuantity, &item.MarketMaxQuantityStatus)
 		}
 		items[item.ID] = item
 	}

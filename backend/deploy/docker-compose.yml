@@ -70,6 +70,7 @@ services:
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/users.d/logging.xml:/etc/clickhouse-server/users.d/logging.xml:ro
       - ./clickhouse/certs:/etc/clickhouse-server/certs:ro
     ulimits:
       nofile:
@@ -89,18 +90,23 @@ services:
   funding-service:
     <<: *backend
     command: ["/out/funding-service"]
+    mem_limit: 1536m
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
     environment:
       DATABASE_URL: postgres://selfquant:selfquant@postgres:5432/selfquant?sslmode=disable
       FUNDING_GRPC_ADDRESS: :9090
       CLICKHOUSE_ADDR: clickhouse:9000
       CLICKHOUSE_TLS: "false"
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_BBO_PASSWORD:-changeme}
+      GOMEMLIMIT: 1200MiB
+      GOGC: "100"
     ports:
       - "9090:9090"
     depends_on:
       postgres:
-        condition: service_healthy
-      clickhouse:
         condition: service_healthy
     healthcheck:
       <<: *grpc-health

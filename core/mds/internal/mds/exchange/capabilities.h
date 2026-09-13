@@ -24,6 +24,7 @@ struct ChannelCapability {
   bool requires_public_ws_login{};
   bool configurable_interval{};
   std::size_t max_levels_per_message{};
+  bool requires_first_data_before_ready{};
 };
 
 struct VenueCapabilities {

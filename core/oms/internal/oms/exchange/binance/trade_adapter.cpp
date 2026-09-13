@@ -1,5 +1,6 @@
 #include "oms/exchange/binance/trade_adapter.h"
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
 
@@ -31,7 +32,6 @@ BinanceTradeAdapter::BinanceTradeAdapter(BinanceAdapterConfig config) noexcept
       config_.recv_window_ms != 0 && config_.recv_window_ms <= 60000 &&
       config_.request_timeout_ns != 0 && config_.transport != nullptr &&
       config_.price_scale <= 18 && config_.quantity_scale <= 18 &&
-      config_.callbacks.resolve_symbol != nullptr &&
       config_.callbacks.resolve_cancel != nullptr;
   status_ = valid ? AdapterStatus::Authenticating : AdapterStatus::Failed;
   if (valid) {
@@ -344,9 +344,29 @@ AdapterResult BinanceTradeAdapter::process_one(std::uint64_t now_ns) noexcept {
     if (command.kind == AdapterCommandKind::Place) {
       slot.parse_context.handle = command.place.handle;
       slot.parse_context.token = command.place.request.token;
-      built = config_.callbacks.resolve_symbol(
-          config_.callbacks.context, command.place.request.instrument_id,
-          symbol.data(), symbol.size(), symbol_length);
+      const auto& routing = command.place.routing;
+      const bool product_matches =
+          config_.product == Product::Spot
+              ? routing.product_type ==
+                    static_cast<std::uint8_t>(utils::md::ProductType::Spot)
+              : (routing.product_type ==
+                     static_cast<std::uint8_t>(
+                         utils::md::ProductType::Perpetual) ||
+                 routing.product_type ==
+                     static_cast<std::uint8_t>(
+                         utils::md::ProductType::Future));
+      built = routing.kind == api::ExecutionRouteKind::Crypto &&
+              routing.venue ==
+                  static_cast<std::uint8_t>(utils::md::Venue::Binance) &&
+              product_matches &&
+              routing.crypto.venue_symbol.length != 0 &&
+              routing.crypto.venue_symbol.length <= symbol.size();
+      if (built) {
+        symbol_length = static_cast<std::uint8_t>(
+            routing.crypto.venue_symbol.length);
+        std::copy_n(routing.crypto.venue_symbol.value.begin(), symbol_length,
+                    symbol.begin());
+      }
       const std::string_view client_id =
           id_view(command.place.request.client_order_id);
       if (built && symbol_length != 0 && symbol_length <= symbol.size() &&

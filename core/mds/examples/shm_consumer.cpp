@@ -199,6 +199,15 @@ std::string profile_text(const md::Instrument &instrument) {
     case md::Venue::Sse:
       profile = "sse/";
       break;
+    case md::Venue::Hyperliquid:
+      profile = "hyperliquid/";
+      break;
+    case md::Venue::Aster:
+      profile = "aster/";
+      break;
+    case md::Venue::Lighter:
+      profile = "lighter/";
+      break;
     case md::Venue::Unknown:
       profile = "unknown/";
       break;
@@ -300,6 +309,7 @@ struct Segment {
   std::uint64_t aggregate_hard_resets{};
   std::uint64_t aggregate_stale_events{};
   std::uint64_t aggregate_window_gaps{};
+  std::uint64_t aggregate_rejected_records{};
 };
 
 SnapshotView &snapshot_for(Segment &segment,
@@ -389,6 +399,10 @@ std::string_view venue_name(std::uint8_t venue) noexcept {
       return "sse";
     case md::Venue::Hyperliquid:
       return "hyperliquid";
+    case md::Venue::Aster:
+      return "aster";
+    case md::Venue::Lighter:
+      return "lighter";
     case md::Venue::Unknown:
       return "unknown";
   }
@@ -1012,7 +1026,34 @@ bool catch_up_aggregate(Segment &segment, std::string_view reason) {
 
 bool recover_reader(Segment &segment, std::uint64_t marker,
                     bool epoch_changed) {
-  (void)segment.ring.unregister_reader(segment.reader);
+  bool can_register = false;
+  for (int attempt = 0; attempt < 32; ++attempt) {
+    const auto released = segment.ring.unregister_reader(segment.reader);
+    if (released) {
+      can_register = true;
+      break;
+    }
+    if (released.error == mds::api::ErrorCode::InvalidHandle) {
+      can_register = true;
+      break;
+    }
+    if (released.error == mds::api::ErrorCode::QuotaExceeded) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      continue;
+    }
+    std::cerr << segment.name << ": reader release failed";
+    if (!released.message.empty()) {
+      std::cerr << ' ' << released.message;
+    }
+    std::cerr << '\n';
+    return false;
+  }
+  if (!can_register) {
+    std::cerr << segment.name
+              << ": reader release still in progress; not registering a second "
+                 "slot\n";
+    return false;
+  }
   segment.snapshots.clear();
   segment.instruments.clear();
   segment.selected_instruments.clear();
@@ -1345,6 +1386,7 @@ int main(int argc, char **argv) {
     clickhouse_recorder =
         std::make_unique<mds::record::ClickHouseBboRecorder>(
             std::move(configured));
+    std::signal(SIGPIPE, SIG_IGN);
     if (!clickhouse_recorder->start()) {
       std::cerr << "ClickHouse BBO recorder failed to start: "
                 << clickhouse_recorder->error() << '\n';
@@ -1538,8 +1580,17 @@ int main(int argc, char **argv) {
           if (segment.latest_state != nullptr &&
               segment.aggregate_topic ==
                   consume::AggregateTopic::AggOrderBook) {
-            segment.latest_state->publish(record, receive);
-            segment.aggregate_watchdog.on_ready(receive.receive_mono_ns);
+            if (segment.latest_state->publish(record, receive)) {
+              segment.aggregate_watchdog.on_ready(receive.receive_mono_ns);
+            } else {
+              const auto rejected = ++segment.aggregate_rejected_records;
+              if ((rejected & (rejected - 1U)) == 0) {
+                std::cerr << segment.name
+                          << ": rejected invalid aggregate orderbook"
+                          << " count=" << rejected
+                          << " ring_seq=" << stable_view.sequence << '\n';
+              }
+            }
           }
         }
         const auto message_type =
@@ -1715,7 +1766,8 @@ int main(int argc, char **argv) {
               << metrics.http_failures << " rows_requeued="
               << metrics.rows_requeued << " shutdown_drops="
               << metrics.shutdown_drops << " stale_skips="
-              << metrics.stale_skips << '\n';
+              << metrics.stale_skips << " decode_failed="
+              << metrics.decode_failed << '\n';
   }
   for (auto &segment : segments) {
     std::cerr << segment.name << ": consumption metrics records_drained="
@@ -1725,6 +1777,8 @@ int main(int argc, char **argv) {
               << " aggregate_stale=" << segment.aggregate_stale_events
               << " aggregate_hard_resets=" << segment.aggregate_hard_resets
               << " aggregate_window_gaps=" << segment.aggregate_window_gaps
+              << " aggregate_rejected_records="
+              << segment.aggregate_rejected_records
               << '\n';
     (void)segment.ring.unregister_reader(segment.reader);
   }

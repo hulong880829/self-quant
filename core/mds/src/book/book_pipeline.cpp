@@ -101,6 +101,7 @@ bool BookPipeline::PublishCanonical(
   event.header = header;
   event.header.instrument_id = instrument_id_;
   event.header.state = utils::md::BookState::Live;
+  event.header.bbo_origin = utils::md::BboOrigin::OrderBookStream;
   return bool(publisher_->publish_bbo(event));
 }
 

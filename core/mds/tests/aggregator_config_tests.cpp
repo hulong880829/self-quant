@@ -34,6 +34,10 @@ int main() {
   assert(book.fx_enabled);
   assert(book.members[5].source_quote_asset == "USDC");
   assert(book.members[0].bbo_ttl_us > 0);
+  for (std::size_t index = 0; index < book.member_count; ++index) {
+    assert(book.members[index].venue != utils::md::Venue::Aster);
+    assert(book.members[index].venue != utils::md::Venue::Lighter);
+  }
   assert(mds::aggregator::output_segment_name(
              loaded.value, book, "aggbbo") ==
          "/selfquant.mds.agg_perp_usdt_binance-bitget-bybit-gate-"
@@ -213,6 +217,25 @@ int main() {
   assert(!mds::aggregator::load_config(bad_type_ttl.string()));
   assert(!mds::aggregator::load_config(disabled_ttl.string()));
 
+  const auto utf8_book = write_temp(
+      "shared_memory:\n"
+      "  prefix: /test\n"
+      "  output:\n"
+      "    ring_bytes: 1048576\n"
+      "    max_record_bytes: 32768\n"
+      "books:\n"
+      "  - symbol: 龙虾USDT\n"
+      "    product: SPOT\n"
+      "    base_asset: 龙虾\n"
+      "    quote_asset: USDT\n"
+      "    members:\n"
+      "      - venue: gate\n",
+      "utf8-symbol");
+  const auto loaded_utf8 = mds::aggregator::load_config(utf8_book.string());
+  assert(loaded_utf8);
+  assert(loaded_utf8.value.books[0].symbol == "龙虾USDT");
+  assert(loaded_utf8.value.books[0].base_asset == "龙虾");
+
   const auto overlong_asset = write_temp(
       "shared_memory:\n"
       "  prefix: /test\n"
@@ -258,6 +281,7 @@ int main() {
   std::filesystem::remove(overflow_ttl);
   std::filesystem::remove(bad_type_ttl);
   std::filesystem::remove(disabled_ttl);
+  std::filesystem::remove(utf8_book);
   std::filesystem::remove(overlong_asset);
   std::filesystem::remove(duplicate_output);
   return 0;

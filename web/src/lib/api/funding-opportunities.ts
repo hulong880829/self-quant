@@ -2,6 +2,7 @@ import type {
   Exchange,
   FundingOpportunityPeriod,
   FundingSpreadLeg,
+  PaybackStatus,
   RankedFundingOpportunity,
 } from "@/types/market";
 
@@ -39,8 +40,15 @@ const exchanges = new Set<Exchange>([
   "Bitget",
   "Gate",
   "Hyperliquid",
+  "Aster",
+  "Lighter",
 ]);
-const periods = new Set<FundingOpportunityPeriod>(["1h", "4h", "8h", "24h"]);
+const periods = new Set<FundingOpportunityPeriod>(["8h", "24h"]);
+const paybackStatuses = new Set<PaybackStatus>([
+  "ready",
+  "never",
+  "insufficient_sample",
+]);
 
 function record(value: unknown, path: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -114,6 +122,15 @@ function period(value: unknown, path: string): FundingOpportunityPeriod {
   return parsed;
 }
 
+function paybackStatus(value: unknown, path: string): PaybackStatus {
+  if (value === undefined || value === "") return "insufficient_sample";
+  const parsed = text(value, path) as PaybackStatus;
+  if (!paybackStatuses.has(parsed)) {
+    throw new Error(`${path} 不是支持的回本状态`);
+  }
+  return parsed;
+}
+
 function version(value: unknown, path: string): string {
   if ((typeof value !== "string" && typeof value !== "number") || String(value).length === 0) {
     throw new Error(`${path} 必须是非空 string 或 number`);
@@ -126,6 +143,9 @@ function mapLeg(value: unknown, path: string): FundingSpreadLeg {
   return {
     exchange: exchange(item.exchange, `${path}.exchange`),
     exchangeSymbol: text(item.exchangeSymbol, `${path}.exchangeSymbol`),
+    globalSymbol: text(item.globalSymbol, `${path}.globalSymbol`),
+    baseAsset: text(item.baseAsset, `${path}.baseAsset`),
+    quoteAsset: text(item.quoteAsset, `${path}.quoteAsset`),
     fundingRate: ratio(item.fundingRate, `${path}.fundingRate`),
     settlementIntervalHours: integer(
       item.settlementIntervalHours,
@@ -186,6 +206,17 @@ export function mapFundingOpportunity(
     coverage: ratio(item.coverage, `${path}.coverage`),
     confidence: ratio(item.confidence, `${path}.confidence`),
     modelState: text(item.modelState, `${path}.modelState`),
+    sampleCount:
+      item.sampleCount === undefined
+        ? 0
+        : integer(item.sampleCount, `${path}.sampleCount`, true),
+    expectedPaybackMinutes:
+      item.expectedPaybackMinutes === undefined ||
+      item.expectedPaybackMinutes === null ||
+      item.expectedPaybackMinutes === ""
+        ? null
+        : decimal(item.expectedPaybackMinutes, `${path}.expectedPaybackMinutes`),
+    paybackStatus: paybackStatus(item.paybackStatus, `${path}.paybackStatus`),
     updatedAt: isoTime(item.sourceUpdatedAt, `${path}.sourceUpdatedAt`),
     stale: boolean(item.stale, `${path}.stale`),
   };
@@ -242,7 +273,7 @@ function opportunitiesUrl(query: FundingOpportunityQuery) {
     period: query.period,
     minLegNotionalUsd: String(query.minPositionNotional),
     minLegVolume24hUsd: String(query.minDailyVolume),
-    limit: "200",
+    limit: "100",
   });
   return `${baseUrl}/api/v1/funding-opportunities?${search}`;
 }

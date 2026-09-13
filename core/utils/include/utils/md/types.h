@@ -18,11 +18,18 @@ enum class Venue : std::uint16_t {
   Bitget = 5,
   Polymarket = 6,
   Sse = 7,
-  Hyperliquid = 8
+  Hyperliquid = 8,
+  Aster = 9,
+  Lighter = 10
 };
 enum class ProductType : std::uint8_t { Unknown = 0, Spot = 1, Perpetual = 2, Future = 3, BinaryOption = 4, Equity = 5 };
 enum class Side : std::uint8_t { Bid = 1, Ask = 2 };
 enum class BookState : std::uint8_t { Empty = 0, Building = 1, Live = 2, Invalid = 3, NeedsRestart = 4 };
+enum class BboOrigin : std::uint16_t {
+  Unknown = 0,
+  TickerStream = 1U << 8U,
+  OrderBookStream = 1U << 9U,
+};
 enum class MessageType : std::uint16_t {
   Bbo = 1, Ticker = 2, BookDelta = 3, SnapshotBegin = 4,
   SnapshotChunk = 5, SnapshotEnd = 6, InstrumentUpdate = 7,
@@ -70,7 +77,7 @@ struct EventHeader {
   std::uint64_t publish_tsc{};
   BookState state{};
   std::uint8_t source_id{};
-  std::uint16_t validity{};
+  BboOrigin bbo_origin{};
   std::array<std::uint8_t, 4> reserved{};
 };
 
@@ -130,6 +137,7 @@ struct InstrumentCatalog {
 };
 
 static_assert(sizeof(Fixed) == 16);
+static_assert(sizeof(BboOrigin) == sizeof(std::uint16_t));
 static_assert(sizeof(EventHeader) == 64);
 static_assert(static_cast<std::uint16_t>(MessageType::Bbo) == 1);
 static_assert(static_cast<std::uint16_t>(MessageType::Ticker) == 2);

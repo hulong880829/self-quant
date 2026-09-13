@@ -12,12 +12,19 @@ int main() {
   using Expiration = Deadlines::Expiration;
 
   using mds::service::RecoveryStreamReady;
-  assert(RecoveryStreamReady(true, false, false, true, false, false, false));
-  assert(!RecoveryStreamReady(true, false, true, true, true, true, false));
-  assert(!RecoveryStreamReady(true, true, true, true, true, true, true));
-  assert(!RecoveryStreamReady(true, true, true, true, true, false, false));
-  assert(RecoveryStreamReady(true, true, true, true, true, true, false));
-  assert(RecoveryStreamReady(false, false, false, false, false, false,
+  assert(RecoveryStreamReady(true, false, false, false, true, false, false,
+                             false));
+  assert(!RecoveryStreamReady(true, false, true, false, true, false, false,
+                              false));
+  assert(!RecoveryStreamReady(true, false, false, true, true, true, true,
+                              false));
+  assert(!RecoveryStreamReady(true, true, false, true, true, true, true,
+                              true));
+  assert(!RecoveryStreamReady(true, true, false, true, true, true, false,
+                              false));
+  assert(RecoveryStreamReady(true, true, false, true, true, true, true,
+                             false));
+  assert(RecoveryStreamReady(false, false, false, false, false, false, false,
                              true));
 
   const auto start = Deadlines::Clock::time_point{1s};
@@ -25,6 +32,27 @@ int main() {
   assert(!ContinuousRecoveryExpired({}, start + 1s, 100ms));
   assert(!ContinuousRecoveryExpired(start, start + 99ms, 100ms));
   assert(ContinuousRecoveryExpired(start, start + 100ms, 100ms));
+
+  mds::service::ClientMessageBudget client_messages;
+  for (std::size_t index = 0; index < 150; ++index) {
+    assert(client_messages.allow(start, 150));
+    client_messages.record(start);
+  }
+  assert(!client_messages.allow(start + 59s, 150));
+  assert(client_messages.retry_at(start + 59s, 150) == start + 60s);
+  assert(client_messages.allow(start + 60s, 150));
+
+  mds::service::ConnectionAttemptBudget connection_attempts;
+  for (std::size_t index = 0;
+       index <
+       mds::service::ConnectionAttemptBudget::kLimitPerMinute;
+       ++index) {
+    assert(connection_attempts.allow(start));
+    connection_attempts.record(start);
+  }
+  assert(!connection_attempts.allow(start + 59s));
+  assert(connection_attempts.retry_at(start + 59s) == start + 60s);
+  assert(connection_attempts.allow(start + 60s));
 
   Deadlines deadlines;
   assert(!deadlines.reached_live_once());
@@ -285,6 +313,20 @@ int main() {
   assert(!budget.allow(budget_start + 1h - 1ms, 2));
   assert(budget.allow(budget_start + 1h, 2));
   assert(budget.size() == 1);
+
+  mds::service::SubscriptionBudget hyperliquid_budget;
+  for (std::size_t cycle = 0; cycle < 4; ++cycle) {
+    for (std::size_t symbol = 0; symbol < 100; ++symbol) {
+      assert(hyperliquid_budget.allow(budget_start, 480));
+      hyperliquid_budget.record(budget_start);
+    }
+  }
+  assert(hyperliquid_budget.size() == 400);
+  for (std::size_t symbol = 0; symbol < 80; ++symbol) {
+    assert(hyperliquid_budget.allow(budget_start, 480));
+    hyperliquid_budget.record(budget_start);
+  }
+  assert(!hyperliquid_budget.allow(budget_start, 480));
 
   constexpr auto maximum =
       std::numeric_limits<std::uint64_t>::max();

@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 
 import * as React from "react";
+import { Activity } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const apiMocks = vi.hoisted(() => ({
   fetchTradingAccounts: vi.fn(),
+  inspectTradingReadiness: vi.fn(),
   fetchTraderInstruments: vi.fn(),
   fetchTraderOrderPage: vi.fn(),
   placeTraderOrder: vi.fn(),
@@ -17,6 +19,7 @@ vi.mock("@/lib/api/accounts", async () => {
   return {
     ...actual,
     fetchTradingAccounts: apiMocks.fetchTradingAccounts,
+    inspectTradingReadiness: apiMocks.inspectTradingReadiness,
   };
 });
 
@@ -25,6 +28,22 @@ vi.mock("@/lib/api/trader", async () => {
   return {
     ...actual,
     fetchTraderInstruments: apiMocks.fetchTraderInstruments,
+    fetchTraderInstrumentCatalog: async (
+      accountId: number,
+      contractType: "spot" | "perpetual",
+    ) => ({
+      items: await apiMocks.fetchTraderInstruments(accountId, contractType),
+      capabilities: {
+        products: ["spot", "perpetual"],
+        quoteAssets: [],
+        timeInForce: ["GTC", "IOC", "POST_ONLY"],
+        postOnly: true,
+        reduceOnly: true,
+        makerTwap: true,
+        privateOrderStream: false,
+        oneWayOnly: false,
+      },
+    }),
     fetchTraderOrderPage: apiMocks.fetchTraderOrderPage,
     placeTraderOrder: apiMocks.placeTraderOrder,
     cancelTraderOrder: apiMocks.cancelTraderOrder,
@@ -39,8 +58,14 @@ const binanceAccount = {
   exchange: "Binance",
   exchangeSlug: "binance",
   accountName: "Binance UTA",
-  apiKeyMasked: "abcd****",
-  hasPassphrase: false,
+    hasPassphrase: false,
+  credentialsPresent: true,
+  credentialsVerified: true,
+  tradingMode: "cex",
+  tradingReady: true,
+  tradingStatus: "ready",
+  tradingUnavailableCode: "",
+  tradingUnavailableReason: "",
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-01T00:00:00Z",
 };
@@ -51,8 +76,14 @@ const okxAccount = {
   exchange: "OKX",
   exchangeSlug: "okx",
   accountName: "OKX UTA",
-  apiKeyMasked: "efgh****",
-  hasPassphrase: true,
+    hasPassphrase: true,
+  credentialsPresent: true,
+  credentialsVerified: true,
+  tradingMode: "cex",
+  tradingReady: true,
+  tradingStatus: "ready",
+  tradingUnavailableCode: "",
+  tradingUnavailableReason: "",
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-01T00:00:00Z",
 };
@@ -97,6 +128,10 @@ const openOrder = {
 
 function setupHappyPath() {
   apiMocks.fetchTradingAccounts.mockResolvedValue([binanceAccount, okxAccount]);
+  apiMocks.inspectTradingReadiness.mockResolvedValue({
+    tradingReady: true,
+    tradingStatus: "ready",
+  });
   apiMocks.fetchTraderInstruments.mockResolvedValue([btc, eth]);
   apiMocks.fetchTraderOrderPage.mockResolvedValue({ items: [], nextCursor: "" });
   apiMocks.placeTraderOrder.mockResolvedValue({
@@ -125,6 +160,31 @@ describe("ManualTradingView", () => {
     await waitFor(() => expect(screen.getByDisplayValue("Binance")).toBeTruthy());
     const scroller = container.querySelector("[data-manual-trading-scroll]");
     expect(scroller?.className).toContain("overflow-y-auto");
+  });
+
+  it("keeps bound accounts when instrument catalog fails", async () => {
+    apiMocks.fetchTradingAccounts.mockResolvedValue([
+      {
+        ...binanceAccount,
+        id: 24,
+        exchange: "Hyperliquid",
+        exchangeSlug: "hyperliquid",
+        accountName: "hulong-hy",
+        tradingReady: false,
+        tradingStatus: "checking",
+        credentialsPresent: true,
+      },
+    ]);
+    apiMocks.inspectTradingReadiness.mockResolvedValue({
+      tradingReady: false,
+      tradingStatus: "checking",
+      credentialsPresent: true,
+    });
+    apiMocks.fetchTraderInstruments.mockRejectedValue(new Error("catalog failed"));
+    apiMocks.fetchTraderOrderPage.mockResolvedValue({ items: [], nextCursor: "" });
+    render(<ManualTradingView />);
+    expect(await screen.findByDisplayValue("hulong-hy（交易能力检查中）")).toBeTruthy();
+    expect(screen.getByText("交易标的尚未同步")).toBeTruthy();
   });
 
   it("filters instruments by fuzzy search", async () => {
@@ -317,6 +377,45 @@ describe("ManualTradingView", () => {
     expect(apiMocks.fetchTraderOrderPage).toHaveBeenCalledTimes(calls);
   });
 
+  it("does not mark order sync delayed when a visibility refresh aborts the in-flight poll", async () => {
+    setupHappyPath();
+    apiMocks.fetchTraderOrderPage.mockImplementation(
+      (
+        _accountId: number,
+        options: { signal?: AbortSignal } = {},
+      ) =>
+        new Promise((_resolve, reject) => {
+          const fail = () =>
+            reject(
+              new DOMException("signal is aborted without reason", "AbortError"),
+            );
+          if (options.signal?.aborted) {
+            fail();
+            return;
+          }
+          options.signal?.addEventListener("abort", fail, { once: true });
+        }),
+    );
+    render(<ManualTradingView />);
+    await waitFor(() => expect(apiMocks.fetchTraderOrderPage).toHaveBeenCalled());
+    expect(screen.getByText("同步中…")).toBeTruthy();
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() =>
+      expect(apiMocks.fetchTraderOrderPage.mock.calls.length).toBeGreaterThan(1),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByText("同步延迟")).toBeNull();
+  });
+
   it("switches between current orders and history without per-order requests", async () => {
     setupHappyPath();
     apiMocks.fetchTraderOrderPage.mockImplementation(async (
@@ -336,5 +435,39 @@ describe("ManualTradingView", () => {
       3,
       expect.objectContaining({ view: "history" }),
     );
+  });
+
+  it("closes the confirm sheet when the view is hidden and keeps inputs", async () => {
+    setupHappyPath();
+    function Harness({ hidden }: { hidden: boolean }) {
+      return (
+        <Activity mode={hidden ? "hidden" : "visible"}>
+          <ManualTradingView />
+        </Activity>
+      );
+    }
+    const view = render(<Harness hidden={false} />);
+    await waitFor(() => expect(screen.getByDisplayValue("Binance")).toBeTruthy());
+    fireEvent.change(screen.getByPlaceholderText("输入委托价格"), {
+      target: { value: "100" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("输入委托数量"), {
+      target: { value: "0.001" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提交订单" }));
+    expect(await screen.findByRole("button", { name: "确认下单" })).toBeTruthy();
+    view.rerender(<Harness hidden />);
+    expect(screen.queryByRole("button", { name: "确认下单" })).toBeNull();
+    expect(
+      (screen.getByPlaceholderText("输入委托数量") as HTMLInputElement)
+        .value,
+    ).toBe("0.001");
+    view.rerender(<Harness hidden={false} />);
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "确认下单", hidden: true })).toBeNull(),
+    );
+    expect(
+      (screen.getByPlaceholderText("输入委托数量") as HTMLInputElement).value,
+    ).toBe("0.001");
   });
 });

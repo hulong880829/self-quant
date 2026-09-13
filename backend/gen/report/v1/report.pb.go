@@ -171,27 +171,33 @@ func (x *Product) GetInceptionDate() string {
 }
 
 type DailySnapshot struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	Id               int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	ProductId        int64                  `protobuf:"varint,2,opt,name=product_id,json=productId,proto3" json:"product_id,omitempty"`
-	ReportDate       string                 `protobuf:"bytes,3,opt,name=report_date,json=reportDate,proto3" json:"report_date,omitempty"`
-	OpeningEquityUsd string                 `protobuf:"bytes,4,opt,name=opening_equity_usd,json=openingEquityUsd,proto3" json:"opening_equity_usd,omitempty"`
-	ClosingEquityUsd string                 `protobuf:"bytes,5,opt,name=closing_equity_usd,json=closingEquityUsd,proto3" json:"closing_equity_usd,omitempty"`
-	NetCashFlowUsd   string                 `protobuf:"bytes,6,opt,name=net_cash_flow_usd,json=netCashFlowUsd,proto3" json:"net_cash_flow_usd,omitempty"`
-	PnlUsd           string                 `protobuf:"bytes,7,opt,name=pnl_usd,json=pnlUsd,proto3" json:"pnl_usd,omitempty"`
-	ReturnRate       string                 `protobuf:"bytes,8,opt,name=return_rate,json=returnRate,proto3" json:"return_rate,omitempty"`
-	SampleCount      int32                  `protobuf:"varint,9,opt,name=sample_count,json=sampleCount,proto3" json:"sample_count,omitempty"`
-	Status           string                 `protobuf:"bytes,10,opt,name=status,proto3" json:"status,omitempty"`
-	FinalizedAt      *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=finalized_at,json=finalizedAt,proto3" json:"finalized_at,omitempty"`
-	AbsoluteReturn   string                 `protobuf:"bytes,12,opt,name=absolute_return,json=absoluteReturn,proto3" json:"absolute_return,omitempty"`
-	AnnualizedReturn string                 `protobuf:"bytes,13,opt,name=annualized_return,json=annualizedReturn,proto3" json:"annualized_return,omitempty"`
-	Annualized_7D    string                 `protobuf:"bytes,14,opt,name=annualized_7d,json=annualized7d,proto3" json:"annualized_7d,omitempty"`
-	Annualized_30D   string                 `protobuf:"bytes,15,opt,name=annualized_30d,json=annualized30d,proto3" json:"annualized_30d,omitempty"`
-	MaxDrawdown      string                 `protobuf:"bytes,16,opt,name=max_drawdown,json=maxDrawdown,proto3" json:"max_drawdown,omitempty"`
-	Sharpe           string                 `protobuf:"bytes,17,opt,name=sharpe,proto3" json:"sharpe,omitempty"`
-	Volume_24HUsd    string                 `protobuf:"bytes,18,opt,name=volume_24h_usd,json=volume24hUsd,proto3" json:"volume_24h_usd,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Id                int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	ProductId         int64                  `protobuf:"varint,2,opt,name=product_id,json=productId,proto3" json:"product_id,omitempty"`
+	ReportDate        string                 `protobuf:"bytes,3,opt,name=report_date,json=reportDate,proto3" json:"report_date,omitempty"`
+	OpeningEquityUsd  string                 `protobuf:"bytes,4,opt,name=opening_equity_usd,json=openingEquityUsd,proto3" json:"opening_equity_usd,omitempty"`
+	ClosingEquityUsd  string                 `protobuf:"bytes,5,opt,name=closing_equity_usd,json=closingEquityUsd,proto3" json:"closing_equity_usd,omitempty"`
+	NetCashFlowUsd    string                 `protobuf:"bytes,6,opt,name=net_cash_flow_usd,json=netCashFlowUsd,proto3" json:"net_cash_flow_usd,omitempty"`
+	PnlUsd            string                 `protobuf:"bytes,7,opt,name=pnl_usd,json=pnlUsd,proto3" json:"pnl_usd,omitempty"`
+	ReturnRate        string                 `protobuf:"bytes,8,opt,name=return_rate,json=returnRate,proto3" json:"return_rate,omitempty"`
+	SampleCount       int32                  `protobuf:"varint,9,opt,name=sample_count,json=sampleCount,proto3" json:"sample_count,omitempty"`
+	Status            string                 `protobuf:"bytes,10,opt,name=status,proto3" json:"status,omitempty"`
+	FinalizedAt       *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=finalized_at,json=finalizedAt,proto3" json:"finalized_at,omitempty"`
+	AbsoluteReturn    string                 `protobuf:"bytes,12,opt,name=absolute_return,json=absoluteReturn,proto3" json:"absolute_return,omitempty"`
+	AnnualizedReturn  string                 `protobuf:"bytes,13,opt,name=annualized_return,json=annualizedReturn,proto3" json:"annualized_return,omitempty"`
+	Annualized_7D     string                 `protobuf:"bytes,14,opt,name=annualized_7d,json=annualized7d,proto3" json:"annualized_7d,omitempty"`
+	Annualized_30D    string                 `protobuf:"bytes,15,opt,name=annualized_30d,json=annualized30d,proto3" json:"annualized_30d,omitempty"`
+	MaxDrawdown       string                 `protobuf:"bytes,16,opt,name=max_drawdown,json=maxDrawdown,proto3" json:"max_drawdown,omitempty"`
+	Sharpe            string                 `protobuf:"bytes,17,opt,name=sharpe,proto3" json:"sharpe,omitempty"`
+	Volume_24HUsd     string                 `protobuf:"bytes,18,opt,name=volume_24h_usd,json=volume24hUsd,proto3" json:"volume_24h_usd,omitempty"`
+	SubscriptionUsd   string                 `protobuf:"bytes,19,opt,name=subscription_usd,json=subscriptionUsd,proto3" json:"subscription_usd,omitempty"`
+	RedemptionUsd     string                 `protobuf:"bytes,20,opt,name=redemption_usd,json=redemptionUsd,proto3" json:"redemption_usd,omitempty"`
+	CashFlowCount     int32                  `protobuf:"varint,21,opt,name=cash_flow_count,json=cashFlowCount,proto3" json:"cash_flow_count,omitempty"`
+	PeriodRuleVersion int32                  `protobuf:"varint,22,opt,name=period_rule_version,json=periodRuleVersion,proto3" json:"period_rule_version,omitempty"`
+	PeriodStart       *timestamppb.Timestamp `protobuf:"bytes,23,opt,name=period_start,json=periodStart,proto3" json:"period_start,omitempty"`
+	PeriodEnd         *timestamppb.Timestamp `protobuf:"bytes,24,opt,name=period_end,json=periodEnd,proto3" json:"period_end,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *DailySnapshot) Reset() {
@@ -348,6 +354,48 @@ func (x *DailySnapshot) GetVolume_24HUsd() string {
 		return x.Volume_24HUsd
 	}
 	return ""
+}
+
+func (x *DailySnapshot) GetSubscriptionUsd() string {
+	if x != nil {
+		return x.SubscriptionUsd
+	}
+	return ""
+}
+
+func (x *DailySnapshot) GetRedemptionUsd() string {
+	if x != nil {
+		return x.RedemptionUsd
+	}
+	return ""
+}
+
+func (x *DailySnapshot) GetCashFlowCount() int32 {
+	if x != nil {
+		return x.CashFlowCount
+	}
+	return 0
+}
+
+func (x *DailySnapshot) GetPeriodRuleVersion() int32 {
+	if x != nil {
+		return x.PeriodRuleVersion
+	}
+	return 0
+}
+
+func (x *DailySnapshot) GetPeriodStart() *timestamppb.Timestamp {
+	if x != nil {
+		return x.PeriodStart
+	}
+	return nil
+}
+
+func (x *DailySnapshot) GetPeriodEnd() *timestamppb.Timestamp {
+	if x != nil {
+		return x.PeriodEnd
+	}
+	return nil
 }
 
 type CashFlow struct {
@@ -1031,10 +1079,11 @@ func (x *CreateCashFlowRequest) GetOccurredAt() *timestamppb.Timestamp {
 }
 
 type CreateCashFlowResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CashFlow      *CashFlow              `protobuf:"bytes,1,opt,name=cash_flow,json=cashFlow,proto3" json:"cash_flow,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	CashFlow        *CashFlow              `protobuf:"bytes,1,opt,name=cash_flow,json=cashFlow,proto3" json:"cash_flow,omitempty"`
+	RecomputeStatus string                 `protobuf:"bytes,2,opt,name=recompute_status,json=recomputeStatus,proto3" json:"recompute_status,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CreateCashFlowResponse) Reset() {
@@ -1072,6 +1121,13 @@ func (x *CreateCashFlowResponse) GetCashFlow() *CashFlow {
 		return x.CashFlow
 	}
 	return nil
+}
+
+func (x *CreateCashFlowResponse) GetRecomputeStatus() string {
+	if x != nil {
+		return x.RecomputeStatus
+	}
+	return ""
 }
 
 type RecomputeProductRequest struct {
@@ -1207,7 +1263,7 @@ const file_report_v1_report_proto_rawDesc = "" +
 	"\fdisplay_name\x18\v \x01(\tR\vdisplayName\x12\x1a\n" +
 	"\bcategory\x18\f \x01(\tR\bcategory\x12\x1a\n" +
 	"\bstrategy\x18\r \x01(\tR\bstrategy\x12%\n" +
-	"\x0einception_date\x18\x0e \x01(\tR\rinceptionDate\"\x9d\x05\n" +
+	"\x0einception_date\x18\x0e \x01(\tR\rinceptionDate\"\xc1\a\n" +
 	"\rDailySnapshot\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1d\n" +
 	"\n" +
@@ -1230,7 +1286,14 @@ const file_report_v1_report_proto_rawDesc = "" +
 	"\x0eannualized_30d\x18\x0f \x01(\tR\rannualized30d\x12!\n" +
 	"\fmax_drawdown\x18\x10 \x01(\tR\vmaxDrawdown\x12\x16\n" +
 	"\x06sharpe\x18\x11 \x01(\tR\x06sharpe\x12$\n" +
-	"\x0evolume_24h_usd\x18\x12 \x01(\tR\fvolume24hUsd\"\xbd\x03\n" +
+	"\x0evolume_24h_usd\x18\x12 \x01(\tR\fvolume24hUsd\x12)\n" +
+	"\x10subscription_usd\x18\x13 \x01(\tR\x0fsubscriptionUsd\x12%\n" +
+	"\x0eredemption_usd\x18\x14 \x01(\tR\rredemptionUsd\x12&\n" +
+	"\x0fcash_flow_count\x18\x15 \x01(\x05R\rcashFlowCount\x12.\n" +
+	"\x13period_rule_version\x18\x16 \x01(\x05R\x11periodRuleVersion\x12=\n" +
+	"\fperiod_start\x18\x17 \x01(\v2\x1a.google.protobuf.TimestampR\vperiodStart\x129\n" +
+	"\n" +
+	"period_end\x18\x18 \x01(\v2\x1a.google.protobuf.TimestampR\tperiodEnd\"\xbd\x03\n" +
 	"\bCashFlow\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1d\n" +
 	"\n" +
@@ -1292,9 +1355,10 @@ const file_report_v1_report_proto_rawDesc = "" +
 	"\x04note\x18\x06 \x01(\tR\x04note\x12\x1c\n" +
 	"\tconfirmed\x18\a \x01(\bR\tconfirmed\x12;\n" +
 	"\voccurred_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"occurredAt\"J\n" +
+	"occurredAt\"u\n" +
 	"\x16CreateCashFlowResponse\x120\n" +
-	"\tcash_flow\x18\x01 \x01(\v2\x13.report.v1.CashFlowR\bcashFlow\"\x84\x01\n" +
+	"\tcash_flow\x18\x01 \x01(\v2\x13.report.v1.CashFlowR\bcashFlow\x12)\n" +
+	"\x10recompute_status\x18\x02 \x01(\tR\x0frecomputeStatus\"\x84\x01\n" +
 	"\x17RecomputeProductRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x1d\n" +
 	"\n" +
@@ -1345,35 +1409,37 @@ var file_report_v1_report_proto_goTypes = []any{
 var file_report_v1_report_proto_depIdxs = []int32{
 	15, // 0: report.v1.Product.updated_at:type_name -> google.protobuf.Timestamp
 	15, // 1: report.v1.DailySnapshot.finalized_at:type_name -> google.protobuf.Timestamp
-	15, // 2: report.v1.CashFlow.confirmed_at:type_name -> google.protobuf.Timestamp
-	15, // 3: report.v1.CashFlow.created_at:type_name -> google.protobuf.Timestamp
-	15, // 4: report.v1.CashFlow.occurred_at:type_name -> google.protobuf.Timestamp
-	0,  // 5: report.v1.ListProductsResponse.items:type_name -> report.v1.Product
-	0,  // 6: report.v1.GetProductDetailResponse.product:type_name -> report.v1.Product
-	1,  // 7: report.v1.GetProductDetailResponse.latest_snapshot:type_name -> report.v1.DailySnapshot
-	2,  // 8: report.v1.GetProductDetailResponse.recent_cash_flows:type_name -> report.v1.CashFlow
-	1,  // 9: report.v1.GetProductDetailResponse.daily:type_name -> report.v1.DailySnapshot
-	1,  // 10: report.v1.ListDailySnapshotsResponse.items:type_name -> report.v1.DailySnapshot
-	2,  // 11: report.v1.ListCashFlowsResponse.items:type_name -> report.v1.CashFlow
-	15, // 12: report.v1.CreateCashFlowRequest.occurred_at:type_name -> google.protobuf.Timestamp
-	2,  // 13: report.v1.CreateCashFlowResponse.cash_flow:type_name -> report.v1.CashFlow
-	3,  // 14: report.v1.ReportService.ListProducts:input_type -> report.v1.ListProductsRequest
-	5,  // 15: report.v1.ReportService.GetProductDetail:input_type -> report.v1.GetProductDetailRequest
-	7,  // 16: report.v1.ReportService.ListDailySnapshots:input_type -> report.v1.ListDailySnapshotsRequest
-	9,  // 17: report.v1.ReportService.ListCashFlows:input_type -> report.v1.ListCashFlowsRequest
-	11, // 18: report.v1.ReportService.CreateCashFlow:input_type -> report.v1.CreateCashFlowRequest
-	13, // 19: report.v1.ReportService.RecomputeProduct:input_type -> report.v1.RecomputeProductRequest
-	4,  // 20: report.v1.ReportService.ListProducts:output_type -> report.v1.ListProductsResponse
-	6,  // 21: report.v1.ReportService.GetProductDetail:output_type -> report.v1.GetProductDetailResponse
-	8,  // 22: report.v1.ReportService.ListDailySnapshots:output_type -> report.v1.ListDailySnapshotsResponse
-	10, // 23: report.v1.ReportService.ListCashFlows:output_type -> report.v1.ListCashFlowsResponse
-	12, // 24: report.v1.ReportService.CreateCashFlow:output_type -> report.v1.CreateCashFlowResponse
-	14, // 25: report.v1.ReportService.RecomputeProduct:output_type -> report.v1.RecomputeProductResponse
-	20, // [20:26] is the sub-list for method output_type
-	14, // [14:20] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	15, // 2: report.v1.DailySnapshot.period_start:type_name -> google.protobuf.Timestamp
+	15, // 3: report.v1.DailySnapshot.period_end:type_name -> google.protobuf.Timestamp
+	15, // 4: report.v1.CashFlow.confirmed_at:type_name -> google.protobuf.Timestamp
+	15, // 5: report.v1.CashFlow.created_at:type_name -> google.protobuf.Timestamp
+	15, // 6: report.v1.CashFlow.occurred_at:type_name -> google.protobuf.Timestamp
+	0,  // 7: report.v1.ListProductsResponse.items:type_name -> report.v1.Product
+	0,  // 8: report.v1.GetProductDetailResponse.product:type_name -> report.v1.Product
+	1,  // 9: report.v1.GetProductDetailResponse.latest_snapshot:type_name -> report.v1.DailySnapshot
+	2,  // 10: report.v1.GetProductDetailResponse.recent_cash_flows:type_name -> report.v1.CashFlow
+	1,  // 11: report.v1.GetProductDetailResponse.daily:type_name -> report.v1.DailySnapshot
+	1,  // 12: report.v1.ListDailySnapshotsResponse.items:type_name -> report.v1.DailySnapshot
+	2,  // 13: report.v1.ListCashFlowsResponse.items:type_name -> report.v1.CashFlow
+	15, // 14: report.v1.CreateCashFlowRequest.occurred_at:type_name -> google.protobuf.Timestamp
+	2,  // 15: report.v1.CreateCashFlowResponse.cash_flow:type_name -> report.v1.CashFlow
+	3,  // 16: report.v1.ReportService.ListProducts:input_type -> report.v1.ListProductsRequest
+	5,  // 17: report.v1.ReportService.GetProductDetail:input_type -> report.v1.GetProductDetailRequest
+	7,  // 18: report.v1.ReportService.ListDailySnapshots:input_type -> report.v1.ListDailySnapshotsRequest
+	9,  // 19: report.v1.ReportService.ListCashFlows:input_type -> report.v1.ListCashFlowsRequest
+	11, // 20: report.v1.ReportService.CreateCashFlow:input_type -> report.v1.CreateCashFlowRequest
+	13, // 21: report.v1.ReportService.RecomputeProduct:input_type -> report.v1.RecomputeProductRequest
+	4,  // 22: report.v1.ReportService.ListProducts:output_type -> report.v1.ListProductsResponse
+	6,  // 23: report.v1.ReportService.GetProductDetail:output_type -> report.v1.GetProductDetailResponse
+	8,  // 24: report.v1.ReportService.ListDailySnapshots:output_type -> report.v1.ListDailySnapshotsResponse
+	10, // 25: report.v1.ReportService.ListCashFlows:output_type -> report.v1.ListCashFlowsResponse
+	12, // 26: report.v1.ReportService.CreateCashFlow:output_type -> report.v1.CreateCashFlowResponse
+	14, // 27: report.v1.ReportService.RecomputeProduct:output_type -> report.v1.RecomputeProductResponse
+	22, // [22:28] is the sub-list for method output_type
+	16, // [16:22] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_report_v1_report_proto_init() }

@@ -52,14 +52,6 @@ class TradeAdapter {
   [[nodiscard]] virtual AdapterResult commit_cancel(
       AdapterReservation reservation,
       const AdapterCancelCommand& command) noexcept = 0;
-  [[nodiscard]] virtual AdapterResult validate_rebind(
-      const api::RebindPolymarketInstrumentRequest&) const noexcept {
-    return AdapterResult::Unsupported;
-  }
-  [[nodiscard]] virtual AdapterResult apply_rebind(
-      const api::RebindPolymarketInstrumentRequest&) noexcept {
-    return AdapterResult::Unsupported;
-  }
   [[nodiscard]] virtual AdapterResult query_open_orders(
       const AdapterQueryRequest&, const AdapterEventSink&) noexcept {
     return AdapterResult::Unsupported;

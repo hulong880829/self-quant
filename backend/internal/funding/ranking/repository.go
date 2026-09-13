@@ -12,11 +12,6 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-type HistoryStore interface {
-	Query(context.Context, time.Time, time.Time, []string, []string) ([]Quote, error)
-	Close() error
-}
-
 type RepositoryConfig struct {
 	Address        string
 	Database       string
@@ -31,26 +26,63 @@ type RepositoryConfig struct {
 }
 
 type Repository struct {
-	conn     driver.Conn
-	database string
-	table    string
-	timeout  time.Duration
+	conn       driver.Conn
+	database   string
+	table      string
+	timeout    time.Duration
+	settings   clickhouse.Settings
+	queryBatch func(
+		context.Context,
+		time.Time,
+		time.Time,
+		[]HistoryPair,
+		time.Duration,
+		func(HistoryQuote) error,
+	) error
 }
 
-func Open(ctx context.Context, cfg RepositoryConfig) (*Repository, error) {
+type historyConsumerError struct {
+	err error
+}
+
+func (e historyConsumerError) Error() string { return e.err.Error() }
+func (e historyConsumerError) Unwrap() error { return e.err }
+
+type historyQueryBinding struct {
+	pairVenues        []string
+	pairSymbols       []string
+	uniqueVenues      []string
+	uniqueSymbols     []string
+	canonicalBySource map[string]string
+}
+
+func rankingClickHouseSettings() clickhouse.Settings {
+	return clickhouse.Settings{
+		"readonly":    1,
+		"max_threads": 2,
+	}
+}
+
+func rankingClickHouseOptions(cfg RepositoryConfig) *clickhouse.Options {
 	options := &clickhouse.Options{
 		Addr: []string{cfg.Address},
 		Auth: clickhouse.Auth{
 			Database: cfg.Database, Username: cfg.User, Password: cfg.Password,
 		},
-		Protocol: clickhouse.Native, DialTimeout: 5 * time.Second,
+		Protocol:     clickhouse.Native,
+		DialTimeout:  5 * time.Second,
 		ReadTimeout:  max(cfg.QueryTimeout, 2*time.Minute),
 		MaxOpenConns: cfg.PoolSize, MaxIdleConns: cfg.PoolSize,
-		Settings: clickhouse.Settings{"readonly": 1},
+		Settings: rankingClickHouseSettings(),
 	}
 	if cfg.TLS {
 		options.TLS = &tls.Config{InsecureSkipVerify: cfg.TLSSkipVerify} //nolint:gosec // explicit operator setting
 	}
+	return options
+}
+
+func Open(ctx context.Context, cfg RepositoryConfig) (*Repository, error) {
+	options := rankingClickHouseOptions(cfg)
 	conn, err := clickhouse.Open(options)
 	if err != nil {
 		return nil, fmt.Errorf("open opportunity clickhouse: %w", err)
@@ -65,9 +97,12 @@ func Open(ctx context.Context, cfg RepositoryConfig) (*Repository, error) {
 	if cfg.UseMinuteTable {
 		table = minuteTable(table)
 	}
-	return &Repository{
+	repository := &Repository{
 		conn: conn, database: cfg.Database, table: table, timeout: cfg.QueryTimeout,
-	}, nil
+		settings: options.Settings,
+	}
+	repository.queryBatch = repository.queryPairBatch
+	return repository, nil
 }
 
 func (r *Repository) Close() error {
@@ -77,39 +112,74 @@ func (r *Repository) Close() error {
 	return r.conn.Close()
 }
 
-func (r *Repository) Query(
+func (r *Repository) QueryPairs(
 	ctx context.Context,
 	from time.Time,
 	to time.Time,
-	symbols []string,
-	venues []string,
-) ([]Quote, error) {
-	return r.query(ctx, from, to, symbols, venues, r.timeout)
+	pairs []HistoryPair,
+	consume func(HistoryQuote) error,
+) error {
+	return r.queryPairs(ctx, from, to, pairs, r.timeout, consume)
 }
 
-func (r *Repository) QueryWarm(
+func (r *Repository) QueryWarmPairs(
 	ctx context.Context,
 	from time.Time,
 	to time.Time,
-	symbols []string,
-	venues []string,
-) ([]Quote, error) {
-	return r.query(ctx, from, to, symbols, venues, max(r.timeout, 2*time.Minute))
+	pairs []HistoryPair,
+	consume func(HistoryQuote) error,
+) error {
+	return r.queryPairs(ctx, from, to, pairs, max(r.timeout, 2*time.Minute), consume)
 }
 
-func (r *Repository) query(
+func (r *Repository) queryPairs(
 	ctx context.Context,
 	from time.Time,
 	to time.Time,
-	symbols []string,
-	venues []string,
+	pairs []HistoryPair,
 	timeout time.Duration,
-) ([]Quote, error) {
-	if len(symbols) == 0 || len(venues) == 0 || !from.Before(to) {
-		return nil, nil
+	consume func(HistoryQuote) error,
+) error {
+	if len(pairs) == 0 || !from.Before(to) {
+		return nil
 	}
-	symbols = uniqueSorted(symbols)
-	venues = uniqueSorted(venues)
+	pairs = uniqueHistoryPairs(pairs)
+	batch := r.queryBatch
+	if batch == nil {
+		batch = r.queryPairBatch
+	}
+	return batch(ctx, from, to, pairs, timeout, consume)
+}
+
+func historyQueryBindings(pairs []HistoryPair) historyQueryBinding {
+	binding := historyQueryBinding{
+		pairVenues:        make([]string, len(pairs)),
+		pairSymbols:       make([]string, len(pairs)),
+		canonicalBySource: make(map[string]string, len(pairs)),
+	}
+	venues := make([]string, 0, len(pairs))
+	symbols := make([]string, 0, len(pairs))
+	for index, pair := range pairs {
+		binding.pairVenues[index] = pair.Venue
+		binding.pairSymbols[index] = pair.SourceSymbol
+		binding.canonicalBySource[pair.Venue+"\x00"+pair.SourceSymbol] = pair.CanonicalSymbol
+		venues = append(venues, pair.Venue)
+		symbols = append(symbols, pair.SourceSymbol)
+	}
+	binding.uniqueVenues = uniqueSorted(venues)
+	binding.uniqueSymbols = uniqueSorted(symbols)
+	return binding
+}
+
+func (r *Repository) queryPairBatch(
+	ctx context.Context,
+	from time.Time,
+	to time.Time,
+	pairs []HistoryPair,
+	timeout time.Duration,
+	consume func(HistoryQuote) error,
+) error {
+	binding := historyQueryBindings(pairs)
 	queryCtx := ctx
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -117,15 +187,18 @@ func (r *Repository) query(
 		defer cancel()
 	}
 	rows, err := r.conn.Query(
-		queryCtx, historyQueryForTable(r.database, r.table),
-		clickhouse.Named("from", from.UTC()), clickhouse.Named("to", to.UTC()),
-		clickhouse.Named("symbols", symbols), clickhouse.Named("venues", venues),
+		queryCtx, exactHistoryQueryForTable(r.database, r.table),
+		clickhouse.Named("from", from.UTC()),
+		clickhouse.Named("to", to.UTC()),
+		clickhouse.Named("pair_venues", binding.pairVenues),
+		clickhouse.Named("pair_symbols", binding.pairSymbols),
+		clickhouse.Named("unique_venues", binding.uniqueVenues),
+		clickhouse.Named("unique_symbols", binding.uniqueSymbols),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("query opportunity bbo: %w", err)
+		return fmt.Errorf("query exact opportunity bbo: %w", err)
 	}
 	defer rows.Close()
-	result := make([]Quote, 0)
 	for rows.Next() {
 		var (
 			bucket             time.Time
@@ -133,32 +206,43 @@ func (r *Repository) query(
 			bidRaw, askRaw     int64
 			bidScale, askScale uint8
 		)
-		if err := rows.Scan(&bucket, &symbol, &venue, &bidRaw, &bidScale, &askRaw, &askScale); err != nil {
-			return nil, fmt.Errorf("scan opportunity bbo: %w", err)
+		if err := rows.Scan(
+			&bucket, &symbol, &venue, &bidRaw, &bidScale, &askRaw, &askScale,
+		); err != nil {
+			return fmt.Errorf("scan exact opportunity bbo: %w", err)
 		}
 		bid, bidOK := decodePrice(bidRaw, bidScale)
 		ask, askOK := decodePrice(askRaw, askScale)
 		if !bidOK || !askOK || bid > ask {
 			continue
 		}
-		result = append(result, Quote{
-			TS: bucket.UTC(), Symbol: symbol, Venue: venue, Bid: bid, Ask: ask,
-		})
+		canonical, ok := binding.canonicalBySource[venue+"\x00"+symbol]
+		if !ok {
+			continue
+		}
+		if err := consume(HistoryQuote{
+			Pair: HistoryPair{
+				Venue: venue, SourceSymbol: symbol, CanonicalSymbol: canonical,
+			},
+			Quote: MinuteQuote{Minute: bucket.Unix() / 60, Bid: bid, Ask: ask},
+		}); err != nil {
+			return historyConsumerError{err: err}
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read opportunity bbo: %w", err)
+		return fmt.Errorf("read exact opportunity bbo: %w", err)
 	}
-	return result, nil
+	return nil
 }
 
-func historyQueryForTable(database, table string) string {
+func exactHistoryQueryForTable(database, table string) string {
 	if strings.HasSuffix(table, "_minute") {
-		return historyQuery(database, table)
+		return exactHistoryQuery(database, table)
 	}
-	return rawHistoryQuery(database, table)
+	return exactRawHistoryQuery(database, table)
 }
 
-func historyQuery(database, table string) string {
+func exactHistoryQuery(database, table string) string {
 	return fmt.Sprintf(`
 SELECT
 	bucket,
@@ -170,15 +254,18 @@ SELECT
 	tupleElement(argMaxMerge(bbo_state), 4) AS ask_scale
 FROM %s.%s
 PREWHERE product = 'perpetual'
+	AND canonical_symbol IN @unique_symbols
+	AND venue IN @unique_venues
 	AND bucket >= toStartOfMinute(@from) AND bucket < toStartOfMinute(@to)
-	AND canonical_symbol IN @symbols
-	AND venue IN @venues
+WHERE has(
+		arrayMap((venue_key, symbol_key) -> (venue_key, symbol_key), @pair_venues, @pair_symbols),
+		(venue, canonical_symbol)
+	)
 GROUP BY bucket, canonical_symbol, venue
-ORDER BY canonical_symbol, venue, bucket
-`, database, table)
+ORDER BY venue, canonical_symbol, bucket`, database, table)
 }
 
-func rawHistoryQuery(database, table string) string {
+func exactRawHistoryQuery(database, table string) string {
 	return fmt.Sprintf(`
 SELECT
 	toStartOfMinute(ts) AS bucket,
@@ -190,12 +277,29 @@ SELECT
 	argMax(price_scale, ts) AS ask_scale
 FROM %s.%s
 PREWHERE product = 'perpetual'
+	AND canonical_symbol IN @unique_symbols
+	AND venue IN @unique_venues
 	AND ts >= @from AND ts < @to
-	AND canonical_symbol IN @symbols
-	AND venue IN @venues
+WHERE has(
+		arrayMap((venue_key, symbol_key) -> (venue_key, symbol_key), @pair_venues, @pair_symbols),
+		(venue, canonical_symbol)
+	)
 GROUP BY bucket, canonical_symbol, venue
-ORDER BY canonical_symbol, venue, bucket
-`, database, table)
+ORDER BY venue, canonical_symbol, bucket`, database, table)
+}
+
+func uniqueHistoryPairs(values []HistoryPair) []HistoryPair {
+	result := append([]HistoryPair(nil), values...)
+	sortHistoryPairs(result)
+	write := 0
+	for _, value := range result {
+		if write > 0 && result[write-1] == value {
+			continue
+		}
+		result[write] = value
+		write++
+	}
+	return result[:write]
 }
 
 func minuteTable(table string) string {

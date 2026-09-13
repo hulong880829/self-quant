@@ -1,5 +1,7 @@
 #include "producer_config.h"
 
+#include "mds/exchange/lighter/lighter_adapter.h"
+#include "mds/exchange/symbol_policy.h"
 #include "mds/transport/shared_ring.h"
 #include "utils/md/order_book.h"
 #include "utils/md/wire.h"
@@ -56,26 +58,25 @@ T value_or(const YAML::Node &node, std::string_view key, T fallback) {
 }
 
 std::string uppercase(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char character) {
-                   return static_cast<char>(std::toupper(character));
-                 });
+  for (char &character : value) {
+    if (character >= 'a' && character <= 'z') {
+      character = static_cast<char>(character - ('a' - 'A'));
+    }
+  }
   return value;
 }
 
 std::string lowercase(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char character) {
-                   return static_cast<char>(std::tolower(character));
-                 });
+  for (char &character : value) {
+    if (character >= 'A' && character <= 'Z') {
+      character = static_cast<char>(character + ('a' - 'A'));
+    }
+  }
   return value;
 }
 
 bool valid_symbol(std::string_view symbol) {
-  return !symbol.empty() && symbol.size() <= 32 &&
-         std::all_of(symbol.begin(), symbol.end(), [](unsigned char value) {
-           return std::isalnum(value) != 0;
-         });
+  return exchange::valid_utf8_symbol(symbol);
 }
 
 bool power_of_two(std::size_t value) noexcept {
@@ -170,8 +171,36 @@ api::Result<ProducerConfig> load_config(const std::string &path) noexcept {
     const auto root = YAML::LoadFile(path);
     reject_unknown(root,
                    {"shared_memory", "order_book", "venues", "subscriptions",
-                    "capacity"},
+                    "capacity", "venue_limits"},
                    "root");
+
+    std::uint32_t lighter_client_message_limit{};
+    const auto venue_limits = root["venue_limits"];
+    if (venue_limits) {
+      reject_unknown(venue_limits, {"lighter"}, "venue_limits");
+      const auto lighter_limits = venue_limits["lighter"];
+      if (lighter_limits) {
+        reject_unknown(lighter_limits,
+                       {"client_message_limit_per_minute"},
+                       "venue_limits.lighter");
+        if (!lighter_limits["client_message_limit_per_minute"]) {
+          throw std::runtime_error(
+              "venue_limits.lighter.client_message_limit_per_minute is "
+              "required");
+        }
+        const auto configured =
+            lighter_limits["client_message_limit_per_minute"]
+                .as<std::int64_t>();
+        if (configured <= 0 ||
+            configured > 199) {
+          throw std::runtime_error(
+              "venue_limits.lighter.client_message_limit_per_minute must be "
+              "in [1, 199]");
+        }
+        lighter_client_message_limit =
+            static_cast<std::uint32_t>(configured);
+      }
+    }
 
     const auto shared = root["shared_memory"];
     reject_unknown(shared,
@@ -377,6 +406,15 @@ api::Result<ProducerConfig> load_config(const std::string &path) noexcept {
           node, "recovery_deadline_ms", 30'000);
       endpoint.max_continuous_recovery_ms = value_or<std::uint32_t>(
           node, "max_continuous_recovery_ms", 300'000);
+      if (venue == Venue::Lighter) {
+        if (lighter_client_message_limit == 0) {
+          throw std::runtime_error(
+              "Lighter venues require "
+              "venue_limits.lighter.client_message_limit_per_minute");
+        }
+        endpoint.client_message_limit_per_minute =
+            lighter_client_message_limit;
+      }
       const bool polymarket =
           venue == Venue::Polymarket &&
           product == Product::BinaryOption;
@@ -393,7 +431,7 @@ api::Result<ProducerConfig> load_config(const std::string &path) noexcept {
           endpoint.snapshot_ban_backoff_ms <
               endpoint.snapshot_rate_limit_backoff_ms ||
           endpoint.recovery_deadline_ms == 0 ||
-          endpoint.recovery_deadline_ms >
+          endpoint.recovery_deadline_ms >=
               endpoint.max_continuous_recovery_ms ||
           endpoint.max_continuous_recovery_ms == 0) {
         throw std::runtime_error("venue endpoint bounds are invalid");
@@ -622,6 +660,13 @@ api::Result<ProducerConfig> load_config(const std::string &path) noexcept {
             exchange::capabilities(venue, product);
         spec.ticker_channel =
             std::string(venue_capabilities->ticker.channel);
+        spec.ticker_requires_first_data =
+            venue_capabilities->ticker.requires_first_data_before_ready;
+      } else if (spec.discovery != discovery) {
+        throw std::runtime_error(
+            "ticker and orderbook discovery filters must match for " +
+            std::string(exchange::venue_name(venue)) + "/" +
+            std::string(exchange::product_name(product)));
       }
       if (stream == "ticker") {
         if (node["depth"] || node["ladder_ticks_per_side"] ||
@@ -669,16 +714,16 @@ api::Result<ProducerConfig> load_config(const std::string &path) noexcept {
         throw std::runtime_error(channel_error);
       }
       std::size_t snapshot_depth{};
-      if (venue == Venue::Binance) {
+      if (venue == Venue::Binance || venue == Venue::Aster) {
         snapshot_depth = value_or<std::size_t>(
             node, "depth", product == Product::Spot ? 5000 : 1000);
         if (!valid_snapshot_depth(product, snapshot_depth)) {
           throw std::runtime_error(
-              "invalid Binance snapshot depth for " + symbol);
+              "invalid Binance/Aster snapshot depth for " + symbol);
         }
       } else if (node["depth"]) {
         throw std::runtime_error(
-            "depth is only configurable for Binance; use "
+            "depth is only configurable for Binance/Aster; use "
             "orderbook_channel for this venue");
       }
       if (spec.subscribe_orderbook &&
@@ -753,12 +798,102 @@ api::Result<ProducerConfig> load_config(const std::string &path) noexcept {
         throw std::runtime_error(
             "venue connection exceeds max_symbols_per_connection");
       }
+      if (endpoint.venue == Venue::Lighter) {
+        if (endpoint.max_symbols_per_ws == 0) {
+          throw std::runtime_error(
+              "Lighter requires max_symbols_per_ws");
+        }
+        std::size_t maximum_channels_per_symbol{};
+        for (const auto &stream : connection.streams) {
+          maximum_channels_per_symbol =
+              std::max(maximum_channels_per_symbol,
+                       std::size_t(stream.subscribe_ticker) +
+                           std::size_t(stream.subscribe_orderbook));
+        }
+        if (maximum_channels_per_symbol == 0 ||
+            endpoint.max_symbols_per_ws >
+                exchange::lighter::kMaximumSubscriptionsPerConnection /
+                    maximum_channels_per_symbol) {
+          throw std::runtime_error(
+              "Lighter max_symbols_per_ws exceeds 500 subscriptions per "
+              "connection");
+        }
+      }
+      if (endpoint.venue == Venue::Aster) {
+        if (endpoint.max_symbols_per_ws == 0) {
+          throw std::runtime_error(
+              "Aster requires max_symbols_per_ws");
+        }
+        std::size_t maximum_channels_per_symbol{};
+        for (const auto &stream : connection.streams) {
+          maximum_channels_per_symbol =
+              std::max(maximum_channels_per_symbol,
+                       std::size_t(stream.subscribe_ticker) +
+                           std::size_t(stream.subscribe_orderbook));
+        }
+        const auto maximum_streams =
+            endpoint.product == Product::Spot ? std::size_t{1024}
+                                              : std::size_t{200};
+        if (maximum_channels_per_symbol == 0 ||
+            endpoint.max_symbols_per_ws >
+                maximum_streams / maximum_channels_per_symbol) {
+          throw std::runtime_error(
+              "Aster max_symbols_per_ws exceeds product stream limit");
+        }
+      }
       if (endpoint.venue == Venue::Polymarket &&
           ring_layout != publish::RingLayout::PerSymbol) {
         throw std::runtime_error(
             "Polymarket supports only ring_layout: per_symbol");
       }
       config.connections.push_back(std::move(connection));
+    }
+
+    std::uint64_t lighter_resubscribe_messages{};
+    std::uint64_t lighter_connection_count{};
+    for (const auto &connection : config.connections) {
+      if (connection.endpoint.venue != Venue::Lighter) {
+        continue;
+      }
+      std::uint64_t symbols{};
+      for (const auto &stream : connection.streams) {
+        const auto stream_symbols =
+            stream.discovery
+                ? stream.discovery->max_symbols.value_or(
+                      connection.endpoint.max_symbols_per_connection)
+                : 1;
+        const auto channels = std::size_t(stream.subscribe_ticker) +
+                              std::size_t(stream.subscribe_orderbook);
+        symbols += stream_symbols;
+        lighter_resubscribe_messages += stream_symbols * channels;
+      }
+      const auto shards =
+          (symbols + connection.endpoint.max_symbols_per_ws - 1) /
+          connection.endpoint.max_symbols_per_ws;
+      lighter_connection_count += shards;
+      lighter_resubscribe_messages += shards;
+    }
+    if (lighter_connection_count >
+        exchange::lighter::kMaximumConnectionsPerIp) {
+      throw std::runtime_error(
+          "Lighter configuration exceeds 255 connections per IP");
+    }
+    if (lighter_resubscribe_messages != 0) {
+      const auto windows =
+          (lighter_resubscribe_messages + lighter_client_message_limit - 1) /
+          lighter_client_message_limit;
+      const auto worst_resubscribe_ms = windows * 60'000ULL;
+      for (const auto &connection : config.connections) {
+        if (connection.endpoint.venue == Venue::Lighter &&
+            (connection.endpoint.recovery_deadline_ms <=
+                 worst_resubscribe_ms ||
+             connection.endpoint.recovery_deadline_ms >=
+                 connection.endpoint.max_continuous_recovery_ms)) {
+          throw std::runtime_error(
+              "Lighter recovery deadlines do not cover worst-case shared "
+              "resubscription time");
+        }
+      }
     }
 
     std::size_t per_symbol_rings{};

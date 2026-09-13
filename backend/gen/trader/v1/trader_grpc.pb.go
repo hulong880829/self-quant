@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	TraderService_ListInstruments_FullMethodName            = "/trader.v1.TraderService/ListInstruments"
+	TraderService_ApplyAccountProfile_FullMethodName        = "/trader.v1.TraderService/ApplyAccountProfile"
 	TraderService_PlaceOrder_FullMethodName                 = "/trader.v1.TraderService/PlaceOrder"
 	TraderService_GetOrder_FullMethodName                   = "/trader.v1.TraderService/GetOrder"
 	TraderService_ListOrders_FullMethodName                 = "/trader.v1.TraderService/ListOrders"
@@ -30,6 +31,7 @@ const (
 	TraderService_ListTwapOrders_FullMethodName             = "/trader.v1.TraderService/ListTwapOrders"
 	TraderService_CancelTwap_FullMethodName                 = "/trader.v1.TraderService/CancelTwap"
 	TraderService_CreateArbitrageCombination_FullMethodName = "/trader.v1.TraderService/CreateArbitrageCombination"
+	TraderService_UpdateArbitrageCombination_FullMethodName = "/trader.v1.TraderService/UpdateArbitrageCombination"
 	TraderService_GetArbitrageCombination_FullMethodName    = "/trader.v1.TraderService/GetArbitrageCombination"
 	TraderService_ListArbitrageCombinations_FullMethodName  = "/trader.v1.TraderService/ListArbitrageCombinations"
 	TraderService_CloseArbitrageCombination_FullMethodName  = "/trader.v1.TraderService/CloseArbitrageCombination"
@@ -40,6 +42,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type TraderServiceClient interface {
 	ListInstruments(ctx context.Context, in *ListInstrumentsRequest, opts ...grpc.CallOption) (*ListInstrumentsResponse, error)
+	ApplyAccountProfile(ctx context.Context, in *ApplyAccountProfileRequest, opts ...grpc.CallOption) (*ApplyAccountProfileResponse, error)
 	PlaceOrder(ctx context.Context, in *PlaceOrderRequest, opts ...grpc.CallOption) (*PlaceOrderResponse, error)
 	GetOrder(ctx context.Context, in *GetOrderRequest, opts ...grpc.CallOption) (*GetOrderResponse, error)
 	ListOrders(ctx context.Context, in *ListOrdersRequest, opts ...grpc.CallOption) (*ListOrdersResponse, error)
@@ -50,6 +53,7 @@ type TraderServiceClient interface {
 	ListTwapOrders(ctx context.Context, in *ListTwapOrdersRequest, opts ...grpc.CallOption) (*ListTwapOrdersResponse, error)
 	CancelTwap(ctx context.Context, in *CancelTwapRequest, opts ...grpc.CallOption) (*CancelTwapResponse, error)
 	CreateArbitrageCombination(ctx context.Context, in *CreateArbitrageCombinationRequest, opts ...grpc.CallOption) (*CreateArbitrageCombinationResponse, error)
+	UpdateArbitrageCombination(ctx context.Context, in *UpdateArbitrageCombinationRequest, opts ...grpc.CallOption) (*UpdateArbitrageCombinationResponse, error)
 	GetArbitrageCombination(ctx context.Context, in *GetArbitrageCombinationRequest, opts ...grpc.CallOption) (*GetArbitrageCombinationResponse, error)
 	ListArbitrageCombinations(ctx context.Context, in *ListArbitrageCombinationsRequest, opts ...grpc.CallOption) (*ListArbitrageCombinationsResponse, error)
 	CloseArbitrageCombination(ctx context.Context, in *CloseArbitrageCombinationRequest, opts ...grpc.CallOption) (*CloseArbitrageCombinationResponse, error)
@@ -67,6 +71,16 @@ func (c *traderServiceClient) ListInstruments(ctx context.Context, in *ListInstr
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListInstrumentsResponse)
 	err := c.cc.Invoke(ctx, TraderService_ListInstruments_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *traderServiceClient) ApplyAccountProfile(ctx context.Context, in *ApplyAccountProfileRequest, opts ...grpc.CallOption) (*ApplyAccountProfileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyAccountProfileResponse)
+	err := c.cc.Invoke(ctx, TraderService_ApplyAccountProfile_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +187,16 @@ func (c *traderServiceClient) CreateArbitrageCombination(ctx context.Context, in
 	return out, nil
 }
 
+func (c *traderServiceClient) UpdateArbitrageCombination(ctx context.Context, in *UpdateArbitrageCombinationRequest, opts ...grpc.CallOption) (*UpdateArbitrageCombinationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateArbitrageCombinationResponse)
+	err := c.cc.Invoke(ctx, TraderService_UpdateArbitrageCombination_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *traderServiceClient) GetArbitrageCombination(ctx context.Context, in *GetArbitrageCombinationRequest, opts ...grpc.CallOption) (*GetArbitrageCombinationResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetArbitrageCombinationResponse)
@@ -208,6 +232,7 @@ func (c *traderServiceClient) CloseArbitrageCombination(ctx context.Context, in 
 // for forward compatibility.
 type TraderServiceServer interface {
 	ListInstruments(context.Context, *ListInstrumentsRequest) (*ListInstrumentsResponse, error)
+	ApplyAccountProfile(context.Context, *ApplyAccountProfileRequest) (*ApplyAccountProfileResponse, error)
 	PlaceOrder(context.Context, *PlaceOrderRequest) (*PlaceOrderResponse, error)
 	GetOrder(context.Context, *GetOrderRequest) (*GetOrderResponse, error)
 	ListOrders(context.Context, *ListOrdersRequest) (*ListOrdersResponse, error)
@@ -218,6 +243,7 @@ type TraderServiceServer interface {
 	ListTwapOrders(context.Context, *ListTwapOrdersRequest) (*ListTwapOrdersResponse, error)
 	CancelTwap(context.Context, *CancelTwapRequest) (*CancelTwapResponse, error)
 	CreateArbitrageCombination(context.Context, *CreateArbitrageCombinationRequest) (*CreateArbitrageCombinationResponse, error)
+	UpdateArbitrageCombination(context.Context, *UpdateArbitrageCombinationRequest) (*UpdateArbitrageCombinationResponse, error)
 	GetArbitrageCombination(context.Context, *GetArbitrageCombinationRequest) (*GetArbitrageCombinationResponse, error)
 	ListArbitrageCombinations(context.Context, *ListArbitrageCombinationsRequest) (*ListArbitrageCombinationsResponse, error)
 	CloseArbitrageCombination(context.Context, *CloseArbitrageCombinationRequest) (*CloseArbitrageCombinationResponse, error)
@@ -233,6 +259,9 @@ type UnimplementedTraderServiceServer struct{}
 
 func (UnimplementedTraderServiceServer) ListInstruments(context.Context, *ListInstrumentsRequest) (*ListInstrumentsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListInstruments not implemented")
+}
+func (UnimplementedTraderServiceServer) ApplyAccountProfile(context.Context, *ApplyAccountProfileRequest) (*ApplyAccountProfileResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyAccountProfile not implemented")
 }
 func (UnimplementedTraderServiceServer) PlaceOrder(context.Context, *PlaceOrderRequest) (*PlaceOrderResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PlaceOrder not implemented")
@@ -263,6 +292,9 @@ func (UnimplementedTraderServiceServer) CancelTwap(context.Context, *CancelTwapR
 }
 func (UnimplementedTraderServiceServer) CreateArbitrageCombination(context.Context, *CreateArbitrageCombinationRequest) (*CreateArbitrageCombinationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateArbitrageCombination not implemented")
+}
+func (UnimplementedTraderServiceServer) UpdateArbitrageCombination(context.Context, *UpdateArbitrageCombinationRequest) (*UpdateArbitrageCombinationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateArbitrageCombination not implemented")
 }
 func (UnimplementedTraderServiceServer) GetArbitrageCombination(context.Context, *GetArbitrageCombinationRequest) (*GetArbitrageCombinationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetArbitrageCombination not implemented")
@@ -308,6 +340,24 @@ func _TraderService_ListInstruments_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(TraderServiceServer).ListInstruments(ctx, req.(*ListInstrumentsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TraderService_ApplyAccountProfile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyAccountProfileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TraderServiceServer).ApplyAccountProfile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TraderService_ApplyAccountProfile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TraderServiceServer).ApplyAccountProfile(ctx, req.(*ApplyAccountProfileRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -492,6 +542,24 @@ func _TraderService_CreateArbitrageCombination_Handler(srv interface{}, ctx cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TraderService_UpdateArbitrageCombination_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateArbitrageCombinationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TraderServiceServer).UpdateArbitrageCombination(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TraderService_UpdateArbitrageCombination_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TraderServiceServer).UpdateArbitrageCombination(ctx, req.(*UpdateArbitrageCombinationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _TraderService_GetArbitrageCombination_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetArbitrageCombinationRequest)
 	if err := dec(in); err != nil {
@@ -558,6 +626,10 @@ var TraderService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _TraderService_ListInstruments_Handler,
 		},
 		{
+			MethodName: "ApplyAccountProfile",
+			Handler:    _TraderService_ApplyAccountProfile_Handler,
+		},
+		{
 			MethodName: "PlaceOrder",
 			Handler:    _TraderService_PlaceOrder_Handler,
 		},
@@ -596,6 +668,10 @@ var TraderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateArbitrageCombination",
 			Handler:    _TraderService_CreateArbitrageCombination_Handler,
+		},
+		{
+			MethodName: "UpdateArbitrageCombination",
+			Handler:    _TraderService_UpdateArbitrageCombination_Handler,
 		},
 		{
 			MethodName: "GetArbitrageCombination",

@@ -23,8 +23,9 @@ type okxEnvelope[T any] struct {
 }
 type okxInstrument struct {
 	InstID, InstType, InstFamily, State, CtType string
-	BaseCcy, QuoteCcy, SettleCcy                string
-	CtVal, CtMult, TickSz, LotSz                string
+	BaseCcy, QuoteCcy, SettleCcy, CtValCcy      string
+	CtVal, CtMult, TickSz, LotSz, MinSz         string
+	MaxLmtSz, MaxMktSz                          string
 }
 
 func parseOKXInstruments(items []okxInstrument, contractType string) []Instrument {
@@ -41,9 +42,18 @@ func parseOKXInstruments(items []okxInstrument, contractType string) []Instrumen
 		if !valid {
 			continue
 		}
+		if contractType == ContractTypePerpetual &&
+			!strings.EqualFold(strings.TrimSpace(item.CtValCcy), baseAsset) {
+			continue
+		}
 		contractSize, _ := parseFloat(item.CtVal)
 		tick, _ := parseFloat(item.TickSz)
 		step, _ := parseFloat(item.LotSz)
+		minQuantity, minQuantityStatus := knownConstraint(item.MinSz)
+		maxQuantity, maxQuantityStatus := maximumDecimalConstraint(item.MaxLmtSz)
+		marketStep, marketStepStatus := knownDecimalConstraint(item.LotSz)
+		marketMinQuantity, marketMinQuantityStatus := knownDecimalConstraint(item.MinSz)
+		marketMaxQuantity, marketMaxQuantityStatus := maximumDecimalConstraint(item.MaxMktSz)
 		interval := 8.0
 		if contractType == ContractTypeSpot {
 			interval = 0
@@ -60,7 +70,14 @@ func parseOKXInstruments(items []okxInstrument, contractType string) []Instrumen
 			IntervalHours: interval, SettleAsset: item.SettleCcy,
 			ContractType: contractType, Status: "active",
 			ContractSize: contractSize, PriceTick: tick, QuantityStep: step,
-			Metadata: metadata, SourceUpdatedAt: time.Now().UTC(),
+			MinQuantity: minQuantity, MinQuantityStatus: minQuantityStatus,
+			MinNotionalStatus: ConstraintNotApplicable,
+			MaxQuantity:       maxQuantity, MaxQuantityStatus: maxQuantityStatus,
+			MarketQuantityStep: marketStep, MarketQuantityStepStatus: marketStepStatus,
+			MarketMinQuantity: marketMinQuantity, MarketMinQuantityStatus: marketMinQuantityStatus,
+			MarketMaxQuantity: marketMaxQuantity, MarketMaxQuantityStatus: marketMaxQuantityStatus,
+			MarketMinNotionalStatus: ConstraintNotApplicable,
+			Metadata:                metadata, SourceUpdatedAt: time.Now().UTC(),
 		})
 	}
 	return result

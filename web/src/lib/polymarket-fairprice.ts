@@ -1,4 +1,8 @@
 import type { AggdataFairPricePoint } from "@/lib/api/aggdata";
+import {
+  fairPriceChartTimeMs,
+  filterFairPricePointsToWindow,
+} from "@/lib/polymarket-chart";
 import type { PolymarketFairPricePoint } from "@/types/polymarket";
 
 export function toPolymarketFairPricePoint(
@@ -27,12 +31,13 @@ export function mergeFairPricePoints(
   current: PolymarketFairPricePoint[],
   incoming: PolymarketFairPricePoint[],
   limit = 2000,
+  window?: { start: string; end: string; nowMs?: number },
 ) {
   const modelId = incoming.at(-1)?.modelId ?? current.at(-1)?.modelId;
   const buckets = new Map<number, PolymarketFairPricePoint>();
   const add = (point: PolymarketFairPricePoint) => {
     if (modelId && point.modelId !== modelId) return;
-    const timestampMs = new Date(point.timestamp).getTime();
+    const timestampMs = fairPriceChartTimeMs(point);
     if (!Number.isFinite(timestampMs)) return;
     const bucket = Math.floor(timestampMs / 1000);
     const existing = buckets.get(bucket);
@@ -45,10 +50,29 @@ export function mergeFairPricePoints(
   };
   current.forEach(add);
   incoming.forEach(add);
-  return [...buckets.values()]
-    .sort(
-      (left, right) =>
-        new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
-    )
-    .slice(-limit);
+  const merged = [...buckets.values()].sort(
+    (left, right) => fairPriceChartTimeMs(left) - fairPriceChartTimeMs(right),
+  );
+  const filtered = window
+    ? filterFairPricePointsToWindow(
+        merged,
+        window.start,
+        window.end,
+        window.nowMs,
+      )
+    : merged;
+  return filtered.slice(-limit);
+}
+
+export function isFairPriceStale(
+  point: PolymarketFairPricePoint | null,
+  nowMs = Date.now(),
+  staleAfterMs = 15_000,
+  futureToleranceMs = 5_000,
+) {
+  if (point == null) return true;
+  const sourceMs = fairPriceChartTimeMs(point);
+  return !Number.isFinite(sourceMs) ||
+    sourceMs > nowMs + futureToleranceMs ||
+    nowMs - sourceMs > staleAfterMs;
 }

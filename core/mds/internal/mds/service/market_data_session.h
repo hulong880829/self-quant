@@ -34,6 +34,7 @@ enum class ResyncReason : std::uint8_t {
   PipelineResync,
   InputCapacity,
   DirtyData,
+  ScaleMismatch,
 };
 
 [[nodiscard]] std::string_view
@@ -45,6 +46,7 @@ struct MarketDataMetrics {
   std::uint64_t ws_shards_reconnecting{};
   std::uint64_t last_reconnect_shard{};
   std::uint64_t reconnects{};
+  std::uint64_t server_expirations{};
   std::uint64_t connection_rebuild_attempts{};
   std::uint64_t connection_rebuild_successes{};
   std::uint64_t connection_rebuild_failures{};
@@ -61,13 +63,27 @@ struct MarketDataMetrics {
   std::uint64_t input_capacity_resyncs{};
   std::uint64_t dirty_data_resyncs{};
   std::uint64_t parse_errors{};
+  std::uint64_t one_sided_book_frames{};
+  std::uint64_t numeric_tail_normalizations{};
+  std::uint64_t scale_mismatch_frames{};
+  std::uint64_t scale_mismatch_symbols{};
+  std::uint64_t metadata_refresh_requests{};
+  std::uint64_t metadata_refresh_successes{};
+  std::uint64_t metadata_refresh_failures{};
+  std::uint64_t metadata_refresh_coalesced{};
+  std::uint64_t metadata_refresh_rate_limits{};
   std::uint64_t publish_errors{};
   std::uint64_t ticker_updates{};
   std::uint64_t depth_updates{};
   std::uint64_t subscription_requests{};
   std::uint64_t subscription_rejections{};
+  std::uint64_t subscription_rate_limit_deferrals{};
+  std::uint64_t config_symbol_quarantines{};
+  std::uint64_t metadata_symbol_quarantines{};
+  std::uint64_t subscription_symbol_quarantines{};
   std::uint64_t budget_reconnects{};
   std::uint64_t budget_deferrals{};
+  std::uint64_t global_budget_deferrals{};
   std::uint64_t cooldown_deferrals{};
   std::uint64_t recovery_deadline_extensions{};
   std::uint64_t discovery_requests{};

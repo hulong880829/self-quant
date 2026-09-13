@@ -372,7 +372,7 @@ bool RestParser::parse_exchange_info(
         break;
       }
     }
-    if (!pending.empty()) {
+    if (pending.size() == symbols.size()) {
       error = "Binance symbol was not found in exchangeInfo";
       return false;
     }

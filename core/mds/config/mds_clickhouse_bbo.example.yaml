@@ -6,7 +6,8 @@ clickhouse_bbo:
   user: bbo_writer
   password_env: CLICKHOUSE_BBO_PASSWORD
 
-  # 必须与五所 producer 的 shared_memory.prefix 一致
+  # 必须与 producer 的 shared_memory.prefix 一致。
+  # 当前覆盖：Binance / OKX / Bitget / Bybit / Gate / Hyperliquid / Aster / Lighter
   shm_prefix: /selfquant.mds.bbo
 
   # 每个标的每秒保存一次最新 BBO
@@ -73,6 +74,32 @@ clickhouse_bbo:
       product: perpetual
       shard: 3
 
+    - venue: hyperliquid
+      product: spot
+      shard: 0
+    - venue: hyperliquid
+      product: spot
+      shard: 1
+    - venue: hyperliquid
+      product: spot
+      shard: 2
+    - venue: hyperliquid
+      product: spot
+      shard: 3
+
+    - venue: hyperliquid
+      product: perpetual
+      shard: 0
+    - venue: hyperliquid
+      product: perpetual
+      shard: 1
+    - venue: hyperliquid
+      product: perpetual
+      shard: 2
+    - venue: hyperliquid
+      product: perpetual
+      shard: 3
+
     - venue: bitget
       product: spot
       shard: 0
@@ -148,5 +175,31 @@ clickhouse_bbo:
       product: perpetual
       shard: 2
     - venue: gate
+      product: perpetual
+      shard: 3
+
+    - venue: aster
+      product: perpetual
+      shard: 0
+    - venue: aster
+      product: perpetual
+      shard: 1
+    - venue: aster
+      product: perpetual
+      shard: 2
+    - venue: aster
+      product: perpetual
+      shard: 3
+
+    - venue: lighter
+      product: perpetual
+      shard: 0
+    - venue: lighter
+      product: perpetual
+      shard: 1
+    - venue: lighter
+      product: perpetual
+      shard: 2
+    - venue: lighter
       product: perpetual
       shard: 3

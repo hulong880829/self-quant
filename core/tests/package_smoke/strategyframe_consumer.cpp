@@ -12,10 +12,17 @@ static_assert(
 static_assert(sizeof(strategyframe::InstrumentId) == 8);
 
 int main() {
+  strategyframe::Venue venue = strategyframe::Venue::Polymarket;
+  strategyframe::ProductType product =
+      strategyframe::ProductType::BinaryOption;
+  (void)venue;
+  (void)product;
   strategyframe::StrategyFrameConfig config{};
   using CanonicalLookup =
-      strategyframe::Result<strategyframe::InstrumentCatalogInfo>
-      (strategyframe::StrategyContext::*)(std::string_view) const noexcept;
+      strategyframe::Result<strategyframe::InstrumentCatalogInfo> (
+          strategyframe::StrategyContext::*)(
+          strategyframe::Venue, strategyframe::ProductType,
+          std::string_view) const noexcept;
   const auto lookup = static_cast<CanonicalLookup>(
       &strategyframe::StrategyContext::find_instrument);
   (void)lookup;

@@ -51,6 +51,7 @@ struct BboBuild {
 struct BookBuild {
   utils::md::wire::AggOrderBookRecord record{};
   bool changed{};
+  bool publishable{};
 };
 
 [[nodiscard]] constexpr std::uint64_t

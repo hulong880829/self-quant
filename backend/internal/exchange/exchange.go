@@ -3,6 +3,7 @@ package exchange
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,28 +12,51 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
+// ErrNoSettledHistory means the venue confirmed this contract has no settled
+// funding rows yet. Callers treat it as a normal empty listing, not a fetch failure.
+var ErrNoSettledHistory = errors.New("no settled funding history")
+
 type Instrument struct {
-	Exchange        string
-	ExchangeSymbol  string
-	BaseAsset       string
-	QuoteAsset      string
-	GlobalSymbol    string
-	IntervalHours   float64
-	SettleAsset     string
-	ContractType    string
-	Status          string
-	ContractSize    float64
-	PriceTick       float64
-	QuantityStep    float64
-	Metadata        json.RawMessage
-	SourceUpdatedAt time.Time
+	Exchange                 string
+	ExchangeSymbol           string
+	BaseAsset                string
+	QuoteAsset               string
+	GlobalSymbol             string
+	IntervalHours            float64
+	SettleAsset              string
+	ContractType             string
+	Status                   string
+	ContractSize             float64
+	PriceTick                float64
+	QuantityStep             float64
+	MinQuantity              float64
+	MinNotional              float64
+	MinQuantityStatus        string
+	MinNotionalStatus        string
+	MaxQuantity              string
+	MarketQuantityStep       string
+	MarketMinQuantity        string
+	MarketMaxQuantity        string
+	MarketMinNotional        string
+	MaxQuantityStatus        string
+	MarketQuantityStepStatus string
+	MarketMinQuantityStatus  string
+	MarketMaxQuantityStatus  string
+	MarketMinNotionalStatus  string
+	Metadata                 json.RawMessage
+	SourceUpdatedAt          time.Time
 }
 
 const (
-	ContractTypeSpot      = "spot"
-	ContractTypePerpetual = "perpetual"
+	ContractTypeSpot        = "spot"
+	ContractTypePerpetual   = "perpetual"
+	ConstraintKnown         = "known"
+	ConstraintNotApplicable = "not_applicable"
+	ConstraintUnknown       = "unknown"
 )
 
 type FundingRate struct {
@@ -60,6 +84,21 @@ type Adapter interface {
 	SyncInstruments(context.Context, string) ([]Instrument, error)
 	FetchCurrent(context.Context, []Instrument) ([]FundingRate, error)
 	FetchHistory(context.Context, Instrument, time.Time, int) ([]FundingRate, error)
+}
+
+// ContractTypeSupport lets an adapter advertise which instrument catalogs it
+// can refresh. Adapters that omit it still sync spot and perpetual.
+type ContractTypeSupport interface {
+	SupportedContractTypes() []string
+}
+
+func AdapterContractTypes(adapter Adapter) []string {
+	if support, ok := adapter.(ContractTypeSupport); ok {
+		if types := support.SupportedContractTypes(); len(types) > 0 {
+			return append([]string(nil), types...)
+		}
+	}
+	return []string{ContractTypeSpot, ContractTypePerpetual}
 }
 
 type client struct {
@@ -231,6 +270,45 @@ func instrumentMetadata(value any, model, sizeUnit string) json.RawMessage {
 func parseFloat(value string) (float64, error) {
 	var number json.Number = json.Number(value)
 	return number.Float64()
+}
+
+func knownConstraint(value string) (float64, string) {
+	parsed, err := parseFloat(strings.TrimSpace(value))
+	if err != nil || parsed <= 0 {
+		return 0, ConstraintUnknown
+	}
+	return parsed, ConstraintKnown
+}
+
+func knownDecimalConstraint(value string) (string, string) {
+	parsed, err := decimal.NewFromString(strings.TrimSpace(value))
+	if err != nil || !parsed.IsPositive() {
+		return "", ConstraintUnknown
+	}
+	return parsed.String(), ConstraintKnown
+}
+
+func maximumDecimalConstraint(value string) (string, string) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", ConstraintUnknown
+	}
+	parsed, err := decimal.NewFromString(trimmed)
+	if err != nil || parsed.IsNegative() {
+		return "", ConstraintUnknown
+	}
+	if parsed.IsZero() {
+		return "", ConstraintNotApplicable
+	}
+	return parsed.String(), ConstraintKnown
+}
+
+func mustParsePositiveFloat(value string, fallback float64) float64 {
+	parsed, err := parseFloat(strings.TrimSpace(value))
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func milliseconds(value int64) time.Time {

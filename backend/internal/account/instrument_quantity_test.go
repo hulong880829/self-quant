@@ -95,6 +95,29 @@ func TestNormalizeCEXSnapshotPairsCanonicalXStockSpotKey(t *testing.T) {
 	}
 }
 
+func TestNormalizeCEXSnapshotKeepsWalletDEXBaseQuantity(t *testing.T) {
+	service := &Service{}
+	for _, exchange := range []struct{ slug, display string }{
+		{"hyperliquid", "Hyperliquid"},
+		{"aster", "Aster"},
+		{"lighter", "Lighter"},
+	} {
+		snapshot := portfolio.Snapshot{
+			Positions: []portfolio.Position{{
+				Kind: "cex", Exchange: exchange.display, Symbol: "BTCUSDC",
+				Side: "long", Size: "2", MarkPrice: "100", NotionalUSD: "150",
+			}},
+		}
+		if err := service.normalizeCEXSnapshot(context.Background(), exchange.slug, &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		got := snapshot.Positions[0]
+		if got.Size != "2" || got.SignedContractSize != "2" || got.BaseAsset != "BTC" {
+			t.Fatalf("%s position=%+v", exchange.slug, got)
+		}
+	}
+}
+
 func TestNormalizeCEXSnapshotFallsBackToNotionalOverMark(t *testing.T) {
 	service := &Service{}
 	snapshot := portfolio.Snapshot{

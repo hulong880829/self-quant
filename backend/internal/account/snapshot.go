@@ -15,6 +15,7 @@ import (
 )
 
 var ErrSnapshotUnavailable = errors.New("account snapshot unavailable")
+var ErrSnapshotCacheMiss = errors.New("snapshot cache miss")
 
 type TradingAccountSnapshot struct {
 	TradingAccountID                   int64
@@ -76,6 +77,39 @@ func (s *Service) GetTradingAccountSnapshot(ctx context.Context, token string, i
 		return TradingAccountSnapshot{}, err
 	}
 	return s.snapshotForRecord(ctx, session.Username, record)
+}
+
+func (s *Service) GetCachedTradingAccountSnapshot(
+	ctx context.Context,
+	token string,
+	id int64,
+) (TradingAccountSnapshot, error) {
+	session, err := s.ValidateSession(token)
+	if err != nil {
+		return TradingAccountSnapshot{}, err
+	}
+	if id <= 0 || s.trading == nil {
+		return TradingAccountSnapshot{}, ErrInvalidTradingAccount
+	}
+	record, err := s.trading.GetByOwner(ctx, session.Username, id)
+	if err != nil {
+		return TradingAccountSnapshot{}, err
+	}
+	if s.snapshotCache == nil {
+		return TradingAccountSnapshot{}, ErrSnapshotCacheMiss
+	}
+	key := fmt.Sprintf("%s:%d", session.Username, record.ID)
+	s.snapshotMu.RLock()
+	cached, ok := s.snapshotCache[key]
+	s.snapshotMu.RUnlock()
+	if !ok {
+		return TradingAccountSnapshot{}, ErrSnapshotCacheMiss
+	}
+	value := cloneSnapshot(cached.value)
+	if value.Stale || !time.Now().Before(cached.expiresAt) {
+		value.Stale = true
+	}
+	return value, nil
 }
 
 func (s *Service) snapshotForRecord(ctx context.Context, owner string, record TradingAccountRecord) (TradingAccountSnapshot, error) {
@@ -198,7 +232,12 @@ func (s *Service) loadSnapshot(ctx context.Context, owner string, record Trading
 			return result, err
 		}
 	}
-	snapshot, err := s.portfolios.Snapshot(ctx, record.Exchange, portfolio.Credentials{APIKey: apiKey, APISecret: secret, Passphrase: passphrase})
+	snapshot, err := s.portfolios.Snapshot(ctx, record.Exchange, portfolio.Credentials{
+		APIKey:       apiKey,
+		APISecret:    secret,
+		Passphrase:   passphrase,
+		AccountIndex: record.AccountIndex,
+	})
 	if err != nil {
 		return result, err
 	}

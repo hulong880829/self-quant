@@ -1,0 +1,8 @@
+mds:
+  source: replay
+  required_instruments:
+    - {venue: BINANCE, product: spot, symbol: BTCUSDT}
+
+oms: {}
+
+strategy: {}

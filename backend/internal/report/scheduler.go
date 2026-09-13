@@ -65,6 +65,7 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 			s.finalize(ctx, local, now.UTC())
 		}
 	}
+	s.processRecomputeJobs(ctx, now.UTC())
 }
 
 func (s *Scheduler) claimSample(key string) bool {
@@ -154,4 +155,44 @@ func (s *Scheduler) finalize(ctx context.Context, reportDate time.Time, finalize
 	}
 	s.metrics.RecordFinalize(finalErr == nil, written)
 	s.logger.Info("product reports finalized", "date", reportDate.Format(time.DateOnly), "written", written)
+}
+
+func (s *Scheduler) processRecomputeJobs(ctx context.Context, now time.Time) {
+	jobs, err := s.repository.ClaimRecomputeJobs(ctx, 25)
+	if err != nil {
+		s.logger.Warn("claim report recompute jobs failed", "error", err)
+		return
+	}
+	for _, job := range jobs {
+		day, parseErr := time.ParseInLocation(time.DateOnly, job.ReportDate, PeriodLocation())
+		if parseErr != nil {
+			_ = s.repository.FinishRecomputeJob(ctx, job.ID, job.ProductID, job.ReportDate, parseErr)
+			continue
+		}
+		ok, finalizeErr := s.repository.RecomputeDate(ctx, job.ProductID, day, PeriodLocation(), now)
+		if finalizeErr == nil && !ok {
+			finalizeErr = fmt.Errorf("snapshot samples missing for %s", job.ReportDate)
+		}
+		if finishErr := s.repository.FinishRecomputeJob(
+			ctx, job.ID, job.ProductID, job.ReportDate, finalizeErr,
+		); finishErr != nil {
+			s.logger.Warn("finish report recompute job failed", "job_id", job.ID, "error", finishErr)
+		}
+		if finalizeErr != nil {
+			s.logger.Warn(
+				"product report recompute failed",
+				"product_id", job.ProductID,
+				"report_date", job.ReportDate,
+				"attempt", job.Attempts,
+				"error", finalizeErr,
+			)
+			continue
+		}
+		s.logger.Info(
+			"product report recomputed",
+			"product_id", job.ProductID,
+			"report_date", job.ReportDate,
+			"attempt", job.Attempts,
+		)
+	}
 }

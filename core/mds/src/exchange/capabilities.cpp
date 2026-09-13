@@ -15,12 +15,14 @@ constexpr ChannelCapability channel(
     std::string_view name, std::size_t depth, std::uint32_t interval_ms,
     Bootstrap bootstrap, bool login = false,
     bool configurable_interval = false,
-    std::size_t max_levels_per_message = 0) noexcept {
+    std::size_t max_levels_per_message = 0,
+    bool requires_first_data_before_ready = false) noexcept {
   return {name, depth, interval_ms, bootstrap, login, configurable_interval,
-          max_levels_per_message == 0 ? depth : max_levels_per_message};
+          max_levels_per_message == 0 ? depth : max_levels_per_message,
+          requires_first_data_before_ready};
 }
 
-constexpr std::array<VenueCapabilities, 13> kCapabilities{{
+constexpr std::array<VenueCapabilities, 17> kCapabilities{{
     {Venue::Binance, Product::Spot,
      channel("bookTicker", 1, 0, Bootstrap::RestSnapshotThenDelta),
      channel("depth", 5000, 100, Bootstrap::RestSnapshotThenDelta, false,
@@ -64,6 +66,22 @@ constexpr std::array<VenueCapabilities, 13> kCapabilities{{
     {Venue::Hyperliquid, Product::Perpetual,
      channel("bbo", 1, 0, Bootstrap::WsImageOnly),
      channel("l2Book", 20, 500, Bootstrap::WsImageOnly)},
+    {Venue::Aster, Product::Spot,
+     channel("bookTicker", 1, 0, Bootstrap::RestSnapshotThenDelta),
+     channel("depth", 5000, 100, Bootstrap::RestSnapshotThenDelta, false,
+             true)},
+    {Venue::Aster, Product::Perpetual,
+     channel("bookTicker", 1, 0, Bootstrap::RestSnapshotThenDelta),
+     channel("depth", 1000, 100, Bootstrap::RestSnapshotThenDelta, false,
+             true, 5000)},
+    {Venue::Lighter, Product::Spot,
+     channel("ticker", 1, 0, Bootstrap::WsSnapshotThenDelta, false, false, 1,
+             true),
+     channel("order_book", 5000, 50, Bootstrap::WsSnapshotThenDelta)},
+    {Venue::Lighter, Product::Perpetual,
+     channel("ticker", 1, 0, Bootstrap::WsSnapshotThenDelta, false, false, 1,
+             true),
+     channel("order_book", 5000, 50, Bootstrap::WsSnapshotThenDelta)},
     {Venue::Polymarket, Product::BinaryOption,
      channel("best_bid_ask", 1, 0, Bootstrap::WsSnapshotThenDelta),
      channel("market", 500, 0, Bootstrap::WsSnapshotThenDelta, false, false,
@@ -137,7 +155,7 @@ explicit_channel(Venue venue, Product product,
 
 bool valid_interval(Venue venue, Product product,
                     std::uint32_t interval) noexcept {
-  if (venue == Venue::Binance) {
+  if (venue == Venue::Binance || venue == Venue::Aster) {
     return product == Product::Spot
                ? interval == 100 || interval == 1000
                : interval == 100 || interval == 250 || interval == 500;
@@ -164,6 +182,10 @@ std::string_view venue_name(Venue venue) noexcept {
     return "bitget";
   case Venue::Hyperliquid:
     return "hyperliquid";
+  case Venue::Aster:
+    return "aster";
+  case Venue::Lighter:
+    return "lighter";
   case Venue::Polymarket:
     return "polymarket";
   default:
@@ -203,7 +225,8 @@ std::string segment_profile(Venue venue, Product product) {
 std::optional<Venue> parse_venue(std::string_view value) noexcept {
   for (const auto venue : {Venue::Binance, Venue::Okx, Venue::Bybit,
                            Venue::Bitget, Venue::Gate,
-                           Venue::Hyperliquid, Venue::Polymarket}) {
+                           Venue::Hyperliquid, Venue::Aster, Venue::Lighter,
+                           Venue::Polymarket}) {
     if (iequals(value, venue_name(venue))) {
       return venue;
     }

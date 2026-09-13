@@ -566,7 +566,8 @@ ProtocolResult BuildCancelOrder(std::string_view venue_order_id,
 }
 
 ProtocolResult BuildOpenOrdersPage(const Pagination& pagination,
-                                   WireRequest& request) noexcept {
+                                   WireRequest& request,
+                                   std::string_view asset_id) noexcept {
   request = {};
   if (pagination.complete || pagination.page_count >= kMaximumPages ||
       pagination.item_count >= kMaximumOpenOrders ||
@@ -574,9 +575,14 @@ ProtocolResult BuildOpenOrdersPage(const Pagination& pagination,
     return ProtocolResult::BoundsExceeded;
   std::array<char, 512> path{};
   Writer writer(path);
+  const bool filtered = !asset_id.empty();
   if (!writer.append("/data/orders") ||
+      (filtered &&
+       (!writer.append("?asset_id=") ||
+        !AppendQueryEncoded(writer, asset_id))) ||
       (pagination.cursor_size != 0 &&
-       (!writer.append("?next_cursor=") ||
+       (!writer.append(filtered ? "&next_cursor="
+                                : "?next_cursor=") ||
         !AppendQueryEncoded(
             writer, std::string_view(pagination.cursor.data(),
                                      pagination.cursor_size)))))
@@ -588,14 +594,18 @@ ProtocolResult BuildOpenOrdersPage(const Pagination& pagination,
 }
 
 ProtocolResult BuildPositions(std::string_view funder,
-                              WireRequest& request) noexcept {
+                              WireRequest& request,
+                              std::string_view market) noexcept {
   request = {};
   if (funder.empty()) return ProtocolResult::InvalidArgument;
   std::array<char, 512> path{};
   Writer writer(path);
   if (!writer.append("/positions?user=") ||
       !AppendQueryEncoded(writer, funder) ||
-      !writer.append("&sizeThreshold=0.0001&limit=500"))
+      !writer.append("&sizeThreshold=0.0001&limit=500") ||
+      (!market.empty() &&
+       (!writer.append("&market=") ||
+        !AppendQueryEncoded(writer, market))))
     return ProtocolResult::BoundsExceeded;
   return SetMethodPath(request, "GET",
                        std::string_view(path.data(), writer.size()))

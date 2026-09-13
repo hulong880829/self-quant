@@ -4,11 +4,33 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestMarketDataKeyShapeRemainsVenueProductSymbol(t *testing.T) {
+	t.Parallel()
+	keyType := reflect.TypeOf(Key{})
+	if keyType.NumField() != 3 {
+		t.Fatalf("Key has %d fields, want 3", keyType.NumField())
+	}
+	for index, name := range []string{"Venue", "Product", "Symbol"} {
+		if keyType.Field(index).Name != name {
+			t.Fatalf("Key field %d = %s, want %s", index, keyType.Field(index).Name, name)
+		}
+	}
+	for _, venue := range []string{VenueHyperliquid, VenueAster, VenueLighter} {
+		if _, err := NewKey(venue, ProductPerpetual, "BTC"); err != nil {
+			t.Fatalf("%s perpetual key: %v", venue, err)
+		}
+		if _, err := NewKey(venue, ProductSpot, "BTC"); !errors.Is(err, ErrUnsupportedKey) {
+			t.Fatalf("%s spot key error = %v, want ErrUnsupportedKey", venue, err)
+		}
+	}
+}
 
 type fakeRead struct {
 	payload []byte
@@ -212,6 +234,144 @@ func TestManagerReconnectsAndRestoresSubscription(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("restored subscription did not publish")
+	}
+}
+
+func TestManagerInvalidatesLatestImmediatelyWhileReconnecting(t *testing.T) {
+	t.Parallel()
+	firstConnection := newFakeConnection()
+	secondConnection := newFakeConnection()
+	connector := &fakeConnector{
+		connections: []*fakeConnection{firstConnection, secondConnection},
+		connected:   make(chan int, 4),
+	}
+	manager, err := New(Options{
+		Connector:        connector,
+		Parsers:          map[string]Parser{VenueBinance: testParser},
+		StaleAfter:       time.Hour,
+		ReconnectInitial: time.Millisecond,
+		ReconnectMax:     2 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	key := Key{Venue: VenueBinance, Product: ProductPerpetual, Symbol: "ETHUSDT"}
+	subscription, err := manager.Subscribe(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	waitForConnectCount(t, connector.connected, 1)
+	firstConnection.reads <- fakeRead{payload: []byte("41")}
+	waitForPrice(t, manager, key, "41")
+
+	firstConnection.reads <- fakeRead{err: io.ErrUnexpectedEOF}
+	waitForConnectCount(t, connector.connected, 2)
+	if value, err := manager.Latest(key); !errors.Is(err, ErrNoValue) || value != (BBO{}) {
+		t.Fatalf("Latest while reconnecting = (%#v, %v), want empty ErrNoValue", value, err)
+	}
+
+	secondConnection.reads <- fakeRead{payload: []byte("42")}
+	waitForPrice(t, manager, key, "42")
+}
+
+func TestManagerReconnectsImmediatelyOnLighterNonceGap(t *testing.T) {
+	t.Parallel()
+	firstConnection := newFakeConnection()
+	secondConnection := newFakeConnection()
+	thirdConnection := newFakeConnection()
+	connector := &fakeConnector{
+		connections: []*fakeConnection{firstConnection, secondConnection, thirdConnection},
+		connected:   make(chan int, 4),
+	}
+	manager, err := New(Options{
+		Connector:        connector,
+		ReconnectInitial: time.Millisecond,
+		ReconnectMax:     2 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	key := Key{Venue: VenueLighter, Product: ProductPerpetual, Symbol: "BTC"}
+	subscription, err := manager.Subscribe(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	waitForConnectCount(t, connector.connected, 1)
+	firstConnection.reads <- fakeRead{payload: []byte(
+		`{"type":"subscribed/order_book","channel":"order_book:1","timestamp":1,` +
+			`"order_book":{"nonce":100,"begin_nonce":0,` +
+			`"bids":[{"price":"100","size":"1"}],"asks":[{"price":"101","size":"1"}]}}`,
+	)}
+	waitForPrice(t, manager, key, "100")
+	firstConnection.reads <- fakeRead{payload: []byte(
+		`{"type":"update/order_book","channel":"order_book:1","timestamp":2,` +
+			`"order_book":{"nonce":102,"begin_nonce":99,"bids":[],"asks":[]}}`,
+	)}
+	waitForNoBBO(t, manager, key)
+	waitForConnectCount(t, connector.connected, 2)
+
+	secondConnection.reads <- fakeRead{payload: []byte(
+		`{"type":"update/order_book","channel":"order_book:1","timestamp":3,` +
+			`"order_book":{"nonce":101,"begin_nonce":100,` +
+			`"bids":[{"price":"101","size":"1"}],"asks":[{"price":"102","size":"1"}]}}`,
+	)}
+	waitForConnectCount(t, connector.connected, 3)
+	if _, err := manager.Latest(key); !errors.Is(err, ErrNoValue) {
+		t.Fatalf("Latest after reconnect delta = %v, want ErrNoValue", err)
+	}
+
+	thirdConnection.reads <- fakeRead{payload: []byte(
+		`{"type":"subscribed/order_book","channel":"order_book:1","timestamp":4,` +
+			`"order_book":{"nonce":200,"begin_nonce":0,` +
+			`"bids":[{"price":"102","size":"1"}],"asks":[{"price":"103","size":"1"}]}}`,
+	)}
+	waitForPrice(t, manager, key, "102")
+}
+
+func TestManagerSkipsIsolatedParserErrorWithoutReconnect(t *testing.T) {
+	t.Parallel()
+	connection := newFakeConnection()
+	connector := &fakeConnector{
+		connections: []*fakeConnection{connection},
+		connected:   make(chan int, 4),
+	}
+	parser := func(key Key, payload []byte, received time.Time) (BBO, bool, error) {
+		if string(payload) == "malformed" {
+			return BBO{}, false, errors.New("bad frame")
+		}
+		return testParser(key, payload, received)
+	}
+	manager, err := New(Options{
+		Connector:        connector,
+		Parsers:          map[string]Parser{VenueBinance: parser},
+		ReconnectInitial: time.Hour,
+		ReconnectMax:     time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	key := Key{Venue: VenueBinance, Product: ProductSpot, Symbol: "BTCUSDT"}
+	subscription, err := manager.Subscribe(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	waitForConnectCount(t, connector.connected, 1)
+	connection.reads <- fakeRead{payload: []byte("malformed")}
+	connection.reads <- fakeRead{payload: []byte("42")}
+	waitForPrice(t, manager, key, "42")
+
+	stats := manager.Stats()
+	if stats.ParserErrors != 1 || stats.Reconnects != 0 {
+		t.Fatalf("stats after isolated parser error = %+v", stats)
 	}
 }
 

@@ -211,6 +211,7 @@ export async function fetchPolymarketAccountSummary(
     totalAssets: decimal(data.totalAssets) ?? 0,
     sourceUpdatedAt: String(data.sourceUpdatedAt ?? ""),
     stale: Boolean(data.stale),
+    bindingStatus: String(data.bindingStatus ?? ""),
   };
 }
 

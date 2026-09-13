@@ -3,10 +3,14 @@
 import * as React from "react";
 import { BookOpen, ShieldCheck } from "lucide-react";
 
-import { fetchTradingAccounts, groupAccountsByProduct, type TradingAccount } from "@/lib/api/accounts";
 import {
-  CEX_EXCHANGES,
+  isWalletDexExchange,
+  tradingAccountStatusLabel,
+} from "@/lib/api/accounts";
+import { useProductTradingAccounts } from "@/hooks/use-product-trading-accounts";
+import {
   cancelTraderOrder,
+  fetchTraderInstrumentCatalog,
   fetchTraderInstruments,
   fetchTraderOrderPage,
   placeTraderOrder,
@@ -15,6 +19,7 @@ import {
   type TraderOrder,
   type TraderOrderType,
   type TraderSide,
+  type TraderVenueCapabilities,
 } from "@/lib/api/trader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,6 +33,8 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { WideTableScroll } from "@/components/layout/responsive";
+import { isAbortError } from "@/lib/abort";
+import { useCloseOnHidden } from "@/lib/close-on-hidden";
 import { cn } from "@/lib/utils";
 
 const selectClassName =
@@ -50,6 +57,28 @@ function instrumentOptions(items: TraderInstrument[]) {
   }));
 }
 
+async function loadInstrumentCatalog(
+  accountId: number,
+  contractType: TraderContractType,
+): Promise<{ items: TraderInstrument[]; capabilities: TraderVenueCapabilities }> {
+  if (typeof fetchTraderInstrumentCatalog === "function") {
+    return fetchTraderInstrumentCatalog(accountId, contractType);
+  }
+  return {
+    items: await fetchTraderInstruments(accountId, contractType),
+    capabilities: {
+      products: ["spot", "perpetual"],
+      quoteAssets: [],
+      timeInForce: ["GTC", "IOC", "POST_ONLY"],
+      postOnly: true,
+      reduceOnly: true,
+      makerTwap: true,
+      privateOrderStream: false,
+      oneWayOnly: false,
+    },
+  };
+}
+
 function terminalOrderStatus(status: string): boolean {
   switch (status) {
     case "filled":
@@ -60,6 +89,12 @@ function terminalOrderStatus(status: string): boolean {
     default:
       return false;
   }
+}
+
+function orderStatusLabel(status: string): string {
+  if (status === "pending") return "已提交，待交易所确认";
+  if (status === "unknown") return "状态不确定，正在对账";
+  return status;
 }
 
 function positiveDecimal(value: string): boolean {
@@ -83,12 +118,12 @@ function formatDecimal(value: string): string {
 }
 
 export function ManualTradingView() {
-  const [accounts, setAccounts] = React.useState<TradingAccount[]>([]);
-  const [accountsError, setAccountsError] = React.useState<string | null>(null);
+  const { accounts, products, accountsError, inspectOne } = useProductTradingAccounts();
   const [productName, setProductName] = React.useState("");
   const [accountId, setAccountId] = React.useState<number | null>(null);
   const [contractType, setContractType] = React.useState<TraderContractType>("perpetual");
   const [instruments, setInstruments] = React.useState<TraderInstrument[]>([]);
+  const [capabilities, setCapabilities] = React.useState<TraderVenueCapabilities | null>(null);
   const [instrumentId, setInstrumentId] = React.useState<number | null>(null);
   const [side, setSide] = React.useState<TraderSide>("buy");
   const [orderType, setOrderType] = React.useState<TraderOrderType>("limit");
@@ -104,12 +139,8 @@ export function ManualTradingView() {
   const [nextCursor, setNextCursor] = React.useState("");
   const [orderSyncState, setOrderSyncState] = React.useState<"syncing" | "synced" | "delayed">("syncing");
   const [lastSyncedAt, setLastSyncedAt] = React.useState("");
+  const hideHostRef = useCloseOnHidden(() => setConfirmOpen(false));
 
-  const cexAccounts = React.useMemo(
-    () => accounts.filter((item) => CEX_EXCHANGES.has(item.exchangeSlug)),
-    [accounts],
-  );
-  const products = React.useMemo(() => groupAccountsByProduct(cexAccounts), [cexAccounts]);
   const productAccounts = products.find((item) => item.productName === productName)?.accounts ?? [];
   const selectedAccount = productAccounts.find((item) => item.id === accountId) ?? null;
   const visibleInstruments = accountId == null ? [] : instruments;
@@ -118,30 +149,32 @@ export function ManualTradingView() {
   const selectedInstrument = visibleInstruments.find((item) => item.id === visibleInstrumentId) ?? null;
 
   React.useEffect(() => {
-    void fetchTradingAccounts()
-      .then((items) => {
-        setAccounts(items);
-        const groups = groupAccountsByProduct(items.filter((item) => CEX_EXCHANGES.has(item.exchangeSlug)));
-        const first = groups[0];
-        if (first) {
-          setProductName(first.productName);
-          setAccountId(first.accounts[0]?.id ?? null);
-        }
-      })
-      .catch((error: unknown) => {
-        setAccountsError(error instanceof Error ? error.message : "账户加载失败");
-      });
-  }, []);
+    if (productName && products.some((item) => item.productName === productName)) {
+      return;
+    }
+    const first = products[0];
+    setProductName(first?.productName ?? "");
+    setAccountId(first?.accounts[0]?.id ?? null);
+  }, [productName, products]);
 
   React.useEffect(() => {
     if (accountId == null) {
       return;
     }
     const controller = new AbortController();
-    void fetchTraderInstruments(accountId, contractType)
-      .then((items) => {
+    void loadInstrumentCatalog(accountId, contractType)
+      .then((catalog) => {
         if (controller.signal.aborted) return;
+        if (!catalog.capabilities.products.includes(contractType)) {
+          setCapabilities(catalog.capabilities);
+          setInstruments([]);
+          setInstrumentId(null);
+          setContractType(catalog.capabilities.products[0] ?? "perpetual");
+          return;
+        }
+        const items = catalog.items;
         setInstruments(items);
+        setCapabilities(catalog.capabilities);
         setInstrumentId((current) =>
           current && items.some((item) => item.id === current) ? current : items[0]?.id ?? null,
         );
@@ -149,6 +182,7 @@ export function ManualTradingView() {
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
           setInstruments([]);
+          setCapabilities(null);
           setMessageKind("error");
           setMessage(error instanceof Error ? error.message : "标的加载失败");
         }
@@ -185,18 +219,29 @@ export function ManualTradingView() {
     }
     let cancelled = false;
     let timer = 0;
-    let controller: AbortController | null = null;
-    async function tick(schedule = true) {
+    let inFlight: AbortController | null = null;
+    async function tick(scheduleNext = true) {
       if (document.visibilityState === "hidden" || cancelled || accountId == null) return;
-      controller?.abort();
-      controller = new AbortController();
+      window.clearTimeout(timer);
+      inFlight?.abort();
+      const request = new AbortController();
+      inFlight = request;
       let count = 0;
       try {
-        count = await refreshOrders(accountId, orderView, controller.signal);
-      } catch {
-        if (!controller.signal.aborted) setOrderSyncState("delayed");
+        count = await refreshOrders(accountId, orderView, request.signal);
+      } catch (error) {
+        if (!isAbortError(error) && !request.signal.aborted) {
+          setOrderSyncState("delayed");
+        }
+      } finally {
+        if (inFlight === request) inFlight = null;
       }
-      if (!cancelled && schedule && orderView === "open") {
+      if (
+        !cancelled &&
+        scheduleNext &&
+        orderView === "open" &&
+        !request.signal.aborted
+      ) {
         const base = count > 0 ? 4_000 : 12_000;
         const jitter = Math.floor(Math.random() * 1_000);
         timer = window.setTimeout(() => void tick(), base + jitter);
@@ -212,7 +257,7 @@ export function ManualTradingView() {
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelled = true;
-      controller?.abort();
+      inFlight?.abort();
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
@@ -229,6 +274,12 @@ export function ManualTradingView() {
 
   function validateForm(): string | null {
     if (!selectedAccount || !selectedInstrument) return "请选择账户和标的";
+    if (!selectedAccount.tradingReady) {
+      if (selectedAccount.tradingStatus === "checking" || selectedAccount.tradingStatus === "") {
+        return "交易能力检查中";
+      }
+      return selectedAccount.tradingUnavailableReason || "当前账户不可交易";
+    }
     if (!positiveDecimal(quantity)) return "请输入有效数量";
     if (orderType === "limit" && !positiveDecimal(price)) return "限价单需要有效价格";
     return null;
@@ -249,6 +300,12 @@ export function ManualTradingView() {
     if (!selectedAccount || !selectedInstrument || busy) return;
     setBusy(true);
     try {
+      if (isWalletDexExchange(selectedAccount.exchangeSlug)) {
+        const ready = await inspectOne(selectedAccount.id);
+        if (!ready.tradingReady) {
+          throw new Error(ready.tradingUnavailableReason || "当前账户不可交易");
+        }
+      }
       const order = await placeTraderOrder({
         tradingAccountId: selectedAccount.id,
         instrumentId: selectedInstrument.id,
@@ -258,7 +315,7 @@ export function ManualTradingView() {
         price: orderType === "limit" ? price.trim() : undefined,
       });
       setMessageKind("success");
-      setMessage(`订单 ${order.id} 已提交，状态 ${order.status}${order.venueOrderId ? `，交易所 ${order.venueOrderId}` : ""}`);
+      setMessage(`订单 ${order.id} 已提交，状态 ${orderStatusLabel(order.status)}${order.venueOrderId ? `，交易所 ${order.venueOrderId}` : ""}`);
       setConfirmOpen(false);
       const view: OrderView = terminalOrderStatus(order.status) ? "history" : "open";
       setOrderView(view);
@@ -287,7 +344,7 @@ export function ManualTradingView() {
   }
 
   return (
-    <div className="flex min-h-0 flex-col">
+    <div ref={hideHostRef} className="flex min-h-0 flex-col">
       <div className="shrink-0 border-b px-5 py-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -320,6 +377,7 @@ export function ManualTradingView() {
             {accountsError ? (
               <div className="text-sm text-rose-600">{accountsError}</div>
             ) : (
+              <>
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <Field label="产品">
                   <select
@@ -349,7 +407,7 @@ export function ManualTradingView() {
                     {productAccounts.length === 0 ? <option value="">暂无账户</option> : null}
                     {productAccounts.map((item) => (
                       <option key={item.id} value={item.id}>
-                        {item.accountName}
+                        {tradingAccountStatusLabel(item)}
                       </option>
                     ))}
                   </select>
@@ -363,8 +421,11 @@ export function ManualTradingView() {
                     value={contractType}
                     onChange={(event) => setContractType(event.target.value as TraderContractType)}
                   >
-                    <option value="perpetual">线性永续</option>
-                    <option value="spot">现货</option>
+                    {(capabilities?.products.length ? capabilities.products : ["perpetual"]).map((product) => (
+                      <option key={product} value={product}>
+                        {product === "perpetual" ? "线性永续" : "现货"}
+                      </option>
+                    ))}
                   </select>
                 </Field>
                 <Field label="交易标的">
@@ -375,11 +436,22 @@ export function ManualTradingView() {
                     onValueChange={(next) => setInstrumentId(Number(next) || null)}
                     options={instrumentOptions(visibleInstruments)}
                     placeholder="搜索标的，如 BTC 或 BTCUSDT"
-                    emptyText="无匹配标的"
+                    emptyText={visibleInstruments.length === 0 ? "交易标的尚未同步" : "无匹配标的"}
                     disabled={visibleInstruments.length === 0}
                   />
                 </Field>
               </div>
+              {selectedAccount && !selectedAccount.tradingReady ? (
+                <p className="mt-3 text-sm text-amber-700">
+                  {selectedAccount.tradingStatus === "checking" || selectedAccount.tradingStatus === ""
+                    ? "交易能力检查中"
+                    : selectedAccount.tradingUnavailableReason || "当前账户不可交易"}
+                </p>
+              ) : null}
+              {accountId != null && visibleInstruments.length === 0 ? (
+                <p className="mt-3 text-sm text-muted-foreground">交易标的尚未同步</p>
+              ) : null}
+              </>
             )}
           </section>
 
@@ -497,7 +569,7 @@ export function ManualTradingView() {
                   <SummaryRow label="预计金额" value={estimated} />
                 </dl>
                 <div className="mt-auto pt-6">
-                  <Button type="submit" className="w-full" disabled={!selectedAccount || !selectedInstrument || busy}>
+                  <Button type="submit" className="w-full" disabled={!selectedAccount?.tradingReady || !selectedInstrument || busy}>
                     提交订单
                   </Button>
                   {message ? (
@@ -537,7 +609,7 @@ export function ManualTradingView() {
       </div>
 
       <Sheet open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <SheetContent>
+        <SheetContent container={hideHostRef}>
           <SheetHeader>
             <SheetTitle>确认下单</SheetTitle>
             <SheetDescription>
@@ -647,7 +719,7 @@ function OrderTable({
                   <td className="py-2 font-mono">{order.orderType === "limit" ? (order.price || "—") : "市价"}</td>
                   <td className="py-2 font-mono">{formatDecimal(order.quantity)} {order.baseAsset}</td>
                   <td className="py-2 font-mono">{formatDecimal(order.filledQuantity || "0")}</td>
-                  <td className="py-2">{order.status}</td>
+                  <td className="py-2">{orderStatusLabel(order.status)}</td>
                   <td className="py-2 font-mono">{order.venueOrderId || "—"}</td>
                   {showCancel ? (
                     <td className="py-2 text-right">

@@ -4,10 +4,13 @@
 
 #include <algorithm>
 #include <charconv>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
 #include <variant>
+
+#include "utils/md/market_identity.h"
 
 namespace strategyframe {
 
@@ -54,24 +57,37 @@ bool PowerOfTwo(std::uint32_t value) noexcept {
 }
 
 ProductType ParseProduct(const std::string& value) {
-  if (value == "spot") return ProductType::Spot;
-  if (value == "perpetual") return ProductType::Perpetual;
-  if (value == "future") return ProductType::Future;
-  if (value == "binary_option") return ProductType::BinaryOption;
-  if (value == "equity") return ProductType::Equity;
-  throw std::runtime_error("unsupported product: " + value);
+  const auto parsed = utils::md::parse_canonical_product(value);
+  if (!parsed) {
+    throw std::runtime_error("unsupported product: " + value);
+  }
+  return *parsed;
 }
 
 Venue ParseVenue(const std::string& value) {
-  if (value == "binance") return Venue::Binance;
-  if (value == "okx") return Venue::Okx;
-  if (value == "bybit") return Venue::Bybit;
-  if (value == "gate") return Venue::Gate;
-  if (value == "bitget") return Venue::Bitget;
-  if (value == "polymarket") return Venue::Polymarket;
-  if (value == "sse") return Venue::Sse;
-  if (value == "hyperliquid") return Venue::Hyperliquid;
-  throw std::runtime_error("unsupported venue: " + value);
+  const auto parsed = utils::md::parse_canonical_venue(value);
+  if (!parsed) {
+    throw std::runtime_error("unsupported venue: " + value);
+  }
+  return *parsed;
+}
+
+BboPolicy ParseBboPolicy(std::string_view value) {
+  if (value == "ticker_only") return BboPolicy::TickerOnly;
+  if (value == "orderbook_only") return BboPolicy::OrderBookOnly;
+  if (value == "newest_exchange_time")
+    return BboPolicy::NewestExchangeTime;
+  if (value == "legacy_passthrough")
+    return BboPolicy::LegacyPassthrough;
+  throw std::runtime_error("unsupported mds.bbo_policy");
+}
+
+bool HasSegmentRole(const MdsConfig& config, std::string_view role) {
+  return std::any_of(
+      config.segments.begin(), config.segments.end(),
+      [role](const SegmentConfig& segment) {
+        return segment.name.find(role) != std::string::npos;
+      });
 }
 
 EndpointConfig ParseEndpoint(const YAML::Node& node,
@@ -158,7 +174,8 @@ void ValidateCapacities(const CapacityConfig& capacities) {
       !PowerOfTwo(capacities.order_table) ||
       !PowerOfTwo(capacities.position_table) ||
       !PowerOfTwo(capacities.fill_dedup) ||
-      !PowerOfTwo(capacities.timer_table)) {
+      !PowerOfTwo(capacities.timer_table) ||
+      !PowerOfTwo(capacities.instrument_directory)) {
     throw std::runtime_error("all capacities must be powers of two >= 2");
   }
 }
@@ -308,7 +325,8 @@ Result<StrategyFrameConfig> load_config(const std::string& path) noexcept {
 
     const YAML::Node mds = root["mds"];
     RejectUnknown(mds,
-                  {"source", "segments", "producer",
+                  {"source", "bbo_policy", "bbo_policy_starvation_ms",
+                   "segments", "producer",
                    "required_instruments"},
                   "mds");
     const std::string source =
@@ -322,6 +340,15 @@ Result<StrategyFrameConfig> load_config(const std::string& path) noexcept {
     } else {
       throw std::runtime_error("unsupported mds.source");
     }
+    result.mds.bbo_policy = ParseBboPolicy(
+        ValueOr<std::string>(mds, "bbo_policy", "legacy_passthrough"));
+    const std::uint64_t starvation_ms = ValueOr<std::uint64_t>(
+        mds, "bbo_policy_starvation_ms", 2000);
+    if (starvation_ms >
+        std::numeric_limits<std::uint64_t>::max() / 1'000'000ULL)
+      throw std::runtime_error("mds.bbo_policy_starvation_ms overflows");
+    result.mds.bbo_policy_starvation_ns =
+        starvation_ms * 1'000'000ULL;
 
     if (const YAML::Node segments = mds["segments"]) {
       RequireSequence(segments, "mds.segments");
@@ -384,6 +411,7 @@ Result<StrategyFrameConfig> load_config(const std::string& path) noexcept {
                    "numa_node", "strictness", "memory", "socket",
                    "capacities", "instruments", "venues", "session_epoch",
                    "event_budget", "metric_sample_rate",
+                   "retire_deferred_warning_count",
                    "startup_timeout_ns"},
                   "oms");
     const std::string threading =
@@ -415,6 +443,13 @@ Result<StrategyFrameConfig> load_config(const std::string& path) noexcept {
       result.strictness = ConfigStrictness::Relaxed;
     else
       throw std::runtime_error("unsupported oms.strictness");
+    if (result.strictness == ConfigStrictness::Strict &&
+        !mds["bbo_policy"] &&
+        HasSegmentRole(result.mds, ".ticker.") &&
+        HasSegmentRole(result.mds, ".orderbook.")) {
+      throw std::runtime_error(
+          "strict ticker+orderbook subscriptions require mds.bbo_policy");
+    }
     result.session_epoch =
         ValueOr<std::uint32_t>(oms, "session_epoch", 1);
     result.event_budget =
@@ -422,10 +457,14 @@ Result<StrategyFrameConfig> load_config(const std::string& path) noexcept {
     result.metric_sample_rate =
         ValueOr<std::uint32_t>(
             oms, "metric_sample_rate", result.metric_sample_rate);
+    result.retire_deferred_warning_count = ValueOr<std::uint32_t>(
+        oms, "retire_deferred_warning_count",
+        result.retire_deferred_warning_count);
     result.startup_timeout_ns = ValueOr<std::uint64_t>(
         oms, "startup_timeout_ns", result.startup_timeout_ns);
     if (result.session_epoch == 0 || result.event_budget == 0 ||
         result.metric_sample_rate == 0 ||
+        result.retire_deferred_warning_count == 0 ||
         result.startup_timeout_ns == 0)
       throw std::runtime_error("invalid OMS scalar setting");
 
@@ -454,7 +493,7 @@ Result<StrategyFrameConfig> load_config(const std::string& path) noexcept {
       RejectUnknown(capacities,
                     {"command_queue", "update_queue", "market_data_queue",
                      "order_table", "position_table", "fill_dedup",
-                     "timer_table"},
+                     "timer_table", "instrument_directory"},
                     "oms.capacities");
       result.capacities.command_queue = ValueOr<std::uint32_t>(
           capacities, "command_queue", result.capacities.command_queue);
@@ -471,6 +510,9 @@ Result<StrategyFrameConfig> load_config(const std::string& path) noexcept {
           capacities, "fill_dedup", result.capacities.fill_dedup);
       result.capacities.timer_table = ValueOr<std::uint32_t>(
           capacities, "timer_table", result.capacities.timer_table);
+      result.capacities.instrument_directory = ValueOr<std::uint32_t>(
+          capacities, "instrument_directory",
+          result.capacities.instrument_directory);
     }
     ValidateCapacities(result.capacities);
 

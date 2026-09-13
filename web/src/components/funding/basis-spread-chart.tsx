@@ -40,8 +40,10 @@ function cacheKey(
   quoteAsset: string,
   range: BasisSpreadRange,
   compareVenue?: string,
+  venueSymbol?: string,
+  compareVenueSymbol?: string,
 ) {
-  return `${venue.toLowerCase()}|${(compareVenue ?? "").toLowerCase()}|${baseAsset.toUpperCase()}|${quoteAsset.toUpperCase()}|${range}`;
+  return `${venue.toLowerCase()}|${(compareVenue ?? "").toLowerCase()}|${baseAsset.toUpperCase()}|${quoteAsset.toUpperCase()}|${(venueSymbol ?? "").toUpperCase()}|${(compareVenueSymbol ?? "").toUpperCase()}|${range}`;
 }
 
 function formatBps(value: number) {
@@ -72,11 +74,15 @@ export function BasisSpreadPanel({
   baseAsset,
   quoteAsset,
   compareVenue,
+  venueSymbol,
+  compareVenueSymbol,
 }: {
   venue: string;
   baseAsset: string;
   quoteAsset: string;
   compareVenue?: string;
+  venueSymbol?: string;
+  compareVenueSymbol?: string;
 }) {
   const [range, setRange] = React.useState<BasisSpreadRange>("24h");
   const [history, setHistory] = React.useState<BasisSpreadHistory | null>(null);
@@ -92,7 +98,9 @@ export function BasisSpreadPanel({
   const load = React.useCallback(
     async (signal: AbortSignal) => {
       await Promise.resolve();
-      const key = cacheKey(venue, baseAsset, quoteAsset, range, compareVenue);
+      const key = cacheKey(
+        venue, baseAsset, quoteAsset, range, compareVenue, venueSymbol, compareVenueSymbol,
+      );
       const existing = historyCache.get(key);
       if (existing && Date.now() - existing.loadedAt < CACHE_TTL_MS) {
         etagRef.current = existing.etag;
@@ -109,6 +117,8 @@ export function BasisSpreadPanel({
           etagRef.current,
           signal,
           compareVenue,
+          venueSymbol,
+          compareVenueSymbol,
         );
         if (signal.aborted) return;
         if (result.status === "unchanged") {
@@ -131,13 +141,17 @@ export function BasisSpreadPanel({
         setError(reason instanceof Error ? reason.message : "期现价差加载失败");
       }
     },
-    [venue, baseAsset, quoteAsset, range, compareVenue],
+    [venue, baseAsset, quoteAsset, range, compareVenue, venueSymbol, compareVenueSymbol],
   );
 
   React.useEffect(() => {
     const controller = new AbortController();
     etagRef.current =
-      historyCache.get(cacheKey(venue, baseAsset, quoteAsset, range, compareVenue))?.etag ?? null;
+      historyCache.get(
+        cacheKey(
+          venue, baseAsset, quoteAsset, range, compareVenue, venueSymbol, compareVenueSymbol,
+        ),
+      )?.etag ?? null;
     const immediate = window.setTimeout(() => {
       void load(controller.signal);
     }, 0);
@@ -150,7 +164,9 @@ export function BasisSpreadPanel({
       window.clearTimeout(immediate);
       window.clearInterval(timer);
     };
-  }, [load, venue, baseAsset, quoteAsset, range, compareVenue]);
+  }, [
+    load, venue, baseAsset, quoteAsset, range, compareVenue, venueSymbol, compareVenueSymbol,
+  ]);
 
   return (
     <section

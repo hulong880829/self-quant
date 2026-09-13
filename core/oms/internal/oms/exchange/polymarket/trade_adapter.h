@@ -10,7 +10,6 @@
 #include "oms/exchange/polymarket/crypto.h"
 #include "oms/exchange/polymarket/protocol.h"
 #include "oms/exchange/trade_adapter.h"
-#include "oms/instrument_registry.h"
 
 namespace oms::exchange::polymarket {
 
@@ -80,7 +79,9 @@ class Transport {
 };
 
 struct AdapterConfig {
-  InstrumentRegistry* instruments{};
+  void* instrument_context{};
+  api::InstrumentId (*resolve_polymarket_token)(
+      void*, const std::array<std::uint8_t, 32>&) noexcept{};
   Transport* transport{};
   Transport* data_transport{};
   Credentials credentials{};
@@ -113,11 +114,6 @@ class PolymarketTradeAdapter final : public TradeAdapter {
   [[nodiscard]] AdapterResult commit_cancel(
       AdapterReservation reservation,
       const AdapterCancelCommand& command) noexcept override;
-  [[nodiscard]] AdapterResult validate_rebind(
-      const api::RebindPolymarketInstrumentRequest& request) const
-      noexcept override;
-  [[nodiscard]] AdapterResult apply_rebind(
-      const api::RebindPolymarketInstrumentRequest& request) noexcept override;
   [[nodiscard]] AdapterResult query_open_orders(
       const AdapterQueryRequest& request,
       const AdapterEventSink& sink) noexcept override;

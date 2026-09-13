@@ -7,6 +7,29 @@ namespace polymm {
 
 enum class Outcome : std::uint8_t { Up = 1, Down = 2 };
 
+enum class OrderState : std::uint8_t {
+  Idle = 0,
+  PendingOpen = 1,
+  PendingClose = 2,
+  PendingForce = 3,
+  PendingCancel = 4,
+  Dust = 5,
+  NeedsReconcile = 6,
+};
+
+enum class HaltPhase : std::uint8_t {
+  Running = 0,
+  StopOpening = 1,
+  Flattening = 2,
+  Halted = 3,
+};
+
+enum class OrderPurpose : std::uint8_t {
+  Open = 1,
+  Close = 2,
+  ForceFlatten = 3,
+};
+
 struct FairPriceEvent {
   double price_raw{};
   double microprice{};
@@ -44,6 +67,12 @@ struct Parameters {
   std::uint32_t no_trade_before_expiry_ms{30'000};
   double stop_loss_ticks{5.0};
   std::uint32_t fairprice_timer_us{200};
+  double minimum_order_size{5.0};
+  std::uint32_t startup_reconcile_timeout_ms{10'000};
+  std::uint32_t max_bbo_age_ms{2'000};
+  std::uint32_t max_bbo_skew_ms{500};
+  double taker_fee_bps{};
+  double slippage_ticks{};
 };
 
 }  // namespace polymm

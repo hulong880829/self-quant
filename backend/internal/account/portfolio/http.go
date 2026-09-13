@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,10 +22,19 @@ import (
 type upstreamHTTPError struct {
 	StatusCode int
 	Body       []byte
+	RetryAfter time.Duration
 }
 
 func (e *upstreamHTTPError) Error() string {
 	return fmt.Sprintf("upstream status %d: %s", e.StatusCode, strings.TrimSpace(string(e.Body)))
+}
+
+func HTTPRetryAfter(err error) time.Duration {
+	var httpErr *upstreamHTTPError
+	if errors.As(err, &httpErr) && httpErr.RetryAfter > 0 {
+		return httpErr.RetryAfter
+	}
+	return 0
 }
 
 type flexDecimalString string
@@ -49,13 +59,34 @@ func (value *flexDecimalString) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func postJSON(ctx context.Context, client *http.Client, rawURL string, headers http.Header, payload any, target any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return doJSON(ctx, client, http.MethodPost, rawURL, headers, body, target)
+}
+
 func getJSON(ctx context.Context, client *http.Client, rawURL string, headers http.Header, target any) error {
+	return doJSON(ctx, client, http.MethodGet, rawURL, headers, nil, target)
+}
+
+func doJSON(ctx context.Context, client *http.Client, method, rawURL string, headers http.Header, payload []byte, target any) error {
 	for attempt := 0; attempt < 4; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		var bodyReader io.Reader
+		if payload != nil {
+			bodyReader = strings.NewReader(string(payload))
+		}
+		req, err := http.NewRequestWithContext(ctx, method, rawURL, bodyReader)
 		if err != nil {
 			return err
 		}
-		req.Header = headers.Clone()
+		if headers != nil {
+			req.Header = headers.Clone()
+		}
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			return err
@@ -76,7 +107,11 @@ func getJSON(ctx context.Context, client *http.Client, rawURL string, headers ht
 			resp.StatusCode == http.StatusServiceUnavailable ||
 			resp.StatusCode == http.StatusGatewayTimeout
 		if !retryable || attempt == 3 {
-			return &upstreamHTTPError{StatusCode: resp.StatusCode, Body: body}
+			return &upstreamHTTPError{
+				StatusCode: resp.StatusCode,
+				Body:       body,
+				RetryAfter: retryDelay(resp.Header.Get("Retry-After"), attempt),
+			}
 		}
 		delay := retryDelay(resp.Header.Get("Retry-After"), attempt)
 		timer := time.NewTimer(delay)

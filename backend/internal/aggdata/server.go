@@ -31,6 +31,7 @@ type Server struct {
 	streamInterval   time.Duration
 	fairInterval     time.Duration
 	fairHeartbeat    time.Duration
+	fairInvalidGrace time.Duration
 	fairSubscribers  atomic.Int64
 	wsWriteFailures  atomic.Uint64
 	fairPublishLagNS atomic.Int64
@@ -65,6 +66,7 @@ func NewServer(
 		maxSubscriptions: maxSubscriptions, clients: make(chan struct{}, maxClients),
 		resolution: resolution, streamInterval: streamInterval,
 		fairInterval: fairInterval, fairHeartbeat: fairHeartbeat,
+		fairInvalidGrace: 2 * time.Second,
 	}
 	server.upgrader = websocket.Upgrader{
 		HandshakeTimeout: 5 * time.Second,
@@ -169,7 +171,7 @@ func (s *Server) snapshot(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
-	response := snapshotJSON(market, depth)
+	response := snapshotJSONAt(market, depth, s.store, time.Now())
 	if response == nil {
 		writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "snapshot is not ready"})
 		return
@@ -361,15 +363,30 @@ type levelJSON struct {
 }
 
 func snapshotJSON(market *liveMarket, depth int) map[string]any {
+	return snapshotJSONAt(market, depth, nil, time.Time{})
+}
+
+func snapshotJSONAt(
+	market *liveMarket,
+	depth int,
+	store *Store,
+	now time.Time,
+) map[string]any {
 	bbo, book := market.bbo.value.Load(), market.book.value.Load()
-	if (bbo == nil || !bbo.Ready) && (book == nil || !book.Ready) {
+	bboReady := bbo != nil && bbo.Ready
+	bookReady := book != nil && book.Ready
+	if store != nil {
+		bboReady = store.SnapshotFresh(bbo, now)
+		bookReady = store.SnapshotFresh(book, now)
+	}
+	if !bboReady && !bookReady {
 		return nil
 	}
 	result := map[string]any{
 		"symbol": market.catalog.Symbol, "profile": market.catalog.Profile,
 		"ready": true,
 	}
-	if bbo != nil && bbo.Ready {
+	if bboReady {
 		value := bbo.BBO
 		result["bbo"] = map[string]any{
 			"sequence":    strconv.FormatUint(bbo.RingSequence, 10),
@@ -384,7 +401,7 @@ func snapshotJSON(market *liveMarket, depth int) map[string]any {
 			"raw_cross_bps": value.RawCrossBPS, "gated_cross_bps": value.GatedCrossBPS,
 		}
 	}
-	if book != nil && book.Ready {
+	if bookReady {
 		value := book.Book
 		bids, asks := min(depth, len(value.Bids)), min(depth, len(value.Asks))
 		result["orderbook"] = map[string]any{
@@ -460,17 +477,18 @@ const (
 )
 
 type streamSubscription struct {
-	profile      string
-	symbol       string
-	marketKey    string
-	channel      streamChannel
-	depth        int
-	lastEpoch    uint64
-	lastSequence uint64
-	sent         bool
-	resetSent    bool
-	acked        bool
-	lastWrite    time.Time
+	profile          string
+	symbol           string
+	marketKey        string
+	channel          streamChannel
+	depth            int
+	lastEpoch        uint64
+	lastSequence     uint64
+	sent             bool
+	resetSent        bool
+	acked            bool
+	lastWrite        time.Time
+	fairInvalidSince time.Time
 }
 
 type streamControlResponse struct {
@@ -648,7 +666,7 @@ func (s *Server) streamWriter(
 			if err := connection.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
 				return
 			}
-		case <-ticker.C:
+		case now := <-ticker.C:
 			scratch = copySubscriptions(scratch[:0], mu, subscriptions)
 			for _, subscription := range scratch {
 				if !subscription.acked || subscription.channel == streamFairPrice {
@@ -666,16 +684,21 @@ func (s *Server) streamWriter(
 				if snapshot == nil {
 					continue
 				}
-				if !snapshot.Ready {
+				fresh := s.store.SnapshotFresh(snapshot, now)
+				if !fresh {
 					if subscription.sent && !subscription.resetSent {
 						channel := "bbo"
 						if subscription.channel == streamOrderBook {
 							channel = "orderbook"
 						}
+						reason := "not_ready"
+						if snapshot.Ready {
+							reason = "source_stale"
+						}
 						reset, _ := json.Marshal(map[string]string{
 							"op": "reset", "profile": subscription.profile,
 							"symbol":  subscription.symbol,
-							"channel": channel,
+							"channel": channel, "reason": reason,
 						})
 						if !writeWS(connection, websocket.TextMessage, reset) {
 							s.wsWriteFailures.Add(1)
@@ -715,11 +738,27 @@ func (s *Server) streamWriter(
 					continue
 				}
 				snapshot := market.fair.Load()
-				if snapshot == nil || !snapshot.Ready {
+				fresh := s.store.FairSnapshotFresh(snapshot, now)
+				if snapshot != nil && snapshot.WallNS <= uint64(now.UnixNano()) {
+					s.fairPublishLagNS.Store(now.UnixNano() - int64(snapshot.WallNS))
+				}
+				if !fresh {
+					if snapshot != nil && !snapshot.Ready {
+						if subscription.fairInvalidSince.IsZero() {
+							subscription.fairInvalidSince = now
+						}
+						if now.Sub(subscription.fairInvalidSince) < s.fairInvalidGrace {
+							continue
+						}
+					} else {
+						subscription.fairInvalidSince = time.Time{}
+					}
 					if !subscription.resetSent {
 						reason := "waiting_for_orderbook"
-						if snapshot != nil && snapshot.ResetReason != "" {
-							reason = snapshot.ResetReason
+						if snapshot != nil && snapshot.Ready {
+							reason = "source_stale"
+						} else if snapshot != nil {
+							reason = "source_stale"
 						}
 						reset, _ := json.Marshal(map[string]string{
 							"op": "reset", "profile": subscription.profile,
@@ -735,6 +774,7 @@ func (s *Server) streamWriter(
 					}
 					continue
 				}
+				subscription.fairInvalidSince = time.Time{}
 				changed := !subscription.sent ||
 					snapshot.RingEpoch != subscription.lastEpoch ||
 					snapshot.RingSequence != subscription.lastSequence
@@ -746,9 +786,6 @@ func (s *Server) streamWriter(
 				if !writeWS(connection, websocket.TextMessage, snapshot.JSON) {
 					s.wsWriteFailures.Add(1)
 					return
-				}
-				if snapshot.WallNS <= uint64(now.UnixNano()) {
-					s.fairPublishLagNS.Store(now.UnixNano() - int64(snapshot.WallNS))
 				}
 				subscription.lastEpoch = snapshot.RingEpoch
 				subscription.lastSequence = snapshot.RingSequence
@@ -769,6 +806,7 @@ func (s *Server) LogFairPriceStats(ctx context.Context) {
 			return
 		case <-ticker.C:
 			stats := s.store.FairPriceStats()
+			staleTopics := s.store.StaleTopicCount(time.Now())
 			s.logger.Info(
 				"fair price realtime statistics",
 				"computed", stats.Computed,
@@ -776,6 +814,11 @@ func (s *Server) LogFairPriceStats(ctx context.Context) {
 				"crossed", stats.Crossed,
 				"uncross_failed", stats.UncrossFailed,
 				"degraded", stats.Degraded,
+				"unmapped_frames", stats.UnmappedFrames,
+				"reconcile_mappings_preserved", stats.MappingsPreserved,
+				"reconcile_mappings_invalidated", stats.MappingsInvalidated,
+				"topic_relearns", stats.TopicRelearns,
+				"stale_topics", staleTopics,
 				"subscribers", s.fairSubscribers.Load(),
 				"ws_write_failures", s.wsWriteFailures.Load(),
 				"publish_lag_ns", s.fairPublishLagNS.Load(),

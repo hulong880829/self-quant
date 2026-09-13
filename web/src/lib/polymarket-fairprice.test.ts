@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isFairPriceStale,
   mergeFairPricePoints,
   sameFairPriceSequence,
 } from "./polymarket-fairprice";
@@ -48,5 +49,52 @@ describe("Polymarket fair price series", () => {
       ringEpoch: "2",
       sequence: "1",
     })).toBe(false);
+  });
+
+  it("filters merged points by source wall time", () => {
+    const start = "2026-08-24T10:35:00Z";
+    const end = "2026-08-24T10:40:00Z";
+    const stale = point(
+      "2026-08-24T10:36:00Z",
+      (BigInt(new Date("2026-08-24T09:59:59Z").getTime()) * 1_000_000n).toString(),
+      "1",
+    );
+    const fresh = point(
+      "2026-08-24T10:36:01Z",
+      (BigInt(new Date("2026-08-24T10:36:01Z").getTime()) * 1_000_000n).toString(),
+      "2",
+    );
+    expect(mergeFairPricePoints(
+      [stale],
+      [fresh],
+      2000,
+      { start, end, nowMs: new Date(end).getTime() },
+    )).toEqual([fresh]);
+  });
+
+  it("marks a fair point stale from its source wall time", () => {
+    const now = new Date("2026-08-24T10:36:20Z").getTime();
+    const old = point(
+      "2026-08-24T10:36:19Z",
+      (BigInt(now - 16_000) * 1_000_000n).toString(),
+      "1",
+    );
+    expect(isFairPriceStale(old, now)).toBe(true);
+  });
+
+  it("allows small browser and source clock skew", () => {
+    const now = new Date("2026-08-24T10:36:20Z").getTime();
+    const withinTolerance = point(
+      "2026-08-24T10:36:24Z",
+      (BigInt(now + 4_000) * 1_000_000n).toString(),
+      "1",
+    );
+    const beyondTolerance = point(
+      "2026-08-24T10:36:26Z",
+      (BigInt(now + 6_000) * 1_000_000n).toString(),
+      "2",
+    );
+    expect(isFairPriceStale(withinTolerance, now)).toBe(false);
+    expect(isFairPriceStale(beyondTolerance, now)).toBe(true);
   });
 });

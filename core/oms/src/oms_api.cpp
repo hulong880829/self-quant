@@ -8,6 +8,7 @@
 #include <limits>
 #include <mutex>
 #include <stdexcept>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -17,10 +18,10 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "oms/instrument_registry.h"
-#include "oms/order_table.h"
 #include "oms/exchange/adapter_router.h"
 #include "oms/exchange/fake_trade_adapter.h"
+#include "oms/execution_directory.h"
+#include "oms/order_table.h"
 #include "oms/runtime/deadline_scheduler.h"
 #include "oms/runtime/event_notifier.h"
 #include "oms/runtime/fixed_spsc_ring.h"
@@ -45,6 +46,64 @@ bool ValidCapacity(std::uint32_t value) noexcept {
 bool IsTerminal(OrderStatus status) noexcept {
   return status == OrderStatus::Filled || status == OrderStatus::Canceled ||
          status == OrderStatus::Rejected || status == OrderStatus::Expired;
+}
+
+bool InitialRoute(const InstrumentInit& source,
+                  ResolvedInstrument& routing) noexcept {
+  const auto& instrument = source.instrument;
+  routing.kind = instrument.venue == utils::md::Venue::Polymarket
+                     ? ExecutionRouteKind::Polymarket
+                     : ExecutionRouteKind::Crypto;
+  routing.venue = static_cast<std::uint8_t>(instrument.venue);
+  routing.product_type = static_cast<std::uint8_t>(instrument.product_type);
+  routing.price_scale = instrument.price_scale;
+  routing.quantity_scale = instrument.quantity_scale;
+  routing.catalog_revision = 1;
+  routing.tick_size = instrument.tick_size;
+  routing.lot_size = instrument.lot_size;
+  if (routing.kind == ExecutionRouteKind::Polymarket) {
+    routing.signature_type = source.polymarket_signature_type;
+    routing.negative_risk = source.polymarket_negative_risk;
+    routing.outcome = source.polymarket_outcome;
+    routing.taker_delay_ms = source.polymarket_taker_delay_ms;
+    routing.minimum_order_size =
+        std::max<std::int64_t>(1, source.minimum_order_size);
+    routing.polymarket.condition_id = source.polymarket_condition_id;
+    routing.polymarket.token_id = source.polymarket_token_id;
+    return true;
+  }
+
+  const auto venue_end =
+      std::find(instrument.venue_symbol.begin(), instrument.venue_symbol.end(),
+                '\0');
+  std::string_view symbol(
+      instrument.venue_symbol.data(),
+      static_cast<std::size_t>(venue_end - instrument.venue_symbol.begin()));
+  if (symbol.empty()) {
+    const auto key_end =
+        std::find(instrument.instrument_key.begin(),
+                  instrument.instrument_key.end(), '\0');
+    const std::string_view key(
+        instrument.instrument_key.data(),
+        static_cast<std::size_t>(key_end - instrument.instrument_key.begin()));
+    const std::size_t first = key.find(':');
+    const std::size_t second =
+        first == std::string_view::npos ? first : key.find(':', first + 1U);
+    const std::size_t third =
+        second == std::string_view::npos ? second : key.find(':', second + 1U);
+    if (second != std::string_view::npos)
+      symbol = key.substr(second + 1U,
+                          third == std::string_view::npos
+                              ? std::string_view::npos
+                              : third - second - 1U);
+  }
+  if (symbol.empty() || symbol.size() > routing.crypto.venue_symbol.value.size())
+    return false;
+  std::copy(symbol.begin(), symbol.end(),
+            routing.crypto.venue_symbol.value.begin());
+  routing.crypto.venue_symbol.length =
+      static_cast<std::uint16_t>(symbol.size());
+  return true;
 }
 
 int ToWaitMilliseconds(std::uint64_t due, std::uint64_t now,
@@ -125,11 +184,6 @@ struct OmsApi::Impl {
     bool seen{};
   };
 
-  struct PendingInstrumentCommands {
-    api::InstrumentId instrument_id{};
-    std::atomic<std::uint32_t> count{0};
-  };
-
   Impl(const RuntimeConfig& value, std::span<const InstrumentInit> instruments,
        std::span<const ReplayStep> replay,
        const AdapterRuntimeConfig& adapter_config)
@@ -137,8 +191,9 @@ struct OmsApi::Impl {
         adapter_event_budget(
             adapter_config.event_budget == 0 ? 64 : adapter_config.event_budget),
         inline_owner(std::this_thread::get_id()),
+        directory(value.instrument_directory_capacity),
         orders(value.order_capacity),
-        engine(orders, registry, value.fill_dedup_capacity),
+        engine(orders, value.fill_dedup_capacity),
         scheduler(value.deadline_capacity, timer),
         fake(value.adapter_capacities[
                  static_cast<std::size_t>(AdapterCapacitySlot::Fake)]
@@ -160,45 +215,12 @@ struct OmsApi::Impl {
       throw std::invalid_argument("invalid OMS adapter count");
     }
     for (const auto& value_in : instruments) {
-      TradingMetadata trading{};
-      trading.instrument_id = value_in.instrument.instrument_id;
-      if (value_in.instrument.venue == utils::md::Venue::Polymarket) {
-        if (value_in.polymarket_signature_type != 0 &&
-            value_in.polymarket_signature_type != 3) {
-          throw std::invalid_argument(
-              "unsupported Polymarket signature type");
-        }
-        trading.kind = MetadataKind::Polymarket;
-        trading.polymarket.condition_id = value_in.polymarket_condition_id;
-        trading.polymarket.token_id = value_in.polymarket_token_id;
-        trading.polymarket.outcome =
-            value_in.polymarket_outcome == PolymarketOutcome::Yes
-                ? oms::PolymarketOutcome::Yes
-                : (value_in.polymarket_outcome ==
-                           PolymarketOutcome::No
-                       ? oms::PolymarketOutcome::No
-                       : oms::PolymarketOutcome::Unknown);
-        trading.polymarket.negative_risk =
-            value_in.polymarket_negative_risk;
-        trading.polymarket.signature_type =
-            value_in.polymarket_signature_type;
-        trading.polymarket.minimum_order_size =
-            std::max<std::int64_t>(1, value_in.minimum_order_size);
-        trading.polymarket.taker_delay_ms =
-            value_in.polymarket_taker_delay_ms;
-      }
-      if (registry.Add(value_in.instrument, &trading) != Error::Ok) {
+      ResolvedInstrument routing{};
+      if (!InitialRoute(value_in, routing) ||
+          directory.Register(value_in.instrument.instrument_id, routing) !=
+              Error::Ok)
         throw std::invalid_argument("invalid OMS instrument");
-      }
     }
-    pending_instrument_count = instruments.size();
-    pending_instruments =
-        std::make_unique<PendingInstrumentCommands[]>(pending_instrument_count);
-    for (std::size_t index = 0; index < instruments.size(); ++index)
-      pending_instruments[index].instrument_id =
-          instruments[index].instrument.instrument_id;
-    if (registry.Freeze() != Error::Ok)
-      throw std::invalid_argument("invalid OMS registry");
 
     gtd_handles.resize(config.deadline_capacity);
     order_deadlines.resize(orders.capacity());
@@ -344,54 +366,13 @@ struct OmsApi::Impl {
     return Error::NotReady;
   }
 
-  exchange::TradeAdapter* Route(api::InstrumentId instrument_id) noexcept {
-    const auto* instrument = registry.Find(instrument_id);
-    return instrument == nullptr ? nullptr : router.route(*instrument);
-  }
-
   exchange::TradeAdapter* Route(
-      const ExecutionRoutingSnapshot& routing) noexcept {
+      const ResolvedInstrument& routing) noexcept {
     utils::md::Instrument instrument{};
     instrument.venue = static_cast<utils::md::Venue>(routing.venue);
     instrument.product_type =
         static_cast<utils::md::ProductType>(routing.product_type);
     return router.route(instrument);
-  }
-
-  bool PrepareLegacy(const NewOrderRequest& request,
-                     PreparedOrderRequest& prepared) const noexcept {
-    const auto* instrument = registry.Find(request.instrument_id);
-    const auto* trading =
-        registry.FindTradingMetadata(request.instrument_id);
-    if (instrument == nullptr || trading == nullptr) return false;
-    prepared.order = request;
-    auto& routing = prepared.routing;
-    routing.kind = instrument->venue == utils::md::Venue::Polymarket
-                       ? ExecutionRouteKind::Polymarket
-                       : ExecutionRouteKind::Generic;
-    routing.venue = static_cast<std::uint8_t>(instrument->venue);
-    routing.product_type =
-        static_cast<std::uint8_t>(instrument->product_type);
-    routing.price_scale = instrument->price_scale;
-    routing.quantity_scale = instrument->quantity_scale;
-    // Legacy registry entries predate catalog generations. Treat the frozen
-    // registry snapshot as generation 1 so it passes the prepared-command
-    // invariants without weakening validation for catalog-native callers.
-    routing.catalog_generation = 1;
-    routing.tick_size = instrument->tick_size;
-    routing.lot_size = instrument->lot_size;
-    if (routing.kind == ExecutionRouteKind::Polymarket) {
-      routing.signature_type = trading->polymarket.signature_type;
-      routing.negative_risk = trading->polymarket.negative_risk;
-      routing.outcome =
-          static_cast<api::PolymarketOutcome>(trading->polymarket.outcome);
-      routing.taker_delay_ms = trading->polymarket.taker_delay_ms;
-      routing.minimum_order_size =
-          trading->polymarket.minimum_order_size;
-      routing.condition_id = trading->polymarket.condition_id;
-      routing.token_id = trading->polymarket.token_id;
-    }
-    return true;
   }
 
   static exchange::AdapterResult OnAdapterEvent(
@@ -535,15 +516,25 @@ struct OmsApi::Impl {
     return {{lane.config.lane_id, epoch, sequence}, Error::Ok};
   }
 
-  Result<QueryToken> SubmitQuery(std::uint32_t lane_id, AccountId account_id,
+  Result<QueryToken> SubmitQuery(std::uint32_t lane_id, QueryRequest request,
                                  QueryKind kind) noexcept {
     if (stopping.load(std::memory_order_acquire))
       return {{}, Error::ShuttingDown};
     Lane* lane = FindLane(lane_id);
-    if (lane == nullptr || account_id == 0)
+    if (lane == nullptr || request.account_id == 0 ||
+        (request.scope != QueryScope::All &&
+         request.scope != QueryScope::SingleInstrument))
       return {{}, Error::InvalidArgument};
     if (!IsInlineOwner()) return {{}, Error::InvalidTransition};
-    if (AccountAdapter(account_id) == nullptr) return {{}, Error::NotFound};
+    if (AccountAdapter(request.account_id) == nullptr)
+      return {{}, Error::NotFound};
+    if (request.scope == QueryScope::SingleInstrument) {
+      const InstrumentId instrument_id = directory.Find(request.instrument);
+      const auto* entry = directory.Find(instrument_id);
+      if (entry == nullptr ||
+          entry->lifecycle != ExecutionDirectory::Lifecycle::Active)
+        return {{}, Error::NotReady};
+    }
     const auto command_kind =
         kind == QueryKind::OpenOrders
             ? runtime::RuntimeCommandKind::QueryOpenOrders
@@ -563,7 +554,7 @@ struct OmsApi::Impl {
       command.kind = command_kind;
       command.lane = lane_id;
       command.enqueue_time_ns = NowNs();
-      command.query = {token.value, account_id, 0};
+      command.query = {token.value, request};
       const bool was_empty = lane->commands->empty();
       lease->emplace(command);
       (void)lease->commit();
@@ -581,7 +572,70 @@ struct OmsApi::Impl {
     command.kind = command_kind;
     command.lane = lane_id;
     command.enqueue_time_ns = NowNs();
-    command.query = {token.value, account_id, 0};
+    command.query = {token.value, request};
+    const bool processed = ProcessCommand(*lane, command);
+    inline_busy.clear(std::memory_order_release);
+    return {token.value, processed ? Error::Ok : Error::QueueFull};
+  }
+
+  Result<RequestToken> SubmitInstrumentCommand(
+      std::uint32_t lane_id, runtime::RuntimeCommandKind kind,
+      InstrumentId instrument_id,
+      const ResolvedInstrument* routing = nullptr) noexcept {
+    if (stopping.load(std::memory_order_acquire))
+      return {{}, Error::ShuttingDown};
+    Lane* lane = FindLane(lane_id);
+    if (lane == nullptr || instrument_id == 0 ||
+        (kind != runtime::RuntimeCommandKind::RegisterInstrument &&
+         kind != runtime::RuntimeCommandKind::RetireInstrument) ||
+        (kind == runtime::RuntimeCommandKind::RegisterInstrument &&
+         routing == nullptr))
+      return {{}, Error::InvalidArgument};
+    if (!IsInlineOwner()) return {{}, Error::InvalidTransition};
+
+    const auto build = [&](RequestToken token) noexcept {
+      runtime::RuntimeCommand command{};
+      command.kind = kind;
+      command.lane = lane_id;
+      command.enqueue_time_ns = NowNs();
+      if (kind == runtime::RuntimeCommandKind::RegisterInstrument) {
+        command.register_instrument = {token, instrument_id, *routing};
+      } else {
+        command.retire_instrument = {token, instrument_id};
+      }
+      return command;
+    };
+
+    if (config.mode == ExecutionMode::DedicatedIo) {
+      if (lane->producer_busy.test_and_set(std::memory_order_acquire))
+        return {{}, Error::InvalidTransition};
+      struct Guard {
+        std::atomic_flag& flag;
+        ~Guard() { flag.clear(std::memory_order_release); }
+      } guard{lane->producer_busy};
+      auto lease = lane->commands->try_reserve();
+      if (!lease) return {{}, Error::QueueFull};
+      const auto token = AllocateToken(*lane);
+      if (!token) return token;
+      const bool was_empty = lane->commands->empty();
+      lease->emplace(build(token.value));
+      (void)lease->commit();
+      if (was_empty) (void)command_notifier.notify();
+      return token;
+    }
+
+    if (inline_busy.test_and_set(std::memory_order_acquire))
+      return {{}, Error::InvalidTransition};
+    if (!HasRoom(*lane, 1)) {
+      inline_busy.clear(std::memory_order_release);
+      return {{}, Error::QueueFull};
+    }
+    const auto token = AllocateToken(*lane);
+    if (!token) {
+      inline_busy.clear(std::memory_order_release);
+      return token;
+    }
+    const runtime::RuntimeCommand command = build(token.value);
     const bool processed = ProcessCommand(*lane, command);
     inline_busy.clear(std::memory_order_release);
     return {token.value, processed ? Error::Ok : Error::QueueFull};
@@ -626,25 +680,15 @@ struct OmsApi::Impl {
     Publish(lane, update);
   }
 
-  void RebindResult(
-      Lane& lane, Error error,
-      const RebindPolymarketInstrumentRequest& request) noexcept {
+  void InstrumentResult(Lane& lane, RuntimeCommandResultKind kind, Error error,
+                        RequestToken request_token,
+                        InstrumentId instrument_id) noexcept {
     RuntimeUpdate update{};
     update.kind = RuntimeUpdateKind::CommandResult;
-    update.command_result.kind =
-        RuntimeCommandResultKind::RebindInstrument;
+    update.command_result.kind = kind;
     update.command_result.error = error;
-    update.command_result.rebind = {request.request_token,
-                                    request.instrument_id};
+    update.command_result.instrument = {request_token, instrument_id};
     Publish(lane, update);
-  }
-
-  PendingInstrumentCommands* PendingInstrument(
-      api::InstrumentId instrument_id) noexcept {
-    for (std::size_t index = 0; index < pending_instrument_count; ++index)
-      if (pending_instruments[index].instrument_id == instrument_id)
-        return &pending_instruments[index];
-    return nullptr;
   }
 
   bool ProcessCommand(Lane& lane,
@@ -652,15 +696,11 @@ struct OmsApi::Impl {
     // Cancel can emit an order update and its correlated command result. A GTD
     // place can emit Submitted + local Rejected + command error if the
     // deadline scheduler is full. Reserve for the worst case before mutation.
-    const bool placing =
-        command.kind == runtime::RuntimeCommandKind::Place ||
-        command.kind == runtime::RuntimeCommandKind::PlacePrepared;
-    const NewOrderRequest* placed_order =
-        command.kind == runtime::RuntimeCommandKind::PlacePrepared
-            ? &command.prepared.order
-            : &command.orders.place;
+    const bool placing = command.kind == runtime::RuntimeCommandKind::Place;
+    const NewOrderRequest* placed_order = &command.place.order;
     const std::size_t required =
-        command.kind == runtime::RuntimeCommandKind::RebindInstrument
+        command.kind == runtime::RuntimeCommandKind::RegisterInstrument ||
+                command.kind == runtime::RuntimeCommandKind::RetireInstrument
             ? 1
             : (placing &&
                        placed_order->time_in_force == TimeInForce::GTD
@@ -674,15 +714,11 @@ struct OmsApi::Impl {
     if (placing) {
       Error result = Error::InvalidArgument;
       StagedUpdates staged{};
-      PreparedOrderRequest prepared{};
-      const bool routing_ready =
-          command.kind == runtime::RuntimeCommandKind::PlacePrepared
-              ? (prepared = command.prepared, true)
-              : PrepareLegacy(command.orders.place, prepared);
-      const auto& place = prepared.order;
-      if (routing_ready && ValidateToken(lane, place.token)) {
+      const auto& submitted = command.place;
+      const auto& place = submitted.order;
+      if (ValidateToken(lane, place.token)) {
         exchange::TradeAdapter* adapter =
-            Route(prepared.routing);
+            Route(submitted.routing);
         exchange::AdapterReservation reservation{};
         exchange::AdapterResult reserved =
             adapter == nullptr ? exchange::AdapterResult::NotReady
@@ -697,7 +733,7 @@ struct OmsApi::Impl {
           result = AdapterError(reserved);
         } else {
           OrderHandle handle{};
-          result = engine.Submit(prepared, handle, staged.sink());
+          result = engine.Submit(submitted, handle, staged.sink());
           if (result != Error::Ok) adapter->cancel_reservation(reservation);
           if (result == Error::Ok &&
               place.time_in_force == TimeInForce::GTD) {
@@ -746,7 +782,7 @@ struct OmsApi::Impl {
                 place.token.sequence;
             adapter_command.handle = handle;
             adapter_command.request = place;
-            adapter_command.routing = prepared.routing;
+            adapter_command.routing = submitted.routing;
             const exchange::AdapterResult committed =
                 adapter->commit_place(reservation, adapter_command);
             if (committed != exchange::AdapterResult::Ok) {
@@ -759,29 +795,17 @@ struct OmsApi::Impl {
       PublishStaged(lane, staged);
       if (result != Error::Ok)
         CommandResult(lane, RuntimeCommandResultKind::Place, result);
-      if (config.mode == ExecutionMode::DedicatedIo) {
-        if (auto* pending =
-                PendingInstrument(place.instrument_id);
-            pending != nullptr) {
-          pending->count.fetch_sub(1, std::memory_order_release);
-        }
-      }
     } else if (command.kind == runtime::RuntimeCommandKind::Cancel) {
       const CancelCommandCorrelation correlation{
-          command.orders.cancel.target_token,
-          command.orders.cancel.request_token};
+          command.cancel.target_token,
+          command.cancel.request_token};
       Error result = Error::InvalidArgument;
       StagedUpdates staged{};
-      if (ValidateToken(lane, command.orders.cancel.request_token)) {
+      if (ValidateToken(lane, command.cancel.request_token)) {
         OrderRecord* record =
-            orders.Find(command.orders.cancel.target_token);
+            orders.Find(command.cancel.target_token);
         exchange::TradeAdapter* adapter =
-            record == nullptr
-                ? nullptr
-                : (record->routing.kind ==
-                           ExecutionRouteKind::LegacyRegistry
-                       ? Route(record->request.instrument_id)
-                       : Route(record->routing));
+            record == nullptr ? nullptr : Route(record->routing);
         exchange::AdapterReservation reservation{};
         const exchange::AdapterResult reserved =
             adapter == nullptr
@@ -790,7 +814,7 @@ struct OmsApi::Impl {
                       exchange::AdapterCommandKind::Cancel, reservation);
         if (reserved == exchange::AdapterResult::Ok) {
           result =
-              engine.RequestCancel(command.orders.cancel.target_token,
+              engine.RequestCancel(command.cancel.target_token,
                                    staged.sink());
           if (result != Error::Ok) {
             adapter->cancel_reservation(reservation);
@@ -798,8 +822,8 @@ struct OmsApi::Impl {
             exchange::AdapterCancelCommand adapter_command{};
             adapter_command.command_id =
                 (static_cast<std::uint64_t>(lane.config.lane_id) << 32U) ^
-                command.orders.cancel.request_token.sequence;
-            adapter_command.request = command.orders.cancel;
+                command.cancel.request_token.sequence;
+            adapter_command.request = command.cancel;
             const exchange::AdapterResult committed =
                 adapter->commit_cancel(reservation, adapter_command);
             if (committed != exchange::AdapterResult::Ok)
@@ -812,15 +836,13 @@ struct OmsApi::Impl {
       PublishStaged(lane, staged);
       CommandResult(lane, RuntimeCommandResultKind::Cancel, result,
                     correlation);
-      if (config.mode == ExecutionMode::DedicatedIo)
-        pending_cancel_commands.fetch_sub(1, std::memory_order_release);
     } else if (command.kind == runtime::RuntimeCommandKind::QueryOpenOrders ||
                command.kind == runtime::RuntimeCommandKind::QueryPositions) {
       const auto& request = command.query;
       if (!ValidateToken(lane, request.token)) return true;
       exchange::AdapterResult result = exchange::AdapterResult::Unsupported;
       if (exchange::TradeAdapter* adapter =
-              AccountAdapter(request.account_id);
+              AccountAdapter(request.request.account_id);
           adapter != nullptr) {
         result = command.kind == runtime::RuntimeCommandKind::QueryOpenOrders
                      ? adapter->query_open_orders(request, AdapterSink())
@@ -832,7 +854,7 @@ struct OmsApi::Impl {
         RuntimeUpdate update{};
         update.kind = RuntimeUpdateKind::QueryComplete;
         update.query_complete.query_token = request.token;
-        update.query_complete.account_id = request.account_id;
+        update.query_complete.account_id = request.request.account_id;
         update.query_complete.kind =
             command.kind == runtime::RuntimeCommandKind::QueryOpenOrders
                 ? QueryKind::OpenOrders
@@ -841,41 +863,26 @@ struct OmsApi::Impl {
         Publish(lane, update);
       }
     } else if (command.kind ==
-               runtime::RuntimeCommandKind::RebindInstrument) {
+               runtime::RuntimeCommandKind::RegisterInstrument) {
+      const auto& request = command.register_instrument;
       Error result = Error::InvalidArgument;
-      const auto& request = command.rebind;
-      polymarket_rebind_active.store(true, std::memory_order_release);
-      if (ValidateToken(lane, request.request_token) &&
-          registry.ValidateRebind(request) == Error::Ok) {
-        auto* pending = PendingInstrument(request.instrument_id);
-        constexpr std::uint32_t kPolymarketReconcile =
-            1U << static_cast<std::uint8_t>(
-                exchange::AdapterKind::Polymarket);
-        const bool command_quiet =
-            (pending == nullptr ||
-             pending->count.load(std::memory_order_acquire) == 0) &&
-            pending_cancel_commands.load(std::memory_order_acquire) == 0 &&
-            (reconcile_mask.load(std::memory_order_acquire) &
-             kPolymarketReconcile) == 0;
-        exchange::TradeAdapter* adapter =
-            router.find(exchange::AdapterKind::Polymarket);
-        const bool adapter_quiet =
-            adapter == nullptr ||
-            adapter->validate_rebind(request) == exchange::AdapterResult::Ok;
-        if (!command_quiet ||
-            orders.HasActiveOrInflight(request.instrument_id) ||
-            !adapter_quiet) {
-          result = Error::Conflict;
-        } else if (adapter != nullptr &&
-                   adapter->apply_rebind(request) !=
-                       exchange::AdapterResult::Ok) {
-          result = Error::NotReady;
-        } else {
-          result = registry.Rebind(request);
-        }
+      if (ValidateToken(lane, request.request_token))
+        result = directory.Register(request.instrument_id, request.routing);
+      InstrumentResult(lane, RuntimeCommandResultKind::RegisterInstrument,
+                       result, request.request_token, request.instrument_id);
+    } else if (command.kind ==
+               runtime::RuntimeCommandKind::RetireInstrument) {
+      const auto& request = command.retire_instrument;
+      Error result = Error::InvalidArgument;
+      if (ValidateToken(lane, request.request_token)) {
+        // Only the OMS owner scans OrderTable. StrategyFrame owns and scans
+        // its pending-query/position containers before issuing this command.
+        result = directory.Retire(
+            request.instrument_id,
+            orders.HasActiveOrInflight(request.instrument_id));
       }
-      polymarket_rebind_active.store(false, std::memory_order_release);
-      RebindResult(lane, result, request);
+      InstrumentResult(lane, RuntimeCommandResultKind::RetireInstrument,
+                       result, request.request_token, request.instrument_id);
     }
     const std::uint64_t latency = NowNs() - command.enqueue_time_ns;
     lane.enqueue_samples.fetch_add(1, std::memory_order_relaxed);
@@ -1226,7 +1233,7 @@ struct OmsApi::Impl {
   RuntimeConfig config{};
   std::uint32_t adapter_event_budget{};
   std::thread::id inline_owner{};
-  InstrumentRegistry registry;
+  ExecutionDirectory directory;
   OrderTable orders;
   StateEngine engine;
   runtime::EventNotifier command_notifier;
@@ -1248,14 +1255,10 @@ struct OmsApi::Impl {
   std::vector<epoll_event> epoll_events;
   std::uint64_t next_io_token{kTimerToken};
   std::atomic<std::uint32_t> reconcile_mask{0};
-  std::atomic<bool> polymarket_rebind_active{false};
   std::atomic<std::uint64_t> next_reconcile_generation{1};
   std::vector<OrderHandle> gtd_handles;
   std::vector<runtime::DeadlineHandle> order_deadlines;
   std::vector<std::unique_ptr<Lane>> lanes;
-  std::unique_ptr<PendingInstrumentCommands[]> pending_instruments;
-  std::size_t pending_instrument_count{};
-  std::atomic<std::uint32_t> pending_cancel_commands{0};
   std::mutex fake_mutex;
   std::size_t round_robin{};
   std::atomic<std::uint64_t> deadline_depth{0};
@@ -1289,7 +1292,7 @@ Result<std::unique_ptr<OmsApi>> OmsApi::Create(
   if (!ValidateRuntimeCapacities(normalized) ||
       normalized.lane_count == 0 ||
       normalized.lane_count > kMaxRuntimeLanes ||
-      normalized.deadline_capacity == 0 || instruments.empty())
+      normalized.deadline_capacity == 0)
     return {{}, Error::InvalidArgument};
   for (std::uint32_t index = 0; index < normalized.lane_count; ++index) {
     const LaneConfig& lane = normalized.lanes[index];
@@ -1324,86 +1327,19 @@ Result<void> OmsApi::initialize_lane(std::uint32_t lane_id,
 }
 
 Result<RequestToken> OmsApi::submit_order(std::uint32_t lane_id,
-                                          NewOrderRequest request) noexcept {
-  if (impl_->stopping.load(std::memory_order_acquire))
-    return {{}, Error::ShuttingDown};
-  auto* lane = impl_->FindLane(lane_id);
-  if (lane == nullptr) return {{}, Error::InvalidArgument};
-  if (!impl_->IsInlineOwner()) return {{}, Error::InvalidTransition};
-  if (impl_->polymarket_rebind_active.load(std::memory_order_acquire)) {
-    const auto* instrument = impl_->registry.Find(request.instrument_id);
-    if (instrument != nullptr &&
-        instrument->venue == utils::md::Venue::Polymarket) {
-      return {{}, Error::Conflict};
-    }
-  }
-  if (impl_->config.mode == ExecutionMode::DedicatedIo) {
-    if (request.time_in_force == TimeInForce::GTD &&
-        lane->updates->capacity() < 3)
-      return {{}, Error::QueueFull};
-    if (lane->producer_busy.test_and_set(std::memory_order_acquire))
-      return {{}, Error::InvalidTransition};
-    struct ProducerGuard {
-      std::atomic_flag& flag;
-      ~ProducerGuard() { flag.clear(std::memory_order_release); }
-    } producer_guard{lane->producer_busy};
-    auto lease = lane->commands->try_reserve();
-    if (!lease) {
-      lane->command_full_count.fetch_add(1, std::memory_order_relaxed);
-      return {{}, Error::QueueFull};
-    }
-    const auto token = impl_->AllocateToken(*lane);
-    if (!token) return token;
-    request.token = token.value;
-    runtime::RuntimeCommand command{};
-    command.kind = runtime::RuntimeCommandKind::Place;
-    command.lane = lane_id;
-    command.enqueue_time_ns = NowNs();
-    command.orders.place = request;
-    const bool was_empty = lane->commands->empty();
-    if (auto* pending = impl_->PendingInstrument(request.instrument_id);
-        pending != nullptr) {
-      pending->count.fetch_add(1, std::memory_order_release);
-    }
-    lease->emplace(command);
-    (void)lease->commit();
-    if (was_empty) (void)impl_->command_notifier.notify();
-    return token;
-  }
-  if (impl_->inline_busy.test_and_set(std::memory_order_acquire))
-    return {{}, Error::InvalidTransition};
-  const std::size_t required =
-      request.time_in_force == TimeInForce::GTD ? 3 : 2;
-  if (!impl_->HasRoom(*lane, required)) {
-    impl_->inline_busy.clear(std::memory_order_release);
-    lane->update_full_count.fetch_add(1, std::memory_order_relaxed);
-    return {{}, Error::QueueFull};
-  }
-  const auto token = impl_->AllocateToken(*lane);
-  if (!token) {
-    impl_->inline_busy.clear(std::memory_order_release);
-    return token;
-  }
-  request.token = token.value;
-  runtime::RuntimeCommand command{};
-  command.kind = runtime::RuntimeCommandKind::Place;
-  command.lane = lane_id;
-  command.enqueue_time_ns = NowNs();
-  command.orders.place = request;
-  const bool processed = impl_->ProcessCommand(*lane, command);
-  impl_->inline_busy.clear(std::memory_order_release);
-  return {token.value, processed ? Error::Ok : Error::QueueFull};
+                                          SubmitOrderRequest request) noexcept {
+  return submit_order_impl(lane_id, request);
 }
 
-Result<RequestToken> OmsApi::submit_prepared_order(
-    std::uint32_t lane_id, PreparedOrderRequest request) noexcept {
+Result<RequestToken> OmsApi::submit_order_impl(
+    std::uint32_t lane_id,
+    SubmitOrderRequest& request) noexcept {
   if (impl_->stopping.load(std::memory_order_acquire))
     return {{}, Error::ShuttingDown};
   auto* lane = impl_->FindLane(lane_id);
   if (lane == nullptr) return {{}, Error::InvalidArgument};
   if (!impl_->IsInlineOwner()) return {{}, Error::InvalidTransition};
-  if (request.routing.kind == ExecutionRouteKind::LegacyRegistry ||
-      request.order.instrument_id == 0)
+  if (request.order.instrument_id == 0)
     return {{}, Error::InvalidArgument};
   if (impl_->config.mode == ExecutionMode::DedicatedIo) {
     if (request.order.time_in_force == TimeInForce::GTD &&
@@ -1423,18 +1359,12 @@ Result<RequestToken> OmsApi::submit_prepared_order(
     const auto token = impl_->AllocateToken(*lane);
     if (!token) return token;
     request.order.token = token.value;
-    runtime::RuntimeCommand command{};
-    command.kind = runtime::RuntimeCommandKind::PlacePrepared;
+    auto& command = lease->emplace();
+    command.kind = runtime::RuntimeCommandKind::Place;
     command.lane = lane_id;
     command.enqueue_time_ns = NowNs();
-    command.prepared = request;
+    command.place = request;
     const bool was_empty = lane->commands->empty();
-    if (auto* pending =
-            impl_->PendingInstrument(request.order.instrument_id);
-        pending != nullptr) {
-      pending->count.fetch_add(1, std::memory_order_release);
-    }
-    lease->emplace(command);
     (void)lease->commit();
     if (was_empty) (void)impl_->command_notifier.notify();
     return token;
@@ -1455,10 +1385,10 @@ Result<RequestToken> OmsApi::submit_prepared_order(
   }
   request.order.token = token.value;
   runtime::RuntimeCommand command{};
-  command.kind = runtime::RuntimeCommandKind::PlacePrepared;
+  command.kind = runtime::RuntimeCommandKind::Place;
   command.lane = lane_id;
   command.enqueue_time_ns = NowNs();
-  command.prepared = request;
+  command.place = request;
   const bool processed = impl_->ProcessCommand(*lane, command);
   impl_->inline_busy.clear(std::memory_order_release);
   return {token.value, processed ? Error::Ok : Error::QueueFull};
@@ -1486,14 +1416,12 @@ Result<RequestToken> OmsApi::cancel_order(std::uint32_t lane_id,
     }
     const auto token = impl_->AllocateToken(*lane);
     if (!token) return token;
-    runtime::RuntimeCommand command{};
+    auto& command = lease->emplace();
     command.kind = runtime::RuntimeCommandKind::Cancel;
     command.lane = lane_id;
     command.enqueue_time_ns = NowNs();
-    command.orders.cancel = {token.value, target, handle};
+    command.cancel = {token.value, target, handle};
     const bool was_empty = lane->commands->empty();
-    impl_->pending_cancel_commands.fetch_add(1, std::memory_order_release);
-    lease->emplace(command);
     (void)lease->commit();
     if (was_empty) (void)impl_->command_notifier.notify();
     return token;
@@ -1514,79 +1442,47 @@ Result<RequestToken> OmsApi::cancel_order(std::uint32_t lane_id,
   command.kind = runtime::RuntimeCommandKind::Cancel;
   command.lane = lane_id;
   command.enqueue_time_ns = NowNs();
-  command.orders.cancel = {token.value, target, handle};
+  command.cancel = {token.value, target, handle};
   const bool processed = impl_->ProcessCommand(*lane, command);
   impl_->inline_busy.clear(std::memory_order_release);
   return {token.value, processed ? Error::Ok : Error::QueueFull};
 }
 
-Result<RequestToken> OmsApi::rebind_polymarket_instrument(
-    std::uint32_t lane_id,
-    RebindPolymarketInstrumentRequest request) noexcept {
-  if (impl_->stopping.load(std::memory_order_acquire))
-    return {{}, Error::ShuttingDown};
-  auto* lane = impl_->FindLane(lane_id);
-  if (lane == nullptr) return {{}, Error::InvalidArgument};
-  if (!impl_->IsInlineOwner()) return {{}, Error::InvalidTransition};
+Result<RequestToken> OmsApi::register_instrument(
+    std::uint32_t lane_id, RegisterInstrumentRequest request) noexcept {
+  return impl_->SubmitInstrumentCommand(
+      lane_id, runtime::RuntimeCommandKind::RegisterInstrument,
+      request.instrument_id, &request.routing);
+}
 
-  if (impl_->config.mode == ExecutionMode::DedicatedIo) {
-    if (lane->producer_busy.test_and_set(std::memory_order_acquire))
-      return {{}, Error::InvalidTransition};
-    struct ProducerGuard {
-      std::atomic_flag& flag;
-      ~ProducerGuard() { flag.clear(std::memory_order_release); }
-    } producer_guard{lane->producer_busy};
-    auto lease = lane->commands->try_reserve();
-    if (!lease) {
-      lane->command_full_count.fetch_add(1, std::memory_order_relaxed);
-      return {{}, Error::QueueFull};
-    }
-    const auto token = impl_->AllocateToken(*lane);
-    if (!token) return token;
-    request.request_token = token.value;
-    runtime::RuntimeCommand command{};
-    command.kind = runtime::RuntimeCommandKind::RebindInstrument;
-    command.lane = lane_id;
-    command.enqueue_time_ns = NowNs();
-    command.rebind = request;
-    const bool was_empty = lane->commands->empty();
-    lease->emplace(command);
-    (void)lease->commit();
-    if (was_empty) (void)impl_->command_notifier.notify();
-    return token;
-  }
-
-  if (impl_->inline_busy.test_and_set(std::memory_order_acquire))
-    return {{}, Error::InvalidTransition};
-  if (!impl_->HasRoom(*lane, 1)) {
-    impl_->inline_busy.clear(std::memory_order_release);
-    lane->update_full_count.fetch_add(1, std::memory_order_relaxed);
-    return {{}, Error::QueueFull};
-  }
-  const auto token = impl_->AllocateToken(*lane);
-  if (!token) {
-    impl_->inline_busy.clear(std::memory_order_release);
-    return token;
-  }
-  request.request_token = token.value;
-  runtime::RuntimeCommand command{};
-  command.kind = runtime::RuntimeCommandKind::RebindInstrument;
-  command.lane = lane_id;
-  command.enqueue_time_ns = NowNs();
-  command.rebind = request;
-  const bool processed = impl_->ProcessCommand(*lane, command);
-  impl_->inline_busy.clear(std::memory_order_release);
-  return {token.value, processed ? Error::Ok : Error::QueueFull};
+Result<RequestToken> OmsApi::retire_instrument(
+    std::uint32_t lane_id, InstrumentId instrument_id) noexcept {
+  return impl_->SubmitInstrumentCommand(
+      lane_id, runtime::RuntimeCommandKind::RetireInstrument, instrument_id);
 }
 
 Result<QueryToken> OmsApi::query_open_orders(std::uint32_t lane_id,
                                              AccountId account_id) noexcept {
-  return impl_->SubmitQuery(lane_id, account_id, QueryKind::OpenOrders);
+  QueryRequest request{};
+  request.account_id = account_id;
+  return query_open_orders(lane_id, request);
+}
+
+Result<QueryToken> OmsApi::query_open_orders(std::uint32_t lane_id,
+                                             QueryRequest request) noexcept {
+  return impl_->SubmitQuery(lane_id, request, QueryKind::OpenOrders);
 }
 
 Result<QueryToken> OmsApi::query_positions(std::uint32_t lane_id,
                                            AccountId account_id) noexcept {
-  return impl_->SubmitQuery(lane_id, account_id, QueryKind::Positions);
+  QueryRequest request{};
+  request.account_id = account_id;
+  return query_positions(lane_id, request);
+}
+
+Result<QueryToken> OmsApi::query_positions(std::uint32_t lane_id,
+                                           QueryRequest request) noexcept {
+  return impl_->SubmitQuery(lane_id, request, QueryKind::Positions);
 }
 
 Error OmsApi::service_io(int timeout_ms) noexcept {
@@ -1702,13 +1598,19 @@ Result<AdapterStatusSnapshot> OmsApi::adapter_status(
   return {{}, Error::NotFound};
 }
 
+InstrumentId OmsApi::resolve_polymarket_token(
+    const std::array<std::uint8_t, 32>& token_id) const noexcept {
+  return impl_->directory.FindPolymarketToken(token_id);
+}
+
+std::uint64_t OmsApi::execution_directory_access_count() const noexcept {
+  return impl_->directory.access_count();
+}
+
 Error OmsApi::reconcile(exchange::AdapterKind kind) noexcept {
   if (impl_->stopping.load(std::memory_order_acquire))
     return Error::ShuttingDown;
   if (impl_->router.find(kind) == nullptr) return Error::NotFound;
-  if (kind == exchange::AdapterKind::Polymarket &&
-      impl_->polymarket_rebind_active.load(std::memory_order_acquire))
-    return Error::Conflict;
   const std::uint8_t value = static_cast<std::uint8_t>(kind);
   if (value >= 31) return Error::InvalidArgument;
   impl_->reconcile_mask.fetch_or(1U << value, std::memory_order_release);

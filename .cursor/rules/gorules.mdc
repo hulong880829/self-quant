@@ -7,9 +7,12 @@ alwaysApply: false
 # Go Rules
 
 - Format modified Go code with `gofmt`.
-- Keep changes minimal and preserve package boundaries.
-- Accept `context.Context` as the first parameter and propagate cancellation.
-- Wrap errors with `%w`; use `errors.Is` or `errors.As`; do not swallow errors or use panic for normal flow.
-- Give goroutines a defined owner and exit path.
-- Apply explicit timeouts to I/O and use parameterized database queries.
-- Run relevant tests, `go test ./...`, and `go vet ./...`.
+- Make the smallest complete change and preserve existing package boundaries and observable behavior unless explicitly asked otherwise.
+- Do not refactor unrelated code or add speculative abstractions or interfaces.
+- Accept `context.Context` as the first parameter where cancellation is applicable, and propagate cancellation correctly.
+- Handle errors explicitly; wrap with `%w` when adding context, use `errors.Is` or `errors.As` when appropriate, and never swallow errors or use panic for normal control flow.
+- Give every goroutine a clear owner, lifetime, and exit path; make channel ownership and close responsibility explicit.
+- Do not introduce fallback, retry, or silent recovery unless explicitly required.
+- Apply explicit timeouts to external I/O and use parameterized database queries.
+- In performance-sensitive paths, avoid unnecessary allocations, goroutines, channels, reflection, copies, and string formatting.
+- Run targeted tests and validation proportional to the change; do not run full-repository tests by default.

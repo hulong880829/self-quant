@@ -18,14 +18,18 @@ func NewGate(timeout time.Duration) *Gate {
 func (g *Gate) Name() string { return "gate" }
 
 type gateContract struct {
-	Name             string  `json:"name"`
-	InDelisting      bool    `json:"in_delisting"`
-	FundingRate      string  `json:"funding_rate"`
-	FundingNextApply int64   `json:"funding_next_apply"`
-	FundingInterval  int64   `json:"funding_interval"`
-	QuantoMultiplier string  `json:"quanto_multiplier"`
-	OrderPriceRound  string  `json:"order_price_round"`
-	OrderSizeMin     float64 `json:"order_size_min"`
+	Name               string      `json:"name"`
+	InDelisting        bool        `json:"in_delisting"`
+	FundingRate        string      `json:"funding_rate"`
+	FundingNextApply   int64       `json:"funding_next_apply"`
+	FundingInterval    int64       `json:"funding_interval"`
+	QuantoMultiplier   string      `json:"quanto_multiplier"`
+	OrderPriceRound    string      `json:"order_price_round"`
+	OrderSizeRound     string      `json:"order_size_round"`
+	OrderSizeMin       bybitString `json:"order_size_min"`
+	OrderSizeMax       bybitString `json:"order_size_max"`
+	MarketOrderSizeMax bybitString `json:"market_order_size_max"`
+	EnableDecimal      bool        `json:"enable_decimal"`
 }
 
 type gateSpotPair struct {
@@ -35,6 +39,8 @@ type gateSpotPair struct {
 	TradeStatus     string `json:"trade_status"`
 	Precision       int    `json:"precision"`
 	AmountPrecision int    `json:"amount_precision"`
+	MinBaseAmount   string `json:"min_base_amount"`
+	MinQuoteAmount  string `json:"min_quote_amount"`
 }
 
 func parseGateSpotInstruments(items []gateSpotPair) []Instrument {
@@ -44,6 +50,15 @@ func parseGateSpotInstruments(items []gateSpotPair) []Instrument {
 			continue
 		}
 		metadata, _ := json.Marshal(item)
+		minQuantity, minQuantityStatus := knownConstraint(item.MinBaseAmount)
+		minNotional, minNotionalStatus := knownConstraint(item.MinQuoteAmount)
+		marketStep, marketStepStatus := knownDecimalConstraint(
+			strconv.FormatFloat(
+				precisionStep(strconv.Itoa(item.AmountPrecision)), 'f', -1, 64,
+			),
+		)
+		marketMinQuantity, marketMinQuantityStatus := knownDecimalConstraint(item.MinBaseAmount)
+		marketMinNotional, marketMinNotionalStatus := knownDecimalConstraint(item.MinQuoteAmount)
 		result = append(result, Instrument{
 			Exchange: "gate", ExchangeSymbol: item.ID,
 			BaseAsset: item.Base, QuoteAsset: item.Quote,
@@ -52,7 +67,14 @@ func parseGateSpotInstruments(items []gateSpotPair) []Instrument {
 			Status: "active", ContractSize: 1,
 			PriceTick:    precisionStep(strconv.Itoa(item.Precision)),
 			QuantityStep: precisionStep(strconv.Itoa(item.AmountPrecision)),
-			Metadata:     metadata, SourceUpdatedAt: time.Now().UTC(),
+			MinQuantity:  minQuantity, MinNotional: minNotional,
+			MinQuantityStatus: minQuantityStatus, MinNotionalStatus: minNotionalStatus,
+			MaxQuantityStatus:  ConstraintNotApplicable,
+			MarketQuantityStep: marketStep, MarketQuantityStepStatus: marketStepStatus,
+			MarketMinQuantity: marketMinQuantity, MarketMinQuantityStatus: marketMinQuantityStatus,
+			MarketMaxQuantityStatus: ConstraintNotApplicable,
+			MarketMinNotional:       marketMinNotional, MarketMinNotionalStatus: marketMinNotionalStatus,
+			Metadata: metadata, SourceUpdatedAt: time.Now().UTC(),
 		})
 	}
 	return result
@@ -76,6 +98,19 @@ func parseGateSettlementInstruments(items []gateContract, settle string) []Instr
 		}
 		size, _ := parseFloat(item.QuantoMultiplier)
 		tick, _ := parseFloat(item.OrderPriceRound)
+		minQuantity, minQuantityStatus := knownConstraint(string(item.OrderSizeMin))
+		maxQuantity, maxQuantityStatus := maximumDecimalConstraint(string(item.OrderSizeMax))
+		marketMaxQuantity, marketMaxQuantityStatus := maximumDecimalConstraint(
+			string(item.MarketOrderSizeMax),
+		)
+		venueStep := item.OrderSizeRound
+		if venueStep == "" {
+			venueStep = "1"
+		}
+		marketStep, marketStepStatus := knownDecimalConstraint(venueStep)
+		marketMinQuantity, marketMinQuantityStatus := knownDecimalConstraint(
+			string(item.OrderSizeMin),
+		)
 		model := "linear"
 		if !strings.EqualFold(settle, "USDT") {
 			model = "inverse"
@@ -86,8 +121,15 @@ func parseGateSettlementInstruments(items []gateContract, settle string) []Instr
 			BaseAsset: base, QuoteAsset: quote, GlobalSymbol: GlobalSymbol(base, quote),
 			IntervalHours: interval, SettleAsset: strings.ToUpper(settle),
 			ContractType: "perpetual", Status: "active", ContractSize: size,
-			PriceTick: tick, QuantityStep: item.OrderSizeMin,
-			Metadata: metadata, SourceUpdatedAt: time.Now().UTC(),
+			PriceTick: tick, QuantityStep: mustParsePositiveFloat(venueStep, 1),
+			MinQuantity: minQuantity, MinQuantityStatus: minQuantityStatus,
+			MinNotionalStatus: ConstraintNotApplicable,
+			MaxQuantity:       maxQuantity, MaxQuantityStatus: maxQuantityStatus,
+			MarketQuantityStep: marketStep, MarketQuantityStepStatus: marketStepStatus,
+			MarketMinQuantity: marketMinQuantity, MarketMinQuantityStatus: marketMinQuantityStatus,
+			MarketMaxQuantity: marketMaxQuantity, MarketMaxQuantityStatus: marketMaxQuantityStatus,
+			MarketMinNotionalStatus: ConstraintNotApplicable,
+			Metadata:                metadata, SourceUpdatedAt: time.Now().UTC(),
 		})
 	}
 	return result

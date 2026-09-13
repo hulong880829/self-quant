@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -30,6 +31,9 @@ class SignalEngine {
   [[nodiscard]] SignalEvaluation evaluate(
       double market_mid, double spread, double tick_size,
       std::uint64_t remaining_ns) const noexcept;
+  [[nodiscard]] SignalEvaluation evaluate_executable(
+      double up_bid, double up_ask, double down_bid, double down_ask,
+      double tick_size, std::uint64_t remaining_ns) const noexcept;
   [[nodiscard]] bool ready() const noexcept;
   [[nodiscard]] double latest_price() const noexcept;
 
@@ -48,5 +52,15 @@ class SignalEngine {
   std::size_t begin_{};
   std::size_t size_{};
 };
+
+[[nodiscard]] inline std::size_t signal_sample_capacity(
+    const Parameters& parameters) noexcept {
+  if (parameters.fairprice_timer_us == 0) return 16;
+  const std::uint64_t lookback_us =
+      static_cast<std::uint64_t>(parameters.vol_lookback_ms) * 1'000ULL;
+  const std::size_t samples = static_cast<std::size_t>(
+      lookback_us / parameters.fairprice_timer_us + 8U);
+  return std::max<std::size_t>(samples * 2U, 16U);
+}
 
 }  // namespace polymm

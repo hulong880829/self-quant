@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -18,12 +19,19 @@ type historyRepository interface {
 	ListHistory(context.Context, string, string, int) ([]funding.HistoryPoint, error)
 }
 
+type currentRateRepository interface {
+	ListCurrentByKeys(context.Context, []funding.RateLookupKey) ([]*funding.Rate, error)
+}
+
 type FundingServer struct {
 	fundingv1.UnimplementedFundingServiceServer
-	snapshots  *funding.SnapshotStore
-	repository historyRepository
-	staleAfter time.Duration
-	rankings   *ranking.SnapshotStore
+	snapshots     *funding.SnapshotStore
+	repository    historyRepository
+	currentRates  currentRateRepository
+	staleAfter    time.Duration
+	rankings      *ranking.SnapshotStore
+	published     map[string]bool
+	spreadEnabled map[string]bool
 }
 
 func NewFundingServer(
@@ -36,50 +44,100 @@ func NewFundingServer(
 	if len(rankings) > 0 {
 		rankingStore = rankings[0]
 	}
-	return &FundingServer{
+	server := &FundingServer{
 		snapshots: snapshots, repository: repository, staleAfter: staleAfter,
 		rankings: rankingStore,
 	}
+	if lookup, ok := repository.(currentRateRepository); ok {
+		server.currentRates = lookup
+	}
+	return server
+}
+
+func (s *FundingServer) WithPublication(published, spread map[string]bool) *FundingServer {
+	s.published = published
+	s.spreadEnabled = spread
+	return s
 }
 
 func (s *FundingServer) ListFundingRates(_ context.Context, _ *fundingv1.ListFundingRatesRequest) (*fundingv1.ListFundingRatesResponse, error) {
 	snapshot := s.snapshots.Get()
 	now := time.Now().UTC()
+	rates := funding.FilterRatesByExchange(snapshot.Rates, s.published)
 	response := &fundingv1.ListFundingRatesResponse{
-		Items:           make([]*fundingv1.FundingRate, 0, len(snapshot.Rates)),
-		Total:           int32(snapshot.Total),
+		Items:           make([]*fundingv1.FundingRate, 0, len(rates)),
+		Total:           int32(len(rates)),
 		SnapshotVersion: snapshot.Version,
 		ServerTime:      timestamppb.New(now),
 	}
-	for _, item := range snapshot.Rates {
-		rate := &fundingv1.FundingRate{
-			Exchange:               item.Exchange,
-			ExchangeSymbol:         item.ExchangeSymbol,
-			GlobalSymbol:           item.GlobalSymbol,
-			BaseAsset:              item.BaseAsset,
-			QuoteAsset:             item.QuoteAsset,
-			PositionQuantity:       decimal(item.PositionQuantity),
-			PositionNotionalUsd:    decimal(item.PositionNotionalUSD),
-			Volume_24HBase:         decimal(item.Volume24hBase),
-			Turnover_24HUsd:        decimal(item.Turnover24hUSD),
-			FundingRate:            decimal(item.Rate),
-			AnnualizedRate:         decimal(item.AnnualizedRate),
-			FundingIntervalSeconds: int32(item.IntervalHours * 3600),
-			NextFundingAt:          timestamppb.New(item.FundingTime),
-			MarkPrice:              decimal(item.MarkPrice),
-			IndexPrice:             decimal(item.IndexPrice),
-			LastPrice:              decimal(item.LastPrice),
-			PriceChange_24H:        decimal(item.PriceChange24h),
-			Cumulative_24H:         decimal(item.Cumulative24h),
-			Cumulative_7D:          decimal(item.Cumulative7d),
-			SourceUpdatedAt:        timestamppb.New(item.SourceUpdatedAt),
-			Stale:                  item.SourceUpdatedAt.IsZero() || now.Sub(item.SourceUpdatedAt) > s.staleAfter,
+	for _, item := range rates {
+		response.Items = append(response.Items, rateToProto(item, now, s.staleAfter))
+	}
+	return response, nil
+}
+
+func (s *FundingServer) BatchGetFundingRates(
+	ctx context.Context,
+	request *fundingv1.BatchGetFundingRatesRequest,
+) (*fundingv1.BatchGetFundingRatesResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	rawKeys := request.GetKeys()
+	if len(rawKeys) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "keys are required")
+	}
+	if len(rawKeys) > funding.MaxRateLookupKeys {
+		return nil, status.Error(codes.InvalidArgument, "too many keys")
+	}
+	keys := make([]funding.RateLookupKey, len(rawKeys))
+	for index, item := range rawKeys {
+		keys[index] = funding.NormalizeRateLookupKey(funding.RateLookupKey{
+			Exchange:       item.GetExchange(),
+			ExchangeSymbol: item.GetExchangeSymbol(),
+			BaseAsset:      item.GetBaseAsset(),
+			QuoteAsset:     item.GetQuoteAsset(),
+		})
+	}
+	snapshot := s.snapshots.View()
+	now := time.Now().UTC()
+	matched := make([]*funding.Rate, len(keys))
+	anyMiss := false
+	for index, key := range keys {
+		if rate, ok := snapshot.LookupRate(key); ok {
+			copied := rate
+			matched[index] = &copied
+			continue
 		}
-		if item.NextRate != nil {
-			value := decimal(*item.NextRate)
-			rate.NextFundingRate = &value
+		anyMiss = true
+	}
+	if anyMiss && s.currentRates != nil {
+		dbRates, err := s.currentRates.ListCurrentByKeys(ctx, keys)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "list current funding rates")
 		}
-		response.Items = append(response.Items, rate)
+		if len(dbRates) != len(keys) {
+			return nil, status.Error(codes.Internal, "list current funding rates")
+		}
+		matched = dbRates
+	}
+	response := &fundingv1.BatchGetFundingRatesResponse{
+		Results:         make([]*fundingv1.FundingRateLookupResult, 0, len(keys)),
+		SnapshotVersion: snapshot.Version,
+		ServerTime:      timestamppb.New(now),
+	}
+	for index, key := range keys {
+		result := &fundingv1.FundingRateLookupResult{
+			Key:    rawKeys[index],
+			Status: funding.RateLookupMissing,
+		}
+		if matched[index] != nil {
+			result.Status = funding.RateLookupHit
+			result.Item = rateToProto(*matched[index], now, s.staleAfter)
+		} else if key.Exchange == "" {
+			result.Status = funding.RateLookupMissing
+		}
+		response.Results = append(response.Results, result)
 	}
 	return response, nil
 }
@@ -90,7 +148,7 @@ func (s *FundingServer) ListFundingSpreads(
 ) (*fundingv1.ListFundingSpreadsResponse, error) {
 	snapshot := s.snapshots.Get()
 	now := time.Now().UTC()
-	spreads := funding.BuildSpreads(snapshot.Rates)
+	spreads := funding.BuildSpreads(funding.FilterRatesByExchange(snapshot.Rates, s.spreadEnabled))
 	response := &fundingv1.ListFundingSpreadsResponse{
 		Items:           make([]*fundingv1.FundingSpread, 0, len(spreads)),
 		Total:           int32(len(spreads)),
@@ -113,6 +171,8 @@ func (s *FundingServer) ListFundingSpreads(
 			MinTurnover_24HUsd:     decimal(item.MinTurnover24hUSD),
 			UpdatedAt:              timestamppb.New(item.UpdatedAt),
 			Stale:                  longLeg.Stale || shortLeg.Stale,
+			History_24HComplete:    item.History24hComplete,
+			History_7DComplete:     item.History7dComplete,
 		})
 	}
 	return response, nil
@@ -127,6 +187,9 @@ func spreadLegToProto(
 	return &fundingv1.FundingSpreadLeg{
 		Exchange:               item.Exchange,
 		ExchangeSymbol:         item.ExchangeSymbol,
+		GlobalSymbol:           item.GlobalSymbol,
+		BaseAsset:              item.BaseAsset,
+		QuoteAsset:             item.QuoteAsset,
 		EffectiveFundingRate:   decimal(item.EffectiveRate),
 		FundingIntervalSeconds: int32(item.IntervalHours * 3600),
 		NextFundingAt:          timestamppb.New(item.NextFundingAt),
@@ -135,6 +198,9 @@ func spreadLegToProto(
 		SourceUpdatedAt:        timestamppb.New(item.SourceUpdatedAt),
 		LastPrice:              decimal(item.LastPrice),
 		Stale:                  stale,
+		History_24HComplete:    item.History24hComplete,
+		History_7DComplete:     item.History7dComplete,
+		VenueContractType:      venueContractType(item.VenueContractType),
 	}
 }
 
@@ -145,9 +211,13 @@ func (s *FundingServer) ListFundingOpportunities(
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	period, err := ranking.ParsePeriod(request.GetPeriod())
+	periodValue := request.GetPeriod()
+	if strings.TrimSpace(periodValue) == "" {
+		periodValue = string(ranking.Period8h)
+	}
+	period, err := ranking.ParsePeriod(periodValue)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, "period must be one of 1h, 4h, 8h, 24h")
+		return nil, status.Error(codes.InvalidArgument, "period must be one of 8h, 24h")
 	}
 	minNotional, err := nonNegativeDecimal(request.GetMinLegNotionalUsd())
 	if err != nil {
@@ -159,10 +229,10 @@ func (s *FundingServer) ListFundingOpportunities(
 	}
 	limit := int(request.GetLimit())
 	if limit <= 0 {
-		limit = 200
+		limit = 100
 	}
-	if limit > 1000 {
-		limit = 1000
+	if limit > 100 {
+		limit = 100
 	}
 	now := time.Now().UTC()
 	if s.rankings == nil {
@@ -237,9 +307,14 @@ func rankingToProto(
 		P5Return:                   decimal(item.P5Return),
 		MinPositionNotionalUsd:     decimal(item.MinPositionNotionalUSD),
 		MinTurnover_24HUsd:         decimal(item.MinTurnover24hUSD),
-		Coverage:                   decimal(item.Coverage), Confidence: decimal(item.Confidence),
-		ModelState: item.ModelState, UpdatedAt: timestamppb.New(item.UpdatedAt),
-		Stale: snapshotStale || item.Stale || longLeg.Stale || shortLeg.Stale,
+		Coverage:                   decimal(item.Coverage),
+		Confidence:                 decimal(item.Confidence),
+		ModelState:                 item.ModelState,
+		UpdatedAt:                  timestamppb.New(item.UpdatedAt),
+		Stale:                      snapshotStale || item.Stale || longLeg.Stale || shortLeg.Stale,
+		SampleCount:                int32(item.SampleCount),
+		ExpectedPaybackMinutes:     decimal(item.ExpectedPaybackMinutes),
+		PaybackStatus:              string(item.PaybackStatus),
 	}
 }
 
@@ -250,6 +325,7 @@ func rankingLegToProto(
 ) *fundingv1.FundingSpreadLeg {
 	return &fundingv1.FundingSpreadLeg{
 		Exchange: item.Exchange, ExchangeSymbol: item.ExchangeSymbol,
+		GlobalSymbol: item.GlobalSymbol, BaseAsset: item.BaseAsset, QuoteAsset: item.QuoteAsset,
 		EffectiveFundingRate:   decimal(item.EffectiveRate),
 		FundingIntervalSeconds: int32(item.IntervalHours * 3600),
 		NextFundingAt:          timestamppb.New(item.NextFundingAt),
@@ -266,7 +342,7 @@ func nonNegativeDecimal(value string) (float64, error) {
 		return 0, nil
 	}
 	parsed, err := strconv.ParseFloat(value, 64)
-	if err != nil || parsed < 0 {
+	if err != nil || parsed < 0 || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
 		return 0, status.Error(codes.InvalidArgument, "invalid non-negative decimal")
 	}
 	return parsed, nil
@@ -303,6 +379,47 @@ func (s *FundingServer) GetFundingHistory(
 	return response, nil
 }
 
+func rateToProto(item funding.Rate, now time.Time, staleAfter time.Duration) *fundingv1.FundingRate {
+	rate := &fundingv1.FundingRate{
+		Exchange:               item.Exchange,
+		ExchangeSymbol:         item.ExchangeSymbol,
+		GlobalSymbol:           item.GlobalSymbol,
+		BaseAsset:              item.BaseAsset,
+		QuoteAsset:             item.QuoteAsset,
+		PositionQuantity:       decimal(item.PositionQuantity),
+		PositionNotionalUsd:    decimal(item.PositionNotionalUSD),
+		Volume_24HBase:         decimal(item.Volume24hBase),
+		Turnover_24HUsd:        decimal(item.Turnover24hUSD),
+		FundingRate:            decimal(item.Rate),
+		AnnualizedRate:         decimal(item.AnnualizedRate),
+		FundingIntervalSeconds: int32(item.IntervalHours * 3600),
+		NextFundingAt:          timestamppb.New(item.FundingTime),
+		MarkPrice:              decimal(item.MarkPrice),
+		IndexPrice:             decimal(item.IndexPrice),
+		LastPrice:              decimal(item.LastPrice),
+		PriceChange_24H:        decimal(item.PriceChange24h),
+		Cumulative_24H:         decimal(item.Cumulative24h),
+		Cumulative_7D:          decimal(item.Cumulative7d),
+		SourceUpdatedAt:        timestamppb.New(item.SourceUpdatedAt),
+		Stale:                  item.SourceUpdatedAt.IsZero() || now.Sub(item.SourceUpdatedAt) > staleAfter,
+		History_24HComplete:    item.History24hComplete,
+		History_7DComplete:     item.History7dComplete,
+		VenueContractType:      venueContractType(item.VenueContractType),
+	}
+	if item.NextRate != nil {
+		value := decimal(*item.NextRate)
+		rate.NextFundingRate = &value
+	}
+	return rate
+}
+
 func decimal(value float64) string {
 	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+func venueContractType(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return funding.VenueContractTypePerpetual
+	}
+	return value
 }

@@ -7,8 +7,12 @@ import type {
   PolymarketPricePoint,
 } from "@/types/polymarket";
 import {
+  computeChartXDomain,
   computeChartMinSpan,
   computeYDomain,
+  fairPriceChartTimeMs,
+  filterFairPricePointsToWindow,
+  filterPricePointsToWindow,
   formatYTick,
 } from "@/lib/polymarket-chart";
 
@@ -24,14 +28,21 @@ function chartPropsEqual(
     points: PolymarketPricePoint[];
     fairPricePoints: PolymarketFairPricePoint[];
     openPrice: number | null;
+    windowStart: string | null;
+    windowEnd: string | null;
   },
   right: {
     points: PolymarketPricePoint[];
     fairPricePoints: PolymarketFairPricePoint[];
     openPrice: number | null;
+    windowStart: string | null;
+    windowEnd: string | null;
   },
 ) {
   if (left.openPrice !== right.openPrice) return false;
+  if (left.windowStart !== right.windowStart || left.windowEnd !== right.windowEnd) {
+    return false;
+  }
   if (left.points.length !== right.points.length) return false;
   if (left.fairPricePoints.length !== right.fairPricePoints.length) return false;
   const lastLeft = left.points[left.points.length - 1];
@@ -50,24 +61,41 @@ function PolymarketPriceChartInner({
   points,
   fairPricePoints,
   openPrice,
+  windowStart,
+  windowEnd,
 }: {
   points: PolymarketPricePoint[];
   fairPricePoints: PolymarketFairPricePoint[];
   openPrice: number | null;
+  windowStart: string | null;
+  windowEnd: string | null;
 }) {
   const deferredPoints = React.useDeferredValue(points);
   const deferredFairPricePoints = React.useDeferredValue(fairPricePoints);
+  const nowMs = windowEnd ? Date.parse(windowEnd) : 0;
+  const xDomain = computeChartXDomain(windowStart, windowEnd, nowMs);
   const validPoints = React.useMemo(
     () =>
-      deferredPoints.filter(
-        (point): point is PolymarketPricePoint & { chainlinkPrice: number } =>
-          point.chainlinkPrice != null,
-      ),
-    [deferredPoints],
+      filterPricePointsToWindow(
+        deferredPoints,
+        windowStart,
+        windowEnd,
+        nowMs,
+      ).filter(
+          (point): point is PolymarketPricePoint & { chainlinkPrice: number } =>
+            point.chainlinkPrice != null,
+        ),
+    [deferredPoints, nowMs, windowEnd, windowStart],
   );
   const validFairPricePoints = React.useMemo(
-    () => deferredFairPricePoints.filter((point) => Number.isFinite(point.price)),
-    [deferredFairPricePoints],
+    () =>
+      filterFairPricePointsToWindow(
+        deferredFairPricePoints,
+        windowStart,
+        windowEnd,
+        nowMs,
+      ).filter((point) => Number.isFinite(point.price)),
+    [deferredFairPricePoints, nowMs, windowEnd, windowStart],
   );
 
   const hasOpen = openPrice != null;
@@ -93,33 +121,28 @@ function PolymarketPriceChartInner({
     if (hasOpen) domainValues.push(openPrice as number);
     const minSpan = computeChartMinSpan(domainValues, openPrice);
     const domain = computeYDomain(domainValues, { minSpan });
-    const timestamps = [
-      ...validPoints.map((point) => new Date(point.timestamp).getTime()),
-      ...validFairPricePoints.map((point) => new Date(point.timestamp).getTime()),
-    ];
-    const startMs = Math.min(...timestamps);
-    const endMs = Math.max(...timestamps);
-    const spanMs = Math.max(endMs - startMs, 1);
-    const x = (timestamp: string) => {
-      const ratio = (new Date(timestamp).getTime() - startMs) / spanMs;
+    if (!xDomain) return null;
+    const { startMs, spanMs } = xDomain;
+    const x = (timestampMs: number) => {
+      const ratio = (timestampMs - startMs) / spanMs;
       return margin.left + ratio * chartWidth;
     };
     const y = (value: number) =>
       margin.top + ((domain.yMax - value) / (domain.yMax - domain.yMin)) * chartHeight;
-    const buildPath = <T extends { timestamp: string },>(
+    const buildPath = <T,>(
       pathPoints: T[],
       value: (point: T) => number,
-      gapMs: number,
+      timestamp: (point: T) => number,
+      gapMs?: number,
     ) =>
       pathPoints
         .map((point, index) => {
           const previous = pathPoints[index - 1];
           const hasGap =
+            gapMs != null &&
             previous != null &&
-            new Date(point.timestamp).getTime() -
-              new Date(previous.timestamp).getTime() >
-              gapMs;
-          return `${index === 0 || hasGap ? "M" : "L"} ${x(point.timestamp).toFixed(2)} ${y(value(point)).toFixed(2)}`;
+            timestamp(point) - timestamp(previous) > gapMs;
+          return `${index === 0 || hasGap ? "M" : "L"} ${x(timestamp(point)).toFixed(2)} ${y(value(point)).toFixed(2)}`;
         })
         .join(" ");
     return {
@@ -129,12 +152,13 @@ function PolymarketPriceChartInner({
       chainlinkPathD: buildPath(
         validPoints,
         (point) => point.chainlinkPrice,
+        (point) => new Date(point.timestamp).getTime(),
         10_000,
       ),
       fairPricePathD: buildPath(
         validFairPricePoints,
         (point) => point.price,
-        5_000,
+        fairPriceChartTimeMs,
       ),
       startMs,
       spanMs,
@@ -150,6 +174,7 @@ function PolymarketPriceChartInner({
     openPrice,
     validFairPricePoints,
     validPoints,
+    xDomain,
   ]);
 
   if (chartGeometry == null) {
@@ -169,8 +194,8 @@ function PolymarketPriceChartInner({
     startMs,
     spanMs,
   } = chartGeometry;
-  const x = (timestamp: string) => {
-    const ratio = (new Date(timestamp).getTime() - startMs) / spanMs;
+  const x = (timestampMs: number) => {
+    const ratio = (timestampMs - startMs) / spanMs;
     return margin.left + ratio * chartWidth;
   };
   const y = (value: number) =>
@@ -249,7 +274,7 @@ function PolymarketPriceChartInner({
         {xTickTimes.map((timestamp, index) => (
           <text
             key={timestamp}
-            x={x(timestamp)}
+            x={x(new Date(timestamp).getTime())}
             y={height - 12}
             textAnchor={
               index === 0 ? "start" : index === xTickTimes.length - 1 ? "end" : "middle"
@@ -316,7 +341,7 @@ function PolymarketPriceChartInner({
         ) : null}
         {validPoints.length > 0 ? (
           <circle
-            cx={x(validPoints[validPoints.length - 1].timestamp)}
+            cx={x(new Date(validPoints[validPoints.length - 1].timestamp).getTime())}
             cy={y(validPoints[validPoints.length - 1].chainlinkPrice)}
             r="4"
             fill="var(--chart-2)"
@@ -334,7 +359,7 @@ function PolymarketPriceChartInner({
         ) : null}
         {validFairPricePoints.length > 0 ? (
           <circle
-            cx={x(validFairPricePoints[validFairPricePoints.length - 1].timestamp)}
+            cx={x(fairPriceChartTimeMs(validFairPricePoints[validFairPricePoints.length - 1]))}
             cy={y(validFairPricePoints[validFairPricePoints.length - 1].price)}
             r="4"
             fill="var(--chart-3)"

@@ -29,7 +29,8 @@ class SymbolNormalizer {
                                           std::string_view contract_spec = {}) const;
 
  private:
-  [[nodiscard]] std::string NormalizeAsset(std::string_view asset) const;
+  [[nodiscard]] std::optional<std::string>
+  NormalizeAsset(std::string_view asset) const;
   std::unordered_map<std::string, std::string> aliases_;
   std::vector<std::string> known_quotes_;
 };

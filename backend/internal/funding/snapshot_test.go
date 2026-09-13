@@ -9,7 +9,10 @@ import (
 func TestSnapshotStoreCopiesData(t *testing.T) {
 	store := NewSnapshotStore()
 	source := []Rate{{
+		Exchange:       "binance",
 		ExchangeSymbol: "BTCUSDT",
+		BaseAsset:      "BTC",
+		QuoteAsset:     "USDT",
 		History:        []HistoryPoint{{Rate: 0.001}},
 	}}
 	store.Replace(source, 1, time.Unix(100, 0))

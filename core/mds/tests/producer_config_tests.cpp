@@ -4,8 +4,10 @@
 #include <cassert>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 #include <unistd.h>
 
@@ -26,6 +28,22 @@ std::filesystem::path write_temp(std::string_view content,
   std::ofstream output(path);
   output << content;
   return path;
+}
+
+void verify(bool condition, std::string_view message) {
+  if (!condition) {
+    throw std::runtime_error(std::string(message));
+  }
+}
+
+std::string replace_all(std::string text, std::string_view from,
+                        std::string_view to) {
+  std::size_t offset{};
+  while ((offset = text.find(from, offset)) != std::string::npos) {
+    text.replace(offset, from.size(), to);
+    offset += to.size();
+  }
+  return text;
 }
 
 }  // namespace
@@ -82,6 +100,175 @@ int main() {
   }
   assert(found_binance_perpetual);
 
+  const auto ticker_config =
+      mds::producer::load_config(MDS_ASTER_LIGHTER_CONFIG);
+  verify(static_cast<bool>(ticker_config),
+         "Aster/Lighter ticker config must load");
+  verify(ticker_config.value.connections.size() == 2,
+         "ticker config must isolate two venue connections");
+  verify(ticker_config.value.ring_count == 8,
+         "ticker config must allocate four shards per venue");
+  for (const auto &connection : ticker_config.value.connections) {
+    verify(connection.endpoint.product ==
+               utils::md::ProductType::Perpetual,
+           "production ticker config must remain perpetual-only");
+    verify(connection.streams.size() == 1,
+           "ticker connection must contain one discovery stream");
+    const auto &stream = connection.streams.front();
+    verify(stream.discovery.has_value(),
+           "ticker stream must use metadata discovery");
+    verify(stream.subscribe_ticker && !stream.subscribe_orderbook,
+           "production config must enable only BBO ticker");
+    if (connection.endpoint.venue == utils::md::Venue::Lighter) {
+      verify(connection.endpoint.client_message_limit_per_minute == 150,
+             "Lighter must reserve headroom below the 200/min IP limit");
+      verify(stream.ticker_requires_first_data,
+             "Lighter readiness must wait for the first ticker frame");
+    } else {
+      verify(connection.endpoint.venue == utils::md::Venue::Aster,
+             "ticker config contains an unexpected venue");
+      verify(connection.endpoint.client_message_limit_per_minute == 0,
+             "Aster must not use the Lighter client-message budget");
+    }
+  }
+
+  const auto ticker_text = read_file(MDS_ASTER_LIGHTER_CONFIG);
+  for (const auto &[value, suffix] :
+       std::array<std::pair<std::string_view, std::string_view>, 4>{{
+           {"0", "zero"},
+           {"200", "hard-limit"},
+           {"-1", "negative"},
+           {"150.5", "non-integer"},
+       }}) {
+    const auto invalid_text = replace_all(
+        ticker_text, "client_message_limit_per_minute: 150",
+        "client_message_limit_per_minute: " + std::string(value));
+    const auto invalid_path = write_temp(invalid_text, suffix);
+    verify(!mds::producer::load_config(invalid_path.string()),
+           "invalid Lighter client-message limit was accepted");
+    std::filesystem::remove(invalid_path);
+  }
+  const auto missing_limit_text = replace_all(
+      ticker_text, "    client_message_limit_per_minute: 150\n", "");
+  const auto missing_limit_path =
+      write_temp(missing_limit_text, "missing-lighter-limit");
+  verify(!mds::producer::load_config(missing_limit_path.string()),
+         "Lighter config without a client-message limit was accepted");
+  std::filesystem::remove(missing_limit_path);
+
+  const auto unknown_limit_text = replace_all(
+      ticker_text, "    client_message_limit_per_minute: 150\n",
+      "    client_message_limit_per_minute: 150\n"
+      "    unexpected: true\n");
+  const auto unknown_limit_path =
+      write_temp(unknown_limit_text, "unknown-lighter-limit");
+  verify(!mds::producer::load_config(unknown_limit_path.string()),
+         "unknown Lighter venue-limit field was accepted");
+  std::filesystem::remove(unknown_limit_path);
+
+  const auto short_recovery_path = write_temp(
+      replace_all(ticker_text, "recovery_deadline_ms: 180000",
+                  "recovery_deadline_ms: 120000"),
+      "lighter-short-recovery");
+  verify(!mds::producer::load_config(short_recovery_path.string()),
+         "Lighter recovery deadline accepted the worst-case boundary");
+  std::filesystem::remove(short_recovery_path);
+  const auto short_continuous_path = write_temp(
+      replace_all(ticker_text, "max_continuous_recovery_ms: 600000",
+                  "max_continuous_recovery_ms: 180000"),
+      "lighter-short-continuous");
+  verify(!mds::producer::load_config(short_continuous_path.string()),
+         "Lighter continuous-recovery bound was not enforced");
+  std::filesystem::remove(short_continuous_path);
+  const auto too_many_connections_path = write_temp(
+      replace_all(
+          replace_all(ticker_text, "max_symbols_per_ws: 450",
+                      "max_symbols_per_ws: 1"),
+          "recovery_deadline_ms: 180000",
+          "recovery_deadline_ms: 300000"),
+      "lighter-connections");
+  verify(!mds::producer::load_config(
+             too_many_connections_path.string()),
+         "Lighter configuration above 255 IP connections was accepted");
+  std::filesystem::remove(too_many_connections_path);
+
+  const std::string aster_book =
+      "\n  - venue: aster\n"
+      "    product: PERPETUAL\n"
+      "    stream: orderbook\n"
+      "    depth: 1000\n"
+      "    discovery:\n"
+      "      quote_assets: [USDT]\n"
+      "      minimum_turnover: 1000000\n"
+      "      max_symbols: 512\n";
+  const auto aster_over_limit_path =
+      write_temp(ticker_text + aster_book, "aster-dual-limit");
+  verify(!mds::producer::load_config(aster_over_limit_path.string()),
+         "Aster dual stream exceeded the 200-stream connection limit");
+  std::filesystem::remove(aster_over_limit_path);
+  const auto aster_safe_path = write_temp(
+      replace_all(ticker_text, "max_symbols_per_ws: 180",
+                  "max_symbols_per_ws: 90") +
+          aster_book,
+      "aster-dual-safe");
+  verify(static_cast<bool>(
+             mds::producer::load_config(aster_safe_path.string())),
+         "Aster dual stream safety margin should be accepted");
+  std::filesystem::remove(aster_safe_path);
+
+  const auto mismatched_discovery_path = write_temp(
+      ticker_text +
+          replace_all(aster_book, "minimum_turnover: 1000000",
+                      "minimum_turnover: 999999"),
+      "discovery-mismatch");
+  verify(!mds::producer::load_config(mismatched_discovery_path.string()),
+         "ticker/book discovery mismatch was accepted");
+  std::filesystem::remove(mismatched_discovery_path);
+
+  const std::string lighter_book =
+      "\n  - venue: lighter\n"
+      "    product: PERPETUAL\n"
+      "    stream: orderbook\n"
+      "    discovery:\n"
+      "      quote_assets: [USDC]\n"
+      "      minimum_turnover: 1000000\n"
+      "      max_symbols: 256\n";
+  const auto lighter_over_limit_path =
+      write_temp(ticker_text + lighter_book, "lighter-dual-limit");
+  verify(!mds::producer::load_config(lighter_over_limit_path.string()),
+         "Lighter dual stream exceeded the 500-subscription limit");
+  std::filesystem::remove(lighter_over_limit_path);
+  const auto lighter_safe_path = write_temp(
+      replace_all(
+          replace_all(ticker_text, "max_symbols_per_ws: 450",
+                      "max_symbols_per_ws: 225"),
+          "recovery_deadline_ms: 180000",
+          "recovery_deadline_ms: 300000") +
+          lighter_book,
+      "lighter-dual-safe");
+  verify(static_cast<bool>(
+             mds::producer::load_config(lighter_safe_path.string())),
+         "Lighter dual stream safety margin should be accepted");
+  std::filesystem::remove(lighter_safe_path);
+
+  const auto book_config =
+      mds::producer::load_config(MDS_ASTER_LIGHTER_BOOK_CONFIG);
+  verify(static_cast<bool>(book_config),
+         "Aster/Lighter order-book config must load");
+  verify(book_config.value.connections.size() == 4,
+         "book config must cover both products for both venues");
+  verify(book_config.value.ring_count == 16,
+         "book config must allocate isolated high-capacity shards");
+  for (const auto &connection : book_config.value.connections) {
+    verify(connection.streams.size() == 1,
+           "book connection must contain one discovery stream");
+    const auto &stream = connection.streams.front();
+    verify(stream.discovery.has_value(),
+           "book stream must use metadata discovery");
+    verify(!stream.subscribe_ticker && stream.subscribe_orderbook,
+           "book delivery config must not co-locate ticker");
+  }
+
   const auto full_binance_path = example.parent_path() / "binance_spot.yaml";
   if (std::filesystem::exists(full_binance_path)) {
     const auto full_binance =
@@ -102,6 +289,33 @@ int main() {
       assert(connection.streams[0].multiplex_ring.ring_bytes ==
              16'777'216);
     }
+  }
+
+  const auto okx_hyperliquid_path =
+      example.parent_path() / "okx-hypeliquid.yaml";
+  if (std::filesystem::exists(okx_hyperliquid_path)) {
+    const auto okx_hyperliquid =
+        mds::producer::load_config(okx_hyperliquid_path.string());
+    assert(okx_hyperliquid);
+    assert(okx_hyperliquid.value.connections.size() == 4);
+    std::size_t hyperliquid_connections = 0;
+    for (const auto &connection :
+         okx_hyperliquid.value.connections) {
+      if (connection.endpoint.venue !=
+          utils::md::Venue::Hyperliquid) {
+        continue;
+      }
+      ++hyperliquid_connections;
+      assert(connection.endpoint.max_symbols_per_ws == 100);
+      assert(connection.streams.size() == 1);
+      assert(connection.streams[0].discovery);
+      assert(connection.streams[0].discovery->quote_assets ==
+             std::vector<std::string>{"USDC"});
+      assert(connection.streams[0]
+                 .discovery->minimum_turnover == 1'000'000);
+      assert(connection.streams[0].discovery->max_symbols == 512);
+    }
+    assert(hyperliquid_connections == 2);
   }
 
   auto text = read_file(example);
@@ -284,6 +498,25 @@ int main() {
   assert(gate.value.connections[0].streams[0].orderbook_depth == 20);
   assert(gate.value.connections[0].streams[0].max_levels_per_message ==
          1024);
+
+  auto gate_utf8 = gate_book;
+  const auto beat = gate_utf8.find("symbol: BEATUSDT");
+  assert(beat != std::string::npos);
+  gate_utf8.replace(beat, std::string("symbol: BEATUSDT").size(),
+                    "symbol: 龙虾USDT");
+  const auto gate_utf8_path = write_temp(gate_utf8, "gate-utf8");
+  const auto gate_utf8_loaded =
+      mds::producer::load_config(gate_utf8_path.string());
+  assert(gate_utf8_loaded);
+  assert(gate_utf8_loaded.value.connections[0].streams[0].symbol ==
+         "龙虾USDT");
+
+  auto gate_bad = gate_book;
+  gate_bad.replace(gate_bad.find("symbol: BEATUSDT"),
+                   std::string("symbol: BEATUSDT").size(),
+                   "symbol: \"坏\\\"USDT\"");
+  const auto gate_bad_path = write_temp(gate_bad, "gate-bad-symbol");
+  assert(!mds::producer::load_config(gate_bad_path.string()));
 
   const std::string polymarket_config =
       "shared_memory:\n"
@@ -488,6 +721,8 @@ int main() {
   std::filesystem::remove(okx_bad_interval);
   std::filesystem::remove(okx_fast_path);
   std::filesystem::remove(gate_path);
+  std::filesystem::remove(gate_utf8_path);
+  std::filesystem::remove(gate_bad_path);
   std::filesystem::remove(polymarket_path);
   std::filesystem::remove(bad_polymarket);
   std::filesystem::remove(discovery_path);

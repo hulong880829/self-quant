@@ -40,13 +40,16 @@ utils::md::Instrument instrument(utils::md::Venue venue,
 }
 
 utils::md::EventHeader event(std::uint32_t id, std::uint64_t sequence,
-                             utils::md::BookState state) {
+                             utils::md::BookState state,
+                             utils::md::BboOrigin origin =
+                                 utils::md::BboOrigin::Unknown) {
   utils::md::EventHeader value{};
   value.instrument_id = id;
   value.book_generation = 1;
   value.source_seq = sequence;
   value.exchange_ts_ns = sequence * 1'000;
   value.state = state;
+  value.bbo_origin = origin;
   return value;
 }
 
@@ -109,7 +112,8 @@ void test_hyperliquid_usdc_conversion() {
       event(1, 0, utils::md::BookState::Building),
       binance_instrument));
   assert(binance_ticker.publish_bbo(
-      {event(1, 1, utils::md::BookState::Live),
+      {event(1, 1, utils::md::BookState::Live,
+             utils::md::BboOrigin::TickerStream),
        {9'900, 1'000}, {10'200, 2'000}}));
 
   const auto hyperliquid_instrument = instrument(
@@ -118,7 +122,8 @@ void test_hyperliquid_usdc_conversion() {
       event(2, 0, utils::md::BookState::Building),
       hyperliquid_instrument));
   assert(hyperliquid_ticker.publish_bbo(
-      {event(2, 1, utils::md::BookState::Live),
+      {event(2, 1, utils::md::BookState::Live,
+             utils::md::BboOrigin::TickerStream),
        {10'000, 1'000}, {10'000, 2'000}}));
 
   auto fx_instrument =
@@ -127,7 +132,8 @@ void test_hyperliquid_usdc_conversion() {
   assert(fx_ticker.publish_instrument(
       event(3, 0, utils::md::BookState::Building), fx_instrument));
   assert(fx_ticker.publish_bbo(
-      {event(3, 1, utils::md::BookState::Live),
+      {event(3, 1, utils::md::BookState::Live,
+             utils::md::BboOrigin::TickerStream),
        {99, 1'000}, {101, 2'000}}));
 
   AggBboRecord record{};
@@ -159,7 +165,8 @@ void publish_source(mds::publish::WirePublisher &ticker,
   assert(book.publish_instrument(
       event(id, 0, utils::md::BookState::Building), metadata));
   assert(ticker.publish_bbo(
-      {event(id, 1, utils::md::BookState::Live),
+      {event(id, 1, utils::md::BookState::Live,
+             utils::md::BboOrigin::TickerStream),
        {bid, 1'000}, {ask, 2'000}}));
   const std::array<utils::md::Level, 2> bids{
       utils::md::Level{bid, 1'000},
@@ -169,6 +176,19 @@ void publish_source(mds::publish::WirePublisher &ticker,
       utils::md::Level{ask + 1, 4'000}};
   assert(book.publish_snapshot(
       event(id, 1, utils::md::BookState::Live), bids, asks));
+}
+
+void publish_book_update(mds::publish::WirePublisher &book,
+                         std::uint32_t id, std::uint64_t sequence,
+                         std::int64_t bid, std::int64_t ask) {
+  const std::array<utils::md::Level, 2> bids{
+      utils::md::Level{bid, 1'000},
+      utils::md::Level{bid - 1, 3'000}};
+  const std::array<utils::md::Level, 2> asks{
+      utils::md::Level{ask, 2'000},
+      utils::md::Level{ask + 1, 4'000}};
+  assert(book.publish_snapshot(
+      event(id, sequence, utils::md::BookState::Live), bids, asks));
 }
 
 }  // namespace
@@ -208,7 +228,11 @@ int main() {
 
   auto bbo = register_agg_bbo(request);
   auto depth = register_agg_orderbook(request);
-  assert(bbo && depth && bbo.value != depth.value);
+  auto short_ttl_request = request;
+  short_ttl_request.ttl_us = 20'000;
+  auto short_ttl_depth = register_agg_orderbook(short_ttl_request);
+  assert(bbo && depth && short_ttl_depth && bbo.value != depth.value &&
+         depth.value != short_ttl_depth.value);
   AggBboRecord bbo_record{};
   AggOrderBookRecord book_record{};
   assert(try_read_agg_bbo(bbo.value, bbo_record) ==
@@ -259,11 +283,48 @@ int main() {
   assert(bbo_record.gated_bid.price == 10'010);
   assert(bbo_record.gated_ask.price == 10'020);
   assert(bbo_record.member_count == 2);
+  assert((bbo_record.header.flags & utils::md::wire::kBboOriginMask) == 0);
   assert(book_record.bid_count >= 2 && book_record.ask_count >= 2);
+  assert((book_record.header.flags & utils::md::wire::kBboOriginMask) == 0);
   assert(book_record.bids[0].price == 10'010);
   assert(book_record.asks[0].price == 10'020);
   assert(query_state(bbo.value) == SubscriptionState::Live);
   assert(query_state(depth.value) == SubscriptionState::Live);
+
+  AggOrderBookRecord short_ttl_book{};
+  ErrorCode short_ttl_error = ErrorCode::AggregateNotReady;
+  const auto short_ttl_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (std::chrono::steady_clock::now() < short_ttl_deadline &&
+         (short_ttl_error != ErrorCode::Ok ||
+          short_ttl_book.active_mask != 3)) {
+    short_ttl_error =
+        try_read_agg_orderbook(short_ttl_depth.value, short_ttl_book);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  assert(short_ttl_error == ErrorCode::Ok);
+  assert(short_ttl_book.active_mask == 3);
+  const auto last_good_sequence = short_ttl_book.header.source_seq;
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  assert(try_read_agg_orderbook(short_ttl_depth.value, short_ttl_book) ==
+         ErrorCode::Ok);
+  assert(short_ttl_book.header.source_seq == last_good_sequence);
+  assert(short_ttl_book.active_mask == 3);
+  assert(query_state(short_ttl_depth.value) == SubscriptionState::Live);
+
+  publish_book_update(binance_book, 1, 2, 10'001, 10'021);
+  const auto recovery_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (std::chrono::steady_clock::now() < recovery_deadline &&
+         short_ttl_book.header.source_seq == last_good_sequence) {
+    assert(try_read_agg_orderbook(short_ttl_depth.value, short_ttl_book) ==
+           ErrorCode::Ok);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  assert(short_ttl_book.header.source_seq != last_good_sequence);
+  assert(short_ttl_book.active_mask == 1);
+  assert(short_ttl_book.bids[0].price == 10'001);
 
   shutdown();
   assert(try_read_agg_bbo(bbo.value, bbo_record) ==

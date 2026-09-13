@@ -22,6 +22,9 @@ import {
 } from "lucide-react";
 
 import { AuthProvider, useAuth } from "@/components/auth/auth-provider";
+import { PersistentWorkspaceBoundary } from "@/components/layout/persistent-workspace-boundary";
+import { FundingDashboard } from "@/components/funding/funding-dashboard";
+import { TradingWorkspace } from "@/app/trading/page";
 import {
   AssistantProvider,
   clearAssistantConversationSession,
@@ -203,6 +206,24 @@ function AccountMenu() {
   );
 }
 
+function KeepAliveFundingPage() {
+  return <FundingDashboard />;
+}
+
+function KeepAliveTradingPage() {
+  return (
+    <React.Suspense
+      fallback={
+        <div className="flex min-h-[var(--app-page-min-height)] items-center justify-center text-sm text-muted-foreground">
+          正在加载实盘交易…
+        </div>
+      }
+    >
+      <TradingWorkspace />
+    </React.Suspense>
+  );
+}
+
 function AppShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { resolvedTheme, setTheme } = useTheme();
@@ -290,7 +311,14 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
             assistantOpen ? "assistant-dock:pr-[366px]" : "assistant-dock:pr-[72px]",
           )}
         >
-          <div className="mx-auto w-full min-w-0 max-w-[1920px]">{children}</div>
+          <div className="mx-auto w-full min-w-0 max-w-[1920px]">
+            <PersistentWorkspaceBoundary
+              fundingPage={<KeepAliveFundingPage />}
+              tradingPage={<KeepAliveTradingPage />}
+            >
+              {children}
+            </PersistentWorkspaceBoundary>
+          </div>
         </main>
         {assistantReady ? (
           <ResearchAssistant

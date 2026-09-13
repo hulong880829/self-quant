@@ -3,11 +3,13 @@ package trader
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
+	"selfquant/backend/internal/trader/exchange"
 )
 
 func normalizePlaceInput(input PlaceOrderInput) (PlaceOrderInput, error) {
@@ -41,25 +43,213 @@ func normalizePlaceInput(input PlaceOrderInput) (PlaceOrderInput, error) {
 }
 
 func validateInstrumentRules(instrument Instrument, orderType, quantity, price string) error {
+	_, _, err := prepareOrder(instrument, orderType, quantity, price, price)
+	return err
+}
+
+func instrumentRulesReady(instrument Instrument, orderType string) bool {
+	statusKnown := func(status string) bool {
+		return status == exchange.ConstraintKnown ||
+			status == exchange.ConstraintNotApplicable
+	}
+	switch strings.ToLower(strings.TrimSpace(orderType)) {
+	case "limit":
+		return parsePositiveDecimal(instrument.QuantityStep).IsPositive() &&
+			parsePositiveDecimal(instrument.PriceTick).IsPositive() &&
+			statusKnown(instrument.MinQuantityStatus) &&
+			statusKnown(instrument.MaxQuantityStatus) &&
+			statusKnown(instrument.MinNotionalStatus)
+	case "market":
+		return ruleDecimal(
+			instrument.MarketQuantityStep,
+			instrument.MarketQuantityStepStatus,
+		).IsPositive() &&
+			statusKnown(instrument.MarketMinQuantityStatus) &&
+			statusKnown(instrument.MarketMaxQuantityStatus) &&
+			statusKnown(instrument.MarketMinNotionalStatus)
+	default:
+		return false
+	}
+}
+
+func allowBelowMinNotional(execution ArbitrageExecution, instrument Instrument) bool {
+	return execution.LastCloseClip &&
+		strings.EqualFold(strings.TrimSpace(execution.PositionEffect), "close") &&
+		execution.ReduceOnly &&
+		strings.EqualFold(instrument.ContractType, "perpetual")
+}
+
+func allowBelowMinNotionalCombo(
+	combination ArbitrageCombination,
+	execution ArbitrageExecution,
+	instrument Instrument,
+) bool {
+	return allowBelowMinNotional(execution, instrument) &&
+		arbitrageFlattening(combination)
+}
+
+func lastCloseClipMustMatchFills(
+	combination ArbitrageCombination,
+	execution ArbitrageExecution,
+) bool {
+	return arbitrageFlattening(combination) &&
+		execution.LastCloseClip &&
+		strings.EqualFold(strings.TrimSpace(execution.PositionEffect), "close") &&
+		execution.ReduceOnly
+}
+
+func prepareOrder(
+	instrument Instrument,
+	orderType, quantity, price, referencePrice string,
+) (string, string, error) {
+	return prepareOrderMode(instrument, orderType, quantity, price, referencePrice, false)
+}
+
+func prepareOrderSkippingMinNotional(
+	instrument Instrument,
+	orderType, quantity, price, referencePrice string,
+) (string, string, error) {
+	return prepareOrderMode(instrument, orderType, quantity, price, referencePrice, true)
+}
+
+func prepareArbitrageOrder(
+	instrument Instrument,
+	orderType, quantity, price, referencePrice string,
+	execution ArbitrageExecution,
+) (string, string, error) {
+	if allowBelowMinNotional(execution, instrument) {
+		return prepareOrderSkippingMinNotional(instrument, orderType, quantity, price, referencePrice)
+	}
+	return prepareOrder(instrument, orderType, quantity, price, referencePrice)
+}
+
+func prepareOrderMode(
+	instrument Instrument,
+	orderType, quantity, price, referencePrice string,
+	skipMinNotional bool,
+) (string, string, error) {
 	qty, err := decimal.NewFromString(quantity)
 	if err != nil || !qty.IsPositive() {
-		return ErrInvalidArgument
+		return "", "", fmt.Errorf("%w: quantity %q must be positive", ErrInvalidArgument, quantity)
 	}
-	if step := parsePositiveDecimal(instrument.QuantityStep); step.IsPositive() {
-		if !qty.Mod(step).IsZero() {
-			return ErrInvalidArgument
-		}
+	orderType = strings.ToLower(strings.TrimSpace(orderType))
+	step := parsePositiveDecimal(instrument.QuantityStep)
+	minQuantity, minQuantityStatus := instrument.MinQuantity, instrument.MinQuantityStatus
+	maxQuantity, maxQuantityStatus := instrument.MaxQuantity, instrument.MaxQuantityStatus
+	minNotional, minNotionalStatus := instrument.MinNotional, instrument.MinNotionalStatus
+	if orderType == "market" {
+		step = ruleDecimal(instrument.MarketQuantityStep, instrument.MarketQuantityStepStatus)
+		minQuantity, minQuantityStatus = instrument.MarketMinQuantity, instrument.MarketMinQuantityStatus
+		maxQuantity, maxQuantityStatus = instrument.MarketMaxQuantity, instrument.MarketMaxQuantityStatus
+		minNotional, minNotionalStatus = instrument.MarketMinNotional, instrument.MarketMinNotionalStatus
+	} else if orderType != "limit" {
+		return "", "", fmt.Errorf("%w: unsupported order type %q", ErrInvalidArgument, orderType)
 	}
+	if !step.IsPositive() || !qty.Mod(step).IsZero() {
+		return "", "", fmt.Errorf(
+			"%w: quantity %s does not satisfy %s step %s",
+			ErrInvalidArgument, qty, orderType, step,
+		)
+	}
+	if err := validateMinimumRule(qty, minQuantity, minQuantityStatus); err != nil {
+		return "", "", err
+	}
+	if err := validateMaximumRule(qty, maxQuantity, maxQuantityStatus); err != nil {
+		return "", "", err
+	}
+	canonicalPrice := ""
 	if orderType == "limit" {
 		px, priceErr := decimal.NewFromString(price)
 		if priceErr != nil || !px.IsPositive() {
-			return ErrInvalidArgument
+			return "", "", fmt.Errorf("%w: limit price %q must be positive", ErrInvalidArgument, price)
 		}
-		if tick := parsePositiveDecimal(instrument.PriceTick); tick.IsPositive() {
-			if !px.Mod(tick).IsZero() {
-				return ErrInvalidArgument
-			}
+		tick := parsePositiveDecimal(instrument.PriceTick)
+		if !tick.IsPositive() || !px.Mod(tick).IsZero() {
+			return "", "", fmt.Errorf(
+				"%w: price %s does not satisfy tick %s",
+				ErrInvalidArgument, px, tick,
+			)
 		}
+		canonicalPrice = px.String()
+		referencePrice = canonicalPrice
+	}
+	if !skipMinNotional {
+		if err := validateNotionalRule(
+			qty, referencePrice, minNotional, minNotionalStatus,
+		); err != nil {
+			return "", "", err
+		}
+	}
+	return qty.String(), canonicalPrice, nil
+}
+
+func ruleDecimal(value, status string) decimal.Decimal {
+	if status != exchange.ConstraintKnown {
+		return decimal.Zero
+	}
+	return parsePositiveDecimal(value)
+}
+
+func validateMinimumRule(quantity decimal.Decimal, value, status string) error {
+	switch status {
+	case exchange.ConstraintKnown:
+		minimum := parsePositiveDecimal(value)
+		if !minimum.IsPositive() {
+			return ErrInstrumentUnavailable
+		}
+		if quantity.LessThan(minimum) {
+			return fmt.Errorf(
+				"%w: quantity %s is below minimum %s: %w",
+				ErrInvalidArgument, quantity, minimum, ErrOrderBelowMinimum,
+			)
+		}
+	case exchange.ConstraintNotApplicable:
+	default:
+		return ErrInstrumentUnavailable
+	}
+	return nil
+}
+
+func validateMaximumRule(quantity decimal.Decimal, value, status string) error {
+	switch status {
+	case exchange.ConstraintKnown:
+		maximum := parsePositiveDecimal(value)
+		if !maximum.IsPositive() {
+			return ErrInstrumentUnavailable
+		}
+		if quantity.GreaterThan(maximum) {
+			return fmt.Errorf(
+				"%w: quantity %s exceeds maximum %s",
+				ErrInvalidArgument, quantity, maximum,
+			)
+		}
+	case exchange.ConstraintNotApplicable:
+	default:
+		return ErrInstrumentUnavailable
+	}
+	return nil
+}
+
+func validateNotionalRule(
+	quantity decimal.Decimal,
+	referencePrice, value, status string,
+) error {
+	switch status {
+	case exchange.ConstraintKnown:
+		minimum := parsePositiveDecimal(value)
+		price := parsePositiveDecimal(referencePrice)
+		if !minimum.IsPositive() || !price.IsPositive() {
+			return ErrInstrumentUnavailable
+		}
+		if quantity.Mul(price).LessThan(minimum) {
+			return fmt.Errorf(
+				"%w: notional %s is below minimum %s: %w",
+				ErrInvalidArgument, quantity.Mul(price), minimum, ErrOrderBelowMinimum,
+			)
+		}
+	case exchange.ConstraintNotApplicable:
+	default:
+		return ErrInstrumentUnavailable
 	}
 	return nil
 }

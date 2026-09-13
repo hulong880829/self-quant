@@ -146,6 +146,7 @@ func (h *Handler) getPolymarketAccountSummary(writer http.ResponseWriter, reques
 			"totalAssets":      summary.GetTotalAssets(),
 			"sourceUpdatedAt":  formatTimestamp(summary.GetSourceUpdatedAt()),
 			"stale":            summary.GetStale(),
+			"bindingStatus":    summary.GetBindingStatus(),
 		},
 	})
 }

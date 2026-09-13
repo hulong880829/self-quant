@@ -3,6 +3,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <poll.h>
@@ -56,19 +57,36 @@ oms::api::RuntimeConfig Config(oms::api::ExecutionMode mode) {
   return config;
 }
 
-oms::api::NewOrderRequest Order() {
-  oms::api::NewOrderRequest request{};
+oms::api::SubmitOrderRequest Order(
+    std::uint64_t instrument_id = 9,
+    std::string_view symbol = "DUAL") {
+  oms::api::SubmitOrderRequest submitted{};
+  auto& request = submitted.order;
   constexpr char client[] = "dual-client";
   std::memcpy(request.client_order_id.value.data(), client,
               sizeof(client) - 1);
   request.client_order_id.length = sizeof(client) - 1;
-  request.instrument_id = 9;
+  request.instrument_id = instrument_id;
   request.side = oms::api::Side::Buy;
   request.type = oms::api::OrderType::Limit;
   request.time_in_force = oms::api::TimeInForce::GTC;
   request.quantity = {10, 2, {}};
   request.price = {50, 2, {}};
-  return request;
+  submitted.routing.kind = oms::api::ExecutionRouteKind::Crypto;
+  submitted.routing.venue =
+      static_cast<std::uint8_t>(utils::md::Venue::Binance);
+  submitted.routing.product_type =
+      static_cast<std::uint8_t>(utils::md::ProductType::Spot);
+  submitted.routing.price_scale = 2;
+  submitted.routing.quantity_scale = 2;
+  submitted.routing.catalog_revision = 1;
+  submitted.routing.tick_size = 1;
+  submitted.routing.lot_size = 1;
+  std::memcpy(submitted.routing.crypto.venue_symbol.value.data(),
+              symbol.data(), symbol.size());
+  submitted.routing.crypto.venue_symbol.length =
+      static_cast<std::uint16_t>(symbol.size());
+  return submitted;
 }
 
 struct Capture {
@@ -118,120 +136,86 @@ std::vector<oms::api::RuntimeUpdate> Run(
   return capture.values;
 }
 
-void TestRebind(oms::api::ExecutionMode mode) {
-  const auto instrument = PolymarketInstrument();
-  const std::array instruments{instrument, Instrument()};
-  auto created = oms::api::OmsApi::Create(Config(mode), instruments);
+void TestRegisterSubmitRetireOrdering(oms::api::ExecutionMode mode) {
+  const auto initial = Instrument();
+  auto created = oms::api::OmsApi::Create(Config(mode), {&initial, 1});
   REQUIRE(created);
   auto& api = *created.value;
   REQUIRE(api.initialize_lane(1, 88));
 
-  oms::api::RebindPolymarketInstrumentRequest request{};
-  request.instrument_id = instrument.instrument.instrument_id;
-  request.condition_id[0] = 3;
-  request.token_id[0] = 4;
-  request.outcome = oms::api::PolymarketOutcome::No;
-  request.signature_type = 3;
-  request.minimum_order_size = 2;
-  const auto submitted = api.rebind_polymarket_instrument(1, request);
+  constexpr oms::api::InstrumentId dynamic_id = 777;
+  auto order = Order(dynamic_id, "DYNAMIC");
+  constexpr char client[] = "dynamic-client";
+  order.order.client_order_id = {};
+  std::memcpy(order.order.client_order_id.value.data(), client,
+              sizeof(client) - 1);
+  order.order.client_order_id.length = sizeof(client) - 1;
+  oms::api::RegisterInstrumentRequest registration{};
+  registration.instrument_id = dynamic_id;
+  registration.routing = order.routing;
+
+  const std::uint64_t before = api.execution_directory_access_count();
+  const auto registered = api.register_instrument(1, registration);
+  const auto submitted = api.submit_order(1, order);
+  const auto retired = api.retire_instrument(1, dynamic_id);
+  REQUIRE(registered);
   REQUIRE(submitted);
+  REQUIRE(retired);
 
   Capture capture;
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(1);
-  while (capture.values.empty() &&
+  while (capture.values.size() < 3 &&
          std::chrono::steady_clock::now() < deadline) {
     if (mode == oms::api::ExecutionMode::Inline)
       REQUIRE(api.service_io(0) == oms::api::Error::Ok);
     (void)api.drain_updates(1, &Capture::Add, &capture);
   }
-  REQUIRE(capture.values.size() == 1);
-  const auto& result = capture.values[0].command_result;
-  REQUIRE(result.kind ==
-          oms::api::RuntimeCommandResultKind::RebindInstrument);
-  REQUIRE(result.error == oms::api::Error::Ok);
-  REQUIRE(result.rebind.request_token == submitted.value);
-  REQUIRE(result.rebind.instrument_id == request.instrument_id);
-
-  auto non_polymarket = request;
-  non_polymarket.instrument_id = 9;
-  const auto invalid =
-      api.rebind_polymarket_instrument(1, non_polymarket);
-  REQUIRE(invalid);
-  const auto invalid_deadline =
-      std::chrono::steady_clock::now() + std::chrono::seconds(1);
-  while (capture.values.size() < 2 &&
-         std::chrono::steady_clock::now() < invalid_deadline) {
-    if (mode == oms::api::ExecutionMode::Inline)
-      REQUIRE(api.service_io(0) == oms::api::Error::Ok);
-    (void)api.drain_updates(1, &Capture::Add, &capture);
-  }
-  REQUIRE(capture.values.size() == 2);
-  REQUIRE(capture.values.back().command_result.error ==
-          oms::api::Error::InvalidArgument);
-
-  auto active_order = Order();
-  active_order.instrument_id = request.instrument_id;
-  REQUIRE(api.submit_order(1, active_order));
-  const auto conflicted =
-      api.rebind_polymarket_instrument(1, request);
-  REQUIRE(conflicted);
-  const auto conflict_deadline =
-      std::chrono::steady_clock::now() + std::chrono::seconds(1);
-  while (capture.values.size() < 4 &&
-         std::chrono::steady_clock::now() < conflict_deadline) {
-    if (mode == oms::api::ExecutionMode::Inline)
-      REQUIRE(api.service_io(0) == oms::api::Error::Ok);
-    (void)api.drain_updates(1, &Capture::Add, &capture);
-  }
-  REQUIRE(capture.values.size() == 4);
-  REQUIRE(capture.values.back().command_result.kind ==
-          oms::api::RuntimeCommandResultKind::RebindInstrument);
-  REQUIRE(capture.values.back().command_result.error ==
-          oms::api::Error::Conflict);
+  REQUIRE(capture.values.size() >= 3);
+  REQUIRE(capture.values[0].kind ==
+          oms::api::RuntimeUpdateKind::CommandResult);
+  REQUIRE(capture.values[0].command_result.kind ==
+          oms::api::RuntimeCommandResultKind::RegisterInstrument);
+  REQUIRE(capture.values[0].command_result.error == oms::api::Error::Ok);
+  REQUIRE(capture.values[1].kind == oms::api::RuntimeUpdateKind::Order);
+  REQUIRE(capture.values[1].order.type == oms::api::UpdateType::Submitted);
+  REQUIRE(capture.values[2].kind ==
+          oms::api::RuntimeUpdateKind::CommandResult);
+  REQUIRE(capture.values[2].command_result.kind ==
+          oms::api::RuntimeCommandResultKind::RetireInstrument);
+  REQUIRE(capture.values[2].command_result.error ==
+          oms::api::Error::Deferred);
+  // Exactly Register and Retire touched the directory; Submit did not.
+  REQUIRE(api.execution_directory_access_count() == before + 2);
 }
 
-void TestPreparedWithoutRegistry(oms::api::ExecutionMode mode) {
-  const auto instrument = Instrument();
-  auto created =
-      oms::api::OmsApi::Create(Config(mode), {&instrument, 1});
+void TestSubmitCancelDirectoryIsolation(oms::api::ExecutionMode mode) {
+  const auto initial = Instrument();
+  auto created = oms::api::OmsApi::Create(Config(mode), {&initial, 1});
   REQUIRE(created);
   auto& api = *created.value;
   REQUIRE(api.initialize_lane(1, 99));
-  oms::api::PreparedOrderRequest prepared{};
-  prepared.order = Order();
-  prepared.order.instrument_id = 777;
-  constexpr char client[] = "prepared-catalog-only";
-  std::memcpy(prepared.order.client_order_id.value.data(), client,
-              sizeof(client) - 1);
-  prepared.order.client_order_id.length = sizeof(client) - 1;
-  prepared.routing.kind = oms::api::ExecutionRouteKind::Generic;
-  prepared.routing.venue =
-      static_cast<std::uint8_t>(utils::md::Venue::Binance);
-  prepared.routing.product_type =
-      static_cast<std::uint8_t>(utils::md::ProductType::Spot);
-  prepared.routing.price_scale = 2;
-  prepared.routing.quantity_scale = 2;
-  prepared.routing.tick_size = 1;
-  prepared.routing.lot_size = 1;
-  prepared.routing.catalog_generation = 41;
-  const auto submitted = api.submit_prepared_order(1, prepared);
+  const std::uint64_t before = api.execution_directory_access_count();
+  const auto submitted = api.submit_order(1, Order());
   REQUIRE(submitted);
+  REQUIRE(api.cancel_order(1, submitted.value));
 
   Capture capture;
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(1);
-  while (capture.values.empty() &&
+  while (capture.values.size() < 3 &&
          std::chrono::steady_clock::now() < deadline) {
     if (mode == oms::api::ExecutionMode::Inline)
       REQUIRE(api.service_io(0) == oms::api::Error::Ok);
     (void)api.drain_updates(1, &Capture::Add, &capture);
   }
-  REQUIRE(!capture.values.empty());
-  REQUIRE(capture.values.front().kind ==
-          oms::api::RuntimeUpdateKind::Order);
-  REQUIRE(capture.values.front().order.type ==
-          oms::api::UpdateType::Submitted);
+  REQUIRE(capture.values.size() >= 3);
+  REQUIRE(capture.values[0].order.type == oms::api::UpdateType::Submitted);
+  REQUIRE(capture.values[1].order.type ==
+          oms::api::UpdateType::CancelRequested);
+  REQUIRE(capture.values[2].command_result.kind ==
+          oms::api::RuntimeCommandResultKind::Cancel);
+  REQUIRE(api.execution_directory_access_count() == before);
 }
 
 }  // namespace
@@ -253,8 +237,8 @@ int main() {
   REQUIRE(std::memcmp(inline_updates.data(), dedicated_updates.data(),
                       inline_updates.size() *
                           sizeof(oms::api::RuntimeUpdate)) == 0);
-  TestRebind(oms::api::ExecutionMode::Inline);
-  TestRebind(oms::api::ExecutionMode::DedicatedIo);
-  TestPreparedWithoutRegistry(oms::api::ExecutionMode::Inline);
-  TestPreparedWithoutRegistry(oms::api::ExecutionMode::DedicatedIo);
+  TestRegisterSubmitRetireOrdering(oms::api::ExecutionMode::Inline);
+  TestRegisterSubmitRetireOrdering(oms::api::ExecutionMode::DedicatedIo);
+  TestSubmitCancelDirectoryIsolation(oms::api::ExecutionMode::Inline);
+  TestSubmitCancelDirectoryIsolation(oms::api::ExecutionMode::DedicatedIo);
 }

@@ -10,6 +10,7 @@
 
 #include "strategyframe/config.h"
 #include "strategyframe/error.h"
+#include "strategyframe/strategy_context.h"
 #include "strategyframe/types.h"
 #include "utils/md/types.h"
 
@@ -38,6 +39,7 @@ class MarketDataSource {
   [[nodiscard]] Error poll(std::size_t budget, std::size_t& dispatched) noexcept;
   void stop() noexcept;
   [[nodiscard]] bool ready() const noexcept;
+  [[nodiscard]] const RuntimeMetrics& metrics() const noexcept;
   void retire_instrument(InstrumentId instrument_id) noexcept;
 
   // Deterministic in-memory source used by runtime/MDS tests. Each entry is one

@@ -1,6 +1,7 @@
 #include "net/http_client.h"
 #include "net/epoll_loop.h"
 #include "net/tcp_connector.h"
+#include "net/websocket_client.h"
 #include "net/websocket_codec.h"
 
 #include <algorithm>
@@ -215,6 +216,38 @@ void test_http_request_encoding_and_limits() {
   require(!header_limited.feed(bytes("HTTP/1.1 200 OK\r\n"), error) &&
               header_limited.error_code() == HttpParseError::HeaderTooLarge,
           "response header limit was not classified");
+}
+
+void test_websocket_upgrade_header_validation() {
+  using namespace net;
+  WebSocketClient client(nullptr);
+  require(client.set_upgrade_headers({}),
+          "empty WebSocket upgrade headers were rejected");
+
+  constexpr std::array<WebSocketHeader, 1> valid{{
+      {"X-Gate-Size-Decimal", "1"},
+  }};
+  require(client.set_upgrade_headers(valid),
+          "valid WebSocket upgrade header was rejected");
+  client.reset();
+
+  constexpr std::array<WebSocketHeader, 1> injected_name{{
+      {"X-Gate\r\nInjected", "1"},
+  }};
+  require(!client.set_upgrade_headers(injected_name),
+          "WebSocket upgrade header name injection was accepted");
+
+  constexpr std::array<WebSocketHeader, 1> injected_value{{
+      {"X-Gate-Size-Decimal", "1\r\nX-Injected: yes"},
+  }};
+  require(!client.set_upgrade_headers(injected_value),
+          "WebSocket upgrade header value injection was accepted");
+
+  constexpr std::array<WebSocketHeader, 1> reserved{{
+      {"Sec-WebSocket-Key", "override"},
+  }};
+  require(!client.set_upgrade_headers(reserved),
+          "reserved WebSocket upgrade header was accepted");
 }
 
 void test_http_protocol_hardening() {
@@ -444,6 +477,7 @@ int main() {
     test_masked_frame_and_partial_write();
     test_http_incremental_parsing();
     test_http_request_encoding_and_limits();
+    test_websocket_upgrade_header_validation();
     test_http_protocol_hardening();
     test_connector_states();
     test_connector_fallback_reused_fd_registration();

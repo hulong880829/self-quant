@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <iostream>
 #include <new>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <sys/mman.h>
@@ -180,6 +181,7 @@ void test_publish_decode_order_and_fragmentation() {
   require(bool(publisher.publish_instrument(header, instrument)),
           "instrument publish failed");
 
+  header.bbo_origin = utils::md::BboOrigin::TickerStream;
   utils::md::BboEvent bbo{header, {100, 2}, {101, 3}};
   require(bool(publisher.publish_bbo(bbo)), "BBO publish failed");
   utils::md::TickerEvent ticker{};
@@ -257,6 +259,13 @@ void test_publish_decode_order_and_fragmentation() {
                 inner.state == static_cast<std::uint8_t>(header.state) &&
                 inner.source_id == header.source_id,
             "wire publisher omitted header fields");
+    const auto expected_flags =
+        expected_type == utils::md::MessageType::Bbo ||
+                expected_type == utils::md::MessageType::Ticker
+            ? utils::md::wire::kBboOriginTickerStream
+            : 0;
+    require(inner.flags == expected_flags,
+            "wire publisher forwarded origin flags to the wrong record");
     require(bool(read.value.commit()), "record commit failed");
   }
   require(visitor.types.size() == expected.size() &&
@@ -273,6 +282,62 @@ void test_publish_decode_order_and_fragmentation() {
                   {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}) &&
               publisher.current_bus_seq() == 11,
           "publisher bus sequences were not unique and monotonic");
+  require(publisher.bbo_origin_missing() == 0,
+          "tagged BBO/ticker was counted as missing origin");
+}
+
+void test_bbo_origin_mirror_and_missing_counter() {
+  using namespace mds;
+  const auto suffix = std::to_string(::getpid());
+  auto primary_opened =
+      transport::SharedRing::open(ring_options("/mds.origin-primary." + suffix));
+  auto mirror_opened =
+      transport::SharedRing::open(ring_options("/mds.origin-mirror." + suffix));
+  require(bool(primary_opened) && bool(mirror_opened),
+          "failed to open origin mirror rings");
+  auto primary_ring = std::move(primary_opened.value);
+  auto mirror_ring = std::move(mirror_opened.value);
+  auto primary_registered = primary_ring.register_reader(
+      transport::process_start_marker(::getpid()), now_ns());
+  auto mirror_registered = mirror_ring.register_reader(
+      transport::process_start_marker(::getpid()), now_ns());
+  require(bool(primary_registered) && bool(mirror_registered),
+          "failed to register origin mirror readers");
+  auto primary_reader = primary_registered.value;
+  auto mirror_reader = mirror_registered.value;
+
+  publish::WirePublisher primary(primary_ring);
+  publish::WirePublisher mirror(mirror_ring);
+  primary.set_mirror(&mirror);
+  auto header = event_header();
+  header.bbo_origin = utils::md::BboOrigin::OrderBookStream;
+  const utils::md::BboEvent tagged{header, {100, 2}, {101, 3}};
+  require(bool(primary.publish_bbo(tagged)), "mirrored BBO publish failed");
+
+  const auto verify = [](transport::SharedRing &ring,
+                         transport::ReaderHandle &reader) {
+    auto read = ring.read(reader);
+    require(bool(read), "failed to read mirrored BBO");
+    utils::md::wire::BboRecord decoded{};
+    require(utils::md::wire::DecodeBbo(read.value->payload, decoded) ==
+                    utils::md::wire::CodecError::Ok &&
+                decoded.header.flags ==
+                    utils::md::wire::kBboOriginOrderBookStream,
+            "mirror changed BBO origin");
+    require(bool(read.value.commit()), "failed to commit mirrored BBO");
+  };
+  verify(primary_ring, primary_reader);
+  verify(mirror_ring, mirror_reader);
+  require(primary.bbo_origin_missing() == 0 &&
+              mirror.bbo_origin_missing() == 0,
+          "tagged mirrored BBO was counted as missing origin");
+
+  auto unknown = tagged;
+  unknown.header.bbo_origin = utils::md::BboOrigin::Unknown;
+  require(bool(primary.publish_bbo(unknown)), "unknown-origin BBO publish failed");
+  require(primary.bbo_origin_missing() == 1 &&
+              mirror.bbo_origin_missing() == 1,
+          "unknown-origin BBO was not observed on both publishers");
 }
 
 void test_late_reader_detection() {
@@ -459,15 +524,79 @@ void test_aggregate_orderbook_preallocated_publish() {
           "aggregate orderbook did not round-trip through the ring");
 }
 
+void test_segment_names_preserve_ascii_and_hash_non_ascii() {
+  const auto ascii = mds::transport::make_segment_name(
+      "binance", "spot", "btcusdt", "ticker", 2);
+  require(ascii == "/selfquant.mds.binance.spot.btcusdt.ticker.2",
+          "ASCII segment name changed");
+  const auto publisher_ascii = mds::publish::make_publisher_segment_name(
+      "/selfquant.mds", "spot", "BTCUSDT", "ticker");
+  require(publisher_ascii == "/selfquant.mds.spot.btcusdt.ticker.2",
+          "ASCII publisher segment name changed");
+  const auto multiplex = mds::publish::make_multiplex_segment_name(
+      "/selfquant.mds.bbo", "gate", "spot", "ticker", 0);
+  require(multiplex == "/selfquant.mds.bbo.gate.spot.ticker.shard0.2",
+          "multiplex segment name changed");
+
+  const auto first = mds::transport::make_segment_name(
+      "gate", "spot", "龙虾USDT", "ticker", 2);
+  const auto second = mds::transport::make_segment_name(
+      "gate", "spot", "我踏马来了USDT", "ticker", 2);
+  require(first != second, "distinct non-ASCII symbols produced one name");
+  require(first == "/selfquant.mds.gate.spot.______USDT-3569356e4c002760.ticker.2",
+          "non-ASCII FNV-1a segment hash suffix changed");
+  require(second ==
+              "/selfquant.mds.gate.spot._______________USDT-19b86a08bff4a133."
+              "ticker.2",
+          "second non-ASCII FNV-1a segment hash suffix changed");
+  require(first == mds::transport::make_segment_name(
+                       "gate", "spot", "龙虾USDT", "ticker", 2),
+          "non-ASCII segment hash is not stable");
+}
+
+void test_aster_lighter_segment_names_are_isolated() {
+  std::set<std::string> ticker_segments;
+  std::set<std::string> book_segments;
+  for (const std::string_view venue : {"aster", "lighter"}) {
+    for (const std::string_view product : {"spot", "perpetual"}) {
+      for (std::size_t shard = 0; shard < 4; ++shard) {
+        ticker_segments.insert(mds::publish::make_multiplex_segment_name(
+            "/selfquant.mds.bbo", venue, product, "ticker", shard));
+        book_segments.insert(mds::publish::make_multiplex_segment_name(
+            "/selfquant.mds.book", venue, product, "orderbook", shard));
+      }
+    }
+  }
+  require(ticker_segments.size() == 16 && book_segments.size() == 16,
+          "Aster/Lighter segment names are not unique");
+  require(ticker_segments.contains(
+              "/selfquant.mds.bbo.aster.spot.ticker.shard0.2") &&
+              ticker_segments.contains(
+                  "/selfquant.mds.bbo.lighter.perpetual.ticker.shard3.2"),
+          "Aster/Lighter ticker segment golden vector changed");
+  require(book_segments.contains(
+              "/selfquant.mds.book.aster.perpetual.orderbook.shard0.2") &&
+              book_segments.contains(
+                  "/selfquant.mds.book.lighter.spot.orderbook.shard3.2"),
+          "Aster/Lighter book segment golden vector changed");
+  for (const auto &segment : book_segments) {
+    require(!ticker_segments.contains(segment),
+            "ticker and book segment namespaces overlap");
+  }
+}
+
 } // namespace
 
 int main() {
   try {
     test_publish_decode_order_and_fragmentation();
+    test_bbo_origin_mirror_and_missing_counter();
     test_late_reader_detection();
     test_crc_and_backpressure();
     test_dual_segment_factory();
     test_aggregate_orderbook_preallocated_publish();
+    test_segment_names_preserve_ascii_and_hash_non_ascii();
+    test_aster_lighter_segment_names_are_isolated();
     std::cout << "all wire publisher tests passed\n";
     return 0;
   } catch (const std::exception &exception) {

@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  fetchFundingHistory,
   fetchFundingRates,
+  fetchFundingRatesLookup,
   fetchFundingSpreads,
+  fundingRequestKey,
   mapFundingDto,
   mapFundingHistoryResponse,
+  mapFundingRatesLookupResponse,
   mapFundingSpreadsResponse,
 } from "./funding";
 
@@ -40,11 +44,61 @@ afterEach(() => {
 });
 
 describe("funding list mapping", () => {
+  it("accepts Aster and Lighter and optional coverage fields", () => {
+    const aster = mapFundingDto(
+      fundingWire({
+        id: "aster-btcusdt",
+        exchange: "Aster",
+        history24hComplete: false,
+        history7dComplete: true,
+      }),
+      0,
+    );
+    expect(aster.exchange).toBe("Aster");
+    expect(aster.history24hComplete).toBe(false);
+    expect(aster.history7dComplete).toBe(true);
+    const legacy = mapFundingDto(fundingWire(), 0);
+    expect(legacy.history24hComplete).toBeUndefined();
+    expect(legacy.history7dComplete).toBeUndefined();
+  });
+
   it("accepts lightweight rows without history", () => {
     const item = mapFundingDto(fundingWire(), 0);
     expect(item.exchangeSymbol).toBe("BTCUSDT");
     expect(item.currentFundingRate).toBeNull();
     expect(item.fundingHistory).toEqual([]);
+    expect(item.venueContractType).toBe("PERPETUAL");
+  });
+
+  it("maps venue contract types", () => {
+    expect(mapFundingDto(fundingWire({ venueContractType: "TRADIFI_PERPETUAL" }), 0).venueContractType).toBe(
+      "TRADIFI_PERPETUAL",
+    );
+    expect(
+      mapFundingDto(
+        fundingWire({
+          exchange: "Hyperliquid",
+          exchangeSymbol: "xyz:ZHIPU",
+          venueContractType: "HIP3",
+        }),
+        0,
+      ).venueContractType,
+    ).toBe("HIP3");
+    const entropy = mapFundingDto(
+      fundingWire({
+        id: "entropy-io-anth",
+        exchange: "Entropy",
+        exchangeSymbol: "io:ANTH",
+        symbol: "ANTHUSDC",
+        baseAsset: "ANTH",
+        quoteAsset: "USDC",
+        venueContractType: "HIP3",
+      }),
+      0,
+    );
+    expect(entropy.exchange).toBe("Entropy");
+    expect(entropy.exchangeSymbol).toBe("io:ANTH");
+    expect(entropy.venueContractType).toBe("HIP3");
   });
 
   it("maps on-demand funding history", () => {
@@ -55,6 +109,21 @@ describe("funding list mapping", () => {
     expect(history).toEqual([
       { rate: 0.01, settledAt: "2026-08-07T08:00:00Z" },
     ]);
+  });
+
+  it("encodes Entropy HIP-3 history symbols", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        data: [{ rate: "0.0001", settledAt: "2026-08-07T08:00:00Z" }],
+        meta: { exchange: "entropy", exchangeSymbol: "io:ANTH", total: 1 },
+      })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchFundingHistory("entropy", "io:ANTH");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/funding-rates/entropy/io%3AANTH/history?limit=10",
+      expect.objectContaining({ method: "GET" }),
+    );
   });
 });
 
@@ -84,10 +153,102 @@ describe("funding list ETag", () => {
   });
 });
 
+describe("funding lookup", () => {
+  it("maps results aligned to request keys", () => {
+    const requested = [
+      {
+        exchange: "binance",
+        exchangeSymbol: "BTCUSDT",
+        baseAsset: "BTC",
+        quoteAsset: "USDT",
+      },
+      {
+        exchange: "okx",
+        exchangeSymbol: "MISSING",
+        baseAsset: "BTC",
+        quoteAsset: "USDT",
+      },
+    ];
+    const mapped = mapFundingRatesLookupResponse(
+      {
+        results: [
+          {
+            key: {
+              exchange: "binance",
+              exchangeSymbol: "BTCUSDT",
+              baseAsset: "BTC",
+              quoteAsset: "USDT",
+            },
+            status: "hit",
+            item: fundingWire(),
+          },
+          {
+            key: {
+              exchange: "okx",
+              exchangeSymbol: "MISSING",
+              baseAsset: "BTC",
+              quoteAsset: "USDT",
+            },
+            status: "missing",
+          },
+        ],
+        meta: {
+          snapshotVersion: "9",
+          serverTime: "2026-08-07T12:00:00Z",
+        },
+      },
+      requested,
+    );
+    expect(mapped.results[0]).toEqual({
+      key: "binance|btcusdt",
+      status: "hit",
+      item: expect.objectContaining({ exchange: "Binance", exchangeSymbol: "BTCUSDT" }),
+    });
+    expect(mapped.results[1]).toEqual({
+      key: "okx|missing",
+      status: "missing",
+    });
+    expect(mapped.snapshotVersion).toBe("9");
+  });
+
+  it("posts credentials and maps 401 to login required", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "authentication required" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      fetchFundingRatesLookup([
+        {
+          exchange: "binance",
+          exchangeSymbol: "BTCUSDT",
+          baseAsset: "BTC",
+          quoteAsset: "USDT",
+        },
+      ]),
+    ).rejects.toThrow("请先登录");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/funding-rates/lookup",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+      }),
+    );
+    expect(fundingRequestKey({ exchange: "Binance", exchangeSymbol: "BTCUSDT" })).toBe(
+      "binance|btcusdt",
+    );
+  });
+});
+
 describe("funding spread mapping and ETag", () => {
   const leg = (exchange: string, rate: string) => ({
     exchange,
     exchangeSymbol: "BTCUSDT",
+    globalSymbol: "BTCUSDT",
+    baseAsset: "BTC",
+    quoteAsset: "USDT",
     fundingRate: rate,
     settlementIntervalHours: exchange === "Binance" ? 8 : 1,
     nextFundingAt: "2026-08-07T20:00:00Z",

@@ -682,6 +682,8 @@ AggregationEngine::build_orderbook(std::uint64_t now_mono_ns) noexcept {
 
   merge_side(Side::Bid, output.bids, output.bid_count);
   merge_side(Side::Ask, output.asks, output.ask_count);
+  result.publishable =
+      output.active_mask != 0 && output.bid_count > 0 && output.ask_count > 0;
   result.changed =
       !have_previous_book_ || !semantic_equal(output, previous_book_);
   if (result.changed) {

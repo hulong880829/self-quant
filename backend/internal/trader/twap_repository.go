@@ -268,17 +268,32 @@ func (r *Repository) LeaseDueTwaps(ctx context.Context, limit int, lease time.Du
 	if lease <= 0 {
 		lease = 30 * time.Second
 	}
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	rows, err := tx.Query(ctx, `
-		SELECT `+twapColumns+` FROM trader_twap_jobs
-		WHERE status IN ('pending','running') AND next_action_at <= now()
-		  AND (scheduler_lease_until IS NULL OR scheduler_lease_until < now())
-		ORDER BY next_action_at,created_at
-		LIMIT $1 FOR UPDATE SKIP LOCKED`, limit)
+	rows, err := r.pool.Query(ctx, `
+		WITH candidate AS MATERIALIZED (
+			SELECT id AS candidate_id,
+			       next_action_at AS candidate_next_action_at,
+			       created_at AS candidate_created_at
+			FROM trader_twap_jobs
+			WHERE status IN ('pending','running') AND next_action_at <= now()
+			  AND (scheduler_lease_until IS NULL OR scheduler_lease_until < now())
+			ORDER BY next_action_at,created_at,id
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		), leased AS (
+			UPDATE trader_twap_jobs job
+			SET scheduler_lease_until=now()+$2::interval
+			FROM candidate
+			WHERE job.id=candidate.candidate_id
+			RETURNING job.*
+		)
+		SELECT `+twapColumns+`
+		FROM leased
+		JOIN candidate ON candidate.candidate_id=leased.id
+		ORDER BY candidate.candidate_next_action_at,
+		         candidate.candidate_created_at,
+		         candidate.candidate_id`,
+		limit, lease.String(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("lease twaps: %w", err)
 	}
@@ -292,15 +307,7 @@ func (r *Repository) LeaseDueTwaps(ctx context.Context, limit int, lease time.Du
 		items = append(items, item)
 	}
 	rows.Close()
-	for _, item := range items {
-		if _, err := tx.Exec(ctx, `
-			UPDATE trader_twap_jobs
-			SET scheduler_lease_until=now()+$2::interval
-			WHERE id=$1::uuid`, item.ID, lease.String()); err != nil {
-			return nil, err
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return items, nil

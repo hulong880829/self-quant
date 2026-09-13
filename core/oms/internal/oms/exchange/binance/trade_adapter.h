@@ -65,8 +65,6 @@ class Transport {
 
 struct AdapterCallbacks {
   void* context{};
-  bool (*resolve_symbol)(void*, api::InstrumentId, char*, std::size_t,
-                         std::uint8_t&) noexcept{};
   bool (*resolve_cancel)(void*, api::OrderHandle, ResolvedCancel&) noexcept{};
   bool (*resolve_stream)(void*, std::string_view, ParseContext&) noexcept{};
 };

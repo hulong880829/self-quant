@@ -19,6 +19,22 @@ export interface TraderInstrument {
   quantityStep: string;
 }
 
+export interface TraderVenueCapabilities {
+  products: TraderContractType[];
+  quoteAssets: string[];
+  timeInForce: string[];
+  postOnly: boolean;
+  reduceOnly: boolean;
+  makerTwap: boolean;
+  privateOrderStream: boolean;
+  oneWayOnly: boolean;
+}
+
+export interface TraderInstrumentCatalog {
+  items: TraderInstrument[];
+  capabilities: TraderVenueCapabilities;
+}
+
 export interface TraderOrder {
   id: string;
   idempotencyKey: string;
@@ -47,6 +63,9 @@ export interface TraderOrder {
   syncState: string;
   twapSliceIndex: number;
   twapAttemptIndex: number;
+  arbitrageExecutionId: string;
+  arbitrageLeg: string;
+  arbitrageRole: string;
 }
 
 export interface TraderOrderPage {
@@ -135,7 +154,7 @@ function mapInstrument(value: Record<string, unknown>): TraderInstrument {
   };
 }
 
-function mapOrder(value: Record<string, unknown>): TraderOrder {
+export function mapTraderOrder(value: Record<string, unknown>): TraderOrder {
   return {
     id: String(value.id ?? ""),
     idempotencyKey: String(value.idempotencyKey ?? ""),
@@ -164,6 +183,9 @@ function mapOrder(value: Record<string, unknown>): TraderOrder {
     syncState: String(value.syncState ?? ""),
     twapSliceIndex: Number(value.twapSliceIndex ?? 0),
     twapAttemptIndex: Number(value.twapAttemptIndex ?? 0),
+    arbitrageExecutionId: String(value.arbitrageExecutionId ?? ""),
+    arbitrageLeg: String(value.arbitrageLeg ?? ""),
+    arbitrageRole: String(value.arbitrageRole ?? ""),
   };
 }
 
@@ -207,14 +229,43 @@ export async function fetchTraderInstruments(
   accountId: number,
   contractType: TraderContractType,
 ): Promise<TraderInstrument[]> {
+  return (await fetchTraderInstrumentCatalog(accountId, contractType)).items;
+}
+
+export async function fetchTraderInstrumentCatalog(
+  accountId: number,
+  contractType: TraderContractType,
+): Promise<TraderInstrumentCatalog> {
   const response = await fetch(
     traderUrl(`/accounts/${accountId}/instruments?type=${encodeURIComponent(contractType)}`),
     { credentials: "include", headers: { Accept: "application/json" }, cache: "no-store" },
   );
   if (response.status === 401) throw new Error("请先登录");
   if (!response.ok) throw new Error(await errorMessage(response, "无法加载交易标的"));
-  const payload = (await response.json()) as { data?: Record<string, unknown>[] };
-  return (payload.data ?? []).map(mapInstrument);
+  const payload = (await response.json()) as {
+    data?: Record<string, unknown>[];
+    capabilities?: Record<string, unknown>;
+  };
+  const capabilities = payload.capabilities ?? {};
+  return {
+    items: (payload.data ?? []).map(mapInstrument),
+    capabilities: {
+      products: Array.isArray(capabilities.products)
+        ? capabilities.products.map(String) as TraderContractType[]
+        : [],
+      quoteAssets: Array.isArray(capabilities.quoteAssets)
+        ? capabilities.quoteAssets.map(String)
+        : [],
+      timeInForce: Array.isArray(capabilities.timeInForce)
+        ? capabilities.timeInForce.map(String)
+        : [],
+      postOnly: Boolean(capabilities.postOnly),
+      reduceOnly: Boolean(capabilities.reduceOnly),
+      makerTwap: Boolean(capabilities.makerTwap),
+      privateOrderStream: Boolean(capabilities.privateOrderStream),
+      oneWayOnly: Boolean(capabilities.oneWayOnly),
+    },
+  };
 }
 
 export async function fetchTraderOrder(orderId: string): Promise<TraderOrder> {
@@ -227,7 +278,7 @@ export async function fetchTraderOrder(orderId: string): Promise<TraderOrder> {
   if (!response.ok) throw new Error(await errorMessage(response, "无法加载订单"));
   const payload = (await response.json()) as { data?: Record<string, unknown> };
   if (!payload.data) throw new Error("订单响应无效");
-  return mapOrder(payload.data);
+  return mapTraderOrder(payload.data);
 }
 
 export async function fetchTraderOrders(accountId: number): Promise<TraderOrder[]> {
@@ -265,7 +316,7 @@ export async function fetchTraderOrderPage(
     meta?: { nextCursor?: string };
   };
   return {
-    items: (payload.data ?? []).map(mapOrder),
+    items: (payload.data ?? []).map(mapTraderOrder),
     nextCursor: payload.meta?.nextCursor ?? "",
   };
 }
@@ -292,7 +343,7 @@ export async function placeTraderOrder(input: {
   if (!response.ok) throw new Error(await errorMessage(response, "订单提交失败"));
   const payload = (await response.json()) as { data?: Record<string, unknown> };
   if (!payload.data) throw new Error("下单响应无效");
-  return mapOrder(payload.data);
+  return mapTraderOrder(payload.data);
 }
 
 export async function cancelTraderOrder(orderId: string): Promise<TraderOrder> {
@@ -304,7 +355,7 @@ export async function cancelTraderOrder(orderId: string): Promise<TraderOrder> {
   if (!response.ok) throw new Error(await errorMessage(response, "撤单失败"));
   const payload = (await response.json()) as { data?: Record<string, unknown> };
   if (!payload.data) throw new Error("撤单响应无效");
-  return mapOrder(payload.data);
+  return mapTraderOrder(payload.data);
 }
 
 export async function createTraderTwap(input: CreateTraderTwapInput): Promise<TraderTwap> {
@@ -392,7 +443,7 @@ export async function fetchTraderTwapOrders(twapId: string): Promise<TraderOrder
   if (response.status === 401) throw new Error("请先登录");
   if (!response.ok) throw new Error(await errorMessage(response, "无法加载 TWAP 子订单"));
   const payload = (await response.json()) as { data?: Record<string, unknown>[] };
-  return (payload.data ?? []).map(mapOrder);
+  return (payload.data ?? []).map(mapTraderOrder);
 }
 
 export async function cancelTraderTwap(twapId: string): Promise<TraderTwap> {
@@ -408,3 +459,9 @@ export async function cancelTraderTwap(twapId: string): Promise<TraderTwap> {
 }
 
 export const CEX_EXCHANGES = new Set(["binance", "okx", "bybit", "bitget", "gate"]);
+export const ARBITRAGE_EXCHANGES = new Set([
+  ...CEX_EXCHANGES,
+  "hyperliquid",
+  "aster",
+  "lighter",
+]);

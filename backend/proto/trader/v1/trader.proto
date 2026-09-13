@@ -8,6 +8,7 @@ import "google/protobuf/timestamp.proto";
 
 service TraderService {
   rpc ListInstruments(ListInstrumentsRequest) returns (ListInstrumentsResponse);
+  rpc ApplyAccountProfile(ApplyAccountProfileRequest) returns (ApplyAccountProfileResponse);
   rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
   rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
   rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse);
@@ -18,6 +19,7 @@ service TraderService {
   rpc ListTwapOrders(ListTwapOrdersRequest) returns (ListTwapOrdersResponse);
   rpc CancelTwap(CancelTwapRequest) returns (CancelTwapResponse);
   rpc CreateArbitrageCombination(CreateArbitrageCombinationRequest) returns (CreateArbitrageCombinationResponse);
+  rpc UpdateArbitrageCombination(UpdateArbitrageCombinationRequest) returns (UpdateArbitrageCombinationResponse);
   rpc GetArbitrageCombination(GetArbitrageCombinationRequest) returns (GetArbitrageCombinationResponse);
   rpc ListArbitrageCombinations(ListArbitrageCombinationsRequest) returns (ListArbitrageCombinationsResponse);
   rpc CloseArbitrageCombination(CloseArbitrageCombinationRequest) returns (CloseArbitrageCombinationResponse);
@@ -114,6 +116,43 @@ message ListInstrumentsRequest {
 message ListInstrumentsResponse {
   repeated Instrument items = 1;
   google.protobuf.Timestamp server_time = 2;
+  VenueCapabilities capabilities = 3;
+}
+
+message VenueCapabilities {
+  repeated string products = 1;
+  repeated string quote_assets = 2;
+  repeated string time_in_force = 3;
+  bool post_only = 4;
+  bool reduce_only = 5;
+  bool maker_twap = 6;
+  bool private_order_stream = 7;
+  bool one_way_only = 8;
+}
+
+message AccountProfileStepResult {
+  string step = 1;
+  string status = 2;
+  string code = 3;
+  string message = 4;
+}
+
+message AccountProfileResult {
+  int64 trading_account_id = 1;
+  string product_name = 2;
+  string account_name = 3;
+  string exchange = 4;
+  string overall_status = 5;
+  repeated AccountProfileStepResult steps = 6;
+}
+
+message ApplyAccountProfileRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+}
+
+message ApplyAccountProfileResponse {
+  AccountProfileResult result = 1;
 }
 
 message PlaceOrderRequest {
@@ -239,6 +278,8 @@ message ArbitrageLeg {
 }
 
 message ArbitrageCombination {
+  reserved 8, 9;
+  reserved "order_notional", "max_delta_notional";
   string id = 1;
   string idempotency_key = 2;
   ArbitrageLeg leg_a = 3;
@@ -246,8 +287,6 @@ message ArbitrageCombination {
   string ask_threshold_bps = 5;
   string bid_threshold_bps = 6;
   string target_notional = 7;
-  string order_notional = 8;
-  string max_delta_notional = 9;
   string execution_mode = 10;
   string maker_leg = 11;
   string status = 12;
@@ -263,9 +302,59 @@ message ArbitrageCombination {
   int32 consecutive_failures = 22;
   google.protobuf.Timestamp next_retry_at = 23;
   bool position_uncertain = 24;
+  string runtime_state = 25;
+  string leg_a_base_position = 26;
+  string leg_b_base_position = 27;
+  string carry_base_quantity = 28;
+  string leg_a_venue_base_position = 29;
+  string leg_b_venue_base_position = 30;
+  string leg_a_position_difference = 31;
+  string leg_b_position_difference = 32;
+  google.protobuf.Timestamp last_position_reconciled_at = 33;
+  string gross_turnover_notional = 34;
+  string leg_a_average_entry_price = 35;
+  string leg_b_average_entry_price = 36;
+  string average_entry_spread_bps = 37;
+  string leg_a_unrealized_pnl = 38;
+  string leg_b_unrealized_pnl = 39;
+  string realized_spread_pnl = 40;
+  string estimated_funding_pnl = 41;
+  string combined_position_annualized = 42;
+  bool funding_history_complete = 43;
+  string leg_a_venue_baseline_base_position = 44;
+  string leg_b_venue_baseline_base_position = 45;
+  google.protobuf.Timestamp venue_baseline_captured_at = 46;
+  string leg_a_expected_base_position = 47;
+  string leg_b_expected_base_position = 48;
+  string leg_a_venue_notional = 49;
+  string leg_b_venue_notional = 50;
+  string leg_a_venue_valuation_price = 51;
+  string leg_b_venue_valuation_price = 52;
+  google.protobuf.Timestamp leg_a_venue_valuation_at = 53;
+  google.protobuf.Timestamp leg_b_venue_valuation_at = 54;
+  string run_mode = 55;
+  string entry_direction = 56;
+  string leg_a_leverage = 57;
+  string leg_b_leverage = 58;
+  string exit_policy = 59;
+  string exit_annualized_rate = 60;
+  int32 exit_after_seconds = 61;
+  google.protobuf.Timestamp target_reached_at = 62;
+  google.protobuf.Timestamp scheduled_exit_at = 63;
+  string one_shot_phase = 64;
+  string early_exit_funding_8h_annualized_floor = 65;
+}
+
+message ArbitrageCreateFailure {
+  string code = 1;
+  string message = 2;
+  string leg = 3;
+  map<string, string> details = 4;
 }
 
 message CreateArbitrageCombinationRequest {
+  reserved 9, 10;
+  reserved "order_notional", "max_delta_notional";
   string token = 1;
   int64 leg_a_trading_account_id = 2;
   int64 leg_a_instrument_id = 3;
@@ -274,14 +363,34 @@ message CreateArbitrageCombinationRequest {
   string ask_threshold_bps = 6;
   string bid_threshold_bps = 7;
   string target_notional = 8;
-  string order_notional = 9;
-  string max_delta_notional = 10;
   string execution_mode = 11;
   string maker_leg = 12;
   string idempotency_key = 13;
+  string run_mode = 14;
+  string entry_direction = 15;
+  string leg_a_leverage = 16;
+  string leg_b_leverage = 17;
+  string exit_policy = 18;
+  string exit_annualized_rate = 19;
+  int32 exit_after_seconds = 20;
+  string early_exit_funding_8h_annualized_floor = 21;
 }
 
 message CreateArbitrageCombinationResponse {
+  ArbitrageCombination combination = 1;
+}
+
+message UpdateArbitrageCombinationRequest {
+  reserved 6;
+  reserved "order_notional";
+  string token = 1;
+  string combination_id = 2;
+  optional string ask_threshold_bps = 3;
+  optional string bid_threshold_bps = 4;
+  optional string target_notional = 5;
+}
+
+message UpdateArbitrageCombinationResponse {
   ArbitrageCombination combination = 1;
 }
 

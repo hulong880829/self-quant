@@ -2,6 +2,7 @@
 
 #include "mds/exchange/binance/binance_adapter.h"
 #include "mds/exchange/binance/binance_rest.h"
+#include "mds/exchange/symbol_policy.h"
 
 #include <algorithm>
 #include <cctype>
@@ -24,15 +25,6 @@ constexpr std::size_t kMetadataTargetCapacity = 6U << 10U;
 Profile profile(utils::md::ProductType product) noexcept {
   return product == utils::md::ProductType::Spot ? Profile::Spot
                                                   : Profile::UsdM;
-}
-
-std::string lowercase(std::string_view value) {
-  std::string result(value);
-  std::transform(result.begin(), result.end(), result.begin(),
-                 [](unsigned char character) {
-                   return static_cast<char>(std::tolower(character));
-                 });
-  return result;
 }
 
 class BinanceVenueAdapter final : public VenueAdapter {
@@ -98,11 +90,10 @@ class BinanceVenueAdapter final : public VenueAdapter {
     std::vector<std::string> topics;
     topics.reserve(requests.size() * 2);
     for (const auto &request : requests) {
-      if (request.venue_symbol.empty()) {
-        error = "Binance subscription symbol is empty";
-        return false;
+      if (!valid_utf8_symbol(request.venue_symbol)) {
+        continue;
       }
-      const auto symbol = lowercase(request.venue_symbol);
+      const auto symbol = ascii_lower(request.venue_symbol);
       if (request.ticker) {
         if (!request.ticker_channel.empty() &&
             request.ticker_channel != "bookTicker") {
@@ -140,13 +131,35 @@ class BinanceVenueAdapter final : public VenueAdapter {
           batch.push_back(',');
         }
         batch.push_back('"');
-        batch.append(topics[index]);
+        append_json_escaped(batch, topics[index]);
         batch.push_back('"');
       }
       batch.append(R"(],"id":)");
       batch.append(std::to_string(batches.size() + 1));
       batch.push_back('}');
       batches.push_back(std::move(batch));
+    }
+    error.clear();
+    return true;
+  }
+
+  bool build_unsubscription_batches(
+      std::span<const StreamRequest> requests,
+      std::vector<std::string> &batches,
+      std::string &error) const override {
+    if (!build_subscription_batches(requests, batches, error)) {
+      return false;
+    }
+    for (auto &batch : batches) {
+      constexpr std::string_view subscribe{"\"SUBSCRIBE\""};
+      const auto operation = batch.find(subscribe);
+      if (operation == std::string::npos) {
+        error =
+            "Binance subscription cannot be converted to unsubscribe";
+        batches.clear();
+        return false;
+      }
+      batch.replace(operation, subscribe.size(), "\"UNSUBSCRIBE\"");
     }
     error.clear();
     return true;
@@ -324,11 +337,43 @@ class BinanceVenueAdapter final : public VenueAdapter {
     for (std::size_t index = 0; index < requests.size(); ++index) {
       const auto &request = requests[index];
       auto &parsed = parsed_metadata[index];
+      if (parsed.venue_symbol.empty()) {
+        continue;
+      }
       auto venue_symbol = parsed.venue_symbol;
       states_.emplace_back(std::string(request.canonical_symbol),
                            std::move(venue_symbol), std::move(parsed),
                            maximum_levels_);
     }
+    error.clear();
+    return true;
+  }
+
+  bool upsert_metadata(
+      std::string_view json, std::span<const StreamRequest> requests,
+      std::vector<InstrumentMetadata> &metadata,
+      std::string &error) override {
+    auto existing = std::move(states_);
+    std::vector<InstrumentMetadata> parsed;
+    const bool ok = parse_metadata(json, requests, parsed, error);
+    auto refreshed = std::move(states_);
+    states_ = std::move(existing);
+    if (!ok) {
+      return false;
+    }
+    for (auto &entry : refreshed) {
+      const auto found = std::find_if(
+          states_.begin(), states_.end(),
+          [&entry](const SymbolState &current) {
+            return current.venue == entry.venue;
+          });
+      if (found == states_.end()) {
+        states_.push_back(std::move(entry));
+      } else {
+        *found = std::move(entry);
+      }
+    }
+    metadata = std::move(parsed);
     error.clear();
     return true;
   }
@@ -480,6 +525,13 @@ class BinanceVenueAdapter final : public VenueAdapter {
     return true;
   }
 
+ protected:
+  void classify_parse_failure(std::string_view,
+                              const NormalizedEvent &event,
+                              ParseFailure &failure) const noexcept override {
+    (void)classify_scale_mismatch(event, failure);
+  }
+
  private:
   bool parse_metadata_values(
       std::string_view json, std::span<const StreamRequest> requests,
@@ -501,10 +553,14 @@ class BinanceVenueAdapter final : public VenueAdapter {
     for (std::size_t index = 0; index < requests.size(); ++index) {
       const auto &request = requests[index];
       const auto &parsed = parsed_metadata[index];
+      if (parsed.venue_symbol.empty()) {
+        continue;
+      }
       if (trading_only &&
           (parsed.status != "TRADING" ||
            (profile_ == Profile::UsdM &&
-            parsed.contract_type != "PERPETUAL"))) {
+            parsed.contract_type != "PERPETUAL" &&
+            parsed.contract_type != "TRADIFI_PERPETUAL"))) {
         continue;
       }
       if (parsed.price_scale < 0 || parsed.quantity_scale < 0) {

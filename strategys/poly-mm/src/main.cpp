@@ -29,9 +29,11 @@ int main(int argc, char** argv) {
     std::cerr << "live OMS venue requires --accept-live-trading\n";
     return 2;
   }
+  int exit_code = 0;
   strategyframe::StrategyRunner<polymm::PolyMm> runner(
-      std::move(loaded.value), polymm::PolyMm{});
+      std::move(loaded.value), polymm::PolyMm{&exit_code});
   const auto result = runner.run();
+  if (exit_code != 0) return exit_code;
   if (result != strategyframe::Error::Ok) {
     std::cerr << "poly-mm stopped with error "
               << static_cast<unsigned>(result) << '\n';

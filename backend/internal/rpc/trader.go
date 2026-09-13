@@ -16,6 +16,7 @@ import (
 
 type traderService interface {
 	ListInstruments(context.Context, string, int64, string) ([]trader.Instrument, error)
+	ApplyAccountProfile(context.Context, string, int64) (trader.AccountProfileResult, error)
 	PlaceOrder(context.Context, trader.PlaceOrderInput) (trader.Order, error)
 	GetOrder(context.Context, string, string) (trader.Order, error)
 	ListOrders(context.Context, string, int64, string, int, string) ([]trader.Order, string, error)
@@ -32,6 +33,14 @@ type traderService interface {
 	)
 	ListArbitrageCombinations(context.Context, string, string, int, string) ([]trader.ArbitrageCombination, string, int64, error)
 	CloseArbitrageCombination(context.Context, string, string) (trader.ArbitrageCombination, error)
+}
+
+type traderArbitrageConfigService interface {
+	UpdateArbitrageCombination(context.Context, trader.UpdateArbitrageInput) (trader.ArbitrageCombination, error)
+}
+
+type traderCapabilityService interface {
+	GetVenueCapabilities(context.Context, string, int64) (trader.VenueCapabilities, error)
 }
 
 type TraderServer struct {
@@ -56,10 +65,51 @@ func (s *TraderServer) ListInstruments(
 	response := &traderv1.ListInstrumentsResponse{
 		Items: make([]*traderv1.Instrument, 0, len(items)), ServerTime: timestamppb.Now(),
 	}
+	if capabilityService, ok := s.service.(traderCapabilityService); ok {
+		capabilities, capabilityErr := capabilityService.GetVenueCapabilities(
+			ctx, request.GetToken(), request.GetTradingAccountId(),
+		)
+		if capabilityErr == nil {
+			response.Capabilities = &traderv1.VenueCapabilities{
+				Products: capabilities.Products, QuoteAssets: capabilities.QuoteAssets,
+				TimeInForce: capabilities.TimeInForce, PostOnly: capabilities.PostOnly,
+				ReduceOnly: capabilities.ReduceOnly, MakerTwap: capabilities.MakerTwap,
+				PrivateOrderStream: capabilities.PrivateOrderStream, OneWayOnly: capabilities.OneWayOnly,
+			}
+		}
+	}
 	for _, item := range items {
 		response.Items = append(response.Items, instrumentToProto(item))
 	}
 	return response, nil
+}
+
+func (s *TraderServer) ApplyAccountProfile(
+	ctx context.Context,
+	request *traderv1.ApplyAccountProfileRequest,
+) (*traderv1.ApplyAccountProfileResponse, error) {
+	result, err := s.service.ApplyAccountProfile(
+		ctx, request.GetToken(), request.GetTradingAccountId(),
+	)
+	if err != nil {
+		return nil, mapTraderError(err)
+	}
+	steps := make([]*traderv1.AccountProfileStepResult, 0, len(result.Steps))
+	for _, step := range result.Steps {
+		steps = append(steps, &traderv1.AccountProfileStepResult{
+			Step: step.Step, Status: step.Status, Code: step.Code, Message: step.Message,
+		})
+	}
+	return &traderv1.ApplyAccountProfileResponse{
+		Result: &traderv1.AccountProfileResult{
+			TradingAccountId: result.TradingAccountID,
+			ProductName:      result.ProductName,
+			AccountName:      result.AccountName,
+			Exchange:         result.Exchange,
+			OverallStatus:    result.OverallStatus,
+			Steps:            steps,
+		},
+	}, nil
 }
 
 func (s *TraderServer) PlaceOrder(
@@ -218,14 +268,47 @@ func (s *TraderServer) CreateArbitrageCombination(
 		LegBTradingAccountID: request.GetLegBTradingAccountId(),
 		LegBInstrumentID:     request.GetLegBInstrumentId(),
 		AskThresholdBps:      request.GetAskThresholdBps(), BidThresholdBps: request.GetBidThresholdBps(),
-		TargetNotional: request.GetTargetNotional(), OrderNotional: request.GetOrderNotional(),
-		MaxDeltaNotional: request.GetMaxDeltaNotional(), ExecutionMode: request.GetExecutionMode(),
-		MakerLeg: request.GetMakerLeg(),
+		TargetNotional:                    request.GetTargetNotional(),
+		ExecutionMode:                     request.GetExecutionMode(),
+		MakerLeg:                          request.GetMakerLeg(),
+		RunMode:                           request.GetRunMode(),
+		EntryDirection:                    request.GetEntryDirection(),
+		LegALeverage:                      request.GetLegALeverage(),
+		LegBLeverage:                      request.GetLegBLeverage(),
+		ExitPolicy:                        request.GetExitPolicy(),
+		ExitAnnualizedRate:                request.GetExitAnnualizedRate(),
+		ExitAfterSeconds:                  int(request.GetExitAfterSeconds()),
+		EarlyExitFunding8hAnnualizedFloor: request.GetEarlyExitFunding_8HAnnualizedFloor(),
 	})
 	if err != nil {
 		return nil, mapTraderError(err)
 	}
 	return &traderv1.CreateArbitrageCombinationResponse{
+		Combination: arbitrageCombinationToProto(item),
+	}, nil
+}
+
+func (s *TraderServer) UpdateArbitrageCombination(
+	ctx context.Context,
+	request *traderv1.UpdateArbitrageCombinationRequest,
+) (*traderv1.UpdateArbitrageCombinationResponse, error) {
+	service, ok := s.service.(traderArbitrageConfigService)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "arbitrage parameter update is unavailable")
+	}
+	item, err := service.UpdateArbitrageCombination(ctx, trader.UpdateArbitrageInput{
+		Token: request.GetToken(), CombinationID: request.GetCombinationId(),
+		AskThresholdBps: request.AskThresholdBps,
+		BidThresholdBps: request.BidThresholdBps,
+		TargetNotional:  request.TargetNotional,
+	})
+	if err != nil {
+		if errors.Is(err, trader.ErrInvalidArgument) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, mapTraderError(err)
+	}
+	return &traderv1.UpdateArbitrageCombinationResponse{
 		Combination: arbitrageCombinationToProto(item),
 	}, nil
 }
@@ -380,24 +463,73 @@ func arbitrageCombinationToProto(item trader.ArbitrageCombination) *traderv1.Arb
 			QuoteAsset: value.QuoteAsset,
 		}
 	}
+	expectedA, expectedB := "", ""
+	if !item.VenueBaselineCapturedAt.IsZero() &&
+		!item.VenueBaselineCapturedAt.Equal(time.Unix(0, 0).UTC()) {
+		expectedA = decimalOrZero(item.LegAVenueBaselineBasePosition).
+			Add(decimalOrZero(item.LegABasePosition)).String()
+		expectedB = decimalOrZero(item.LegBVenueBaselineBasePosition).
+			Add(decimalOrZero(item.LegBBasePosition)).String()
+	}
 	return &traderv1.ArbitrageCombination{
 		Id: item.ID, IdempotencyKey: item.IdempotencyKey,
 		LegA: leg(item.LegA), LegB: leg(item.LegB),
 		AskThresholdBps: item.AskThresholdBps, BidThresholdBps: item.BidThresholdBps,
-		TargetNotional: item.TargetNotional, OrderNotional: item.OrderNotional,
-		MaxDeltaNotional: item.MaxDeltaNotional, ExecutionMode: item.ExecutionMode,
-		MakerLeg: item.MakerLeg, Status: item.Status,
-		PositionNotional:           item.PositionNotional,
-		CumulativeTurnoverNotional: item.CumulativeTurnoverNotional,
-		CurrentAskSpreadBps:        item.CurrentAskSpreadBps,
-		CurrentBidSpreadBps:        item.CurrentBidSpreadBps,
-		MarketDataStale:            item.MarketDataStale, ErrorMessage: item.ErrorMessage,
-		ConsecutiveFailures: int32(item.ConsecutiveFailures),
-		NextRetryAt:         optionalTraderTimestamp(item.NextRetryAt),
-		PositionUncertain:   item.PositionUncertain,
-		CreatedAt:           optionalTraderTimestamp(item.CreatedAt),
-		UpdatedAt:           optionalTraderTimestamp(item.UpdatedAt),
-		ClosedAt:            optionalTraderTimestamp(item.ClosedAt),
+		TargetNotional: item.TargetNotional,
+		ExecutionMode:  item.ExecutionMode,
+		MakerLeg:       item.MakerLeg, Status: item.Status,
+		PositionNotional:              item.PositionNotional,
+		CumulativeTurnoverNotional:    item.CumulativeTurnoverNotional,
+		GrossTurnoverNotional:         item.GrossTurnoverNotional,
+		RuntimeState:                  item.RuntimeState,
+		LegABasePosition:              item.LegABasePosition,
+		LegBBasePosition:              item.LegBBasePosition,
+		CarryBaseQuantity:             item.CarryBaseQuantity,
+		LegAVenueBasePosition:         item.LegAVenueBasePosition,
+		LegBVenueBasePosition:         item.LegBVenueBasePosition,
+		LegAPositionDifference:        item.LegAPositionDifference,
+		LegBPositionDifference:        item.LegBPositionDifference,
+		LastPositionReconciledAt:      optionalTraderTimestamp(item.LastPositionReconciledAt),
+		LegAAverageEntryPrice:         item.LegAAverageEntryPrice,
+		LegBAverageEntryPrice:         item.LegBAverageEntryPrice,
+		AverageEntrySpreadBps:         item.AverageEntrySpreadBps,
+		LegAUnrealizedPnl:             item.LegAUnrealizedPnl,
+		LegBUnrealizedPnl:             item.LegBUnrealizedPnl,
+		RealizedSpreadPnl:             item.RealizedSpreadPnl,
+		EstimatedFundingPnl:           item.EstimatedFundingPnl,
+		CombinedPositionAnnualized:    item.CombinedPositionAnnualized,
+		FundingHistoryComplete:        item.FundingHistoryComplete,
+		LegAVenueBaselineBasePosition: item.LegAVenueBaselineBasePosition,
+		LegBVenueBaselineBasePosition: item.LegBVenueBaselineBasePosition,
+		VenueBaselineCapturedAt:       optionalTraderTimestamp(item.VenueBaselineCapturedAt),
+		LegAExpectedBasePosition:      expectedA,
+		LegBExpectedBasePosition:      expectedB,
+		LegAVenueNotional:             item.LegAVenueNotional,
+		LegBVenueNotional:             item.LegBVenueNotional,
+		LegAVenueValuationPrice:       item.LegAVenueValuationPrice,
+		LegBVenueValuationPrice:       item.LegBVenueValuationPrice,
+		LegAVenueValuationAt:          optionalTraderTimestamp(item.LegAVenueValuationAt),
+		LegBVenueValuationAt:          optionalTraderTimestamp(item.LegBVenueValuationAt),
+		CurrentAskSpreadBps:           item.CurrentAskSpreadBps,
+		CurrentBidSpreadBps:           item.CurrentBidSpreadBps,
+		MarketDataStale:               item.MarketDataStale, ErrorMessage: item.ErrorMessage,
+		ConsecutiveFailures:                int32(item.ConsecutiveFailures),
+		NextRetryAt:                        optionalTraderTimestamp(item.NextRetryAt),
+		PositionUncertain:                  item.PositionUncertain,
+		CreatedAt:                          optionalTraderTimestamp(item.CreatedAt),
+		UpdatedAt:                          optionalTraderTimestamp(item.UpdatedAt),
+		ClosedAt:                           optionalTraderTimestamp(item.ClosedAt),
+		RunMode:                            item.RunMode,
+		EntryDirection:                     item.EntryDirection,
+		LegALeverage:                       item.LegALeverage,
+		LegBLeverage:                       item.LegBLeverage,
+		ExitPolicy:                         item.ExitPolicy,
+		ExitAnnualizedRate:                 item.ExitAnnualizedRate,
+		ExitAfterSeconds:                   int32(item.ExitAfterSeconds),
+		TargetReachedAt:                    optionalTraderTimestamp(item.TargetReachedAt),
+		ScheduledExitAt:                    optionalTraderTimestamp(item.ScheduledExitAt),
+		OneShotPhase:                       item.OneShotPhase,
+		EarlyExitFunding_8HAnnualizedFloor: item.EarlyExitFunding8hAnnualizedFloor,
 	}
 }
 
@@ -424,6 +556,18 @@ func decimalOrZero(value string) shopspringdecimal.Decimal {
 }
 
 func mapTraderError(err error) error {
+	var createErr *trader.ArbitrageCreateError
+	if errors.As(err, &createErr) {
+		st := status.New(arbitrageCreateGRPCCode(createErr.Code), createErr.Message)
+		detail := &traderv1.ArbitrageCreateFailure{
+			Code: createErr.Code, Message: createErr.Message, Leg: createErr.Leg,
+			Details: createErr.Details,
+		}
+		if withDetails, detailErr := st.WithDetails(detail); detailErr == nil {
+			return withDetails.Err()
+		}
+		return st.Err()
+	}
 	message := strings.TrimSpace(err.Error())
 	switch {
 	case errors.Is(err, trader.ErrInvalidArgument):
@@ -432,6 +576,15 @@ func mapTraderError(err error) error {
 		return status.Error(codes.NotFound, "not found")
 	case errors.Is(err, trader.ErrIdempotencyConflict):
 		return status.Error(codes.AlreadyExists, "idempotency key conflict")
+	case errors.Is(err, trader.ErrActiveArbitrageInstrumentConflict):
+		detail := strings.TrimPrefix(
+			err.Error(),
+			trader.ErrActiveArbitrageInstrumentConflict.Error()+": ",
+		)
+		return status.Error(
+			codes.AlreadyExists,
+			"active_arbitrage_instrument_conflict: "+detail,
+		)
 	case errors.Is(err, trader.ErrActiveTwapLimit):
 		return status.Error(codes.ResourceExhausted, "active twap limit reached")
 	case errors.Is(err, trader.ErrUnsupportedExchange):
@@ -444,10 +597,14 @@ func mapTraderError(err error) error {
 		return status.Error(codes.FailedPrecondition, "arbitrage combination is not closable")
 	case errors.Is(err, trader.ErrArbitrageConflict):
 		return status.Error(codes.Aborted, "arbitrage combination conflict")
+	case errors.Is(err, trader.ErrArbitrageConfigInvalid):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, trader.ErrMarketDataStale):
 		return status.Error(codes.Unavailable, "market data is stale")
 	case errors.Is(err, trader.ErrRiskLimit):
 		return status.Error(codes.FailedPrecondition, "arbitrage risk limit exceeded")
+	case errors.Is(err, trader.ErrPositionMode):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, trader.ErrPersistence):
 		return status.Error(codes.Internal, "order persistence failed")
 	case errors.Is(err, trader.ErrVenueRateLimited):
@@ -458,9 +615,24 @@ func mapTraderError(err error) error {
 		return status.Error(codes.Unavailable, "order result is uncertain")
 	case errors.Is(err, trader.ErrVenueUnavailable):
 		return status.Error(codes.Unavailable, "venue unavailable")
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, "trader request timed out")
 	case strings.Contains(message, "unauthenticated") || strings.Contains(message, "invalid session"):
 		return status.Error(codes.Unauthenticated, "invalid session")
 	default:
 		return status.Error(codes.Internal, "trader request failed")
+	}
+}
+
+func arbitrageCreateGRPCCode(code string) codes.Code {
+	switch code {
+	case "invalid_leverage":
+		return codes.InvalidArgument
+	case "insufficient_margin", "insufficient_spot_balance", "position_capacity_exceeded":
+		return codes.FailedPrecondition
+	case "leverage_apply_failed", "venue_unavailable":
+		return codes.Unavailable
+	default:
+		return codes.FailedPrecondition
 	}
 }

@@ -11,6 +11,7 @@
 
 #include <array>
 #include <atomic>
+#include <barrier>
 #include <bit>
 #include <chrono>
 #include <cctype>
@@ -25,8 +26,10 @@
 #include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <thread>
 #include <type_traits>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -92,6 +95,60 @@ std::string read_fixture(const char *name) {
 std::uint64_t now_ns() {
   return static_cast<std::uint64_t>(
       std::chrono::steady_clock::now().time_since_epoch().count());
+}
+
+struct MappedSegment {
+  int fd{-1};
+  void *mapping{MAP_FAILED};
+  std::size_t bytes{};
+  mds::transport::SegmentHeader *header{};
+
+  MappedSegment() = default;
+  MappedSegment(const MappedSegment &) = delete;
+  MappedSegment &operator=(const MappedSegment &) = delete;
+  MappedSegment(MappedSegment &&other) noexcept { *this = std::move(other); }
+  MappedSegment &operator=(MappedSegment &&other) noexcept {
+    if (this != &other) {
+      reset();
+      fd = other.fd;
+      mapping = other.mapping;
+      bytes = other.bytes;
+      header = other.header;
+      other.fd = -1;
+      other.mapping = MAP_FAILED;
+      other.bytes = 0;
+      other.header = nullptr;
+    }
+    return *this;
+  }
+  ~MappedSegment() { reset(); }
+
+  void reset() noexcept {
+    if (mapping != MAP_FAILED && mapping != nullptr) {
+      ::munmap(mapping, bytes);
+      mapping = MAP_FAILED;
+    }
+    if (fd >= 0) {
+      ::close(fd);
+      fd = -1;
+    }
+    header = nullptr;
+    bytes = 0;
+  }
+};
+
+MappedSegment map_segment(const std::string &name) {
+  MappedSegment mapped;
+  mapped.fd = ::shm_open(name.c_str(), O_RDWR, 0600);
+  require(mapped.fd >= 0, "failed to reopen test segment");
+  struct stat status {};
+  require(::fstat(mapped.fd, &status) == 0, "failed to stat test segment");
+  mapped.bytes = static_cast<std::size_t>(status.st_size);
+  mapped.mapping = ::mmap(nullptr, mapped.bytes, PROT_READ | PROT_WRITE,
+                            MAP_SHARED, mapped.fd, 0);
+  require(mapped.mapping != MAP_FAILED, "failed to map test segment");
+  mapped.header = static_cast<mds::transport::SegmentHeader *>(mapped.mapping);
+  return mapped;
 }
 
 template <typename T>
@@ -363,6 +420,206 @@ void test_shared_ring_initialization_and_header_validation() {
 
   ::munmap(mapping, static_cast<std::size_t>(status.st_size));
   ::close(fd);
+}
+
+void test_shared_ring_reader_reclaim_and_unregister() {
+  using namespace mds::transport;
+  using mds::api::ErrorCode;
+
+  auto alive = [](std::uint32_t, std::uint64_t) { return true; };
+  auto dead = [](std::uint32_t, std::uint64_t) { return false; };
+
+  RingOptions options;
+  options.name = "/mds.reader-lease-test." + std::to_string(::getpid());
+  options.ring_bytes = 4096;
+  options.max_record_bytes = 256;
+  options.unlink_on_close = true;
+  auto opened = SharedRing::open(options);
+  require(bool(opened), opened.message.c_str());
+  auto ring = std::move(opened.value);
+  const auto marker = process_start_marker(::getpid());
+  auto mapped = map_segment(options.name);
+
+  auto registration = ring.register_reader(marker, 1);
+  require(bool(registration), "live reader registration failed");
+  auto reader = registration.value;
+  require(ring.reclaim_stale(now_ns(), 1, alive) == 0,
+          "live Active reader was reclaimed");
+  require(mapped.header->readers[reader.slot].state.load(
+              std::memory_order_acquire) ==
+              static_cast<std::uint32_t>(ReaderState::Active),
+          "live Active reader left Active");
+  require(static_cast<bool>(ring.heartbeat(reader, now_ns())),
+          "live reader heartbeat failed after reclaim");
+  require(ring.read(reader).error == ErrorCode::QuotaExceeded,
+          "live reader read failed after reclaim");
+
+  std::atomic<std::uint32_t> invalid_handle_hits{0};
+  std::barrier sync(2);
+  std::thread reclaimer([&] {
+    sync.arrive_and_wait();
+    for (int i = 0; i < 10'000; ++i) {
+      (void)ring.reclaim_stale(now_ns(), 1, alive);
+    }
+  });
+  std::thread consumer([&] {
+    sync.arrive_and_wait();
+    std::array<std::byte, 8> payload{std::byte{0x7}};
+    for (int i = 0; i < 10'000; ++i) {
+      if (!ring.heartbeat(reader, now_ns())) {
+        invalid_handle_hits.fetch_add(1, std::memory_order_relaxed);
+      }
+      (void)ring.publish(1, payload);
+      auto record = ring.read(reader);
+      if (!record) {
+        if (record.error == ErrorCode::InvalidHandle) {
+          invalid_handle_hits.fetch_add(1, std::memory_order_relaxed);
+        }
+      } else {
+        require(static_cast<bool>(record.value.commit()),
+                "barrier read commit failed");
+      }
+    }
+  });
+  reclaimer.join();
+  consumer.join();
+  require(invalid_handle_hits.load(std::memory_order_relaxed) == 0,
+          "live Active reader passed through Suspect");
+  require(mapped.header->readers[reader.slot].state.load(
+              std::memory_order_acquire) ==
+              static_cast<std::uint32_t>(ReaderState::Active),
+          "barrier left reader off Active");
+
+  for (int i = 0; i < 100; ++i) {
+    bool released = false;
+    for (int attempt = 0; attempt < 32; ++attempt) {
+      auto result = ring.unregister_reader(reader);
+      if (result || result.error == ErrorCode::InvalidHandle) {
+        released = true;
+        break;
+      }
+      require(result.error == ErrorCode::QuotaExceeded,
+              "recover unregister returned an unexpected error");
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    require(released, "recover unregister did not release the slot");
+    require(ring.active_reader_count() == 0,
+            "recover left an Active reader");
+    registration = ring.register_reader(marker, now_ns());
+    require(bool(registration), "recover re-registration failed");
+    require(registration.error != ErrorCode::QuotaExceeded,
+            "reader registry is full after recover");
+    reader = registration.value;
+    require(ring.active_reader_count() == 1,
+            "recover did not restore a single Active reader");
+  }
+
+  require(static_cast<bool>(ring.unregister_reader(reader)),
+          "final unregister before dead reclaim failed");
+  registration = ring.register_reader(marker, 1);
+  require(bool(registration), "dead reader registration failed");
+  reader = registration.value;
+  require(ring.reclaim_stale(now_ns(), 1, dead) == 1,
+          "dead Active reader was not reclaimed");
+  require(ring.active_reader_count() == 0,
+          "dead Active reader remained counted");
+  registration = ring.register_reader(marker, now_ns());
+  require(bool(registration), "registration after dead reclaim failed");
+  reader = registration.value;
+
+  auto mismatched = reader;
+  mismatched.lease_token ^= 1ULL;
+  auto mismatch = ring.unregister_reader(mismatched);
+  require(!mismatch && mismatch.error == ErrorCode::InvalidHandle,
+          "token mismatch did not return InvalidHandle");
+  require(mapped.header->readers[reader.slot].state.load(
+              std::memory_order_acquire) ==
+              static_cast<std::uint32_t>(ReaderState::Active),
+          "token mismatch released the owned slot");
+  require(static_cast<bool>(ring.heartbeat(reader, now_ns())),
+          "owned reader became unusable after token mismatch");
+
+  auto force_transition = [&](ReaderState state) {
+    auto &slot = mapped.header->readers[reader.slot];
+    slot.state.store(static_cast<std::uint32_t>(state),
+                       std::memory_order_release);
+    auto blocked = ring.unregister_reader(reader);
+    require(!blocked && blocked.error == ErrorCode::QuotaExceeded,
+            "in-progress unregister did not apply backpressure");
+    require(slot.lease_token.load(std::memory_order_relaxed) ==
+                reader.lease_token,
+            "in-progress unregister cleared the token");
+    require(slot.state.load(std::memory_order_acquire) ==
+                static_cast<std::uint32_t>(state),
+            "in-progress unregister changed the slot state");
+    auto stolen = ring.register_reader(marker, now_ns());
+    require(bool(stolen), "register during transition failed");
+    require(stolen.value.slot != reader.slot,
+            "register_reader stole a non-Free slot");
+    require(static_cast<bool>(ring.unregister_reader(stolen.value)),
+            "cleanup of extra transition reader failed");
+    slot.state.store(static_cast<std::uint32_t>(ReaderState::Active),
+                       std::memory_order_release);
+  };
+  force_transition(ReaderState::Suspect);
+  force_transition(ReaderState::Initializing);
+
+  require(static_cast<bool>(ring.unregister_reader(reader)),
+          "normal unregister failed");
+  require(mapped.header->readers[reader.slot].lease_token.load(
+              std::memory_order_relaxed) == 0,
+          "unregister did not clear the lease token before Free");
+  require(mapped.header->readers[reader.slot].state.load(
+              std::memory_order_acquire) ==
+              static_cast<std::uint32_t>(ReaderState::Free),
+          "unregister did not publish Free last");
+  registration = ring.register_reader(marker, now_ns());
+  require(bool(registration), "register after successful unregister failed");
+  reader = registration.value;
+
+  auto stale_epoch = reader;
+  stale_epoch.epoch ^= 1ULL;
+  require(!ring.heartbeat(stale_epoch, now_ns()) &&
+              ring.heartbeat(stale_epoch, now_ns()).error ==
+                  ErrorCode::InvalidHandle,
+          "stale epoch heartbeat was accepted");
+  require(ring.read(stale_epoch).error == ErrorCode::InvalidHandle,
+          "stale epoch read was accepted");
+  require(static_cast<bool>(ring.unregister_reader(stale_epoch)),
+          "stale epoch unregister failed to release the slot");
+  require(ring.active_reader_count() == 0,
+          "stale epoch unregister left an Active reader");
+  require(mapped.header->readers[stale_epoch.slot].state.load(
+              std::memory_order_acquire) ==
+              static_cast<std::uint32_t>(ReaderState::Free),
+          "stale epoch unregister did not free the original slot");
+  registration = ring.register_reader(marker, now_ns());
+  require(bool(registration), "register after stale-epoch release failed");
+  require(ring.active_reader_count() == 1,
+          "stale epoch recover did not restore a single reader");
+  reader = registration.value;
+
+  SharedRing closed;
+  auto uninitialized = closed.unregister_reader(reader);
+  require(!uninitialized && uninitialized.error == ErrorCode::NotInitialized,
+          "closed ring unregister must return NotInitialized");
+
+  auto &crash_slot = mapped.header->readers[reader.slot];
+  crash_slot.heartbeat_ns.store(1, std::memory_order_relaxed);
+  crash_slot.state.store(static_cast<std::uint32_t>(ReaderState::Initializing),
+                            std::memory_order_release);
+  require(ring.reclaim_stale(now_ns(), 1, dead) == 1,
+          "crashed unregister transition was not reclaimed");
+  require(crash_slot.state.load(std::memory_order_acquire) ==
+              static_cast<std::uint32_t>(ReaderState::Free),
+          "crashed unregister transition remained non-Free");
+  require(crash_slot.lease_token.load(std::memory_order_relaxed) == 0,
+          "crashed unregister transition left a token");
+  registration = ring.register_reader(marker, now_ns());
+  require(bool(registration),
+          "registration after crashed unregister reclaim failed");
+  require(static_cast<bool>(ring.unregister_reader(registration.value)),
+          "cleanup of post-crash reader failed");
 }
 
 void test_shared_ring_crc_detection() {
@@ -960,6 +1217,11 @@ void test_binance_rest_and_stream_profiles() {
                                      path, error, "250ms") &&
               path == "/stream?streams=ethusdt@depth@250ms",
           "USD-M combined stream path was built incorrectly");
+  require(build_combined_stream_path(Profile::Spot, "龙虾USDT", true, false,
+                                     path, error) &&
+              path.find("%E9%BE%99%E8%99%BEusdt@bookTicker") !=
+                  std::string::npos,
+          "non-ASCII combined stream path was not percent-encoded");
 
   CombinedMessageView view;
   const std::string envelope =
@@ -1422,6 +1684,7 @@ int main() {
     test_shared_ring_try_read();
     test_shared_ring_overwrite_and_resync();
     test_shared_ring_initialization_and_header_validation();
+    test_shared_ring_reader_reclaim_and_unregister();
     test_shared_ring_crc_detection();
     test_arbiter();
     test_snapshot_bridge();

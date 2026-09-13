@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/shopspring/decimal"
 )
@@ -34,12 +35,14 @@ const (
 )
 
 type HistoryRequest struct {
-	Venue        string
-	CompareVenue string
-	BaseAsset    string
-	QuoteAsset   string
-	Range        Range
-	Now          time.Time
+	Venue                       string
+	CompareVenue                string
+	BaseAsset                   string
+	QuoteAsset                  string
+	VenueCanonicalSymbol        string
+	CompareVenueCanonicalSymbol string
+	Range                       Range
+	Now                         time.Time
 }
 
 type Point struct {
@@ -142,10 +145,22 @@ func NormalizeRequest(input HistoryRequest) (HistoryRequest, error) {
 	compareVenue := strings.ToLower(strings.TrimSpace(input.CompareVenue))
 	base := strings.ToUpper(strings.TrimSpace(input.BaseAsset))
 	quote := strings.ToUpper(strings.TrimSpace(input.QuoteAsset))
-	if !validVenue(venue) || !validAsset(base) || !validAsset(quote) {
+	venueSymbol := strings.ToUpper(strings.TrimSpace(input.VenueCanonicalSymbol))
+	compareSymbol := strings.ToUpper(strings.TrimSpace(input.CompareVenueCanonicalSymbol))
+	if !ValidVenue(venue) || !ValidAsset(base) || !ValidAsset(quote) {
 		return HistoryRequest{}, ErrInvalidArgument
 	}
-	if compareVenue != "" && (!validVenue(compareVenue) || compareVenue == venue) {
+	if compareVenue != "" && (!ValidVenue(compareVenue) || compareVenue == venue) {
+		return HistoryRequest{}, ErrInvalidArgument
+	}
+	if venueSymbol == "" {
+		venueSymbol = CanonicalSymbol(base, quote)
+	}
+	if compareSymbol == "" {
+		compareSymbol = CanonicalSymbol(base, quote)
+	}
+	if !ValidCanonicalSymbol(venueSymbol) ||
+		(compareVenue != "" && !ValidCanonicalSymbol(compareSymbol)) {
 		return HistoryRequest{}, ErrInvalidArgument
 	}
 	parsed, err := ParseRange(string(input.Range))
@@ -158,12 +173,17 @@ func NormalizeRequest(input HistoryRequest) (HistoryRequest, error) {
 	}
 	return HistoryRequest{
 		Venue: venue, CompareVenue: compareVenue, BaseAsset: base, QuoteAsset: quote,
+		VenueCanonicalSymbol: venueSymbol, CompareVenueCanonicalSymbol: compareSymbol,
 		Range: parsed, Now: now,
 	}, nil
 }
 
-func validVenue(value string) bool {
-	if len(value) < 2 || len(value) > 32 {
+func ValidVenue(value string) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	count := utf8.RuneCountInString(value)
+	if count < 2 || count > 32 {
 		return false
 	}
 	for _, r := range value {
@@ -174,14 +194,27 @@ func validVenue(value string) bool {
 	return true
 }
 
-func validAsset(value string) bool {
-	if len(value) < 2 || len(value) > 16 {
+func ValidAsset(value string) bool {
+	return validLetterOrDigitToken(value, 1, 16)
+}
+
+func ValidCanonicalSymbol(value string) bool {
+	return validLetterOrDigitToken(value, 2, 32)
+}
+
+func validLetterOrDigitToken(value string, minRunes, maxRunes int) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	count := utf8.RuneCountInString(value)
+	if count < minRunes || count > maxRunes {
 		return false
 	}
 	for _, r := range value {
-		if !unicode.IsUpper(r) && (r < '0' || r > '9') {
-			return false
+		if unicode.IsLetter(r) || (r >= '0' && r <= '9') {
+			continue
 		}
+		return false
 	}
 	return true
 }

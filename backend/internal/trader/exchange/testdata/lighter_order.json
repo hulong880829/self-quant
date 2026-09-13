@@ -1,0 +1,25 @@
+{
+  "code": 200,
+  "orders": [
+    {
+      "order_index": 234,
+      "client_order_index": 234,
+      "order_id": "234",
+      "client_order_id": "234",
+      "market_index": 0,
+      "owner_account_index": 1,
+      "initial_base_amount": "0.1",
+      "price": "3024.66",
+      "nonce": 722,
+      "remaining_base_amount": "0.0",
+      "filled_base_amount": "0.1",
+      "filled_quote_amount": "302.466",
+      "side": "buy",
+      "type": "limit",
+      "time_in_force": "good-till-time",
+      "reduce_only": false,
+      "status": "filled",
+      "timestamp": 1720000000000
+    }
+  ]
+}

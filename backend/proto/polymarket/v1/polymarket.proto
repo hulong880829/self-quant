@@ -94,6 +94,7 @@ message AccountSummary {
   string total_assets = 6;
   google.protobuf.Timestamp source_updated_at = 7;
   bool stale = 8;
+  string binding_status = 9;
 }
 
 message GetAccountSummaryRequest {
@@ -132,6 +133,7 @@ message ListPositionsResponse {
   repeated Position items = 1;
   google.protobuf.Timestamp server_time = 2;
   bool stale = 3;
+  string binding_status = 4;
 }
 
 message OpenOrder {
@@ -159,6 +161,7 @@ message ListOpenOrdersResponse {
   repeated OpenOrder items = 1;
   google.protobuf.Timestamp server_time = 2;
   bool stale = 3;
+  string binding_status = 4;
 }
 
 message PlaceOrderRequest {

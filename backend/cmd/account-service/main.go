@@ -53,26 +53,45 @@ func main() {
 		logger.Error("credentials cipher startup failed", "error", err)
 		os.Exit(1)
 	}
+	httpClient := &http.Client{Timeout: cfg.HTTPTimeout}
+	venueURLs := map[string]string{
+		"binance":     cfg.BinancePortfolioURL,
+		"okx":         cfg.OKXAccountURL,
+		"bitget":      cfg.BitgetAccountURL,
+		"bybit":       cfg.BybitAccountURL,
+		"gate":        cfg.GateAccountURL,
+		"hyperliquid": cfg.HyperliquidInfoAPIURL,
+		"aster":       cfg.AsterFuturesAPIURL,
+		"lighter":     cfg.LighterAPIURL,
+	}
+	tradingRepo := account.NewTradingRepository(pool)
+	portfolios := portfolio.NewRegistry(httpClient, venueURLs)
 	service := account.NewService(account.NewRepository(pool), tokens).
-		WithTrading(account.NewTradingRepository(pool), cipher).
+		WithTrading(tradingRepo, cipher).
 		WithPolymarket(
 			account.NewPolymarketCredentialRepository(pool),
 			polymarketauth.NewClient(cfg.PolymarketCLOBURL, cfg.HTTPTimeout),
 		).
 		WithInstrumentCatalog(account.NewInstrumentCatalog(pool, 10*time.Minute)).
 		WithSnapshots(
-			portfolio.NewRegistry(&http.Client{Timeout: cfg.HTTPTimeout}, map[string]string{
-				"binance": cfg.BinancePortfolioURL, "okx": cfg.OKXAccountURL,
-				"bitget": cfg.BitgetAccountURL, "bybit": cfg.BybitAccountURL,
-				"gate": cfg.GateAccountURL,
-			}),
+			portfolios,
 			polymarket.NewDataClient(cfg.PolymarketDataURL, cfg.HTTPTimeout),
 			polymarket.NewCLOBClient(cfg.PolymarketCLOBURL, cfg.HTTPTimeout),
 			cfg.AccountSnapshotTTL,
 		).
+		WithReadiness(httpClient, venueURLs).
 		WithInternalReports(cfg.ReportInternalToken, account.NewTradeFillRepository(pool)).
 		WithInternalTrader(cfg.TraderInternalToken).
 		WithAICredentials(account.NewAICredentialRepository(pool))
+	fees := account.NewFeeSync(
+		tradingRepo, portfolios, service.TradingCredentialsFromRecord, pool, logger, nil,
+	)
+	service.WithFeeSync(fees)
+	if err := fees.Warmup(ctx); err != nil {
+		logger.Error("fee cache warmup failed", "error", err)
+		os.Exit(1)
+	}
+	go fees.Run(ctx)
 
 	listener, err := net.Listen("tcp", cfg.GRPCAddress)
 	if err != nil {

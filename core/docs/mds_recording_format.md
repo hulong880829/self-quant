@@ -26,6 +26,11 @@ cross BPS observed during the sampling window. AggOrderBook entries contain
 only valid levels up to the configured depth (maximum 50 per side), encoded
 field-by-field without C++ padding. Every entry includes wall/monotonic sample
 time, ring epoch/sequence, topic generation, and reset/gap flags.
+Sampling may persist the same last-good aggregate image more than once while
+the upstream topic is not publishing. Replay and research consumers that need
+the true update frequency must deduplicate unchanged entries by ring epoch,
+ring sequence, and topic generation rather than treating each sample as a new
+market-data update.
 
 The recorder removes only finalized shards older than the configured retention,
 which cannot exceed 24 hours. It never removes the current temporary shard.

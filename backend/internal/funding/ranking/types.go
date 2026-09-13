@@ -9,24 +9,23 @@ import (
 )
 
 var (
-	ErrInvalidPeriod = errors.New("invalid ranking period")
-	ErrInsufficient  = errors.New("insufficient ranking data")
+	ErrInvalidPeriod        = errors.New("invalid ranking period")
+	ErrInsufficient         = errors.New("insufficient ranking data")
+	ErrHistoryRetryDeferred = errors.New("history ranking retry deferred")
 )
 
 type Period string
 
 const (
-	Period1h  Period = "1h"
-	Period4h  Period = "4h"
 	Period8h  Period = "8h"
 	Period24h Period = "24h"
 )
 
-var Periods = []Period{Period1h, Period4h, Period8h, Period24h}
+var Periods = []Period{Period8h, Period24h}
 
 func ParsePeriod(value string) (Period, error) {
 	switch Period(strings.ToLower(strings.TrimSpace(value))) {
-	case Period1h, Period4h, Period8h, Period24h:
+	case Period8h, Period24h:
 		return Period(strings.ToLower(strings.TrimSpace(value))), nil
 	default:
 		return "", ErrInvalidPeriod
@@ -35,10 +34,6 @@ func ParsePeriod(value string) (Period, error) {
 
 func (p Period) Horizon() time.Duration {
 	switch p {
-	case Period1h:
-		return time.Hour
-	case Period4h:
-		return 4 * time.Hour
 	case Period8h:
 		return 8 * time.Hour
 	case Period24h:
@@ -50,13 +45,7 @@ func (p Period) Horizon() time.Duration {
 
 func (p Period) Lookback() time.Duration {
 	switch p {
-	case Period1h:
-		return 24 * time.Hour
-	case Period4h:
-		return 3 * 24 * time.Hour
-	case Period8h:
-		return 5 * 24 * time.Hour
-	case Period24h:
+	case Period8h, Period24h:
 		return 7 * 24 * time.Hour
 	default:
 		return 0
@@ -65,10 +54,6 @@ func (p Period) Lookback() time.Duration {
 
 func (p Period) SimulationStep() time.Duration {
 	switch p {
-	case Period1h:
-		return time.Minute
-	case Period4h:
-		return 5 * time.Minute
 	case Period8h:
 		return 10 * time.Minute
 	case Period24h:
@@ -88,9 +73,18 @@ type Quote struct {
 
 func (q Quote) Mid() float64 { return (q.Bid + q.Ask) / 2 }
 
+type PairPoint struct {
+	TS    time.Time
+	Long  Quote
+	Short Quote
+}
+
 type Leg struct {
 	Exchange            string
 	ExchangeSymbol      string
+	GlobalSymbol        string
+	BaseAsset           string
+	QuoteAsset          string
 	EffectiveRate       float64
 	IntervalHours       float64
 	NextFundingAt       time.Time
@@ -123,10 +117,22 @@ type Opportunity struct {
 	MinTurnover24hUSD          float64
 	Coverage                   float64
 	Confidence                 float64
+	Score                      float64
 	ModelState                 string
+	SampleCount                int
+	ExpectedPaybackMinutes     float64
+	PaybackStatus              PaybackStatus
 	UpdatedAt                  time.Time
 	Stale                      bool
 }
+
+type PaybackStatus string
+
+const (
+	PaybackReady              PaybackStatus = "ready"
+	PaybackNever              PaybackStatus = "never"
+	PaybackInsufficientSample PaybackStatus = "insufficient_sample"
+)
 
 type Snapshot struct {
 	Period              Period
@@ -139,6 +145,7 @@ type Snapshot struct {
 	LastSuccessfulAt    time.Time
 	DataThrough         time.Time
 	Stale               bool
+	RejectionSummary    map[string]int
 }
 
 type SnapshotStatus string
@@ -157,6 +164,7 @@ func legFromRate(rate funding.Rate) Leg {
 	}
 	return Leg{
 		Exchange: rate.Exchange, ExchangeSymbol: rate.ExchangeSymbol,
+		GlobalSymbol: rate.GlobalSymbol, BaseAsset: rate.BaseAsset, QuoteAsset: rate.QuoteAsset,
 		EffectiveRate: effective, IntervalHours: rate.IntervalHours,
 		NextFundingAt: rate.FundingTime, PositionNotionalUSD: rate.PositionNotionalUSD,
 		Turnover24hUSD: rate.Turnover24hUSD, LastPrice: rate.LastPrice,

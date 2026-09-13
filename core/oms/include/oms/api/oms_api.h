@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <type_traits>
 
 #include "oms/api/runtime_types.h"
 #include "oms/exchange/trade_adapter.h"
@@ -23,6 +24,11 @@ struct InstrumentInit {
   std::int64_t minimum_order_size{1};
   std::uint32_t polymarket_taker_delay_ms{};
 };
+
+static_assert(std::is_trivially_copyable_v<InstrumentInit>);
+static_assert(std::is_standard_layout_v<InstrumentInit>);
+static_assert(sizeof(utils::md::Instrument) == 224);
+static_assert(sizeof(InstrumentInit) == 312);
 
 enum class ReplayControl : std::uint8_t {
   Event = 0,
@@ -77,22 +83,30 @@ class OmsApi {
 
   Result<void> initialize_lane(std::uint32_t lane_id,
                                std::uint32_t session_epoch) noexcept;
-  // Legacy registry-routed entry point. New integrations should prepare and
-  // freeze routing from the MDS catalog before submission.
+  // The caller freezes routing from the catalog before submission. Dynamic
+  // instruments must be submitted only by StrategyFrame after its successful
+  // RegisterInstrument acknowledgement and execution-ready gate.
+  //
+  // Lifecycle ordering depends on one caller thread and submit/retire using
+  // the same lane. Multi-lane callers must quiesce every relevant lane first.
+  // OMS intentionally does not query lifecycle state on this hot path.
   Result<RequestToken> submit_order(std::uint32_t lane_id,
-                                    NewOrderRequest request) noexcept;
-  Result<RequestToken> submit_prepared_order(
-      std::uint32_t lane_id, PreparedOrderRequest request) noexcept;
+                                    SubmitOrderRequest request) noexcept;
   Result<RequestToken> cancel_order(std::uint32_t lane_id,
                                     RequestToken target,
                                     OrderHandle handle = {}) noexcept;
-  Result<RequestToken> rebind_polymarket_instrument(
-      std::uint32_t lane_id,
-      RebindPolymarketInstrumentRequest request) noexcept;
+  Result<RequestToken> register_instrument(
+      std::uint32_t lane_id, RegisterInstrumentRequest request) noexcept;
+  Result<RequestToken> retire_instrument(std::uint32_t lane_id,
+                                         InstrumentId instrument_id) noexcept;
   Result<QueryToken> query_open_orders(std::uint32_t lane_id,
                                       AccountId account_id) noexcept;
+  Result<QueryToken> query_open_orders(std::uint32_t lane_id,
+                                      QueryRequest request) noexcept;
   Result<QueryToken> query_positions(std::uint32_t lane_id,
                                     AccountId account_id) noexcept;
+  Result<QueryToken> query_positions(std::uint32_t lane_id,
+                                     QueryRequest request) noexcept;
 
   // Inline only: timeout 0 polls, timeout >0 waits at most that many
   // milliseconds, and -1 waits indefinitely.
@@ -104,6 +118,10 @@ class OmsApi {
   [[nodiscard]] RuntimeMetrics metrics() const noexcept;
   [[nodiscard]] Result<AdapterStatusSnapshot> adapter_status(
       exchange::AdapterKind kind) const noexcept;
+  [[nodiscard]] InstrumentId resolve_polymarket_token(
+      const std::array<std::uint8_t, 32>& token_id) const noexcept;
+  [[nodiscard]] std::uint64_t execution_directory_access_count() const
+      noexcept;
   Error reconcile(exchange::AdapterKind kind) noexcept;
   Error shutdown() noexcept;
 
@@ -112,8 +130,12 @@ class OmsApi {
   Error inject(const ReplayStep& step) noexcept;
 
  private:
+  friend class ExecutionChannel;
   struct Impl;
   explicit OmsApi(std::unique_ptr<Impl> impl) noexcept;
+  Result<RequestToken> submit_order_impl(
+      std::uint32_t lane_id,
+      SubmitOrderRequest& request) noexcept;
   std::unique_ptr<Impl> impl_;
 };
 

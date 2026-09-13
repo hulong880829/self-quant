@@ -80,9 +80,11 @@ struct PositionSnapshot {
 [[nodiscard]] ProtocolResult BuildCancelOrder(
     std::string_view venue_order_id, WireRequest& request) noexcept;
 [[nodiscard]] ProtocolResult BuildOpenOrdersPage(
-    const Pagination& pagination, WireRequest& request) noexcept;
+    const Pagination& pagination, WireRequest& request,
+    std::string_view asset_id = {}) noexcept;
 [[nodiscard]] ProtocolResult BuildPositions(std::string_view funder,
-                                            WireRequest& request) noexcept;
+                                            WireRequest& request,
+                                            std::string_view market = {}) noexcept;
 
 // Accepts both the V2 envelope and legacy top-level array. next_cursor is
 // bounded, repeated cursors terminate pagination, and LTE= is terminal.

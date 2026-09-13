@@ -104,19 +104,22 @@ class ExecutionChannel {
   Result<void> initialize_lane(std::uint32_t lane_id,
                                std::uint32_t session_epoch) noexcept;
   Result<RequestToken> place_order(std::uint32_t lane_id,
-                                   NewOrderRequest request) noexcept;
-  Result<RequestToken> place_prepared_order(
-      std::uint32_t lane_id, PreparedOrderRequest request) noexcept;
+                                   SubmitOrderRequest request) noexcept;
   Result<RequestToken> cancel_order(std::uint32_t lane_id,
                                     RequestToken target,
                                     OrderHandle handle = {}) noexcept;
-  Result<RequestToken> rebind_polymarket_instrument(
-      std::uint32_t lane_id,
-      RebindPolymarketInstrumentRequest request) noexcept;
+  Result<RequestToken> register_instrument(
+      std::uint32_t lane_id, RegisterInstrumentRequest request) noexcept;
+  Result<RequestToken> retire_instrument(std::uint32_t lane_id,
+                                         InstrumentId instrument_id) noexcept;
   Result<QueryToken> query_open_orders(std::uint32_t lane_id,
                                       AccountId account_id) noexcept;
+  Result<QueryToken> query_open_orders(std::uint32_t lane_id,
+                                      QueryRequest request) noexcept;
   Result<QueryToken> query_positions(std::uint32_t lane_id,
                                     AccountId account_id) noexcept;
+  Result<QueryToken> query_positions(std::uint32_t lane_id,
+                                     QueryRequest request) noexcept;
   Error service_io(int timeout_ms) noexcept;
   std::size_t drain_updates(std::uint32_t lane_id, UpdateCallback callback,
                             void* context,

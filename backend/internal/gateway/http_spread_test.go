@@ -24,16 +24,20 @@ import (
 
 type testSpreadServer struct {
 	spreadv1.UnimplementedSpreadServiceServer
-	err error
+	err          error
+	last         *spreadv1.GetBasisSpreadHistoryRequest
+	historyCalls int
 }
 
 func (s *testSpreadServer) GetBasisSpreadHistory(
 	_ context.Context,
 	request *spreadv1.GetBasisSpreadHistoryRequest,
 ) (*spreadv1.GetBasisSpreadHistoryResponse, error) {
+	s.historyCalls++
 	if s.err != nil {
 		return nil, s.err
 	}
+	s.last = request
 	now := time.Date(2026, 8, 22, 7, 0, 0, 0, time.UTC)
 	return &spreadv1.GetBasisSpreadHistoryResponse{
 		Venue: request.GetVenue(), CompareVenue: request.GetCompareVenue(),
@@ -122,9 +126,10 @@ func TestBasisSpreadHistoryContractAndETag(t *testing.T) {
 }
 
 func TestBasisSpreadHistoryForwardsCompareVenue(t *testing.T) {
-	router := spreadRouter(t, &testSpreadServer{})
+	server := &testSpreadServer{}
+	router := spreadRouter(t, server)
 	request := httptest.NewRequest(
-		http.MethodGet, "/api/v1/basis-spreads/binance/BTC/USDT/history?range=24h&compareVenue=okx", nil,
+		http.MethodGet, "/api/v1/basis-spreads/hyperliquid/BTC/USDT/history?range=24h&compareVenue=binance&venueSymbol=BTCUSDC&compareVenueSymbol=BTCUSDT", nil,
 	)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
@@ -135,8 +140,34 @@ func TestBasisSpreadHistoryForwardsCompareVenue(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["venue"] != "binance" || payload["compareVenue"] != "okx" {
+	if payload["venue"] != "hyperliquid" || payload["compareVenue"] != "binance" ||
+		server.last.GetVenueCanonicalSymbol() != "BTCUSDC" ||
+		server.last.GetCompareVenueCanonicalSymbol() != "BTCUSDT" {
 		t.Fatalf("payload=%v", payload)
+	}
+}
+
+func TestBasisSpreadHistoryAcceptsEncodedChineseAsset(t *testing.T) {
+	server := &testSpreadServer{}
+	router := spreadRouter(t, server)
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/basis-spreads/aster/%E9%BE%99%E8%99%BE/USDT/history?range=24h&compareVenue=bitget&venueSymbol=%E9%BE%99%E8%99%BEUSDT&compareVenueSymbol=%E9%BE%99%E8%99%BEUSDT",
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if server.last == nil ||
+		server.last.GetVenue() != "aster" ||
+		server.last.GetCompareVenue() != "bitget" ||
+		server.last.GetBaseAsset() != "龙虾" ||
+		server.last.GetQuoteAsset() != "USDT" ||
+		server.last.GetVenueCanonicalSymbol() != "龙虾USDT" ||
+		server.last.GetCompareVenueCanonicalSymbol() != "龙虾USDT" {
+		t.Fatalf("forwarded=%+v", server.last)
 	}
 }
 
@@ -161,6 +192,78 @@ func TestBasisSpreadHistoryRejectsInvalidRange(t *testing.T) {
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestBasisSpreadHistoryAcceptsSingleCharacterAssets(t *testing.T) {
+	server := &testSpreadServer{}
+	router := spreadRouter(t, server)
+	for _, tc := range []struct {
+		path string
+		base string
+	}{
+		{path: "/api/v1/basis-spreads/bybit/T/USDT/history?range=24h", base: "T"},
+		{path: "/api/v1/basis-spreads/bybit/1/USDT/history?range=24h", base: "1"},
+	} {
+		server.last = nil
+		request := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("path=%s status=%d body=%s", tc.path, recorder.Code, recorder.Body.String())
+		}
+		if server.last == nil ||
+			server.last.GetVenue() != "bybit" ||
+			server.last.GetBaseAsset() != tc.base ||
+			server.last.GetQuoteAsset() != "USDT" {
+			t.Fatalf("path=%s forwarded=%+v", tc.path, server.last)
+		}
+	}
+}
+
+func TestBasisSpreadHistoryForwardsSingleCharacterCrossVenueSymbols(t *testing.T) {
+	server := &testSpreadServer{}
+	router := spreadRouter(t, server)
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/basis-spreads/bybit/T/USDT/history?range=24h&compareVenue=binance&venueSymbol=TUSDT&compareVenueSymbol=TUSDT",
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if server.last == nil ||
+		server.last.GetVenue() != "bybit" ||
+		server.last.GetCompareVenue() != "binance" ||
+		server.last.GetBaseAsset() != "T" ||
+		server.last.GetQuoteAsset() != "USDT" ||
+		server.last.GetVenueCanonicalSymbol() != "TUSDT" ||
+		server.last.GetCompareVenueCanonicalSymbol() != "TUSDT" {
+		t.Fatalf("forwarded=%+v", server.last)
+	}
+}
+
+func TestBasisSpreadHistoryRejectsInvalidAssets(t *testing.T) {
+	server := &testSpreadServer{}
+	router := spreadRouter(t, server)
+	for _, path := range []string{
+		"/api/v1/basis-spreads/bybit/%20/USDT/history?range=24h",
+		"/api/v1/basis-spreads/bybit/-/USDT/history?range=24h",
+		"/api/v1/basis-spreads/bybit/T%2F/USDT/history?range=24h",
+		"/api/v1/basis-spreads/bybit/T%20USDT/USDT/history?range=24h",
+	} {
+		server.last = nil
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("path=%s status=%d body=%s", path, recorder.Code, recorder.Body.String())
+		}
+		if server.last != nil {
+			t.Fatalf("path=%s called spread-service: %+v", path, server.last)
+		}
 	}
 }
 

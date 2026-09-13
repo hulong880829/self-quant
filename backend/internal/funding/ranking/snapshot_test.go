@@ -10,12 +10,12 @@ func TestSnapshotStatusChangesFreshnessWithoutReplacingItems(t *testing.T) {
 	store := NewSnapshotStore()
 	now := time.Now().UTC()
 	store.ReplaceWithDataThrough(
-		Period1h, []Opportunity{{Rank: 1, GlobalSymbol: "BTCUSDT"}},
+		Period8h, []Opportunity{{Rank: 1, GlobalSymbol: "BTCUSDT"}},
 		now, now.Add(-time.Minute),
 	)
-	ready := store.View(Period1h)
-	store.MarkStale(Period1h)
-	stale := store.View(Period1h)
+	ready := store.View(Period8h)
+	store.MarkStale(Period8h)
+	stale := store.View(Period8h)
 	if stale.Status != SnapshotStale || !stale.Stale || stale.Version == ready.Version {
 		t.Fatalf("ready=%+v stale=%+v", ready, stale)
 	}
@@ -33,7 +33,7 @@ func TestSnapshotConcurrentReadersObservePublishedGenerations(t *testing.T) {
 		go func() {
 			defer group.Done()
 			for range 1000 {
-				snapshot := store.View(Period1h)
+				snapshot := store.View(Period8h)
 				if snapshot.Generation > 0 && len(snapshot.Items) != 1 {
 					t.Errorf("partial snapshot: %+v", snapshot)
 					return
@@ -43,7 +43,7 @@ func TestSnapshotConcurrentReadersObservePublishedGenerations(t *testing.T) {
 	}
 	for generation := 0; generation < 100; generation++ {
 		store.Replace(
-			Period1h, []Opportunity{{Rank: 1, GlobalSymbol: "BTCUSDT"}},
+			Period8h, []Opportunity{{Rank: 1, GlobalSymbol: "BTCUSDT"}},
 			time.Now().UTC(),
 		)
 	}
@@ -52,15 +52,15 @@ func TestSnapshotConcurrentReadersObservePublishedGenerations(t *testing.T) {
 
 func BenchmarkSnapshotViewParallel(b *testing.B) {
 	store := NewSnapshotStore()
-	items := make([]Opportunity, 1000)
+	items := make([]Opportunity, 100)
 	for index := range items {
 		items[index] = Opportunity{Rank: index + 1, GlobalSymbol: "BTCUSDT"}
 	}
-	store.Replace(Period1h, items, time.Now().UTC())
+	store.Replace(Period8h, items, time.Now().UTC())
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			snapshot := store.View(Period1h)
+			snapshot := store.View(Period8h)
 			if len(snapshot.Items) != len(items) {
 				b.Fatal("invalid snapshot")
 			}

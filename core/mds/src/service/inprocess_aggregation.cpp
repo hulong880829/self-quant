@@ -453,7 +453,7 @@ bool InProcessAggregation::poll(std::uint64_t now_mono_ns) noexcept {
     }
   } else {
     const auto built = engine_->build_orderbook(now_mono_ns);
-    if (built.changed) {
+    if (built.changed && built.publishable) {
       latest_book_ = built.record;
       have_latest_ = true;
       state_ = api::SubscriptionState::Live;

@@ -721,6 +721,7 @@ bool BinanceSession::handle_ticker(std::string_view data, std::string &error) {
                   utils::md::BookState::Live);
   event.bid = {ticker.bid_price, ticker.bid_quantity};
   event.ask = {ticker.ask_price, ticker.ask_quantity};
+  event.header.bbo_origin = utils::md::BboOrigin::TickerStream;
   latest_ticker_ = event;
   if (!options_.subscribe_orderbook) {
     if (ticker_publisher_ && !ticker_publisher_->publish_bbo(event)) {
@@ -742,6 +743,9 @@ bool BinanceSession::handle_ticker(std::string_view data, std::string &error) {
   std::optional<utils::md::BboEvent> output =
       options_.profile == Profile::Spot ? overlay_.Effective(canonical)
                                         : overlay_.ticker();
+  if (output) {
+    output->header.bbo_origin = utils::md::BboOrigin::TickerStream;
+  }
   if (ticker_publisher_ && output && !ticker_publisher_->publish_bbo(*output)) {
     ++metrics_.publish_errors;
     handle_publish_failure("ticker BBO publish failed", Clock::now());
@@ -878,6 +882,8 @@ bool BinanceSession::publish_canonical(std::uint64_t sequence,
                   bus_sequence_++, exchange_time_ms,
                   state() == SessionState::Live ? utils::md::BookState::Live
                                                 : utils::md::BookState::Building);
+  canonical->header.bbo_origin =
+      utils::md::BboOrigin::OrderBookStream;
   if (overlay_.OnCanonical(*canonical) == book::OverlayAction::Divergence) {
     request_resync("ticker/canonical BBO divergence", Clock::now());
     return false;
@@ -930,6 +936,8 @@ bool BinanceSession::republish_ticker() noexcept {
   }
   if (!options_.subscribe_orderbook) {
     if (latest_ticker_) {
+      latest_ticker_->header.bbo_origin =
+          utils::md::BboOrigin::TickerStream;
       result = ticker_publisher_->publish_bbo(*latest_ticker_);
       if (!result) {
         ++metrics_.publish_errors;
@@ -945,10 +953,11 @@ bool BinanceSession::republish_ticker() noexcept {
   canonical.header.book_generation = generation();
   canonical.header.source_seq =
       bridge_ ? bridge_->last_update_id() : std::uint64_t{};
-  const auto output =
+  auto output =
       options_.profile == Profile::Spot ? overlay_.Effective(canonical)
                                         : overlay_.ticker();
   if (output) {
+    output->header.bbo_origin = utils::md::BboOrigin::TickerStream;
     result = ticker_publisher_->publish_bbo(*output);
     if (!result) {
       ++metrics_.publish_errors;

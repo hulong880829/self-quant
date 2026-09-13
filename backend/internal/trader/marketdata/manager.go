@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,6 +28,7 @@ type Parser func(Key, []byte, time.Time) (BBO, bool, error)
 type Options struct {
 	Connector        Connector
 	Parsers          map[string]Parser
+	ParserFactories  map[string]func() Parser
 	StaleAfter       time.Duration
 	ReconnectInitial time.Duration
 	ReconnectMax     time.Duration
@@ -37,31 +39,41 @@ type Options struct {
 type Manager struct {
 	connector        Connector
 	parsers          map[string]Parser
+	parserFactories  map[string]func() Parser
 	staleAfter       time.Duration
 	reconnectInitial time.Duration
 	reconnectMax     time.Duration
 	now              func() time.Time
 	logger           *slog.Logger
 
-	mu         sync.Mutex
-	streams    map[Key]*stream
-	closed     bool
-	connects   atomic.Uint64
-	reconnects atomic.Uint64
-	updates    atomic.Uint64
-	staleReads atomic.Uint64
+	mu                      sync.Mutex
+	streams                 map[Key]*stream
+	closed                  bool
+	connects                atomic.Uint64
+	reconnects              atomic.Uint64
+	disconnects             atomic.Uint64
+	updates                 atomic.Uint64
+	staleReads              atomic.Uint64
+	parserErrors            atomic.Uint64
+	subscriptionRejections  atomic.Uint64
+	subscriptionAckTimeouts atomic.Uint64
+	readTimeouts            atomic.Uint64
 }
 
 type stream struct {
-	key          Key
-	ctx          context.Context
-	cancel       context.CancelFunc
-	refs         int
-	nextID       uint64
-	subs         map[uint64]chan BBO
-	latest       BBO
-	hasData      bool
-	lastErrorLog time.Time
+	key                 Key
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	refs                int
+	nextID              uint64
+	subs                map[uint64]chan BBO
+	latest              BBO
+	hasData             bool
+	lastErrorLog        time.Time
+	lastParserErrorLog  time.Time
+	consecutiveFailures uint64
+	parser              Parser
+	parserFactory       func() Parser
 }
 
 type Subscription struct {
@@ -77,8 +89,15 @@ func New(options Options) (*Manager, error) {
 	if options.Connector == nil {
 		options.Connector = NewWebSocketConnector()
 	}
-	if options.Parsers == nil {
+	usingDefaultParsers := options.Parsers == nil
+	if usingDefaultParsers {
 		options.Parsers = DefaultParsers()
+	}
+	if options.ParserFactories == nil {
+		options.ParserFactories = make(map[string]func() Parser)
+		if usingDefaultParsers {
+			options.ParserFactories = defaultParserFactories()
+		}
 	}
 	if options.StaleAfter <= 0 {
 		options.StaleAfter = 15 * time.Second
@@ -101,6 +120,7 @@ func New(options Options) (*Manager, error) {
 	return &Manager{
 		connector:        options.Connector,
 		parsers:          options.Parsers,
+		parserFactories:  options.ParserFactories,
 		staleAfter:       options.StaleAfter,
 		reconnectInitial: options.ReconnectInitial,
 		reconnectMax:     options.ReconnectMax,
@@ -131,7 +151,8 @@ func (m *Manager) Subscribe(ctx context.Context, key Key) (*Subscription, error)
 		streamCtx, cancel := context.WithCancel(context.Background())
 		s = &stream{
 			key: normalized, ctx: streamCtx, cancel: cancel,
-			subs: make(map[uint64]chan BBO),
+			subs: make(map[uint64]chan BBO), parser: m.parsers[normalized.Venue],
+			parserFactory: m.parserFactories[normalized.Venue],
 		}
 		m.streams[normalized] = s
 		go m.run(s)
@@ -254,15 +275,24 @@ func (m *Manager) run(s *stream) {
 	backoff := m.reconnectInitial
 	for s.ctx.Err() == nil {
 		connection, err := m.connector.Connect(s.ctx, s.key)
-		if err == nil {
+		connected := err == nil
+		if connected {
 			m.connects.Add(1)
 			backoff = m.reconnectInitial
 			err = m.consume(s, connection)
-			m.reconnects.Add(1)
 		}
 		if s.ctx.Err() != nil {
 			return
 		}
+		if err != nil {
+			m.reconnects.Add(1)
+			s.consecutiveFailures++
+			if connected {
+				m.disconnects.Add(1)
+				m.classifyDisconnect(err)
+			}
+		}
+		m.invalidate(s)
 		m.logStreamError(s, err, backoff)
 		jitterMax := max(time.Millisecond, backoff/4)
 		jitter := time.Duration(rand.Int64N(int64(jitterMax)))
@@ -275,6 +305,29 @@ func (m *Manager) run(s *stream) {
 		}
 		backoff = min(m.reconnectMax, backoff*2)
 	}
+}
+
+func (m *Manager) classifyDisconnect(err error) {
+	if errors.Is(err, ErrSubscriptionRejected) {
+		m.subscriptionRejections.Add(1)
+	}
+	if errors.Is(err, ErrSubscriptionAckTimeout) {
+		m.subscriptionAckTimeouts.Add(1)
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		m.readTimeouts.Add(1)
+	}
+}
+
+func (m *Manager) invalidate(s *stream) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.streams[s.key] != s {
+		return
+	}
+	s.latest = BBO{}
+	s.hasData = false
 }
 
 func (m *Manager) logStreamError(s *stream, err error, retryAfter time.Duration) {
@@ -290,6 +343,7 @@ func (m *Manager) logStreamError(s *stream, err error, retryAfter time.Duration)
 		"venue", s.key.Venue,
 		"product", s.key.Product,
 		"symbol", s.key.Symbol,
+		"consecutive_failures", s.consecutiveFailures,
 		"retry_after", retryAfter,
 		"error", err,
 	)
@@ -307,7 +361,12 @@ func (m *Manager) consume(s *stream, connection Connection) error {
 	defer close(closed)
 	defer connection.Close()
 
-	parser := m.parsers[s.key.Venue]
+	parser := s.parser
+	if s.parserFactory != nil {
+		parser = s.parserFactory()
+	}
+	const maxConsecutiveParserErrors = 10
+	consecutiveParserErrors := 0
 	for {
 		payload, err := connection.Read()
 		if err != nil {
@@ -315,13 +374,40 @@ func (m *Manager) consume(s *stream, connection Connection) error {
 		}
 		bbo, matched, err := parser(s.key, payload, m.now())
 		if err != nil {
-			return fmt.Errorf("parse %s BBO: %w", s.key.Venue, err)
+			m.parserErrors.Add(1)
+			consecutiveParserErrors++
+			m.logParserError(s, err)
+			if errors.Is(err, ErrSequenceGap) || errors.Is(err, ErrBookUnavailable) {
+				return fmt.Errorf("parse %s BBO: %w", s.key.Venue, err)
+			}
+			if consecutiveParserErrors >= maxConsecutiveParserErrors {
+				return fmt.Errorf(
+					"parse %s BBO: %d consecutive malformed frames: %w",
+					s.key.Venue, consecutiveParserErrors, err,
+				)
+			}
+			continue
 		}
+		consecutiveParserErrors = 0
 		if !matched {
 			continue
 		}
 		m.publish(s, bbo)
 	}
+}
+
+func (m *Manager) logParserError(s *stream, err error) {
+	now := m.now()
+	if !s.lastParserErrorLog.IsZero() && now.Sub(s.lastParserErrorLog) < 10*time.Second {
+		return
+	}
+	s.lastParserErrorLog = now
+	m.logger.Warn("public BBO frame skipped",
+		"venue", s.key.Venue,
+		"product", s.key.Product,
+		"symbol", s.key.Symbol,
+		"error", err,
+	)
 }
 
 func (m *Manager) publish(s *stream, bbo BBO) {
@@ -332,6 +418,7 @@ func (m *Manager) publish(s *stream, bbo BBO) {
 		return
 	}
 	s.latest, s.hasData = bbo, true
+	s.consecutiveFailures = 0
 	m.updates.Add(1)
 	for _, updates := range s.subs {
 		select {
@@ -350,12 +437,17 @@ func (m *Manager) publish(s *stream, bbo BBO) {
 }
 
 type Stats struct {
-	ActiveStreams uint64
-	References    uint64
-	Connects      uint64
-	Reconnects    uint64
-	Updates       uint64
-	StaleReads    uint64
+	ActiveStreams           uint64
+	References              uint64
+	Connects                uint64
+	Reconnects              uint64
+	Disconnects             uint64
+	Updates                 uint64
+	StaleReads              uint64
+	ParserErrors            uint64
+	SubscriptionRejections  uint64
+	SubscriptionAckTimeouts uint64
+	ReadTimeouts            uint64
 }
 
 func (m *Manager) Stats() Stats {
@@ -368,6 +460,10 @@ func (m *Manager) Stats() Stats {
 	return Stats{
 		ActiveStreams: uint64(len(m.streams)), References: references,
 		Connects: m.connects.Load(), Reconnects: m.reconnects.Load(),
-		Updates: m.updates.Load(), StaleReads: m.staleReads.Load(),
+		Disconnects: m.disconnects.Load(), Updates: m.updates.Load(),
+		StaleReads: m.staleReads.Load(), ParserErrors: m.parserErrors.Load(),
+		SubscriptionRejections:  m.subscriptionRejections.Load(),
+		SubscriptionAckTimeouts: m.subscriptionAckTimeouts.Load(),
+		ReadTimeouts:            m.readTimeouts.Load(),
 	}
 }

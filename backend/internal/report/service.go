@@ -139,7 +139,7 @@ func (s *Service) CreateCashFlow(
 	ctx context.Context,
 	token string,
 	productID int64,
-	flowDate string,
+	_ string,
 	occurredAt time.Time,
 	amount string,
 	flowType string,
@@ -150,13 +150,9 @@ func (s *Service) CreateCashFlow(
 		return CashFlow{}, fmt.Errorf("%w: manual cash flows must be confirmed", ErrInvalidInput)
 	}
 	if occurredAt.IsZero() {
-		parsed, err := time.ParseInLocation(time.DateOnly, flowDate, s.location)
-		if err != nil {
-			return CashFlow{}, fmt.Errorf("%w: invalid flow date", ErrInvalidInput)
-		}
-		occurredAt = parsed
+		return CashFlow{}, fmt.Errorf("%w: occurredAt is required", ErrInvalidInput)
 	}
-	flowDate = occurredAt.In(s.location).Format(time.DateOnly)
+	flowDate := ReportDate(occurredAt)
 	value, err := decimal.NewFromString(strings.TrimSpace(amount))
 	if err != nil || value.IsZero() {
 		return CashFlow{}, fmt.Errorf("%w: amount must be a non-zero decimal string", ErrInvalidInput)
@@ -175,10 +171,26 @@ func (s *Service) CreateCashFlow(
 	if err != nil {
 		return CashFlow{}, err
 	}
-	return s.repository.CreateCashFlow(
+	item, err := s.repository.CreateCashFlow(
 		ctx, owner, productID, flowDate, occurredAt.UTC(), value.String(), flowType,
-		strings.TrimSpace(note), true,
+		strings.TrimSpace(note), true, DefaultIdempotencyKey(flowType, occurredAt, value.String()),
 	)
+	if err != nil {
+		return CashFlow{}, err
+	}
+	exists, existsErr := s.repository.SnapshotExists(ctx, productID, item.FlowDate)
+	if existsErr != nil {
+		return CashFlow{}, existsErr
+	}
+	if exists {
+		if enqueueErr := s.repository.EnqueueRecompute(ctx, productID, item.FlowDate); enqueueErr != nil {
+			return CashFlow{}, enqueueErr
+		}
+		item.RecomputeStatus = "queued"
+	} else {
+		item.RecomputeStatus = "none"
+	}
+	return item, nil
 }
 
 func (s *Service) Recompute(
@@ -221,4 +233,8 @@ func (s *Service) Recompute(
 
 func IsUnauthenticated(err error) bool {
 	return errors.Is(err, ErrUnauthenticated)
+}
+
+func IsDuplicate(err error) bool {
+	return errors.Is(err, ErrDuplicate)
 }

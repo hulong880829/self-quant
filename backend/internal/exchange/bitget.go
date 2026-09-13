@@ -25,12 +25,21 @@ type bitgetEnvelope[T any] struct {
 type bitgetInstrument struct {
 	Symbol, BaseCoin, QuoteCoin, SymbolStatus, SymbolType, FundingRateInterval string
 	SettleCoin, SizeMultiplier, PriceEndStep, PricePlace, MinTradeNum          string
+	MinTradeUSDT, VolumePlace                                                  string
 	SupportMarginCoins                                                         []string
 }
 
 type bitgetSpotInstrument struct {
 	Symbol, BaseCoin, QuoteCoin, Status               string
 	PricePrecision, QuantityPrecision, MinTradeAmount string
+	MinTradeUSDT                                      string
+}
+
+type bitgetUTAInstrument struct {
+	Category, Symbol, BaseCoin, QuoteCoin, Status, Type, FundInterval string
+	PricePrecision, QuantityPrecision, QuotePrecision                 string
+	PriceMultiplier, QuantityMultiplier                               string
+	MinOrderQty, MaxOrderQty, MinOrderAmount, MaxMarketOrderQty       string
 }
 
 func precisionStep(value string) float64 {
@@ -52,6 +61,8 @@ func parseBitgetSpotInstruments(items []bitgetSpotInstrument) []Instrument {
 			continue
 		}
 		metadata, _ := json.Marshal(item)
+		minQuantity, minQuantityStatus := knownConstraint(item.MinTradeAmount)
+		minNotional, minNotionalStatus := knownConstraint(item.MinTradeUSDT)
 		result = append(result, Instrument{
 			Exchange: "bitget", ExchangeSymbol: item.Symbol,
 			BaseAsset: item.BaseCoin, QuoteAsset: item.QuoteCoin,
@@ -60,7 +71,9 @@ func parseBitgetSpotInstruments(items []bitgetSpotInstrument) []Instrument {
 			Status: "active", ContractSize: 1,
 			PriceTick:    precisionStep(item.PricePrecision),
 			QuantityStep: precisionStep(item.QuantityPrecision),
-			Metadata:     metadata, SourceUpdatedAt: time.Now().UTC(),
+			MinQuantity:  minQuantity, MinNotional: minNotional,
+			MinQuantityStatus: minQuantityStatus, MinNotionalStatus: minNotionalStatus,
+			Metadata: metadata, SourceUpdatedAt: time.Now().UTC(),
 		})
 	}
 	return result
@@ -81,7 +94,9 @@ func parseBitgetInstruments(items []bitgetInstrument) []Instrument {
 		if placeStep := precisionStep(item.PricePlace); placeStep > 0 {
 			tick *= placeStep
 		}
-		step, _ := parseFloat(item.MinTradeNum)
+		step := size
+		minQuantity, minQuantityStatus := knownConstraint(item.MinTradeNum)
+		minNotional, minNotionalStatus := knownConstraint(item.MinTradeUSDT)
 		settle := bitgetSettleAsset(item)
 		model, sizeUnit := "linear", "base"
 		if strings.EqualFold(settle, item.BaseCoin) {
@@ -95,36 +110,102 @@ func parseBitgetInstruments(items []bitgetInstrument) []Instrument {
 			IntervalHours: hours, SettleAsset: settle,
 			ContractType: "perpetual", Status: "active", ContractSize: size,
 			PriceTick: tick, QuantityStep: step, Metadata: metadata,
+			MinQuantity: minQuantity, MinNotional: minNotional,
+			MinQuantityStatus: minQuantityStatus, MinNotionalStatus: minNotionalStatus,
 			SourceUpdatedAt: time.Now().UTC(),
 		})
 	}
 	return result
 }
 
-func (b *Bitget) SyncInstruments(ctx context.Context, contractType string) ([]Instrument, error) {
-	if contractType == ContractTypeSpot {
-		var payload bitgetEnvelope[[]bitgetSpotInstrument]
-		if err := b.client.get(ctx, "/api/v2/spot/public/symbols", nil, &payload); err != nil {
-			return nil, err
+func parseBitgetUTAInstruments(items []bitgetUTAInstrument, category string) []Instrument {
+	result := make([]Instrument, 0, len(items))
+	for _, item := range items {
+		if !strings.EqualFold(item.Status, "online") {
+			continue
 		}
-		if payload.Code != "00000" {
-			return nil, fmt.Errorf("bitget: %s", payload.Msg)
+		contractType := ContractTypePerpetual
+		if strings.EqualFold(category, "SPOT") {
+			contractType = ContractTypeSpot
+		} else if !strings.EqualFold(item.Type, "perpetual") {
+			continue
 		}
-		return parseBitgetSpotInstruments(payload.Data), nil
+		tick, _ := parseFloat(item.PriceMultiplier)
+		if tick <= 0 {
+			tick = precisionStep(item.PricePrecision)
+		}
+		step, _ := parseFloat(item.QuantityMultiplier)
+		if step <= 0 {
+			step = precisionStep(item.QuantityPrecision)
+		}
+		minQuantity, minQuantityStatus := knownConstraint(item.MinOrderQty)
+		minNotional, minNotionalStatus := knownConstraint(item.MinOrderAmount)
+		maxQuantity, maxQuantityStatus := maximumDecimalConstraint(item.MaxOrderQty)
+		marketStep, marketStepStatus := knownDecimalConstraint(item.QuantityMultiplier)
+		if marketStepStatus != ConstraintKnown {
+			marketStep, marketStepStatus = knownDecimalConstraint(
+				strconv.FormatFloat(step, 'f', -1, 64),
+			)
+		}
+		marketMinQuantity, marketMinQuantityStatus := knownDecimalConstraint(item.MinOrderQty)
+		marketMaxQuantity, marketMaxQuantityStatus := maximumDecimalConstraint(
+			item.MaxMarketOrderQty,
+		)
+		marketMinNotional, marketMinNotionalStatus := knownDecimalConstraint(
+			item.MinOrderAmount,
+		)
+		hours, _ := strconv.ParseFloat(item.FundInterval, 64)
+		if contractType == ContractTypePerpetual && hours <= 0 {
+			hours = 8
+		}
+		settle := item.QuoteCoin
+		if strings.EqualFold(category, "COIN-FUTURES") {
+			settle = item.BaseCoin
+		}
+		model, sizeUnit := "linear", "base"
+		if strings.EqualFold(settle, item.BaseCoin) {
+			model, sizeUnit = "inverse", "quote"
+		}
+		metadata := instrumentMetadata(item, model, sizeUnit)
+		result = append(result, Instrument{
+			Exchange: "bitget", ExchangeSymbol: item.Symbol,
+			BaseAsset: item.BaseCoin, QuoteAsset: item.QuoteCoin,
+			GlobalSymbol:  GlobalSymbol(item.BaseCoin, item.QuoteCoin),
+			IntervalHours: hours, SettleAsset: settle,
+			ContractType: contractType, Status: "active", ContractSize: 1,
+			PriceTick: tick, QuantityStep: step,
+			MinQuantity: minQuantity, MinNotional: minNotional,
+			MinQuantityStatus: minQuantityStatus, MinNotionalStatus: minNotionalStatus,
+			MaxQuantity: maxQuantity, MaxQuantityStatus: maxQuantityStatus,
+			MarketQuantityStep: marketStep, MarketQuantityStepStatus: marketStepStatus,
+			MarketMinQuantity: marketMinQuantity, MarketMinQuantityStatus: marketMinQuantityStatus,
+			MarketMaxQuantity: marketMaxQuantity, MarketMaxQuantityStatus: marketMaxQuantityStatus,
+			MarketMinNotional: marketMinNotional, MarketMinNotionalStatus: marketMinNotionalStatus,
+			Metadata: metadata, SourceUpdatedAt: time.Now().UTC(),
+		})
 	}
-	if contractType != ContractTypePerpetual {
+	return result
+}
+
+func (b *Bitget) SyncInstruments(ctx context.Context, contractType string) ([]Instrument, error) {
+	categories := []string{"SPOT"}
+	if contractType == ContractTypePerpetual {
+		categories = []string{"USDT-FUTURES", "USDC-FUTURES", "COIN-FUTURES"}
+	} else if contractType != ContractTypeSpot {
 		return nil, fmt.Errorf("bitget: unsupported contract type %q", contractType)
 	}
 	var all []Instrument
-	for _, product := range []string{"USDT-FUTURES", "USDC-FUTURES", "COIN-FUTURES"} {
-		var payload bitgetEnvelope[[]bitgetInstrument]
-		if err := b.client.get(ctx, "/api/v2/mix/market/contracts", url.Values{"productType": {product}}, &payload); err != nil {
+	for _, category := range categories {
+		var payload bitgetEnvelope[[]bitgetUTAInstrument]
+		if err := b.client.get(ctx, "/api/v3/market/instruments", url.Values{
+			"category": {category},
+		}, &payload); err != nil {
 			return nil, err
 		}
 		if payload.Code != "00000" {
 			return nil, fmt.Errorf("bitget: %s", payload.Msg)
 		}
-		all = append(all, parseBitgetInstruments(payload.Data)...)
+		all = append(all, parseBitgetUTAInstruments(payload.Data, category)...)
 	}
 	return all, nil
 }

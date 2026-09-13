@@ -12,8 +12,6 @@ import (
 	"github.com/shopspring/decimal"
 	"golang.org/x/sync/singleflight"
 	"golang.org/x/time/rate"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 var (
@@ -29,6 +27,7 @@ type CredentialProvider interface {
 	Get(context.Context, string, int64) (Credentials, string, error)
 	Refresh(context.Context, string, int64) (Credentials, string, error)
 	Invalidate(context.Context, string, int64) error
+	Activate(context.Context, string, int64) error
 	Owner(context.Context, string) (string, error)
 }
 
@@ -42,28 +41,6 @@ func isCLOBUnauthorized(err error) bool {
 	return errors.As(err, &clobErr) && clobErr.StatusCode == 401
 }
 
-func (s *Service) refreshAfterUnauthorized(
-	ctx context.Context,
-	token string,
-	accountID int64,
-) (Credentials, error) {
-	value, err, _ := s.group.Do(fmt.Sprintf("credentials:%d", accountID), func() (any, error) {
-		refreshed, _, refreshErr := s.credentials.Refresh(ctx, token, accountID)
-		return refreshed, refreshErr
-	})
-	if err == nil {
-		return value.(Credentials), nil
-	}
-	code := status.Code(err)
-	if !errors.Is(err, context.DeadlineExceeded) &&
-		!errors.Is(err, context.Canceled) &&
-		code != codes.DeadlineExceeded &&
-		code != codes.Unavailable {
-		_ = s.credentials.Invalidate(context.WithoutCancel(ctx), token, accountID)
-	}
-	return Credentials{}, err
-}
-
 func (s *Service) staleCacheTTL() time.Duration {
 	if s.cacheTTL < 30*time.Second {
 		return 30 * time.Second
@@ -71,40 +48,20 @@ func (s *Service) staleCacheTTL() time.Duration {
 	return s.cacheTTL
 }
 
-func callPrivateCLOB[T any](
-	ctx context.Context,
-	service *Service,
-	token string,
-	accountID int64,
-	credentials Credentials,
-	call func(Credentials) (T, error),
-) (T, Credentials, error) {
-	result, err := call(credentials)
-	if !isCLOBUnauthorized(err) {
-		return result, credentials, err
-	}
-	refreshed, refreshErr := service.refreshAfterUnauthorized(ctx, token, accountID)
-	if refreshErr != nil {
-		var zero T
-		return zero, credentials, refreshErr
-	}
-	result, err = call(refreshed)
-	if isCLOBUnauthorized(err) {
-		_ = service.credentials.Invalidate(context.WithoutCancel(ctx), token, accountID)
-	}
-	return result, refreshed, err
-}
-
 type cachedPositions struct {
-	value     []Position
-	expiresAt time.Time
-	stale     bool
+	value          []Position
+	expiresAt      time.Time
+	stale          bool
+	bindingInvalid bool
+	bindingStatus  string
 }
 
 type cachedOpenOrders struct {
-	value     []OpenOrder
-	expiresAt time.Time
-	stale     bool
+	value          []OpenOrder
+	expiresAt      time.Time
+	stale          bool
+	bindingInvalid bool
+	bindingStatus  string
 }
 
 type chainlinkOpenCandidate struct {
@@ -139,6 +96,10 @@ type Service struct {
 	orderMu        sync.Mutex
 	orderLocks     map[int64]*sync.Mutex
 	accountStreams *UserStreamManager
+
+	clock      func() time.Time
+	recoveryMu sync.Mutex
+	recovery   map[int64]credentialRecoveryState
 }
 
 func NewService(
@@ -168,6 +129,7 @@ func NewService(
 		lastPersisted:  make(map[string]time.Time),
 		openPersisted:  make(map[string]bool),
 		openCandidates: make(map[string]chainlinkOpenCandidate),
+		recovery:       make(map[int64]credentialRecoveryState),
 	}
 }
 
@@ -505,19 +467,22 @@ func (s *Service) GetAccountSummary(
 	token string,
 	accountID int64,
 ) (AccountSummary, error) {
-	now := time.Now()
+	now := s.nowTime()
 	s.cacheMu.RLock()
 	cached, ok := s.summaries[accountID]
 	s.cacheMu.RUnlock()
-	if ok && now.Before(cached.expiresAt) {
+	if ok && now.Before(cached.expiresAt) && cached.value.BindingStatus != "invalid" {
 		return cached.value, nil
 	}
 	value, err, _ := s.group.Do(fmt.Sprintf("summary:%d", accountID), func() (any, error) {
 		if waitErr := s.limiter.Wait(ctx); waitErr != nil {
 			return AccountSummary{}, waitErr
 		}
-		credentials, accountName, credentialErr := s.credentials.Get(ctx, token, accountID)
+		credentials, accountName, credentialErr := s.resolvePrivateCredentials(ctx, token, accountID)
 		if credentialErr != nil {
+			if isRecoverableCredentialError(credentialErr) {
+				return s.staleAccountSummaryFallback(ctx, accountID, accountName, cached, ok)
+			}
 			return AccountSummary{}, credentialErr
 		}
 		var balance, positionValue string
@@ -546,23 +511,31 @@ func (s *Service) GetAccountSummary(
 			if ok {
 				fallback := cached.value
 				fallback.Stale = true
+				if fallback.BindingStatus == "" {
+					fallback.BindingStatus = "active"
+				}
 				s.cacheMu.Lock()
 				s.summaries[accountID] = cachedSummary{
-					value: fallback, expiresAt: time.Now().Add(s.staleCacheTTL()),
+					value: fallback, expiresAt: s.nowTime().Add(s.staleCacheTTL()),
 				}
 				s.cacheMu.Unlock()
 				return fallback, nil
 			}
-			if fallback, loadErr := s.repository.LoadAccountSummary(ctx, accountID); loadErr == nil {
-				fallback.AccountName = accountName
-				fallback.WalletAddress = credentials.FunderAddress
-				fallback.Stale = true
-				s.cacheMu.Lock()
-				s.summaries[accountID] = cachedSummary{
-					value: fallback, expiresAt: time.Now().Add(s.staleCacheTTL()),
+			if s.repository != nil {
+				if fallback, loadErr := s.repository.LoadAccountSummary(ctx, accountID); loadErr == nil {
+					fallback.AccountName = accountName
+					fallback.WalletAddress = credentials.FunderAddress
+					fallback.Stale = true
+					if fallback.BindingStatus == "" {
+						fallback.BindingStatus = "active"
+					}
+					s.cacheMu.Lock()
+					s.summaries[accountID] = cachedSummary{
+						value: fallback, expiresAt: s.nowTime().Add(s.staleCacheTTL()),
+					}
+					s.cacheMu.Unlock()
+					return fallback, nil
 				}
-				s.cacheMu.Unlock()
-				return fallback, nil
 			}
 			if balanceErr != nil {
 				return AccountSummary{}, balanceErr
@@ -577,13 +550,16 @@ func (s *Service) GetAccountSummary(
 			AvailableBalance: balanceDecimal.String(),
 			PositionValue:    positionDecimal.String(),
 			TotalAssets:      balanceDecimal.Add(positionDecimal).String(),
-			SourceUpdatedAt:  time.Now().UTC(),
+			SourceUpdatedAt:  s.nowTime().UTC(),
+			BindingStatus:    "active",
 		}
-		if persistErr := s.repository.UpsertAccountSummary(ctx, summary); persistErr != nil {
-			s.logger.Warn("persist account summary failed", "account_id", accountID, "error", persistErr)
+		if s.repository != nil {
+			if persistErr := s.repository.UpsertAccountSummary(ctx, summary); persistErr != nil {
+				s.warnf("persist account summary failed", "account_id", accountID, "error", persistErr)
+			}
 		}
 		s.cacheMu.Lock()
-		s.summaries[accountID] = cachedSummary{value: summary, expiresAt: time.Now().Add(s.cacheTTL)}
+		s.summaries[accountID] = cachedSummary{value: summary, expiresAt: s.nowTime().Add(s.cacheTTL)}
 		s.cacheMu.Unlock()
 		return summary, nil
 	})
@@ -593,25 +569,87 @@ func (s *Service) GetAccountSummary(
 	return value.(AccountSummary), nil
 }
 
+func (s *Service) staleAccountSummaryFallback(
+	ctx context.Context,
+	accountID int64,
+	accountName string,
+	cached cachedSummary,
+	ok bool,
+) (AccountSummary, error) {
+	if ok {
+		fallback := cached.value
+		fallback.Stale = true
+		fallback.BindingStatus = "invalid"
+		if accountName != "" {
+			fallback.AccountName = accountName
+		}
+		s.cacheMu.Lock()
+		s.summaries[accountID] = cachedSummary{
+			value: fallback, expiresAt: s.nowTime().Add(s.staleCacheTTL()),
+		}
+		s.cacheMu.Unlock()
+		return fallback, nil
+	}
+	if s.repository != nil {
+		if fallback, loadErr := s.repository.LoadAccountSummary(ctx, accountID); loadErr == nil {
+			if accountName != "" {
+				fallback.AccountName = accountName
+			}
+			fallback.Stale = true
+			fallback.BindingStatus = "invalid"
+			s.cacheMu.Lock()
+			s.summaries[accountID] = cachedSummary{
+				value: fallback, expiresAt: s.nowTime().Add(s.staleCacheTTL()),
+			}
+			s.cacheMu.Unlock()
+			return fallback, nil
+		}
+	}
+	empty := AccountSummary{
+		TradingAccountID: accountID,
+		AccountName:      accountName,
+		Stale:            true,
+		BindingStatus:    "invalid",
+	}
+	s.cacheMu.Lock()
+	if s.summaries == nil {
+		s.summaries = make(map[int64]cachedSummary)
+	}
+	s.summaries[accountID] = cachedSummary{
+		value: empty, expiresAt: s.nowTime().Add(s.staleCacheTTL()),
+	}
+	s.cacheMu.Unlock()
+	return empty, nil
+}
+
+func (s *Service) warnf(message string, args ...any) {
+	if s.logger != nil {
+		s.logger.Warn(message, args...)
+	}
+}
+
 func (s *Service) ListPositions(
 	ctx context.Context,
 	token string,
 	accountID int64,
 	force bool,
 ) ([]Position, bool, error) {
-	now := time.Now()
+	now := s.nowTime()
 	s.cacheMu.RLock()
 	cached, ok := s.positions[accountID]
 	s.cacheMu.RUnlock()
-	if !force && ok && now.Before(cached.expiresAt) {
+	if !force && ok && now.Before(cached.expiresAt) && !cached.bindingInvalid {
 		return filterLivePositions(cached.value), cached.stale, nil
 	}
 	value, err, _ := s.group.Do(fmt.Sprintf("positions:%d", accountID), func() (any, error) {
 		if waitErr := s.limiter.Wait(ctx); waitErr != nil {
 			return cachedPositions{}, waitErr
 		}
-		credentials, _, credentialErr := s.credentials.Get(ctx, token, accountID)
+		credentials, _, credentialErr := s.resolvePrivateCredentials(ctx, token, accountID)
 		if credentialErr != nil {
+			if isRecoverableCredentialError(credentialErr) {
+				return s.stalePositionsFallback(ctx, accountID, cached, ok)
+			}
 			return cachedPositions{}, credentialErr
 		}
 		positions, listErr := s.data.ListPositions(ctx, credentials.FunderAddress)
@@ -619,33 +657,37 @@ func (s *Service) ListPositions(
 			if ok {
 				fallback := cached
 				fallback.stale = true
-				fallback.expiresAt = time.Now().Add(s.staleCacheTTL())
+				fallback.expiresAt = s.nowTime().Add(s.staleCacheTTL())
 				s.cacheMu.Lock()
 				s.positions[accountID] = fallback
 				s.cacheMu.Unlock()
 				return fallback, nil
 			}
-			if stored, loadErr := s.repository.LoadPositions(ctx, accountID); loadErr == nil {
-				fallback := cachedPositions{
-					value: stored, stale: true,
-					expiresAt: time.Now().Add(s.staleCacheTTL()),
+			if s.repository != nil {
+				if stored, loadErr := s.repository.LoadPositions(ctx, accountID); loadErr == nil {
+					fallback := cachedPositions{
+						value: stored, stale: true,
+						expiresAt: s.nowTime().Add(s.staleCacheTTL()),
+					}
+					s.cacheMu.Lock()
+					s.positions[accountID] = fallback
+					s.cacheMu.Unlock()
+					return fallback, nil
 				}
-				s.cacheMu.Lock()
-				s.positions[accountID] = fallback
-				s.cacheMu.Unlock()
-				return fallback, nil
 			}
 			return cachedPositions{}, listErr
 		}
 		for index := range positions {
 			positions[index].TradingAccountID = accountID
 		}
-		if persistErr := s.repository.UpsertPositions(ctx, accountID, positions); persistErr != nil {
-			s.logger.Warn("persist positions failed", "account_id", accountID, "error", persistErr)
+		if s.repository != nil {
+			if persistErr := s.repository.UpsertPositions(ctx, accountID, positions); persistErr != nil {
+				s.warnf("persist positions failed", "account_id", accountID, "error", persistErr)
+			}
 		}
 		next := cachedPositions{
 			value:     append([]Position(nil), positions...),
-			expiresAt: time.Now().Add(s.cacheTTL),
+			expiresAt: s.nowTime().Add(s.cacheTTL),
 		}
 		s.cacheMu.Lock()
 		s.positions[accountID] = next
@@ -657,6 +699,49 @@ func (s *Service) ListPositions(
 	}
 	result := value.(cachedPositions)
 	return filterLivePositions(result.value), result.stale, nil
+}
+
+func (s *Service) stalePositionsFallback(
+	ctx context.Context,
+	accountID int64,
+	cached cachedPositions,
+	ok bool,
+) (cachedPositions, error) {
+	if ok {
+		fallback := cached
+		fallback.stale = true
+		fallback.bindingInvalid = true
+		fallback.bindingStatus = "invalid"
+		fallback.expiresAt = s.nowTime().Add(s.staleCacheTTL())
+		s.cacheMu.Lock()
+		s.positions[accountID] = fallback
+		s.cacheMu.Unlock()
+		return fallback, nil
+	}
+	if s.repository != nil {
+		if stored, loadErr := s.repository.LoadPositions(ctx, accountID); loadErr == nil {
+			fallback := cachedPositions{
+				value: stored, stale: true, bindingInvalid: true,
+				bindingStatus: "invalid",
+				expiresAt:     s.nowTime().Add(s.staleCacheTTL()),
+			}
+			s.cacheMu.Lock()
+			s.positions[accountID] = fallback
+			s.cacheMu.Unlock()
+			return fallback, nil
+		}
+	}
+	fallback := cachedPositions{
+		stale: true, bindingInvalid: true, bindingStatus: "invalid",
+		expiresAt: s.nowTime().Add(s.staleCacheTTL()),
+	}
+	s.cacheMu.Lock()
+	if s.positions == nil {
+		s.positions = make(map[int64]cachedPositions)
+	}
+	s.positions[accountID] = fallback
+	s.cacheMu.Unlock()
+	return fallback, nil
 }
 
 func filterLivePositions(positions []Position) []Position {
@@ -680,19 +765,22 @@ func (s *Service) ListOpenOrders(
 	accountID int64,
 	force bool,
 ) ([]OpenOrder, bool, error) {
-	now := time.Now()
+	now := s.nowTime()
 	s.cacheMu.RLock()
 	cached, ok := s.openOrders[accountID]
 	s.cacheMu.RUnlock()
-	if !force && ok && now.Before(cached.expiresAt) {
+	if !force && ok && now.Before(cached.expiresAt) && !cached.bindingInvalid {
 		return append([]OpenOrder(nil), cached.value...), cached.stale, nil
 	}
 	value, err, _ := s.group.Do(fmt.Sprintf("open-orders:%d", accountID), func() (any, error) {
 		if waitErr := s.limiter.Wait(ctx); waitErr != nil {
 			return cachedOpenOrders{}, waitErr
 		}
-		credentials, _, credentialErr := s.credentials.Get(ctx, token, accountID)
+		credentials, _, credentialErr := s.resolvePrivateCredentials(ctx, token, accountID)
 		if credentialErr != nil {
+			if isRecoverableCredentialError(credentialErr) {
+				return s.staleOpenOrdersFallback(ctx, accountID, cached, ok)
+			}
 			return cachedOpenOrders{}, credentialErr
 		}
 		orders, _, listErr := callPrivateCLOB(
@@ -705,29 +793,31 @@ func (s *Service) ListOpenOrders(
 			if ok {
 				fallback := cached
 				fallback.stale = true
-				fallback.expiresAt = time.Now().Add(s.staleCacheTTL())
+				fallback.expiresAt = s.nowTime().Add(s.staleCacheTTL())
 				s.cacheMu.Lock()
 				s.openOrders[accountID] = fallback
 				s.cacheMu.Unlock()
 				return fallback, nil
 			}
-			if stored, loadErr := s.repository.LoadOpenOrders(ctx, accountID); loadErr == nil {
-				s.enrichOpenOrders(stored)
-				fallback := cachedOpenOrders{
-					value: stored, stale: true,
-					expiresAt: time.Now().Add(s.staleCacheTTL()),
+			if s.repository != nil {
+				if stored, loadErr := s.repository.LoadOpenOrders(ctx, accountID); loadErr == nil {
+					s.enrichOpenOrders(stored)
+					fallback := cachedOpenOrders{
+						value: stored, stale: true,
+						expiresAt: s.nowTime().Add(s.staleCacheTTL()),
+					}
+					s.cacheMu.Lock()
+					s.openOrders[accountID] = fallback
+					s.cacheMu.Unlock()
+					return fallback, nil
 				}
-				s.cacheMu.Lock()
-				s.openOrders[accountID] = fallback
-				s.cacheMu.Unlock()
-				return fallback, nil
 			}
 			return cachedOpenOrders{}, listErr
 		}
 		s.enrichOpenOrders(orders)
 		next := cachedOpenOrders{
 			value:     append([]OpenOrder(nil), orders...),
-			expiresAt: time.Now().Add(s.cacheTTL),
+			expiresAt: s.nowTime().Add(s.cacheTTL),
 		}
 		s.cacheMu.Lock()
 		s.openOrders[accountID] = next
@@ -741,7 +831,54 @@ func (s *Service) ListOpenOrders(
 	return append([]OpenOrder(nil), result.value...), result.stale, nil
 }
 
+func (s *Service) staleOpenOrdersFallback(
+	ctx context.Context,
+	accountID int64,
+	cached cachedOpenOrders,
+	ok bool,
+) (cachedOpenOrders, error) {
+	if ok {
+		fallback := cached
+		fallback.stale = true
+		fallback.bindingInvalid = true
+		fallback.bindingStatus = "invalid"
+		fallback.expiresAt = s.nowTime().Add(s.staleCacheTTL())
+		s.cacheMu.Lock()
+		s.openOrders[accountID] = fallback
+		s.cacheMu.Unlock()
+		return fallback, nil
+	}
+	if s.repository != nil {
+		if stored, loadErr := s.repository.LoadOpenOrders(ctx, accountID); loadErr == nil {
+			s.enrichOpenOrders(stored)
+			fallback := cachedOpenOrders{
+				value: stored, stale: true, bindingInvalid: true,
+				bindingStatus: "invalid",
+				expiresAt:     s.nowTime().Add(s.staleCacheTTL()),
+			}
+			s.cacheMu.Lock()
+			s.openOrders[accountID] = fallback
+			s.cacheMu.Unlock()
+			return fallback, nil
+		}
+	}
+	fallback := cachedOpenOrders{
+		stale: true, bindingInvalid: true, bindingStatus: "invalid",
+		expiresAt: s.nowTime().Add(s.staleCacheTTL()),
+	}
+	s.cacheMu.Lock()
+	if s.openOrders == nil {
+		s.openOrders = make(map[int64]cachedOpenOrders)
+	}
+	s.openOrders[accountID] = fallback
+	s.cacheMu.Unlock()
+	return fallback, nil
+}
+
 func (s *Service) enrichOpenOrders(orders []OpenOrder) {
+	if s.snapshots == nil {
+		return
+	}
 	markets, _ := s.snapshots.ListMarkets("", "", false)
 	for index := range orders {
 		for _, market := range markets {

@@ -1,0 +1,17 @@
+mds:
+  source: replay
+  required_instruments:
+    - {venue: binance, product: spot, symbol: BTCUSDT}
+    - {venue: okx, product: perpetual, symbol: BTC-USDT-SWAP}
+    - {venue: bybit, product: future, symbol: BTCUSDT}
+    - {venue: gate, product: binary_option, symbol: BTC_USDT}
+    - {venue: bitget, product: equity, symbol: BTCUSDT}
+    - {venue: polymarket, product: binary_option, symbol: btc5mup}
+    - {venue: sse, product: equity, symbol: 600519}
+    - {venue: hyperliquid, product: perpetual, symbol: BTC}
+    - {venue: aster, product: spot, symbol: BTCUSDT}
+    - {venue: lighter, product: perpetual, symbol: BTCUSDC}
+
+oms: {}
+
+strategy: {}

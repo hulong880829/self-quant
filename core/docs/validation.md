@@ -92,9 +92,9 @@ CRC、JSON/SBE symbol/exponent 与 buffer drain 覆盖曾由父代理在 Debug/W
 1. 公共 POD：固定容量 client/venue/trade ID、request token、64-bit generation
    order handle、request/event/order update/fill update 的
    trivially-copyable、standard-layout、size 和 enum ABI 契约；
-2. immutable registry：底层 `utils::md::InstrumentRegistry`、duplicate/freeze、
-   无交易 side metadata 时 untradeable，以及 Polymarket 256-bit
-   condition/token、outcome、negative-risk、signature、minimum size 和 taker delay；
+2. fixed-capacity Execution Directory：双索引 duplicate/conflict/capacity、
+   Polymarket token 反查、Active/Retiring/Retired 回收，以及 submit/cancel
+   路径访问计数保持为零；
 3. `OrderTable`：固定 slab/free-list/generation、request/client/venue 三类
    预分配 open-addressed index、容量、冲突、幂等 venue binding、erase 和 ABA；
 4. state engine：本地 submit/reject、venue new ack/reject、early cancel、

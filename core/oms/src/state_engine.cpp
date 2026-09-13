@@ -4,6 +4,8 @@
 #include <limits>
 #include <stdexcept>
 
+#include "utils/md/types.h"
+
 namespace oms {
 namespace {
 
@@ -73,10 +75,8 @@ bool HasAnyByte(const std::array<std::uint8_t, Size>& value) noexcept {
 
 }  // namespace
 
-StateEngine::StateEngine(OrderTable& orders,
-                         const InstrumentRegistry& instruments,
-                         std::size_t fill_dedup_capacity)
-    : orders_(orders), instruments_(instruments),
+StateEngine::StateEngine(OrderTable& orders, std::size_t fill_dedup_capacity)
+    : orders_(orders),
       fill_dedup_(NextPowerOfTwo(
           std::max<std::size_t>(4, fill_dedup_capacity * 2))) {}
 
@@ -95,51 +95,7 @@ void StateEngine::EmitOrder(api::UpdateType type, api::OrderHandle handle,
   sink.on_order(sink.context, update);
 }
 
-api::Error StateEngine::Submit(const api::NewOrderRequest& request,
-                               api::OrderHandle& handle,
-                               const api::UpdateSink& sink) noexcept {
-  if (!instruments_.frozen()) return api::Error::InvalidArgument;
-  constexpr std::uint16_t known_flags =
-      api::PostOnly | api::ReduceOnly | api::ClosePosition |
-      api::QuoteQuantity;
-  if (!ValidSide(request.side) || !ValidOrderType(request.type) ||
-      !ValidTimeInForce(request.time_in_force) ||
-      (request.flags & static_cast<std::uint16_t>(~known_flags)) != 0U)
-    return api::Error::InvalidArgument;
-  const auto* instrument = instruments_.Find(request.instrument_id);
-  if (instrument == nullptr) return api::Error::NotFound;
-  if (!instruments_.IsTradeable(request.instrument_id))
-    return api::Error::Untradeable;
-  if (request.quantity.scale != instrument->quantity_scale ||
-      request.price.scale != instrument->price_scale)
-    return api::Error::InvalidScale;
-  if (request.quantity.value <= 0 ||
-      ((request.flags & api::QuoteQuantity) == 0U &&
-       request.quantity.value % instrument->lot_size != 0))
-    return api::Error::InvalidArgument;
-  if (request.type == api::OrderType::Limit &&
-      (request.price.value <= 0 ||
-       request.price.value % instrument->tick_size != 0))
-    return api::Error::InvalidArgument;
-  if (request.type == api::OrderType::Market &&
-      (request.flags & api::PostOnly) != 0U)
-    return api::Error::InvalidArgument;
-  if ((request.time_in_force == api::TimeInForce::GTD) !=
-      (request.expire_time_ns != 0))
-    return api::Error::InvalidArgument;
-  if (const auto* trading =
-          instruments_.FindTradingMetadata(request.instrument_id);
-      instrument->venue == utils::md::Venue::Polymarket &&
-      trading != nullptr &&
-      request.quantity.value < trading->polymarket.minimum_order_size)
-    return api::Error::InvalidArgument;
-  const api::Error result = orders_.Insert(request, handle);
-  if (result != api::Error::Ok) return result;
-  EmitOrder(api::UpdateType::Submitted, handle, *orders_.Lookup(handle), sink);
-  return api::Error::Ok;
-}
-
-api::Error StateEngine::Submit(const api::PreparedOrderRequest& prepared,
+api::Error StateEngine::Submit(const api::SubmitOrderRequest& prepared,
                                api::OrderHandle& handle,
                                const api::UpdateSink& sink) noexcept {
   const auto& request = prepared.order;
@@ -152,14 +108,14 @@ api::Error StateEngine::Submit(const api::PreparedOrderRequest& prepared,
   const bool polymarket_venue =
       routing.venue ==
       static_cast<std::uint8_t>(utils::md::Venue::Polymarket);
-  if ((routing.kind != api::ExecutionRouteKind::Generic && !polymarket) ||
+  if ((routing.kind != api::ExecutionRouteKind::Crypto && !polymarket) ||
       routing.venue == 0 || routing.product_type == 0 ||
-      routing.catalog_generation == 0 ||
+      routing.catalog_revision == 0 ||
       polymarket != polymarket_venue ||
       routing.price_scale > 18 || routing.quantity_scale > 18 ||
       routing.tick_size <= 0 || routing.lot_size <= 0 ||
       !ValidSide(request.side) || !ValidOrderType(request.type) ||
-      !ValidTimeInForce(request.time_in_force) ||
+      !ValidTimeInForce(request.time_in_force) || request.instrument_id == 0 ||
       (request.flags & static_cast<std::uint16_t>(~known_flags)) != 0U)
     return api::Error::InvalidArgument;
   if (request.quantity.scale != routing.quantity_scale ||
@@ -179,14 +135,19 @@ api::Error StateEngine::Submit(const api::PreparedOrderRequest& prepared,
   if ((request.time_in_force == api::TimeInForce::GTD) !=
       (request.expire_time_ns != 0))
     return api::Error::InvalidArgument;
+  if (!polymarket &&
+      (routing.crypto.venue_symbol.length == 0 ||
+       routing.crypto.venue_symbol.length >
+           routing.crypto.venue_symbol.value.size()))
+    return api::Error::InvalidArgument;
   if (polymarket &&
       (routing.minimum_order_size <= 0 ||
        request.quantity.value < routing.minimum_order_size ||
        (routing.outcome != api::PolymarketOutcome::Yes &&
         routing.outcome != api::PolymarketOutcome::No) ||
        (routing.signature_type != 0 && routing.signature_type != 3) ||
-       !HasAnyByte(routing.condition_id) ||
-       !HasAnyByte(routing.token_id)))
+       !HasAnyByte(routing.polymarket.condition_id) ||
+       !HasAnyByte(routing.polymarket.token_id)))
     return api::Error::InvalidArgument;
   const api::Error result = orders_.Insert(prepared, handle);
   if (result != api::Error::Ok) return result;

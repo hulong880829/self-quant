@@ -778,6 +778,7 @@ type ListInstrumentsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Items         []*Instrument          `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
 	ServerTime    *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=server_time,json=serverTime,proto3" json:"server_time,omitempty"`
+	Capabilities  *VenueCapabilities     `protobuf:"bytes,3,opt,name=capabilities,proto3" json:"capabilities,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -826,6 +827,361 @@ func (x *ListInstrumentsResponse) GetServerTime() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *ListInstrumentsResponse) GetCapabilities() *VenueCapabilities {
+	if x != nil {
+		return x.Capabilities
+	}
+	return nil
+}
+
+type VenueCapabilities struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Products           []string               `protobuf:"bytes,1,rep,name=products,proto3" json:"products,omitempty"`
+	QuoteAssets        []string               `protobuf:"bytes,2,rep,name=quote_assets,json=quoteAssets,proto3" json:"quote_assets,omitempty"`
+	TimeInForce        []string               `protobuf:"bytes,3,rep,name=time_in_force,json=timeInForce,proto3" json:"time_in_force,omitempty"`
+	PostOnly           bool                   `protobuf:"varint,4,opt,name=post_only,json=postOnly,proto3" json:"post_only,omitempty"`
+	ReduceOnly         bool                   `protobuf:"varint,5,opt,name=reduce_only,json=reduceOnly,proto3" json:"reduce_only,omitempty"`
+	MakerTwap          bool                   `protobuf:"varint,6,opt,name=maker_twap,json=makerTwap,proto3" json:"maker_twap,omitempty"`
+	PrivateOrderStream bool                   `protobuf:"varint,7,opt,name=private_order_stream,json=privateOrderStream,proto3" json:"private_order_stream,omitempty"`
+	OneWayOnly         bool                   `protobuf:"varint,8,opt,name=one_way_only,json=oneWayOnly,proto3" json:"one_way_only,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *VenueCapabilities) Reset() {
+	*x = VenueCapabilities{}
+	mi := &file_trader_v1_trader_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VenueCapabilities) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VenueCapabilities) ProtoMessage() {}
+
+func (x *VenueCapabilities) ProtoReflect() protoreflect.Message {
+	mi := &file_trader_v1_trader_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VenueCapabilities.ProtoReflect.Descriptor instead.
+func (*VenueCapabilities) Descriptor() ([]byte, []int) {
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *VenueCapabilities) GetProducts() []string {
+	if x != nil {
+		return x.Products
+	}
+	return nil
+}
+
+func (x *VenueCapabilities) GetQuoteAssets() []string {
+	if x != nil {
+		return x.QuoteAssets
+	}
+	return nil
+}
+
+func (x *VenueCapabilities) GetTimeInForce() []string {
+	if x != nil {
+		return x.TimeInForce
+	}
+	return nil
+}
+
+func (x *VenueCapabilities) GetPostOnly() bool {
+	if x != nil {
+		return x.PostOnly
+	}
+	return false
+}
+
+func (x *VenueCapabilities) GetReduceOnly() bool {
+	if x != nil {
+		return x.ReduceOnly
+	}
+	return false
+}
+
+func (x *VenueCapabilities) GetMakerTwap() bool {
+	if x != nil {
+		return x.MakerTwap
+	}
+	return false
+}
+
+func (x *VenueCapabilities) GetPrivateOrderStream() bool {
+	if x != nil {
+		return x.PrivateOrderStream
+	}
+	return false
+}
+
+func (x *VenueCapabilities) GetOneWayOnly() bool {
+	if x != nil {
+		return x.OneWayOnly
+	}
+	return false
+}
+
+type AccountProfileStepResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Step          string                 `protobuf:"bytes,1,opt,name=step,proto3" json:"step,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	Code          string                 `protobuf:"bytes,3,opt,name=code,proto3" json:"code,omitempty"`
+	Message       string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AccountProfileStepResult) Reset() {
+	*x = AccountProfileStepResult{}
+	mi := &file_trader_v1_trader_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AccountProfileStepResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AccountProfileStepResult) ProtoMessage() {}
+
+func (x *AccountProfileStepResult) ProtoReflect() protoreflect.Message {
+	mi := &file_trader_v1_trader_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AccountProfileStepResult.ProtoReflect.Descriptor instead.
+func (*AccountProfileStepResult) Descriptor() ([]byte, []int) {
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *AccountProfileStepResult) GetStep() string {
+	if x != nil {
+		return x.Step
+	}
+	return ""
+}
+
+func (x *AccountProfileStepResult) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *AccountProfileStepResult) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
+}
+
+func (x *AccountProfileStepResult) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type AccountProfileResult struct {
+	state            protoimpl.MessageState      `protogen:"open.v1"`
+	TradingAccountId int64                       `protobuf:"varint,1,opt,name=trading_account_id,json=tradingAccountId,proto3" json:"trading_account_id,omitempty"`
+	ProductName      string                      `protobuf:"bytes,2,opt,name=product_name,json=productName,proto3" json:"product_name,omitempty"`
+	AccountName      string                      `protobuf:"bytes,3,opt,name=account_name,json=accountName,proto3" json:"account_name,omitempty"`
+	Exchange         string                      `protobuf:"bytes,4,opt,name=exchange,proto3" json:"exchange,omitempty"`
+	OverallStatus    string                      `protobuf:"bytes,5,opt,name=overall_status,json=overallStatus,proto3" json:"overall_status,omitempty"`
+	Steps            []*AccountProfileStepResult `protobuf:"bytes,6,rep,name=steps,proto3" json:"steps,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *AccountProfileResult) Reset() {
+	*x = AccountProfileResult{}
+	mi := &file_trader_v1_trader_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AccountProfileResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AccountProfileResult) ProtoMessage() {}
+
+func (x *AccountProfileResult) ProtoReflect() protoreflect.Message {
+	mi := &file_trader_v1_trader_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AccountProfileResult.ProtoReflect.Descriptor instead.
+func (*AccountProfileResult) Descriptor() ([]byte, []int) {
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *AccountProfileResult) GetTradingAccountId() int64 {
+	if x != nil {
+		return x.TradingAccountId
+	}
+	return 0
+}
+
+func (x *AccountProfileResult) GetProductName() string {
+	if x != nil {
+		return x.ProductName
+	}
+	return ""
+}
+
+func (x *AccountProfileResult) GetAccountName() string {
+	if x != nil {
+		return x.AccountName
+	}
+	return ""
+}
+
+func (x *AccountProfileResult) GetExchange() string {
+	if x != nil {
+		return x.Exchange
+	}
+	return ""
+}
+
+func (x *AccountProfileResult) GetOverallStatus() string {
+	if x != nil {
+		return x.OverallStatus
+	}
+	return ""
+}
+
+func (x *AccountProfileResult) GetSteps() []*AccountProfileStepResult {
+	if x != nil {
+		return x.Steps
+	}
+	return nil
+}
+
+type ApplyAccountProfileRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Token            string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	TradingAccountId int64                  `protobuf:"varint,2,opt,name=trading_account_id,json=tradingAccountId,proto3" json:"trading_account_id,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ApplyAccountProfileRequest) Reset() {
+	*x = ApplyAccountProfileRequest{}
+	mi := &file_trader_v1_trader_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyAccountProfileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyAccountProfileRequest) ProtoMessage() {}
+
+func (x *ApplyAccountProfileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_trader_v1_trader_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyAccountProfileRequest.ProtoReflect.Descriptor instead.
+func (*ApplyAccountProfileRequest) Descriptor() ([]byte, []int) {
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ApplyAccountProfileRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *ApplyAccountProfileRequest) GetTradingAccountId() int64 {
+	if x != nil {
+		return x.TradingAccountId
+	}
+	return 0
+}
+
+type ApplyAccountProfileResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Result        *AccountProfileResult  `protobuf:"bytes,1,opt,name=result,proto3" json:"result,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyAccountProfileResponse) Reset() {
+	*x = ApplyAccountProfileResponse{}
+	mi := &file_trader_v1_trader_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyAccountProfileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyAccountProfileResponse) ProtoMessage() {}
+
+func (x *ApplyAccountProfileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_trader_v1_trader_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyAccountProfileResponse.ProtoReflect.Descriptor instead.
+func (*ApplyAccountProfileResponse) Descriptor() ([]byte, []int) {
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ApplyAccountProfileResponse) GetResult() *AccountProfileResult {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
 type PlaceOrderRequest struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Token            string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
@@ -842,7 +1198,7 @@ type PlaceOrderRequest struct {
 
 func (x *PlaceOrderRequest) Reset() {
 	*x = PlaceOrderRequest{}
-	mi := &file_trader_v1_trader_proto_msgTypes[5]
+	mi := &file_trader_v1_trader_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -854,7 +1210,7 @@ func (x *PlaceOrderRequest) String() string {
 func (*PlaceOrderRequest) ProtoMessage() {}
 
 func (x *PlaceOrderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[5]
+	mi := &file_trader_v1_trader_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -867,7 +1223,7 @@ func (x *PlaceOrderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlaceOrderRequest.ProtoReflect.Descriptor instead.
 func (*PlaceOrderRequest) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{5}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *PlaceOrderRequest) GetToken() string {
@@ -935,7 +1291,7 @@ type PlaceOrderResponse struct {
 
 func (x *PlaceOrderResponse) Reset() {
 	*x = PlaceOrderResponse{}
-	mi := &file_trader_v1_trader_proto_msgTypes[6]
+	mi := &file_trader_v1_trader_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -947,7 +1303,7 @@ func (x *PlaceOrderResponse) String() string {
 func (*PlaceOrderResponse) ProtoMessage() {}
 
 func (x *PlaceOrderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[6]
+	mi := &file_trader_v1_trader_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -960,7 +1316,7 @@ func (x *PlaceOrderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlaceOrderResponse.ProtoReflect.Descriptor instead.
 func (*PlaceOrderResponse) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{6}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *PlaceOrderResponse) GetOrder() *Order {
@@ -980,7 +1336,7 @@ type GetOrderRequest struct {
 
 func (x *GetOrderRequest) Reset() {
 	*x = GetOrderRequest{}
-	mi := &file_trader_v1_trader_proto_msgTypes[7]
+	mi := &file_trader_v1_trader_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -992,7 +1348,7 @@ func (x *GetOrderRequest) String() string {
 func (*GetOrderRequest) ProtoMessage() {}
 
 func (x *GetOrderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[7]
+	mi := &file_trader_v1_trader_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1005,7 +1361,7 @@ func (x *GetOrderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOrderRequest.ProtoReflect.Descriptor instead.
 func (*GetOrderRequest) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{7}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *GetOrderRequest) GetToken() string {
@@ -1031,7 +1387,7 @@ type GetOrderResponse struct {
 
 func (x *GetOrderResponse) Reset() {
 	*x = GetOrderResponse{}
-	mi := &file_trader_v1_trader_proto_msgTypes[8]
+	mi := &file_trader_v1_trader_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1043,7 +1399,7 @@ func (x *GetOrderResponse) String() string {
 func (*GetOrderResponse) ProtoMessage() {}
 
 func (x *GetOrderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[8]
+	mi := &file_trader_v1_trader_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1056,7 +1412,7 @@ func (x *GetOrderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOrderResponse.ProtoReflect.Descriptor instead.
 func (*GetOrderResponse) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{8}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *GetOrderResponse) GetOrder() *Order {
@@ -1079,7 +1435,7 @@ type ListOrdersRequest struct {
 
 func (x *ListOrdersRequest) Reset() {
 	*x = ListOrdersRequest{}
-	mi := &file_trader_v1_trader_proto_msgTypes[9]
+	mi := &file_trader_v1_trader_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1091,7 +1447,7 @@ func (x *ListOrdersRequest) String() string {
 func (*ListOrdersRequest) ProtoMessage() {}
 
 func (x *ListOrdersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[9]
+	mi := &file_trader_v1_trader_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1104,7 +1460,7 @@ func (x *ListOrdersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOrdersRequest.ProtoReflect.Descriptor instead.
 func (*ListOrdersRequest) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{9}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ListOrdersRequest) GetToken() string {
@@ -1153,7 +1509,7 @@ type ListOrdersResponse struct {
 
 func (x *ListOrdersResponse) Reset() {
 	*x = ListOrdersResponse{}
-	mi := &file_trader_v1_trader_proto_msgTypes[10]
+	mi := &file_trader_v1_trader_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1165,7 +1521,7 @@ func (x *ListOrdersResponse) String() string {
 func (*ListOrdersResponse) ProtoMessage() {}
 
 func (x *ListOrdersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[10]
+	mi := &file_trader_v1_trader_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1178,7 +1534,7 @@ func (x *ListOrdersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOrdersResponse.ProtoReflect.Descriptor instead.
 func (*ListOrdersResponse) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{10}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ListOrdersResponse) GetItems() []*Order {
@@ -1212,7 +1568,7 @@ type CancelOrderRequest struct {
 
 func (x *CancelOrderRequest) Reset() {
 	*x = CancelOrderRequest{}
-	mi := &file_trader_v1_trader_proto_msgTypes[11]
+	mi := &file_trader_v1_trader_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1224,7 +1580,7 @@ func (x *CancelOrderRequest) String() string {
 func (*CancelOrderRequest) ProtoMessage() {}
 
 func (x *CancelOrderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[11]
+	mi := &file_trader_v1_trader_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1237,7 +1593,7 @@ func (x *CancelOrderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelOrderRequest.ProtoReflect.Descriptor instead.
 func (*CancelOrderRequest) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{11}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *CancelOrderRequest) GetToken() string {
@@ -1263,7 +1619,7 @@ type CancelOrderResponse struct {
 
 func (x *CancelOrderResponse) Reset() {
 	*x = CancelOrderResponse{}
-	mi := &file_trader_v1_trader_proto_msgTypes[12]
+	mi := &file_trader_v1_trader_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1275,7 +1631,7 @@ func (x *CancelOrderResponse) String() string {
 func (*CancelOrderResponse) ProtoMessage() {}
 
 func (x *CancelOrderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[12]
+	mi := &file_trader_v1_trader_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1288,7 +1644,7 @@ func (x *CancelOrderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelOrderResponse.ProtoReflect.Descriptor instead.
 func (*CancelOrderResponse) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{12}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CancelOrderResponse) GetOrder() *Order {
@@ -1319,7 +1675,7 @@ type CreateTwapRequest struct {
 
 func (x *CreateTwapRequest) Reset() {
 	*x = CreateTwapRequest{}
-	mi := &file_trader_v1_trader_proto_msgTypes[13]
+	mi := &file_trader_v1_trader_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1331,7 +1687,7 @@ func (x *CreateTwapRequest) String() string {
 func (*CreateTwapRequest) ProtoMessage() {}
 
 func (x *CreateTwapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[13]
+	mi := &file_trader_v1_trader_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1344,7 +1700,7 @@ func (x *CreateTwapRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateTwapRequest.ProtoReflect.Descriptor instead.
 func (*CreateTwapRequest) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{13}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CreateTwapRequest) GetToken() string {
@@ -1447,7 +1803,7 @@ type CreateTwapResponse struct {
 
 func (x *CreateTwapResponse) Reset() {
 	*x = CreateTwapResponse{}
-	mi := &file_trader_v1_trader_proto_msgTypes[14]
+	mi := &file_trader_v1_trader_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1459,7 +1815,7 @@ func (x *CreateTwapResponse) String() string {
 func (*CreateTwapResponse) ProtoMessage() {}
 
 func (x *CreateTwapResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[14]
+	mi := &file_trader_v1_trader_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1472,7 +1828,7 @@ func (x *CreateTwapResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateTwapResponse.ProtoReflect.Descriptor instead.
 func (*CreateTwapResponse) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{14}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *CreateTwapResponse) GetJob() *TwapJob {
@@ -1492,7 +1848,7 @@ type GetTwapRequest struct {
 
 func (x *GetTwapRequest) Reset() {
 	*x = GetTwapRequest{}
-	mi := &file_trader_v1_trader_proto_msgTypes[15]
+	mi := &file_trader_v1_trader_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1504,7 +1860,7 @@ func (x *GetTwapRequest) String() string {
 func (*GetTwapRequest) ProtoMessage() {}
 
 func (x *GetTwapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[15]
+	mi := &file_trader_v1_trader_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1517,7 +1873,7 @@ func (x *GetTwapRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTwapRequest.ProtoReflect.Descriptor instead.
 func (*GetTwapRequest) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{15}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GetTwapRequest) GetToken() string {
@@ -1543,7 +1899,7 @@ type GetTwapResponse struct {
 
 func (x *GetTwapResponse) Reset() {
 	*x = GetTwapResponse{}
-	mi := &file_trader_v1_trader_proto_msgTypes[16]
+	mi := &file_trader_v1_trader_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1555,7 +1911,7 @@ func (x *GetTwapResponse) String() string {
 func (*GetTwapResponse) ProtoMessage() {}
 
 func (x *GetTwapResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[16]
+	mi := &file_trader_v1_trader_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1568,7 +1924,7 @@ func (x *GetTwapResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTwapResponse.ProtoReflect.Descriptor instead.
 func (*GetTwapResponse) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{16}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *GetTwapResponse) GetJob() *TwapJob {
@@ -1592,7 +1948,7 @@ type ListTwapsRequest struct {
 
 func (x *ListTwapsRequest) Reset() {
 	*x = ListTwapsRequest{}
-	mi := &file_trader_v1_trader_proto_msgTypes[17]
+	mi := &file_trader_v1_trader_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1604,7 +1960,7 @@ func (x *ListTwapsRequest) String() string {
 func (*ListTwapsRequest) ProtoMessage() {}
 
 func (x *ListTwapsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[17]
+	mi := &file_trader_v1_trader_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1617,7 +1973,7 @@ func (x *ListTwapsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTwapsRequest.ProtoReflect.Descriptor instead.
 func (*ListTwapsRequest) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{17}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ListTwapsRequest) GetToken() string {
@@ -1673,7 +2029,7 @@ type ListTwapsResponse struct {
 
 func (x *ListTwapsResponse) Reset() {
 	*x = ListTwapsResponse{}
-	mi := &file_trader_v1_trader_proto_msgTypes[18]
+	mi := &file_trader_v1_trader_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1685,7 +2041,7 @@ func (x *ListTwapsResponse) String() string {
 func (*ListTwapsResponse) ProtoMessage() {}
 
 func (x *ListTwapsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[18]
+	mi := &file_trader_v1_trader_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1698,7 +2054,7 @@ func (x *ListTwapsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTwapsResponse.ProtoReflect.Descriptor instead.
 func (*ListTwapsResponse) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{18}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ListTwapsResponse) GetItems() []*TwapJob {
@@ -1732,7 +2088,7 @@ type ListTwapOrdersRequest struct {
 
 func (x *ListTwapOrdersRequest) Reset() {
 	*x = ListTwapOrdersRequest{}
-	mi := &file_trader_v1_trader_proto_msgTypes[19]
+	mi := &file_trader_v1_trader_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1744,7 +2100,7 @@ func (x *ListTwapOrdersRequest) String() string {
 func (*ListTwapOrdersRequest) ProtoMessage() {}
 
 func (x *ListTwapOrdersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[19]
+	mi := &file_trader_v1_trader_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1757,7 +2113,7 @@ func (x *ListTwapOrdersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTwapOrdersRequest.ProtoReflect.Descriptor instead.
 func (*ListTwapOrdersRequest) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{19}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ListTwapOrdersRequest) GetToken() string {
@@ -1784,7 +2140,7 @@ type ListTwapOrdersResponse struct {
 
 func (x *ListTwapOrdersResponse) Reset() {
 	*x = ListTwapOrdersResponse{}
-	mi := &file_trader_v1_trader_proto_msgTypes[20]
+	mi := &file_trader_v1_trader_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1796,7 +2152,7 @@ func (x *ListTwapOrdersResponse) String() string {
 func (*ListTwapOrdersResponse) ProtoMessage() {}
 
 func (x *ListTwapOrdersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[20]
+	mi := &file_trader_v1_trader_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1809,7 +2165,7 @@ func (x *ListTwapOrdersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTwapOrdersResponse.ProtoReflect.Descriptor instead.
 func (*ListTwapOrdersResponse) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{20}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ListTwapOrdersResponse) GetItems() []*Order {
@@ -1836,7 +2192,7 @@ type CancelTwapRequest struct {
 
 func (x *CancelTwapRequest) Reset() {
 	*x = CancelTwapRequest{}
-	mi := &file_trader_v1_trader_proto_msgTypes[21]
+	mi := &file_trader_v1_trader_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1848,7 +2204,7 @@ func (x *CancelTwapRequest) String() string {
 func (*CancelTwapRequest) ProtoMessage() {}
 
 func (x *CancelTwapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[21]
+	mi := &file_trader_v1_trader_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1861,7 +2217,7 @@ func (x *CancelTwapRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelTwapRequest.ProtoReflect.Descriptor instead.
 func (*CancelTwapRequest) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{21}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CancelTwapRequest) GetToken() string {
@@ -1887,7 +2243,7 @@ type CancelTwapResponse struct {
 
 func (x *CancelTwapResponse) Reset() {
 	*x = CancelTwapResponse{}
-	mi := &file_trader_v1_trader_proto_msgTypes[22]
+	mi := &file_trader_v1_trader_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1899,7 +2255,7 @@ func (x *CancelTwapResponse) String() string {
 func (*CancelTwapResponse) ProtoMessage() {}
 
 func (x *CancelTwapResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[22]
+	mi := &file_trader_v1_trader_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1912,7 +2268,7 @@ func (x *CancelTwapResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelTwapResponse.ProtoReflect.Descriptor instead.
 func (*CancelTwapResponse) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{22}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *CancelTwapResponse) GetJob() *TwapJob {
@@ -1939,7 +2295,7 @@ type ArbitrageLeg struct {
 
 func (x *ArbitrageLeg) Reset() {
 	*x = ArbitrageLeg{}
-	mi := &file_trader_v1_trader_proto_msgTypes[23]
+	mi := &file_trader_v1_trader_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1951,7 +2307,7 @@ func (x *ArbitrageLeg) String() string {
 func (*ArbitrageLeg) ProtoMessage() {}
 
 func (x *ArbitrageLeg) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[23]
+	mi := &file_trader_v1_trader_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1964,7 +2320,7 @@ func (x *ArbitrageLeg) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArbitrageLeg.ProtoReflect.Descriptor instead.
 func (*ArbitrageLeg) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{23}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ArbitrageLeg) GetTradingAccountId() int64 {
@@ -2031,38 +2387,77 @@ func (x *ArbitrageLeg) GetQuoteAsset() string {
 }
 
 type ArbitrageCombination struct {
-	state                      protoimpl.MessageState `protogen:"open.v1"`
-	Id                         string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	IdempotencyKey             string                 `protobuf:"bytes,2,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	LegA                       *ArbitrageLeg          `protobuf:"bytes,3,opt,name=leg_a,json=legA,proto3" json:"leg_a,omitempty"`
-	LegB                       *ArbitrageLeg          `protobuf:"bytes,4,opt,name=leg_b,json=legB,proto3" json:"leg_b,omitempty"`
-	AskThresholdBps            string                 `protobuf:"bytes,5,opt,name=ask_threshold_bps,json=askThresholdBps,proto3" json:"ask_threshold_bps,omitempty"`
-	BidThresholdBps            string                 `protobuf:"bytes,6,opt,name=bid_threshold_bps,json=bidThresholdBps,proto3" json:"bid_threshold_bps,omitempty"`
-	TargetNotional             string                 `protobuf:"bytes,7,opt,name=target_notional,json=targetNotional,proto3" json:"target_notional,omitempty"`
-	OrderNotional              string                 `protobuf:"bytes,8,opt,name=order_notional,json=orderNotional,proto3" json:"order_notional,omitempty"`
-	MaxDeltaNotional           string                 `protobuf:"bytes,9,opt,name=max_delta_notional,json=maxDeltaNotional,proto3" json:"max_delta_notional,omitempty"`
-	ExecutionMode              string                 `protobuf:"bytes,10,opt,name=execution_mode,json=executionMode,proto3" json:"execution_mode,omitempty"`
-	MakerLeg                   string                 `protobuf:"bytes,11,opt,name=maker_leg,json=makerLeg,proto3" json:"maker_leg,omitempty"`
-	Status                     string                 `protobuf:"bytes,12,opt,name=status,proto3" json:"status,omitempty"`
-	PositionNotional           string                 `protobuf:"bytes,13,opt,name=position_notional,json=positionNotional,proto3" json:"position_notional,omitempty"`
-	CurrentAskSpreadBps        string                 `protobuf:"bytes,14,opt,name=current_ask_spread_bps,json=currentAskSpreadBps,proto3" json:"current_ask_spread_bps,omitempty"`
-	CurrentBidSpreadBps        string                 `protobuf:"bytes,15,opt,name=current_bid_spread_bps,json=currentBidSpreadBps,proto3" json:"current_bid_spread_bps,omitempty"`
-	MarketDataStale            bool                   `protobuf:"varint,16,opt,name=market_data_stale,json=marketDataStale,proto3" json:"market_data_stale,omitempty"`
-	ErrorMessage               string                 `protobuf:"bytes,17,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
-	CreatedAt                  *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt                  *timestamppb.Timestamp `protobuf:"bytes,19,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	ClosedAt                   *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=closed_at,json=closedAt,proto3" json:"closed_at,omitempty"`
-	CumulativeTurnoverNotional string                 `protobuf:"bytes,21,opt,name=cumulative_turnover_notional,json=cumulativeTurnoverNotional,proto3" json:"cumulative_turnover_notional,omitempty"`
-	ConsecutiveFailures        int32                  `protobuf:"varint,22,opt,name=consecutive_failures,json=consecutiveFailures,proto3" json:"consecutive_failures,omitempty"`
-	NextRetryAt                *timestamppb.Timestamp `protobuf:"bytes,23,opt,name=next_retry_at,json=nextRetryAt,proto3" json:"next_retry_at,omitempty"`
-	PositionUncertain          bool                   `protobuf:"varint,24,opt,name=position_uncertain,json=positionUncertain,proto3" json:"position_uncertain,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	state                              protoimpl.MessageState `protogen:"open.v1"`
+	Id                                 string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	IdempotencyKey                     string                 `protobuf:"bytes,2,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	LegA                               *ArbitrageLeg          `protobuf:"bytes,3,opt,name=leg_a,json=legA,proto3" json:"leg_a,omitempty"`
+	LegB                               *ArbitrageLeg          `protobuf:"bytes,4,opt,name=leg_b,json=legB,proto3" json:"leg_b,omitempty"`
+	AskThresholdBps                    string                 `protobuf:"bytes,5,opt,name=ask_threshold_bps,json=askThresholdBps,proto3" json:"ask_threshold_bps,omitempty"`
+	BidThresholdBps                    string                 `protobuf:"bytes,6,opt,name=bid_threshold_bps,json=bidThresholdBps,proto3" json:"bid_threshold_bps,omitempty"`
+	TargetNotional                     string                 `protobuf:"bytes,7,opt,name=target_notional,json=targetNotional,proto3" json:"target_notional,omitempty"`
+	ExecutionMode                      string                 `protobuf:"bytes,10,opt,name=execution_mode,json=executionMode,proto3" json:"execution_mode,omitempty"`
+	MakerLeg                           string                 `protobuf:"bytes,11,opt,name=maker_leg,json=makerLeg,proto3" json:"maker_leg,omitempty"`
+	Status                             string                 `protobuf:"bytes,12,opt,name=status,proto3" json:"status,omitempty"`
+	PositionNotional                   string                 `protobuf:"bytes,13,opt,name=position_notional,json=positionNotional,proto3" json:"position_notional,omitempty"`
+	CurrentAskSpreadBps                string                 `protobuf:"bytes,14,opt,name=current_ask_spread_bps,json=currentAskSpreadBps,proto3" json:"current_ask_spread_bps,omitempty"`
+	CurrentBidSpreadBps                string                 `protobuf:"bytes,15,opt,name=current_bid_spread_bps,json=currentBidSpreadBps,proto3" json:"current_bid_spread_bps,omitempty"`
+	MarketDataStale                    bool                   `protobuf:"varint,16,opt,name=market_data_stale,json=marketDataStale,proto3" json:"market_data_stale,omitempty"`
+	ErrorMessage                       string                 `protobuf:"bytes,17,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	CreatedAt                          *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt                          *timestamppb.Timestamp `protobuf:"bytes,19,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	ClosedAt                           *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=closed_at,json=closedAt,proto3" json:"closed_at,omitempty"`
+	CumulativeTurnoverNotional         string                 `protobuf:"bytes,21,opt,name=cumulative_turnover_notional,json=cumulativeTurnoverNotional,proto3" json:"cumulative_turnover_notional,omitempty"`
+	ConsecutiveFailures                int32                  `protobuf:"varint,22,opt,name=consecutive_failures,json=consecutiveFailures,proto3" json:"consecutive_failures,omitempty"`
+	NextRetryAt                        *timestamppb.Timestamp `protobuf:"bytes,23,opt,name=next_retry_at,json=nextRetryAt,proto3" json:"next_retry_at,omitempty"`
+	PositionUncertain                  bool                   `protobuf:"varint,24,opt,name=position_uncertain,json=positionUncertain,proto3" json:"position_uncertain,omitempty"`
+	RuntimeState                       string                 `protobuf:"bytes,25,opt,name=runtime_state,json=runtimeState,proto3" json:"runtime_state,omitempty"`
+	LegABasePosition                   string                 `protobuf:"bytes,26,opt,name=leg_a_base_position,json=legABasePosition,proto3" json:"leg_a_base_position,omitempty"`
+	LegBBasePosition                   string                 `protobuf:"bytes,27,opt,name=leg_b_base_position,json=legBBasePosition,proto3" json:"leg_b_base_position,omitempty"`
+	CarryBaseQuantity                  string                 `protobuf:"bytes,28,opt,name=carry_base_quantity,json=carryBaseQuantity,proto3" json:"carry_base_quantity,omitempty"`
+	LegAVenueBasePosition              string                 `protobuf:"bytes,29,opt,name=leg_a_venue_base_position,json=legAVenueBasePosition,proto3" json:"leg_a_venue_base_position,omitempty"`
+	LegBVenueBasePosition              string                 `protobuf:"bytes,30,opt,name=leg_b_venue_base_position,json=legBVenueBasePosition,proto3" json:"leg_b_venue_base_position,omitempty"`
+	LegAPositionDifference             string                 `protobuf:"bytes,31,opt,name=leg_a_position_difference,json=legAPositionDifference,proto3" json:"leg_a_position_difference,omitempty"`
+	LegBPositionDifference             string                 `protobuf:"bytes,32,opt,name=leg_b_position_difference,json=legBPositionDifference,proto3" json:"leg_b_position_difference,omitempty"`
+	LastPositionReconciledAt           *timestamppb.Timestamp `protobuf:"bytes,33,opt,name=last_position_reconciled_at,json=lastPositionReconciledAt,proto3" json:"last_position_reconciled_at,omitempty"`
+	GrossTurnoverNotional              string                 `protobuf:"bytes,34,opt,name=gross_turnover_notional,json=grossTurnoverNotional,proto3" json:"gross_turnover_notional,omitempty"`
+	LegAAverageEntryPrice              string                 `protobuf:"bytes,35,opt,name=leg_a_average_entry_price,json=legAAverageEntryPrice,proto3" json:"leg_a_average_entry_price,omitempty"`
+	LegBAverageEntryPrice              string                 `protobuf:"bytes,36,opt,name=leg_b_average_entry_price,json=legBAverageEntryPrice,proto3" json:"leg_b_average_entry_price,omitempty"`
+	AverageEntrySpreadBps              string                 `protobuf:"bytes,37,opt,name=average_entry_spread_bps,json=averageEntrySpreadBps,proto3" json:"average_entry_spread_bps,omitempty"`
+	LegAUnrealizedPnl                  string                 `protobuf:"bytes,38,opt,name=leg_a_unrealized_pnl,json=legAUnrealizedPnl,proto3" json:"leg_a_unrealized_pnl,omitempty"`
+	LegBUnrealizedPnl                  string                 `protobuf:"bytes,39,opt,name=leg_b_unrealized_pnl,json=legBUnrealizedPnl,proto3" json:"leg_b_unrealized_pnl,omitempty"`
+	RealizedSpreadPnl                  string                 `protobuf:"bytes,40,opt,name=realized_spread_pnl,json=realizedSpreadPnl,proto3" json:"realized_spread_pnl,omitempty"`
+	EstimatedFundingPnl                string                 `protobuf:"bytes,41,opt,name=estimated_funding_pnl,json=estimatedFundingPnl,proto3" json:"estimated_funding_pnl,omitempty"`
+	CombinedPositionAnnualized         string                 `protobuf:"bytes,42,opt,name=combined_position_annualized,json=combinedPositionAnnualized,proto3" json:"combined_position_annualized,omitempty"`
+	FundingHistoryComplete             bool                   `protobuf:"varint,43,opt,name=funding_history_complete,json=fundingHistoryComplete,proto3" json:"funding_history_complete,omitempty"`
+	LegAVenueBaselineBasePosition      string                 `protobuf:"bytes,44,opt,name=leg_a_venue_baseline_base_position,json=legAVenueBaselineBasePosition,proto3" json:"leg_a_venue_baseline_base_position,omitempty"`
+	LegBVenueBaselineBasePosition      string                 `protobuf:"bytes,45,opt,name=leg_b_venue_baseline_base_position,json=legBVenueBaselineBasePosition,proto3" json:"leg_b_venue_baseline_base_position,omitempty"`
+	VenueBaselineCapturedAt            *timestamppb.Timestamp `protobuf:"bytes,46,opt,name=venue_baseline_captured_at,json=venueBaselineCapturedAt,proto3" json:"venue_baseline_captured_at,omitempty"`
+	LegAExpectedBasePosition           string                 `protobuf:"bytes,47,opt,name=leg_a_expected_base_position,json=legAExpectedBasePosition,proto3" json:"leg_a_expected_base_position,omitempty"`
+	LegBExpectedBasePosition           string                 `protobuf:"bytes,48,opt,name=leg_b_expected_base_position,json=legBExpectedBasePosition,proto3" json:"leg_b_expected_base_position,omitempty"`
+	LegAVenueNotional                  string                 `protobuf:"bytes,49,opt,name=leg_a_venue_notional,json=legAVenueNotional,proto3" json:"leg_a_venue_notional,omitempty"`
+	LegBVenueNotional                  string                 `protobuf:"bytes,50,opt,name=leg_b_venue_notional,json=legBVenueNotional,proto3" json:"leg_b_venue_notional,omitempty"`
+	LegAVenueValuationPrice            string                 `protobuf:"bytes,51,opt,name=leg_a_venue_valuation_price,json=legAVenueValuationPrice,proto3" json:"leg_a_venue_valuation_price,omitempty"`
+	LegBVenueValuationPrice            string                 `protobuf:"bytes,52,opt,name=leg_b_venue_valuation_price,json=legBVenueValuationPrice,proto3" json:"leg_b_venue_valuation_price,omitempty"`
+	LegAVenueValuationAt               *timestamppb.Timestamp `protobuf:"bytes,53,opt,name=leg_a_venue_valuation_at,json=legAVenueValuationAt,proto3" json:"leg_a_venue_valuation_at,omitempty"`
+	LegBVenueValuationAt               *timestamppb.Timestamp `protobuf:"bytes,54,opt,name=leg_b_venue_valuation_at,json=legBVenueValuationAt,proto3" json:"leg_b_venue_valuation_at,omitempty"`
+	RunMode                            string                 `protobuf:"bytes,55,opt,name=run_mode,json=runMode,proto3" json:"run_mode,omitempty"`
+	EntryDirection                     string                 `protobuf:"bytes,56,opt,name=entry_direction,json=entryDirection,proto3" json:"entry_direction,omitempty"`
+	LegALeverage                       string                 `protobuf:"bytes,57,opt,name=leg_a_leverage,json=legALeverage,proto3" json:"leg_a_leverage,omitempty"`
+	LegBLeverage                       string                 `protobuf:"bytes,58,opt,name=leg_b_leverage,json=legBLeverage,proto3" json:"leg_b_leverage,omitempty"`
+	ExitPolicy                         string                 `protobuf:"bytes,59,opt,name=exit_policy,json=exitPolicy,proto3" json:"exit_policy,omitempty"`
+	ExitAnnualizedRate                 string                 `protobuf:"bytes,60,opt,name=exit_annualized_rate,json=exitAnnualizedRate,proto3" json:"exit_annualized_rate,omitempty"`
+	ExitAfterSeconds                   int32                  `protobuf:"varint,61,opt,name=exit_after_seconds,json=exitAfterSeconds,proto3" json:"exit_after_seconds,omitempty"`
+	TargetReachedAt                    *timestamppb.Timestamp `protobuf:"bytes,62,opt,name=target_reached_at,json=targetReachedAt,proto3" json:"target_reached_at,omitempty"`
+	ScheduledExitAt                    *timestamppb.Timestamp `protobuf:"bytes,63,opt,name=scheduled_exit_at,json=scheduledExitAt,proto3" json:"scheduled_exit_at,omitempty"`
+	OneShotPhase                       string                 `protobuf:"bytes,64,opt,name=one_shot_phase,json=oneShotPhase,proto3" json:"one_shot_phase,omitempty"`
+	EarlyExitFunding_8HAnnualizedFloor string                 `protobuf:"bytes,65,opt,name=early_exit_funding_8h_annualized_floor,json=earlyExitFunding8hAnnualizedFloor,proto3" json:"early_exit_funding_8h_annualized_floor,omitempty"`
+	unknownFields                      protoimpl.UnknownFields
+	sizeCache                          protoimpl.SizeCache
 }
 
 func (x *ArbitrageCombination) Reset() {
 	*x = ArbitrageCombination{}
-	mi := &file_trader_v1_trader_proto_msgTypes[24]
+	mi := &file_trader_v1_trader_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2074,7 +2469,7 @@ func (x *ArbitrageCombination) String() string {
 func (*ArbitrageCombination) ProtoMessage() {}
 
 func (x *ArbitrageCombination) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[24]
+	mi := &file_trader_v1_trader_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2087,7 +2482,7 @@ func (x *ArbitrageCombination) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArbitrageCombination.ProtoReflect.Descriptor instead.
 func (*ArbitrageCombination) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{24}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ArbitrageCombination) GetId() string {
@@ -2135,20 +2530,6 @@ func (x *ArbitrageCombination) GetBidThresholdBps() string {
 func (x *ArbitrageCombination) GetTargetNotional() string {
 	if x != nil {
 		return x.TargetNotional
-	}
-	return ""
-}
-
-func (x *ArbitrageCombination) GetOrderNotional() string {
-	if x != nil {
-		return x.OrderNotional
-	}
-	return ""
-}
-
-func (x *ArbitrageCombination) GetMaxDeltaNotional() string {
-	if x != nil {
-		return x.MaxDeltaNotional
 	}
 	return ""
 }
@@ -2258,28 +2639,389 @@ func (x *ArbitrageCombination) GetPositionUncertain() bool {
 	return false
 }
 
+func (x *ArbitrageCombination) GetRuntimeState() string {
+	if x != nil {
+		return x.RuntimeState
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegABasePosition() string {
+	if x != nil {
+		return x.LegABasePosition
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegBBasePosition() string {
+	if x != nil {
+		return x.LegBBasePosition
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetCarryBaseQuantity() string {
+	if x != nil {
+		return x.CarryBaseQuantity
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegAVenueBasePosition() string {
+	if x != nil {
+		return x.LegAVenueBasePosition
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegBVenueBasePosition() string {
+	if x != nil {
+		return x.LegBVenueBasePosition
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegAPositionDifference() string {
+	if x != nil {
+		return x.LegAPositionDifference
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegBPositionDifference() string {
+	if x != nil {
+		return x.LegBPositionDifference
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLastPositionReconciledAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastPositionReconciledAt
+	}
+	return nil
+}
+
+func (x *ArbitrageCombination) GetGrossTurnoverNotional() string {
+	if x != nil {
+		return x.GrossTurnoverNotional
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegAAverageEntryPrice() string {
+	if x != nil {
+		return x.LegAAverageEntryPrice
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegBAverageEntryPrice() string {
+	if x != nil {
+		return x.LegBAverageEntryPrice
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetAverageEntrySpreadBps() string {
+	if x != nil {
+		return x.AverageEntrySpreadBps
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegAUnrealizedPnl() string {
+	if x != nil {
+		return x.LegAUnrealizedPnl
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegBUnrealizedPnl() string {
+	if x != nil {
+		return x.LegBUnrealizedPnl
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetRealizedSpreadPnl() string {
+	if x != nil {
+		return x.RealizedSpreadPnl
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetEstimatedFundingPnl() string {
+	if x != nil {
+		return x.EstimatedFundingPnl
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetCombinedPositionAnnualized() string {
+	if x != nil {
+		return x.CombinedPositionAnnualized
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetFundingHistoryComplete() bool {
+	if x != nil {
+		return x.FundingHistoryComplete
+	}
+	return false
+}
+
+func (x *ArbitrageCombination) GetLegAVenueBaselineBasePosition() string {
+	if x != nil {
+		return x.LegAVenueBaselineBasePosition
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegBVenueBaselineBasePosition() string {
+	if x != nil {
+		return x.LegBVenueBaselineBasePosition
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetVenueBaselineCapturedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.VenueBaselineCapturedAt
+	}
+	return nil
+}
+
+func (x *ArbitrageCombination) GetLegAExpectedBasePosition() string {
+	if x != nil {
+		return x.LegAExpectedBasePosition
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegBExpectedBasePosition() string {
+	if x != nil {
+		return x.LegBExpectedBasePosition
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegAVenueNotional() string {
+	if x != nil {
+		return x.LegAVenueNotional
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegBVenueNotional() string {
+	if x != nil {
+		return x.LegBVenueNotional
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegAVenueValuationPrice() string {
+	if x != nil {
+		return x.LegAVenueValuationPrice
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegBVenueValuationPrice() string {
+	if x != nil {
+		return x.LegBVenueValuationPrice
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegAVenueValuationAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LegAVenueValuationAt
+	}
+	return nil
+}
+
+func (x *ArbitrageCombination) GetLegBVenueValuationAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LegBVenueValuationAt
+	}
+	return nil
+}
+
+func (x *ArbitrageCombination) GetRunMode() string {
+	if x != nil {
+		return x.RunMode
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetEntryDirection() string {
+	if x != nil {
+		return x.EntryDirection
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegALeverage() string {
+	if x != nil {
+		return x.LegALeverage
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetLegBLeverage() string {
+	if x != nil {
+		return x.LegBLeverage
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetExitPolicy() string {
+	if x != nil {
+		return x.ExitPolicy
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetExitAnnualizedRate() string {
+	if x != nil {
+		return x.ExitAnnualizedRate
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetExitAfterSeconds() int32 {
+	if x != nil {
+		return x.ExitAfterSeconds
+	}
+	return 0
+}
+
+func (x *ArbitrageCombination) GetTargetReachedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.TargetReachedAt
+	}
+	return nil
+}
+
+func (x *ArbitrageCombination) GetScheduledExitAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ScheduledExitAt
+	}
+	return nil
+}
+
+func (x *ArbitrageCombination) GetOneShotPhase() string {
+	if x != nil {
+		return x.OneShotPhase
+	}
+	return ""
+}
+
+func (x *ArbitrageCombination) GetEarlyExitFunding_8HAnnualizedFloor() string {
+	if x != nil {
+		return x.EarlyExitFunding_8HAnnualizedFloor
+	}
+	return ""
+}
+
+type ArbitrageCreateFailure struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          string                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Leg           string                 `protobuf:"bytes,3,opt,name=leg,proto3" json:"leg,omitempty"`
+	Details       map[string]string      `protobuf:"bytes,4,rep,name=details,proto3" json:"details,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ArbitrageCreateFailure) Reset() {
+	*x = ArbitrageCreateFailure{}
+	mi := &file_trader_v1_trader_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ArbitrageCreateFailure) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ArbitrageCreateFailure) ProtoMessage() {}
+
+func (x *ArbitrageCreateFailure) ProtoReflect() protoreflect.Message {
+	mi := &file_trader_v1_trader_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ArbitrageCreateFailure.ProtoReflect.Descriptor instead.
+func (*ArbitrageCreateFailure) Descriptor() ([]byte, []int) {
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *ArbitrageCreateFailure) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
+}
+
+func (x *ArbitrageCreateFailure) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *ArbitrageCreateFailure) GetLeg() string {
+	if x != nil {
+		return x.Leg
+	}
+	return ""
+}
+
+func (x *ArbitrageCreateFailure) GetDetails() map[string]string {
+	if x != nil {
+		return x.Details
+	}
+	return nil
+}
+
 type CreateArbitrageCombinationRequest struct {
-	state                protoimpl.MessageState `protogen:"open.v1"`
-	Token                string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
-	LegATradingAccountId int64                  `protobuf:"varint,2,opt,name=leg_a_trading_account_id,json=legATradingAccountId,proto3" json:"leg_a_trading_account_id,omitempty"`
-	LegAInstrumentId     int64                  `protobuf:"varint,3,opt,name=leg_a_instrument_id,json=legAInstrumentId,proto3" json:"leg_a_instrument_id,omitempty"`
-	LegBTradingAccountId int64                  `protobuf:"varint,4,opt,name=leg_b_trading_account_id,json=legBTradingAccountId,proto3" json:"leg_b_trading_account_id,omitempty"`
-	LegBInstrumentId     int64                  `protobuf:"varint,5,opt,name=leg_b_instrument_id,json=legBInstrumentId,proto3" json:"leg_b_instrument_id,omitempty"`
-	AskThresholdBps      string                 `protobuf:"bytes,6,opt,name=ask_threshold_bps,json=askThresholdBps,proto3" json:"ask_threshold_bps,omitempty"`
-	BidThresholdBps      string                 `protobuf:"bytes,7,opt,name=bid_threshold_bps,json=bidThresholdBps,proto3" json:"bid_threshold_bps,omitempty"`
-	TargetNotional       string                 `protobuf:"bytes,8,opt,name=target_notional,json=targetNotional,proto3" json:"target_notional,omitempty"`
-	OrderNotional        string                 `protobuf:"bytes,9,opt,name=order_notional,json=orderNotional,proto3" json:"order_notional,omitempty"`
-	MaxDeltaNotional     string                 `protobuf:"bytes,10,opt,name=max_delta_notional,json=maxDeltaNotional,proto3" json:"max_delta_notional,omitempty"`
-	ExecutionMode        string                 `protobuf:"bytes,11,opt,name=execution_mode,json=executionMode,proto3" json:"execution_mode,omitempty"`
-	MakerLeg             string                 `protobuf:"bytes,12,opt,name=maker_leg,json=makerLeg,proto3" json:"maker_leg,omitempty"`
-	IdempotencyKey       string                 `protobuf:"bytes,13,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	state                              protoimpl.MessageState `protogen:"open.v1"`
+	Token                              string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	LegATradingAccountId               int64                  `protobuf:"varint,2,opt,name=leg_a_trading_account_id,json=legATradingAccountId,proto3" json:"leg_a_trading_account_id,omitempty"`
+	LegAInstrumentId                   int64                  `protobuf:"varint,3,opt,name=leg_a_instrument_id,json=legAInstrumentId,proto3" json:"leg_a_instrument_id,omitempty"`
+	LegBTradingAccountId               int64                  `protobuf:"varint,4,opt,name=leg_b_trading_account_id,json=legBTradingAccountId,proto3" json:"leg_b_trading_account_id,omitempty"`
+	LegBInstrumentId                   int64                  `protobuf:"varint,5,opt,name=leg_b_instrument_id,json=legBInstrumentId,proto3" json:"leg_b_instrument_id,omitempty"`
+	AskThresholdBps                    string                 `protobuf:"bytes,6,opt,name=ask_threshold_bps,json=askThresholdBps,proto3" json:"ask_threshold_bps,omitempty"`
+	BidThresholdBps                    string                 `protobuf:"bytes,7,opt,name=bid_threshold_bps,json=bidThresholdBps,proto3" json:"bid_threshold_bps,omitempty"`
+	TargetNotional                     string                 `protobuf:"bytes,8,opt,name=target_notional,json=targetNotional,proto3" json:"target_notional,omitempty"`
+	ExecutionMode                      string                 `protobuf:"bytes,11,opt,name=execution_mode,json=executionMode,proto3" json:"execution_mode,omitempty"`
+	MakerLeg                           string                 `protobuf:"bytes,12,opt,name=maker_leg,json=makerLeg,proto3" json:"maker_leg,omitempty"`
+	IdempotencyKey                     string                 `protobuf:"bytes,13,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	RunMode                            string                 `protobuf:"bytes,14,opt,name=run_mode,json=runMode,proto3" json:"run_mode,omitempty"`
+	EntryDirection                     string                 `protobuf:"bytes,15,opt,name=entry_direction,json=entryDirection,proto3" json:"entry_direction,omitempty"`
+	LegALeverage                       string                 `protobuf:"bytes,16,opt,name=leg_a_leverage,json=legALeverage,proto3" json:"leg_a_leverage,omitempty"`
+	LegBLeverage                       string                 `protobuf:"bytes,17,opt,name=leg_b_leverage,json=legBLeverage,proto3" json:"leg_b_leverage,omitempty"`
+	ExitPolicy                         string                 `protobuf:"bytes,18,opt,name=exit_policy,json=exitPolicy,proto3" json:"exit_policy,omitempty"`
+	ExitAnnualizedRate                 string                 `protobuf:"bytes,19,opt,name=exit_annualized_rate,json=exitAnnualizedRate,proto3" json:"exit_annualized_rate,omitempty"`
+	ExitAfterSeconds                   int32                  `protobuf:"varint,20,opt,name=exit_after_seconds,json=exitAfterSeconds,proto3" json:"exit_after_seconds,omitempty"`
+	EarlyExitFunding_8HAnnualizedFloor string                 `protobuf:"bytes,21,opt,name=early_exit_funding_8h_annualized_floor,json=earlyExitFunding8hAnnualizedFloor,proto3" json:"early_exit_funding_8h_annualized_floor,omitempty"`
+	unknownFields                      protoimpl.UnknownFields
+	sizeCache                          protoimpl.SizeCache
 }
 
 func (x *CreateArbitrageCombinationRequest) Reset() {
 	*x = CreateArbitrageCombinationRequest{}
-	mi := &file_trader_v1_trader_proto_msgTypes[25]
+	mi := &file_trader_v1_trader_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2291,7 +3033,7 @@ func (x *CreateArbitrageCombinationRequest) String() string {
 func (*CreateArbitrageCombinationRequest) ProtoMessage() {}
 
 func (x *CreateArbitrageCombinationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[25]
+	mi := &file_trader_v1_trader_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2304,7 +3046,7 @@ func (x *CreateArbitrageCombinationRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CreateArbitrageCombinationRequest.ProtoReflect.Descriptor instead.
 func (*CreateArbitrageCombinationRequest) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{25}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *CreateArbitrageCombinationRequest) GetToken() string {
@@ -2363,20 +3105,6 @@ func (x *CreateArbitrageCombinationRequest) GetTargetNotional() string {
 	return ""
 }
 
-func (x *CreateArbitrageCombinationRequest) GetOrderNotional() string {
-	if x != nil {
-		return x.OrderNotional
-	}
-	return ""
-}
-
-func (x *CreateArbitrageCombinationRequest) GetMaxDeltaNotional() string {
-	if x != nil {
-		return x.MaxDeltaNotional
-	}
-	return ""
-}
-
 func (x *CreateArbitrageCombinationRequest) GetExecutionMode() string {
 	if x != nil {
 		return x.ExecutionMode
@@ -2398,6 +3126,62 @@ func (x *CreateArbitrageCombinationRequest) GetIdempotencyKey() string {
 	return ""
 }
 
+func (x *CreateArbitrageCombinationRequest) GetRunMode() string {
+	if x != nil {
+		return x.RunMode
+	}
+	return ""
+}
+
+func (x *CreateArbitrageCombinationRequest) GetEntryDirection() string {
+	if x != nil {
+		return x.EntryDirection
+	}
+	return ""
+}
+
+func (x *CreateArbitrageCombinationRequest) GetLegALeverage() string {
+	if x != nil {
+		return x.LegALeverage
+	}
+	return ""
+}
+
+func (x *CreateArbitrageCombinationRequest) GetLegBLeverage() string {
+	if x != nil {
+		return x.LegBLeverage
+	}
+	return ""
+}
+
+func (x *CreateArbitrageCombinationRequest) GetExitPolicy() string {
+	if x != nil {
+		return x.ExitPolicy
+	}
+	return ""
+}
+
+func (x *CreateArbitrageCombinationRequest) GetExitAnnualizedRate() string {
+	if x != nil {
+		return x.ExitAnnualizedRate
+	}
+	return ""
+}
+
+func (x *CreateArbitrageCombinationRequest) GetExitAfterSeconds() int32 {
+	if x != nil {
+		return x.ExitAfterSeconds
+	}
+	return 0
+}
+
+func (x *CreateArbitrageCombinationRequest) GetEarlyExitFunding_8HAnnualizedFloor() string {
+	if x != nil {
+		return x.EarlyExitFunding_8HAnnualizedFloor
+	}
+	return ""
+}
+
 type CreateArbitrageCombinationResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Combination   *ArbitrageCombination  `protobuf:"bytes,1,opt,name=combination,proto3" json:"combination,omitempty"`
@@ -2407,7 +3191,7 @@ type CreateArbitrageCombinationResponse struct {
 
 func (x *CreateArbitrageCombinationResponse) Reset() {
 	*x = CreateArbitrageCombinationResponse{}
-	mi := &file_trader_v1_trader_proto_msgTypes[26]
+	mi := &file_trader_v1_trader_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2419,7 +3203,7 @@ func (x *CreateArbitrageCombinationResponse) String() string {
 func (*CreateArbitrageCombinationResponse) ProtoMessage() {}
 
 func (x *CreateArbitrageCombinationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[26]
+	mi := &file_trader_v1_trader_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2432,10 +3216,130 @@ func (x *CreateArbitrageCombinationResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use CreateArbitrageCombinationResponse.ProtoReflect.Descriptor instead.
 func (*CreateArbitrageCombinationResponse) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{26}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *CreateArbitrageCombinationResponse) GetCombination() *ArbitrageCombination {
+	if x != nil {
+		return x.Combination
+	}
+	return nil
+}
+
+type UpdateArbitrageCombinationRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Token           string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	CombinationId   string                 `protobuf:"bytes,2,opt,name=combination_id,json=combinationId,proto3" json:"combination_id,omitempty"`
+	AskThresholdBps *string                `protobuf:"bytes,3,opt,name=ask_threshold_bps,json=askThresholdBps,proto3,oneof" json:"ask_threshold_bps,omitempty"`
+	BidThresholdBps *string                `protobuf:"bytes,4,opt,name=bid_threshold_bps,json=bidThresholdBps,proto3,oneof" json:"bid_threshold_bps,omitempty"`
+	TargetNotional  *string                `protobuf:"bytes,5,opt,name=target_notional,json=targetNotional,proto3,oneof" json:"target_notional,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *UpdateArbitrageCombinationRequest) Reset() {
+	*x = UpdateArbitrageCombinationRequest{}
+	mi := &file_trader_v1_trader_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateArbitrageCombinationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateArbitrageCombinationRequest) ProtoMessage() {}
+
+func (x *UpdateArbitrageCombinationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_trader_v1_trader_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateArbitrageCombinationRequest.ProtoReflect.Descriptor instead.
+func (*UpdateArbitrageCombinationRequest) Descriptor() ([]byte, []int) {
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *UpdateArbitrageCombinationRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *UpdateArbitrageCombinationRequest) GetCombinationId() string {
+	if x != nil {
+		return x.CombinationId
+	}
+	return ""
+}
+
+func (x *UpdateArbitrageCombinationRequest) GetAskThresholdBps() string {
+	if x != nil && x.AskThresholdBps != nil {
+		return *x.AskThresholdBps
+	}
+	return ""
+}
+
+func (x *UpdateArbitrageCombinationRequest) GetBidThresholdBps() string {
+	if x != nil && x.BidThresholdBps != nil {
+		return *x.BidThresholdBps
+	}
+	return ""
+}
+
+func (x *UpdateArbitrageCombinationRequest) GetTargetNotional() string {
+	if x != nil && x.TargetNotional != nil {
+		return *x.TargetNotional
+	}
+	return ""
+}
+
+type UpdateArbitrageCombinationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Combination   *ArbitrageCombination  `protobuf:"bytes,1,opt,name=combination,proto3" json:"combination,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateArbitrageCombinationResponse) Reset() {
+	*x = UpdateArbitrageCombinationResponse{}
+	mi := &file_trader_v1_trader_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateArbitrageCombinationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateArbitrageCombinationResponse) ProtoMessage() {}
+
+func (x *UpdateArbitrageCombinationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_trader_v1_trader_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateArbitrageCombinationResponse.ProtoReflect.Descriptor instead.
+func (*UpdateArbitrageCombinationResponse) Descriptor() ([]byte, []int) {
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *UpdateArbitrageCombinationResponse) GetCombination() *ArbitrageCombination {
 	if x != nil {
 		return x.Combination
 	}
@@ -2452,7 +3356,7 @@ type GetArbitrageCombinationRequest struct {
 
 func (x *GetArbitrageCombinationRequest) Reset() {
 	*x = GetArbitrageCombinationRequest{}
-	mi := &file_trader_v1_trader_proto_msgTypes[27]
+	mi := &file_trader_v1_trader_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2464,7 +3368,7 @@ func (x *GetArbitrageCombinationRequest) String() string {
 func (*GetArbitrageCombinationRequest) ProtoMessage() {}
 
 func (x *GetArbitrageCombinationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[27]
+	mi := &file_trader_v1_trader_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2477,7 +3381,7 @@ func (x *GetArbitrageCombinationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetArbitrageCombinationRequest.ProtoReflect.Descriptor instead.
 func (*GetArbitrageCombinationRequest) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{27}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *GetArbitrageCombinationRequest) GetToken() string {
@@ -2506,7 +3410,7 @@ type GetArbitrageCombinationResponse struct {
 
 func (x *GetArbitrageCombinationResponse) Reset() {
 	*x = GetArbitrageCombinationResponse{}
-	mi := &file_trader_v1_trader_proto_msgTypes[28]
+	mi := &file_trader_v1_trader_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2518,7 +3422,7 @@ func (x *GetArbitrageCombinationResponse) String() string {
 func (*GetArbitrageCombinationResponse) ProtoMessage() {}
 
 func (x *GetArbitrageCombinationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[28]
+	mi := &file_trader_v1_trader_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2531,7 +3435,7 @@ func (x *GetArbitrageCombinationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetArbitrageCombinationResponse.ProtoReflect.Descriptor instead.
 func (*GetArbitrageCombinationResponse) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{28}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *GetArbitrageCombinationResponse) GetCombination() *ArbitrageCombination {
@@ -2583,7 +3487,7 @@ type ArbitrageExecution struct {
 
 func (x *ArbitrageExecution) Reset() {
 	*x = ArbitrageExecution{}
-	mi := &file_trader_v1_trader_proto_msgTypes[29]
+	mi := &file_trader_v1_trader_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2595,7 +3499,7 @@ func (x *ArbitrageExecution) String() string {
 func (*ArbitrageExecution) ProtoMessage() {}
 
 func (x *ArbitrageExecution) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[29]
+	mi := &file_trader_v1_trader_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2608,7 +3512,7 @@ func (x *ArbitrageExecution) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArbitrageExecution.ProtoReflect.Descriptor instead.
 func (*ArbitrageExecution) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{29}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ArbitrageExecution) GetId() string {
@@ -2714,7 +3618,7 @@ type ArbitrageEvent struct {
 
 func (x *ArbitrageEvent) Reset() {
 	*x = ArbitrageEvent{}
-	mi := &file_trader_v1_trader_proto_msgTypes[30]
+	mi := &file_trader_v1_trader_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2726,7 +3630,7 @@ func (x *ArbitrageEvent) String() string {
 func (*ArbitrageEvent) ProtoMessage() {}
 
 func (x *ArbitrageEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[30]
+	mi := &file_trader_v1_trader_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2739,7 +3643,7 @@ func (x *ArbitrageEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArbitrageEvent.ProtoReflect.Descriptor instead.
 func (*ArbitrageEvent) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{30}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ArbitrageEvent) GetId() string {
@@ -2782,7 +3686,7 @@ type ListArbitrageCombinationsRequest struct {
 
 func (x *ListArbitrageCombinationsRequest) Reset() {
 	*x = ListArbitrageCombinationsRequest{}
-	mi := &file_trader_v1_trader_proto_msgTypes[31]
+	mi := &file_trader_v1_trader_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2794,7 +3698,7 @@ func (x *ListArbitrageCombinationsRequest) String() string {
 func (*ListArbitrageCombinationsRequest) ProtoMessage() {}
 
 func (x *ListArbitrageCombinationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[31]
+	mi := &file_trader_v1_trader_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2807,7 +3711,7 @@ func (x *ListArbitrageCombinationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListArbitrageCombinationsRequest.ProtoReflect.Descriptor instead.
 func (*ListArbitrageCombinationsRequest) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{31}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ListArbitrageCombinationsRequest) GetToken() string {
@@ -2850,7 +3754,7 @@ type ListArbitrageCombinationsResponse struct {
 
 func (x *ListArbitrageCombinationsResponse) Reset() {
 	*x = ListArbitrageCombinationsResponse{}
-	mi := &file_trader_v1_trader_proto_msgTypes[32]
+	mi := &file_trader_v1_trader_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2862,7 +3766,7 @@ func (x *ListArbitrageCombinationsResponse) String() string {
 func (*ListArbitrageCombinationsResponse) ProtoMessage() {}
 
 func (x *ListArbitrageCombinationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[32]
+	mi := &file_trader_v1_trader_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2875,7 +3779,7 @@ func (x *ListArbitrageCombinationsResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use ListArbitrageCombinationsResponse.ProtoReflect.Descriptor instead.
 func (*ListArbitrageCombinationsResponse) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{32}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ListArbitrageCombinationsResponse) GetItems() []*ArbitrageCombination {
@@ -2916,7 +3820,7 @@ type CloseArbitrageCombinationRequest struct {
 
 func (x *CloseArbitrageCombinationRequest) Reset() {
 	*x = CloseArbitrageCombinationRequest{}
-	mi := &file_trader_v1_trader_proto_msgTypes[33]
+	mi := &file_trader_v1_trader_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2928,7 +3832,7 @@ func (x *CloseArbitrageCombinationRequest) String() string {
 func (*CloseArbitrageCombinationRequest) ProtoMessage() {}
 
 func (x *CloseArbitrageCombinationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[33]
+	mi := &file_trader_v1_trader_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2941,7 +3845,7 @@ func (x *CloseArbitrageCombinationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseArbitrageCombinationRequest.ProtoReflect.Descriptor instead.
 func (*CloseArbitrageCombinationRequest) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{33}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *CloseArbitrageCombinationRequest) GetToken() string {
@@ -2967,7 +3871,7 @@ type CloseArbitrageCombinationResponse struct {
 
 func (x *CloseArbitrageCombinationResponse) Reset() {
 	*x = CloseArbitrageCombinationResponse{}
-	mi := &file_trader_v1_trader_proto_msgTypes[34]
+	mi := &file_trader_v1_trader_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2979,7 +3883,7 @@ func (x *CloseArbitrageCombinationResponse) String() string {
 func (*CloseArbitrageCombinationResponse) ProtoMessage() {}
 
 func (x *CloseArbitrageCombinationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trader_v1_trader_proto_msgTypes[34]
+	mi := &file_trader_v1_trader_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2992,7 +3896,7 @@ func (x *CloseArbitrageCombinationResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CloseArbitrageCombinationResponse.ProtoReflect.Descriptor instead.
 func (*CloseArbitrageCombinationResponse) Descriptor() ([]byte, []int) {
-	return file_trader_v1_trader_proto_rawDescGZIP(), []int{34}
+	return file_trader_v1_trader_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *CloseArbitrageCombinationResponse) GetCombination() *ArbitrageCombination {
@@ -3107,11 +4011,41 @@ const file_trader_v1_trader_proto_rawDesc = "" +
 	"\x16ListInstrumentsRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12,\n" +
 	"\x12trading_account_id\x18\x02 \x01(\x03R\x10tradingAccountId\x12#\n" +
-	"\rcontract_type\x18\x03 \x01(\tR\fcontractType\"\x83\x01\n" +
+	"\rcontract_type\x18\x03 \x01(\tR\fcontractType\"\xc5\x01\n" +
 	"\x17ListInstrumentsResponse\x12+\n" +
 	"\x05items\x18\x01 \x03(\v2\x15.trader.v1.InstrumentR\x05items\x12;\n" +
 	"\vserver_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"serverTime\"\x8a\x02\n" +
+	"serverTime\x12@\n" +
+	"\fcapabilities\x18\x03 \x01(\v2\x1c.trader.v1.VenueCapabilitiesR\fcapabilities\"\xa7\x02\n" +
+	"\x11VenueCapabilities\x12\x1a\n" +
+	"\bproducts\x18\x01 \x03(\tR\bproducts\x12!\n" +
+	"\fquote_assets\x18\x02 \x03(\tR\vquoteAssets\x12\"\n" +
+	"\rtime_in_force\x18\x03 \x03(\tR\vtimeInForce\x12\x1b\n" +
+	"\tpost_only\x18\x04 \x01(\bR\bpostOnly\x12\x1f\n" +
+	"\vreduce_only\x18\x05 \x01(\bR\n" +
+	"reduceOnly\x12\x1d\n" +
+	"\n" +
+	"maker_twap\x18\x06 \x01(\bR\tmakerTwap\x120\n" +
+	"\x14private_order_stream\x18\a \x01(\bR\x12privateOrderStream\x12 \n" +
+	"\fone_way_only\x18\b \x01(\bR\n" +
+	"oneWayOnly\"t\n" +
+	"\x18AccountProfileStepResult\x12\x12\n" +
+	"\x04step\x18\x01 \x01(\tR\x04step\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x12\n" +
+	"\x04code\x18\x03 \x01(\tR\x04code\x12\x18\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage\"\x88\x02\n" +
+	"\x14AccountProfileResult\x12,\n" +
+	"\x12trading_account_id\x18\x01 \x01(\x03R\x10tradingAccountId\x12!\n" +
+	"\fproduct_name\x18\x02 \x01(\tR\vproductName\x12!\n" +
+	"\faccount_name\x18\x03 \x01(\tR\vaccountName\x12\x1a\n" +
+	"\bexchange\x18\x04 \x01(\tR\bexchange\x12%\n" +
+	"\x0eoverall_status\x18\x05 \x01(\tR\roverallStatus\x129\n" +
+	"\x05steps\x18\x06 \x03(\v2#.trader.v1.AccountProfileStepResultR\x05steps\"`\n" +
+	"\x1aApplyAccountProfileRequest\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12,\n" +
+	"\x12trading_account_id\x18\x02 \x01(\x03R\x10tradingAccountId\"V\n" +
+	"\x1bApplyAccountProfileResponse\x127\n" +
+	"\x06result\x18\x01 \x01(\v2\x1f.trader.v1.AccountProfileResultR\x06result\"\x8a\x02\n" +
 	"\x11PlaceOrderRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12,\n" +
 	"\x12trading_account_id\x18\x02 \x01(\x03R\x10tradingAccountId\x12#\n" +
@@ -3205,7 +4139,7 @@ const file_trader_v1_trader_proto_rawDesc = "" +
 	"\n" +
 	"base_asset\x18\b \x01(\tR\tbaseAsset\x12\x1f\n" +
 	"\vquote_asset\x18\t \x01(\tR\n" +
-	"quoteAsset\"\xd8\b\n" +
+	"quoteAsset\"\xe1\x1a\n" +
 	"\x14ArbitrageCombination\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\x12,\n" +
@@ -3214,8 +4148,6 @@ const file_trader_v1_trader_proto_rawDesc = "" +
 	"\x11ask_threshold_bps\x18\x05 \x01(\tR\x0faskThresholdBps\x12*\n" +
 	"\x11bid_threshold_bps\x18\x06 \x01(\tR\x0fbidThresholdBps\x12'\n" +
 	"\x0ftarget_notional\x18\a \x01(\tR\x0etargetNotional\x12%\n" +
-	"\x0eorder_notional\x18\b \x01(\tR\rorderNotional\x12,\n" +
-	"\x12max_delta_notional\x18\t \x01(\tR\x10maxDeltaNotional\x12%\n" +
 	"\x0eexecution_mode\x18\n" +
 	" \x01(\tR\rexecutionMode\x12\x1b\n" +
 	"\tmaker_leg\x18\v \x01(\tR\bmakerLeg\x12\x16\n" +
@@ -3233,7 +4165,58 @@ const file_trader_v1_trader_proto_rawDesc = "" +
 	"\x1ccumulative_turnover_notional\x18\x15 \x01(\tR\x1acumulativeTurnoverNotional\x121\n" +
 	"\x14consecutive_failures\x18\x16 \x01(\x05R\x13consecutiveFailures\x12>\n" +
 	"\rnext_retry_at\x18\x17 \x01(\v2\x1a.google.protobuf.TimestampR\vnextRetryAt\x12-\n" +
-	"\x12position_uncertain\x18\x18 \x01(\bR\x11positionUncertain\"\xca\x04\n" +
+	"\x12position_uncertain\x18\x18 \x01(\bR\x11positionUncertain\x12#\n" +
+	"\rruntime_state\x18\x19 \x01(\tR\fruntimeState\x12-\n" +
+	"\x13leg_a_base_position\x18\x1a \x01(\tR\x10legABasePosition\x12-\n" +
+	"\x13leg_b_base_position\x18\x1b \x01(\tR\x10legBBasePosition\x12.\n" +
+	"\x13carry_base_quantity\x18\x1c \x01(\tR\x11carryBaseQuantity\x128\n" +
+	"\x19leg_a_venue_base_position\x18\x1d \x01(\tR\x15legAVenueBasePosition\x128\n" +
+	"\x19leg_b_venue_base_position\x18\x1e \x01(\tR\x15legBVenueBasePosition\x129\n" +
+	"\x19leg_a_position_difference\x18\x1f \x01(\tR\x16legAPositionDifference\x129\n" +
+	"\x19leg_b_position_difference\x18  \x01(\tR\x16legBPositionDifference\x12Y\n" +
+	"\x1blast_position_reconciled_at\x18! \x01(\v2\x1a.google.protobuf.TimestampR\x18lastPositionReconciledAt\x126\n" +
+	"\x17gross_turnover_notional\x18\" \x01(\tR\x15grossTurnoverNotional\x128\n" +
+	"\x19leg_a_average_entry_price\x18# \x01(\tR\x15legAAverageEntryPrice\x128\n" +
+	"\x19leg_b_average_entry_price\x18$ \x01(\tR\x15legBAverageEntryPrice\x127\n" +
+	"\x18average_entry_spread_bps\x18% \x01(\tR\x15averageEntrySpreadBps\x12/\n" +
+	"\x14leg_a_unrealized_pnl\x18& \x01(\tR\x11legAUnrealizedPnl\x12/\n" +
+	"\x14leg_b_unrealized_pnl\x18' \x01(\tR\x11legBUnrealizedPnl\x12.\n" +
+	"\x13realized_spread_pnl\x18( \x01(\tR\x11realizedSpreadPnl\x122\n" +
+	"\x15estimated_funding_pnl\x18) \x01(\tR\x13estimatedFundingPnl\x12@\n" +
+	"\x1ccombined_position_annualized\x18* \x01(\tR\x1acombinedPositionAnnualized\x128\n" +
+	"\x18funding_history_complete\x18+ \x01(\bR\x16fundingHistoryComplete\x12I\n" +
+	"\"leg_a_venue_baseline_base_position\x18, \x01(\tR\x1dlegAVenueBaselineBasePosition\x12I\n" +
+	"\"leg_b_venue_baseline_base_position\x18- \x01(\tR\x1dlegBVenueBaselineBasePosition\x12W\n" +
+	"\x1avenue_baseline_captured_at\x18. \x01(\v2\x1a.google.protobuf.TimestampR\x17venueBaselineCapturedAt\x12>\n" +
+	"\x1cleg_a_expected_base_position\x18/ \x01(\tR\x18legAExpectedBasePosition\x12>\n" +
+	"\x1cleg_b_expected_base_position\x180 \x01(\tR\x18legBExpectedBasePosition\x12/\n" +
+	"\x14leg_a_venue_notional\x181 \x01(\tR\x11legAVenueNotional\x12/\n" +
+	"\x14leg_b_venue_notional\x182 \x01(\tR\x11legBVenueNotional\x12<\n" +
+	"\x1bleg_a_venue_valuation_price\x183 \x01(\tR\x17legAVenueValuationPrice\x12<\n" +
+	"\x1bleg_b_venue_valuation_price\x184 \x01(\tR\x17legBVenueValuationPrice\x12R\n" +
+	"\x18leg_a_venue_valuation_at\x185 \x01(\v2\x1a.google.protobuf.TimestampR\x14legAVenueValuationAt\x12R\n" +
+	"\x18leg_b_venue_valuation_at\x186 \x01(\v2\x1a.google.protobuf.TimestampR\x14legBVenueValuationAt\x12\x19\n" +
+	"\brun_mode\x187 \x01(\tR\arunMode\x12'\n" +
+	"\x0fentry_direction\x188 \x01(\tR\x0eentryDirection\x12$\n" +
+	"\x0eleg_a_leverage\x189 \x01(\tR\flegALeverage\x12$\n" +
+	"\x0eleg_b_leverage\x18: \x01(\tR\flegBLeverage\x12\x1f\n" +
+	"\vexit_policy\x18; \x01(\tR\n" +
+	"exitPolicy\x120\n" +
+	"\x14exit_annualized_rate\x18< \x01(\tR\x12exitAnnualizedRate\x12,\n" +
+	"\x12exit_after_seconds\x18= \x01(\x05R\x10exitAfterSeconds\x12F\n" +
+	"\x11target_reached_at\x18> \x01(\v2\x1a.google.protobuf.TimestampR\x0ftargetReachedAt\x12F\n" +
+	"\x11scheduled_exit_at\x18? \x01(\v2\x1a.google.protobuf.TimestampR\x0fscheduledExitAt\x12$\n" +
+	"\x0eone_shot_phase\x18@ \x01(\tR\foneShotPhase\x12Q\n" +
+	"&early_exit_funding_8h_annualized_floor\x18A \x01(\tR!earlyExitFunding8hAnnualizedFloorJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
+	"R\x0eorder_notionalR\x12max_delta_notional\"\xde\x01\n" +
+	"\x16ArbitrageCreateFailure\x12\x12\n" +
+	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12\x10\n" +
+	"\x03leg\x18\x03 \x01(\tR\x03leg\x12H\n" +
+	"\adetails\x18\x04 \x03(\v2..trader.v1.ArbitrageCreateFailure.DetailsEntryR\adetails\x1a:\n" +
+	"\fDetailsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x89\a\n" +
 	"!CreateArbitrageCombinationRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x126\n" +
 	"\x18leg_a_trading_account_id\x18\x02 \x01(\x03R\x14legATradingAccountId\x12-\n" +
@@ -3243,13 +4226,32 @@ const file_trader_v1_trader_proto_rawDesc = "" +
 	"\x11ask_threshold_bps\x18\x06 \x01(\tR\x0faskThresholdBps\x12*\n" +
 	"\x11bid_threshold_bps\x18\a \x01(\tR\x0fbidThresholdBps\x12'\n" +
 	"\x0ftarget_notional\x18\b \x01(\tR\x0etargetNotional\x12%\n" +
-	"\x0eorder_notional\x18\t \x01(\tR\rorderNotional\x12,\n" +
-	"\x12max_delta_notional\x18\n" +
-	" \x01(\tR\x10maxDeltaNotional\x12%\n" +
 	"\x0eexecution_mode\x18\v \x01(\tR\rexecutionMode\x12\x1b\n" +
 	"\tmaker_leg\x18\f \x01(\tR\bmakerLeg\x12'\n" +
-	"\x0fidempotency_key\x18\r \x01(\tR\x0eidempotencyKey\"g\n" +
+	"\x0fidempotency_key\x18\r \x01(\tR\x0eidempotencyKey\x12\x19\n" +
+	"\brun_mode\x18\x0e \x01(\tR\arunMode\x12'\n" +
+	"\x0fentry_direction\x18\x0f \x01(\tR\x0eentryDirection\x12$\n" +
+	"\x0eleg_a_leverage\x18\x10 \x01(\tR\flegALeverage\x12$\n" +
+	"\x0eleg_b_leverage\x18\x11 \x01(\tR\flegBLeverage\x12\x1f\n" +
+	"\vexit_policy\x18\x12 \x01(\tR\n" +
+	"exitPolicy\x120\n" +
+	"\x14exit_annualized_rate\x18\x13 \x01(\tR\x12exitAnnualizedRate\x12,\n" +
+	"\x12exit_after_seconds\x18\x14 \x01(\x05R\x10exitAfterSeconds\x12Q\n" +
+	"&early_exit_funding_8h_annualized_floor\x18\x15 \x01(\tR!earlyExitFunding8hAnnualizedFloorJ\x04\b\t\x10\n" +
+	"J\x04\b\n" +
+	"\x10\vR\x0eorder_notionalR\x12max_delta_notional\"g\n" +
 	"\"CreateArbitrageCombinationResponse\x12A\n" +
+	"\vcombination\x18\x01 \x01(\v2\x1f.trader.v1.ArbitrageCombinationR\vcombination\"\xc6\x02\n" +
+	"!UpdateArbitrageCombinationRequest\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12%\n" +
+	"\x0ecombination_id\x18\x02 \x01(\tR\rcombinationId\x12/\n" +
+	"\x11ask_threshold_bps\x18\x03 \x01(\tH\x00R\x0faskThresholdBps\x88\x01\x01\x12/\n" +
+	"\x11bid_threshold_bps\x18\x04 \x01(\tH\x01R\x0fbidThresholdBps\x88\x01\x01\x12,\n" +
+	"\x0ftarget_notional\x18\x05 \x01(\tH\x02R\x0etargetNotional\x88\x01\x01B\x14\n" +
+	"\x12_ask_threshold_bpsB\x14\n" +
+	"\x12_bid_threshold_bpsB\x12\n" +
+	"\x10_target_notionalJ\x04\b\x06\x10\aR\x0eorder_notional\"g\n" +
+	"\"UpdateArbitrageCombinationResponse\x12A\n" +
 	"\vcombination\x18\x01 \x01(\v2\x1f.trader.v1.ArbitrageCombinationR\vcombination\"]\n" +
 	"\x1eGetArbitrageCombinationRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12%\n" +
@@ -3299,9 +4301,10 @@ const file_trader_v1_trader_proto_rawDesc = "" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12%\n" +
 	"\x0ecombination_id\x18\x02 \x01(\tR\rcombinationId\"f\n" +
 	"!CloseArbitrageCombinationResponse\x12A\n" +
-	"\vcombination\x18\x01 \x01(\v2\x1f.trader.v1.ArbitrageCombinationR\vcombination2\xe6\t\n" +
+	"\vcombination\x18\x01 \x01(\v2\x1f.trader.v1.ArbitrageCombinationR\vcombination2\xc7\v\n" +
 	"\rTraderService\x12X\n" +
-	"\x0fListInstruments\x12!.trader.v1.ListInstrumentsRequest\x1a\".trader.v1.ListInstrumentsResponse\x12I\n" +
+	"\x0fListInstruments\x12!.trader.v1.ListInstrumentsRequest\x1a\".trader.v1.ListInstrumentsResponse\x12d\n" +
+	"\x13ApplyAccountProfile\x12%.trader.v1.ApplyAccountProfileRequest\x1a&.trader.v1.ApplyAccountProfileResponse\x12I\n" +
 	"\n" +
 	"PlaceOrder\x12\x1c.trader.v1.PlaceOrderRequest\x1a\x1d.trader.v1.PlaceOrderResponse\x12C\n" +
 	"\bGetOrder\x12\x1a.trader.v1.GetOrderRequest\x1a\x1b.trader.v1.GetOrderResponse\x12I\n" +
@@ -3315,7 +4318,8 @@ const file_trader_v1_trader_proto_rawDesc = "" +
 	"\x0eListTwapOrders\x12 .trader.v1.ListTwapOrdersRequest\x1a!.trader.v1.ListTwapOrdersResponse\x12I\n" +
 	"\n" +
 	"CancelTwap\x12\x1c.trader.v1.CancelTwapRequest\x1a\x1d.trader.v1.CancelTwapResponse\x12y\n" +
-	"\x1aCreateArbitrageCombination\x12,.trader.v1.CreateArbitrageCombinationRequest\x1a-.trader.v1.CreateArbitrageCombinationResponse\x12p\n" +
+	"\x1aCreateArbitrageCombination\x12,.trader.v1.CreateArbitrageCombinationRequest\x1a-.trader.v1.CreateArbitrageCombinationResponse\x12y\n" +
+	"\x1aUpdateArbitrageCombination\x12,.trader.v1.UpdateArbitrageCombinationRequest\x1a-.trader.v1.UpdateArbitrageCombinationResponse\x12p\n" +
 	"\x17GetArbitrageCombination\x12).trader.v1.GetArbitrageCombinationRequest\x1a*.trader.v1.GetArbitrageCombinationResponse\x12v\n" +
 	"\x19ListArbitrageCombinations\x12+.trader.v1.ListArbitrageCombinationsRequest\x1a,.trader.v1.ListArbitrageCombinationsResponse\x12v\n" +
 	"\x19CloseArbitrageCombination\x12+.trader.v1.CloseArbitrageCombinationRequest\x1a,.trader.v1.CloseArbitrageCombinationResponseB*Z(selfquant/backend/gen/trader/v1;traderv1b\x06proto3"
@@ -3332,122 +4336,146 @@ func file_trader_v1_trader_proto_rawDescGZIP() []byte {
 	return file_trader_v1_trader_proto_rawDescData
 }
 
-var file_trader_v1_trader_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_trader_v1_trader_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_trader_v1_trader_proto_goTypes = []any{
 	(*Instrument)(nil),                         // 0: trader.v1.Instrument
 	(*Order)(nil),                              // 1: trader.v1.Order
 	(*TwapJob)(nil),                            // 2: trader.v1.TwapJob
 	(*ListInstrumentsRequest)(nil),             // 3: trader.v1.ListInstrumentsRequest
 	(*ListInstrumentsResponse)(nil),            // 4: trader.v1.ListInstrumentsResponse
-	(*PlaceOrderRequest)(nil),                  // 5: trader.v1.PlaceOrderRequest
-	(*PlaceOrderResponse)(nil),                 // 6: trader.v1.PlaceOrderResponse
-	(*GetOrderRequest)(nil),                    // 7: trader.v1.GetOrderRequest
-	(*GetOrderResponse)(nil),                   // 8: trader.v1.GetOrderResponse
-	(*ListOrdersRequest)(nil),                  // 9: trader.v1.ListOrdersRequest
-	(*ListOrdersResponse)(nil),                 // 10: trader.v1.ListOrdersResponse
-	(*CancelOrderRequest)(nil),                 // 11: trader.v1.CancelOrderRequest
-	(*CancelOrderResponse)(nil),                // 12: trader.v1.CancelOrderResponse
-	(*CreateTwapRequest)(nil),                  // 13: trader.v1.CreateTwapRequest
-	(*CreateTwapResponse)(nil),                 // 14: trader.v1.CreateTwapResponse
-	(*GetTwapRequest)(nil),                     // 15: trader.v1.GetTwapRequest
-	(*GetTwapResponse)(nil),                    // 16: trader.v1.GetTwapResponse
-	(*ListTwapsRequest)(nil),                   // 17: trader.v1.ListTwapsRequest
-	(*ListTwapsResponse)(nil),                  // 18: trader.v1.ListTwapsResponse
-	(*ListTwapOrdersRequest)(nil),              // 19: trader.v1.ListTwapOrdersRequest
-	(*ListTwapOrdersResponse)(nil),             // 20: trader.v1.ListTwapOrdersResponse
-	(*CancelTwapRequest)(nil),                  // 21: trader.v1.CancelTwapRequest
-	(*CancelTwapResponse)(nil),                 // 22: trader.v1.CancelTwapResponse
-	(*ArbitrageLeg)(nil),                       // 23: trader.v1.ArbitrageLeg
-	(*ArbitrageCombination)(nil),               // 24: trader.v1.ArbitrageCombination
-	(*CreateArbitrageCombinationRequest)(nil),  // 25: trader.v1.CreateArbitrageCombinationRequest
-	(*CreateArbitrageCombinationResponse)(nil), // 26: trader.v1.CreateArbitrageCombinationResponse
-	(*GetArbitrageCombinationRequest)(nil),     // 27: trader.v1.GetArbitrageCombinationRequest
-	(*GetArbitrageCombinationResponse)(nil),    // 28: trader.v1.GetArbitrageCombinationResponse
-	(*ArbitrageExecution)(nil),                 // 29: trader.v1.ArbitrageExecution
-	(*ArbitrageEvent)(nil),                     // 30: trader.v1.ArbitrageEvent
-	(*ListArbitrageCombinationsRequest)(nil),   // 31: trader.v1.ListArbitrageCombinationsRequest
-	(*ListArbitrageCombinationsResponse)(nil),  // 32: trader.v1.ListArbitrageCombinationsResponse
-	(*CloseArbitrageCombinationRequest)(nil),   // 33: trader.v1.CloseArbitrageCombinationRequest
-	(*CloseArbitrageCombinationResponse)(nil),  // 34: trader.v1.CloseArbitrageCombinationResponse
-	(*timestamppb.Timestamp)(nil),              // 35: google.protobuf.Timestamp
+	(*VenueCapabilities)(nil),                  // 5: trader.v1.VenueCapabilities
+	(*AccountProfileStepResult)(nil),           // 6: trader.v1.AccountProfileStepResult
+	(*AccountProfileResult)(nil),               // 7: trader.v1.AccountProfileResult
+	(*ApplyAccountProfileRequest)(nil),         // 8: trader.v1.ApplyAccountProfileRequest
+	(*ApplyAccountProfileResponse)(nil),        // 9: trader.v1.ApplyAccountProfileResponse
+	(*PlaceOrderRequest)(nil),                  // 10: trader.v1.PlaceOrderRequest
+	(*PlaceOrderResponse)(nil),                 // 11: trader.v1.PlaceOrderResponse
+	(*GetOrderRequest)(nil),                    // 12: trader.v1.GetOrderRequest
+	(*GetOrderResponse)(nil),                   // 13: trader.v1.GetOrderResponse
+	(*ListOrdersRequest)(nil),                  // 14: trader.v1.ListOrdersRequest
+	(*ListOrdersResponse)(nil),                 // 15: trader.v1.ListOrdersResponse
+	(*CancelOrderRequest)(nil),                 // 16: trader.v1.CancelOrderRequest
+	(*CancelOrderResponse)(nil),                // 17: trader.v1.CancelOrderResponse
+	(*CreateTwapRequest)(nil),                  // 18: trader.v1.CreateTwapRequest
+	(*CreateTwapResponse)(nil),                 // 19: trader.v1.CreateTwapResponse
+	(*GetTwapRequest)(nil),                     // 20: trader.v1.GetTwapRequest
+	(*GetTwapResponse)(nil),                    // 21: trader.v1.GetTwapResponse
+	(*ListTwapsRequest)(nil),                   // 22: trader.v1.ListTwapsRequest
+	(*ListTwapsResponse)(nil),                  // 23: trader.v1.ListTwapsResponse
+	(*ListTwapOrdersRequest)(nil),              // 24: trader.v1.ListTwapOrdersRequest
+	(*ListTwapOrdersResponse)(nil),             // 25: trader.v1.ListTwapOrdersResponse
+	(*CancelTwapRequest)(nil),                  // 26: trader.v1.CancelTwapRequest
+	(*CancelTwapResponse)(nil),                 // 27: trader.v1.CancelTwapResponse
+	(*ArbitrageLeg)(nil),                       // 28: trader.v1.ArbitrageLeg
+	(*ArbitrageCombination)(nil),               // 29: trader.v1.ArbitrageCombination
+	(*ArbitrageCreateFailure)(nil),             // 30: trader.v1.ArbitrageCreateFailure
+	(*CreateArbitrageCombinationRequest)(nil),  // 31: trader.v1.CreateArbitrageCombinationRequest
+	(*CreateArbitrageCombinationResponse)(nil), // 32: trader.v1.CreateArbitrageCombinationResponse
+	(*UpdateArbitrageCombinationRequest)(nil),  // 33: trader.v1.UpdateArbitrageCombinationRequest
+	(*UpdateArbitrageCombinationResponse)(nil), // 34: trader.v1.UpdateArbitrageCombinationResponse
+	(*GetArbitrageCombinationRequest)(nil),     // 35: trader.v1.GetArbitrageCombinationRequest
+	(*GetArbitrageCombinationResponse)(nil),    // 36: trader.v1.GetArbitrageCombinationResponse
+	(*ArbitrageExecution)(nil),                 // 37: trader.v1.ArbitrageExecution
+	(*ArbitrageEvent)(nil),                     // 38: trader.v1.ArbitrageEvent
+	(*ListArbitrageCombinationsRequest)(nil),   // 39: trader.v1.ListArbitrageCombinationsRequest
+	(*ListArbitrageCombinationsResponse)(nil),  // 40: trader.v1.ListArbitrageCombinationsResponse
+	(*CloseArbitrageCombinationRequest)(nil),   // 41: trader.v1.CloseArbitrageCombinationRequest
+	(*CloseArbitrageCombinationResponse)(nil),  // 42: trader.v1.CloseArbitrageCombinationResponse
+	nil,                           // 43: trader.v1.ArbitrageCreateFailure.DetailsEntry
+	(*timestamppb.Timestamp)(nil), // 44: google.protobuf.Timestamp
 }
 var file_trader_v1_trader_proto_depIdxs = []int32{
-	35, // 0: trader.v1.Order.created_at:type_name -> google.protobuf.Timestamp
-	35, // 1: trader.v1.Order.updated_at:type_name -> google.protobuf.Timestamp
-	35, // 2: trader.v1.Order.last_reconciled_at:type_name -> google.protobuf.Timestamp
-	35, // 3: trader.v1.TwapJob.start_at:type_name -> google.protobuf.Timestamp
-	35, // 4: trader.v1.TwapJob.end_at:type_name -> google.protobuf.Timestamp
-	35, // 5: trader.v1.TwapJob.next_action_at:type_name -> google.protobuf.Timestamp
-	35, // 6: trader.v1.TwapJob.created_at:type_name -> google.protobuf.Timestamp
-	35, // 7: trader.v1.TwapJob.updated_at:type_name -> google.protobuf.Timestamp
-	35, // 8: trader.v1.TwapJob.started_at:type_name -> google.protobuf.Timestamp
-	35, // 9: trader.v1.TwapJob.closed_at:type_name -> google.protobuf.Timestamp
+	44, // 0: trader.v1.Order.created_at:type_name -> google.protobuf.Timestamp
+	44, // 1: trader.v1.Order.updated_at:type_name -> google.protobuf.Timestamp
+	44, // 2: trader.v1.Order.last_reconciled_at:type_name -> google.protobuf.Timestamp
+	44, // 3: trader.v1.TwapJob.start_at:type_name -> google.protobuf.Timestamp
+	44, // 4: trader.v1.TwapJob.end_at:type_name -> google.protobuf.Timestamp
+	44, // 5: trader.v1.TwapJob.next_action_at:type_name -> google.protobuf.Timestamp
+	44, // 6: trader.v1.TwapJob.created_at:type_name -> google.protobuf.Timestamp
+	44, // 7: trader.v1.TwapJob.updated_at:type_name -> google.protobuf.Timestamp
+	44, // 8: trader.v1.TwapJob.started_at:type_name -> google.protobuf.Timestamp
+	44, // 9: trader.v1.TwapJob.closed_at:type_name -> google.protobuf.Timestamp
 	0,  // 10: trader.v1.ListInstrumentsResponse.items:type_name -> trader.v1.Instrument
-	35, // 11: trader.v1.ListInstrumentsResponse.server_time:type_name -> google.protobuf.Timestamp
-	1,  // 12: trader.v1.PlaceOrderResponse.order:type_name -> trader.v1.Order
-	1,  // 13: trader.v1.GetOrderResponse.order:type_name -> trader.v1.Order
-	1,  // 14: trader.v1.ListOrdersResponse.items:type_name -> trader.v1.Order
-	35, // 15: trader.v1.ListOrdersResponse.server_time:type_name -> google.protobuf.Timestamp
-	1,  // 16: trader.v1.CancelOrderResponse.order:type_name -> trader.v1.Order
-	35, // 17: trader.v1.CreateTwapRequest.start_at:type_name -> google.protobuf.Timestamp
-	35, // 18: trader.v1.CreateTwapRequest.end_at:type_name -> google.protobuf.Timestamp
-	2,  // 19: trader.v1.CreateTwapResponse.job:type_name -> trader.v1.TwapJob
-	2,  // 20: trader.v1.GetTwapResponse.job:type_name -> trader.v1.TwapJob
-	2,  // 21: trader.v1.ListTwapsResponse.items:type_name -> trader.v1.TwapJob
-	35, // 22: trader.v1.ListTwapsResponse.server_time:type_name -> google.protobuf.Timestamp
-	1,  // 23: trader.v1.ListTwapOrdersResponse.items:type_name -> trader.v1.Order
-	35, // 24: trader.v1.ListTwapOrdersResponse.server_time:type_name -> google.protobuf.Timestamp
-	2,  // 25: trader.v1.CancelTwapResponse.job:type_name -> trader.v1.TwapJob
-	23, // 26: trader.v1.ArbitrageCombination.leg_a:type_name -> trader.v1.ArbitrageLeg
-	23, // 27: trader.v1.ArbitrageCombination.leg_b:type_name -> trader.v1.ArbitrageLeg
-	35, // 28: trader.v1.ArbitrageCombination.created_at:type_name -> google.protobuf.Timestamp
-	35, // 29: trader.v1.ArbitrageCombination.updated_at:type_name -> google.protobuf.Timestamp
-	35, // 30: trader.v1.ArbitrageCombination.closed_at:type_name -> google.protobuf.Timestamp
-	35, // 31: trader.v1.ArbitrageCombination.next_retry_at:type_name -> google.protobuf.Timestamp
-	24, // 32: trader.v1.CreateArbitrageCombinationResponse.combination:type_name -> trader.v1.ArbitrageCombination
-	24, // 33: trader.v1.GetArbitrageCombinationResponse.combination:type_name -> trader.v1.ArbitrageCombination
-	1,  // 34: trader.v1.GetArbitrageCombinationResponse.orders:type_name -> trader.v1.Order
-	29, // 35: trader.v1.GetArbitrageCombinationResponse.recent_executions:type_name -> trader.v1.ArbitrageExecution
-	30, // 36: trader.v1.GetArbitrageCombinationResponse.recent_events:type_name -> trader.v1.ArbitrageEvent
-	35, // 37: trader.v1.ArbitrageExecution.created_at:type_name -> google.protobuf.Timestamp
-	35, // 38: trader.v1.ArbitrageExecution.updated_at:type_name -> google.protobuf.Timestamp
-	35, // 39: trader.v1.ArbitrageEvent.created_at:type_name -> google.protobuf.Timestamp
-	24, // 40: trader.v1.ListArbitrageCombinationsResponse.items:type_name -> trader.v1.ArbitrageCombination
-	35, // 41: trader.v1.ListArbitrageCombinationsResponse.server_time:type_name -> google.protobuf.Timestamp
-	24, // 42: trader.v1.CloseArbitrageCombinationResponse.combination:type_name -> trader.v1.ArbitrageCombination
-	3,  // 43: trader.v1.TraderService.ListInstruments:input_type -> trader.v1.ListInstrumentsRequest
-	5,  // 44: trader.v1.TraderService.PlaceOrder:input_type -> trader.v1.PlaceOrderRequest
-	7,  // 45: trader.v1.TraderService.GetOrder:input_type -> trader.v1.GetOrderRequest
-	9,  // 46: trader.v1.TraderService.ListOrders:input_type -> trader.v1.ListOrdersRequest
-	11, // 47: trader.v1.TraderService.CancelOrder:input_type -> trader.v1.CancelOrderRequest
-	13, // 48: trader.v1.TraderService.CreateTwap:input_type -> trader.v1.CreateTwapRequest
-	15, // 49: trader.v1.TraderService.GetTwap:input_type -> trader.v1.GetTwapRequest
-	17, // 50: trader.v1.TraderService.ListTwaps:input_type -> trader.v1.ListTwapsRequest
-	19, // 51: trader.v1.TraderService.ListTwapOrders:input_type -> trader.v1.ListTwapOrdersRequest
-	21, // 52: trader.v1.TraderService.CancelTwap:input_type -> trader.v1.CancelTwapRequest
-	25, // 53: trader.v1.TraderService.CreateArbitrageCombination:input_type -> trader.v1.CreateArbitrageCombinationRequest
-	27, // 54: trader.v1.TraderService.GetArbitrageCombination:input_type -> trader.v1.GetArbitrageCombinationRequest
-	31, // 55: trader.v1.TraderService.ListArbitrageCombinations:input_type -> trader.v1.ListArbitrageCombinationsRequest
-	33, // 56: trader.v1.TraderService.CloseArbitrageCombination:input_type -> trader.v1.CloseArbitrageCombinationRequest
-	4,  // 57: trader.v1.TraderService.ListInstruments:output_type -> trader.v1.ListInstrumentsResponse
-	6,  // 58: trader.v1.TraderService.PlaceOrder:output_type -> trader.v1.PlaceOrderResponse
-	8,  // 59: trader.v1.TraderService.GetOrder:output_type -> trader.v1.GetOrderResponse
-	10, // 60: trader.v1.TraderService.ListOrders:output_type -> trader.v1.ListOrdersResponse
-	12, // 61: trader.v1.TraderService.CancelOrder:output_type -> trader.v1.CancelOrderResponse
-	14, // 62: trader.v1.TraderService.CreateTwap:output_type -> trader.v1.CreateTwapResponse
-	16, // 63: trader.v1.TraderService.GetTwap:output_type -> trader.v1.GetTwapResponse
-	18, // 64: trader.v1.TraderService.ListTwaps:output_type -> trader.v1.ListTwapsResponse
-	20, // 65: trader.v1.TraderService.ListTwapOrders:output_type -> trader.v1.ListTwapOrdersResponse
-	22, // 66: trader.v1.TraderService.CancelTwap:output_type -> trader.v1.CancelTwapResponse
-	26, // 67: trader.v1.TraderService.CreateArbitrageCombination:output_type -> trader.v1.CreateArbitrageCombinationResponse
-	28, // 68: trader.v1.TraderService.GetArbitrageCombination:output_type -> trader.v1.GetArbitrageCombinationResponse
-	32, // 69: trader.v1.TraderService.ListArbitrageCombinations:output_type -> trader.v1.ListArbitrageCombinationsResponse
-	34, // 70: trader.v1.TraderService.CloseArbitrageCombination:output_type -> trader.v1.CloseArbitrageCombinationResponse
-	57, // [57:71] is the sub-list for method output_type
-	43, // [43:57] is the sub-list for method input_type
-	43, // [43:43] is the sub-list for extension type_name
-	43, // [43:43] is the sub-list for extension extendee
-	0,  // [0:43] is the sub-list for field type_name
+	44, // 11: trader.v1.ListInstrumentsResponse.server_time:type_name -> google.protobuf.Timestamp
+	5,  // 12: trader.v1.ListInstrumentsResponse.capabilities:type_name -> trader.v1.VenueCapabilities
+	6,  // 13: trader.v1.AccountProfileResult.steps:type_name -> trader.v1.AccountProfileStepResult
+	7,  // 14: trader.v1.ApplyAccountProfileResponse.result:type_name -> trader.v1.AccountProfileResult
+	1,  // 15: trader.v1.PlaceOrderResponse.order:type_name -> trader.v1.Order
+	1,  // 16: trader.v1.GetOrderResponse.order:type_name -> trader.v1.Order
+	1,  // 17: trader.v1.ListOrdersResponse.items:type_name -> trader.v1.Order
+	44, // 18: trader.v1.ListOrdersResponse.server_time:type_name -> google.protobuf.Timestamp
+	1,  // 19: trader.v1.CancelOrderResponse.order:type_name -> trader.v1.Order
+	44, // 20: trader.v1.CreateTwapRequest.start_at:type_name -> google.protobuf.Timestamp
+	44, // 21: trader.v1.CreateTwapRequest.end_at:type_name -> google.protobuf.Timestamp
+	2,  // 22: trader.v1.CreateTwapResponse.job:type_name -> trader.v1.TwapJob
+	2,  // 23: trader.v1.GetTwapResponse.job:type_name -> trader.v1.TwapJob
+	2,  // 24: trader.v1.ListTwapsResponse.items:type_name -> trader.v1.TwapJob
+	44, // 25: trader.v1.ListTwapsResponse.server_time:type_name -> google.protobuf.Timestamp
+	1,  // 26: trader.v1.ListTwapOrdersResponse.items:type_name -> trader.v1.Order
+	44, // 27: trader.v1.ListTwapOrdersResponse.server_time:type_name -> google.protobuf.Timestamp
+	2,  // 28: trader.v1.CancelTwapResponse.job:type_name -> trader.v1.TwapJob
+	28, // 29: trader.v1.ArbitrageCombination.leg_a:type_name -> trader.v1.ArbitrageLeg
+	28, // 30: trader.v1.ArbitrageCombination.leg_b:type_name -> trader.v1.ArbitrageLeg
+	44, // 31: trader.v1.ArbitrageCombination.created_at:type_name -> google.protobuf.Timestamp
+	44, // 32: trader.v1.ArbitrageCombination.updated_at:type_name -> google.protobuf.Timestamp
+	44, // 33: trader.v1.ArbitrageCombination.closed_at:type_name -> google.protobuf.Timestamp
+	44, // 34: trader.v1.ArbitrageCombination.next_retry_at:type_name -> google.protobuf.Timestamp
+	44, // 35: trader.v1.ArbitrageCombination.last_position_reconciled_at:type_name -> google.protobuf.Timestamp
+	44, // 36: trader.v1.ArbitrageCombination.venue_baseline_captured_at:type_name -> google.protobuf.Timestamp
+	44, // 37: trader.v1.ArbitrageCombination.leg_a_venue_valuation_at:type_name -> google.protobuf.Timestamp
+	44, // 38: trader.v1.ArbitrageCombination.leg_b_venue_valuation_at:type_name -> google.protobuf.Timestamp
+	44, // 39: trader.v1.ArbitrageCombination.target_reached_at:type_name -> google.protobuf.Timestamp
+	44, // 40: trader.v1.ArbitrageCombination.scheduled_exit_at:type_name -> google.protobuf.Timestamp
+	43, // 41: trader.v1.ArbitrageCreateFailure.details:type_name -> trader.v1.ArbitrageCreateFailure.DetailsEntry
+	29, // 42: trader.v1.CreateArbitrageCombinationResponse.combination:type_name -> trader.v1.ArbitrageCombination
+	29, // 43: trader.v1.UpdateArbitrageCombinationResponse.combination:type_name -> trader.v1.ArbitrageCombination
+	29, // 44: trader.v1.GetArbitrageCombinationResponse.combination:type_name -> trader.v1.ArbitrageCombination
+	1,  // 45: trader.v1.GetArbitrageCombinationResponse.orders:type_name -> trader.v1.Order
+	37, // 46: trader.v1.GetArbitrageCombinationResponse.recent_executions:type_name -> trader.v1.ArbitrageExecution
+	38, // 47: trader.v1.GetArbitrageCombinationResponse.recent_events:type_name -> trader.v1.ArbitrageEvent
+	44, // 48: trader.v1.ArbitrageExecution.created_at:type_name -> google.protobuf.Timestamp
+	44, // 49: trader.v1.ArbitrageExecution.updated_at:type_name -> google.protobuf.Timestamp
+	44, // 50: trader.v1.ArbitrageEvent.created_at:type_name -> google.protobuf.Timestamp
+	29, // 51: trader.v1.ListArbitrageCombinationsResponse.items:type_name -> trader.v1.ArbitrageCombination
+	44, // 52: trader.v1.ListArbitrageCombinationsResponse.server_time:type_name -> google.protobuf.Timestamp
+	29, // 53: trader.v1.CloseArbitrageCombinationResponse.combination:type_name -> trader.v1.ArbitrageCombination
+	3,  // 54: trader.v1.TraderService.ListInstruments:input_type -> trader.v1.ListInstrumentsRequest
+	8,  // 55: trader.v1.TraderService.ApplyAccountProfile:input_type -> trader.v1.ApplyAccountProfileRequest
+	10, // 56: trader.v1.TraderService.PlaceOrder:input_type -> trader.v1.PlaceOrderRequest
+	12, // 57: trader.v1.TraderService.GetOrder:input_type -> trader.v1.GetOrderRequest
+	14, // 58: trader.v1.TraderService.ListOrders:input_type -> trader.v1.ListOrdersRequest
+	16, // 59: trader.v1.TraderService.CancelOrder:input_type -> trader.v1.CancelOrderRequest
+	18, // 60: trader.v1.TraderService.CreateTwap:input_type -> trader.v1.CreateTwapRequest
+	20, // 61: trader.v1.TraderService.GetTwap:input_type -> trader.v1.GetTwapRequest
+	22, // 62: trader.v1.TraderService.ListTwaps:input_type -> trader.v1.ListTwapsRequest
+	24, // 63: trader.v1.TraderService.ListTwapOrders:input_type -> trader.v1.ListTwapOrdersRequest
+	26, // 64: trader.v1.TraderService.CancelTwap:input_type -> trader.v1.CancelTwapRequest
+	31, // 65: trader.v1.TraderService.CreateArbitrageCombination:input_type -> trader.v1.CreateArbitrageCombinationRequest
+	33, // 66: trader.v1.TraderService.UpdateArbitrageCombination:input_type -> trader.v1.UpdateArbitrageCombinationRequest
+	35, // 67: trader.v1.TraderService.GetArbitrageCombination:input_type -> trader.v1.GetArbitrageCombinationRequest
+	39, // 68: trader.v1.TraderService.ListArbitrageCombinations:input_type -> trader.v1.ListArbitrageCombinationsRequest
+	41, // 69: trader.v1.TraderService.CloseArbitrageCombination:input_type -> trader.v1.CloseArbitrageCombinationRequest
+	4,  // 70: trader.v1.TraderService.ListInstruments:output_type -> trader.v1.ListInstrumentsResponse
+	9,  // 71: trader.v1.TraderService.ApplyAccountProfile:output_type -> trader.v1.ApplyAccountProfileResponse
+	11, // 72: trader.v1.TraderService.PlaceOrder:output_type -> trader.v1.PlaceOrderResponse
+	13, // 73: trader.v1.TraderService.GetOrder:output_type -> trader.v1.GetOrderResponse
+	15, // 74: trader.v1.TraderService.ListOrders:output_type -> trader.v1.ListOrdersResponse
+	17, // 75: trader.v1.TraderService.CancelOrder:output_type -> trader.v1.CancelOrderResponse
+	19, // 76: trader.v1.TraderService.CreateTwap:output_type -> trader.v1.CreateTwapResponse
+	21, // 77: trader.v1.TraderService.GetTwap:output_type -> trader.v1.GetTwapResponse
+	23, // 78: trader.v1.TraderService.ListTwaps:output_type -> trader.v1.ListTwapsResponse
+	25, // 79: trader.v1.TraderService.ListTwapOrders:output_type -> trader.v1.ListTwapOrdersResponse
+	27, // 80: trader.v1.TraderService.CancelTwap:output_type -> trader.v1.CancelTwapResponse
+	32, // 81: trader.v1.TraderService.CreateArbitrageCombination:output_type -> trader.v1.CreateArbitrageCombinationResponse
+	34, // 82: trader.v1.TraderService.UpdateArbitrageCombination:output_type -> trader.v1.UpdateArbitrageCombinationResponse
+	36, // 83: trader.v1.TraderService.GetArbitrageCombination:output_type -> trader.v1.GetArbitrageCombinationResponse
+	40, // 84: trader.v1.TraderService.ListArbitrageCombinations:output_type -> trader.v1.ListArbitrageCombinationsResponse
+	42, // 85: trader.v1.TraderService.CloseArbitrageCombination:output_type -> trader.v1.CloseArbitrageCombinationResponse
+	70, // [70:86] is the sub-list for method output_type
+	54, // [54:70] is the sub-list for method input_type
+	54, // [54:54] is the sub-list for extension type_name
+	54, // [54:54] is the sub-list for extension extendee
+	0,  // [0:54] is the sub-list for field type_name
 }
 
 func init() { file_trader_v1_trader_proto_init() }
@@ -3455,13 +4483,14 @@ func file_trader_v1_trader_proto_init() {
 	if File_trader_v1_trader_proto != nil {
 		return
 	}
+	file_trader_v1_trader_proto_msgTypes[33].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_trader_v1_trader_proto_rawDesc), len(file_trader_v1_trader_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   35,
+			NumMessages:   44,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

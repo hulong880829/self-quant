@@ -1,0 +1,21 @@
+{
+  "code": 200,
+  "order_book_details": [
+    {
+      "symbol": "BTC",
+      "market_id": 1,
+      "market_type": "perp",
+      "status": "active",
+      "multiplier": "1.000000000000000000",
+      "supported_price_decimals": 1,
+      "supported_size_decimals": 5,
+      "mark_price": "79345.0",
+      "index_price": "79346.1",
+      "last_trade_price": 79345.0,
+      "daily_base_token_volume": 8389.44,
+      "daily_quote_token_volume": 665711673.36889,
+      "min_base_amount": "0.00013",
+      "min_quote_amount": "10.000000"
+    }
+  ]
+}

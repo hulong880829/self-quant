@@ -46,6 +46,7 @@ func main() {
 		logger.Error("fair price startup failed", "error", err)
 		os.Exit(1)
 	}
+	store.SetStaleAfter(cfg.SnapshotStaleAfter)
 	if current := catalog.Snapshot(); current != nil {
 		store.Reconcile(current)
 	}

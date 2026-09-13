@@ -79,19 +79,24 @@ type liveMarket struct {
 }
 
 type Store struct {
-	mu                sync.RWMutex
-	markets           map[string]*liveMarket
-	symbolIndex       map[string][]string
-	identityIndex     map[string]string
-	topicMap          map[uint16]*liveMarket
-	mappedSegments    map[string]uint16
-	learningSegment   string
-	fairEngine        *fairPriceEngine
-	fairComputed      atomic.Uint64
-	fairInvalid       atomic.Uint64
-	fairCrossed       atomic.Uint64
-	fairUncrossFailed atomic.Uint64
-	fairDegraded      atomic.Uint64
+	mu                  sync.RWMutex
+	markets             map[string]*liveMarket
+	symbolIndex         map[string][]string
+	identityIndex       map[string]string
+	topicMap            map[uint16]*liveMarket
+	mappedSegments      map[string]uint16
+	learningSegment     string
+	fairEngine          *fairPriceEngine
+	fairComputed        atomic.Uint64
+	fairInvalid         atomic.Uint64
+	fairCrossed         atomic.Uint64
+	fairUncrossFailed   atomic.Uint64
+	fairDegraded        atomic.Uint64
+	unmappedFrames      atomic.Uint64
+	mappingsPreserved   atomic.Uint64
+	mappingsInvalidated atomic.Uint64
+	topicRelearns       atomic.Uint64
+	staleAfterNS        atomic.Int64
 }
 
 func NewStore() *Store {
@@ -117,12 +122,39 @@ func NewStoreWithFairPrice(config FairPriceConfig) (*Store, error) {
 	return store, nil
 }
 
+func (s *Store) SetStaleAfter(duration time.Duration) {
+	s.staleAfterNS.Store(duration.Nanoseconds())
+}
+
+func (s *Store) SnapshotFresh(snapshot *Snapshot, now time.Time) bool {
+	return snapshot != nil && snapshot.Ready && s.wallFresh(snapshot.WallNS, now)
+}
+
+func (s *Store) FairSnapshotFresh(snapshot *FairPriceSnapshot, now time.Time) bool {
+	return snapshot != nil && snapshot.Ready && s.wallFresh(snapshot.WallNS, now)
+}
+
+func (s *Store) wallFresh(wallNS uint64, now time.Time) bool {
+	staleAfter := s.staleAfterNS.Load()
+	if staleAfter <= 0 {
+		return true
+	}
+	nowNS := now.UnixNano()
+	return wallNS <= uint64(nowNS) && nowNS-int64(wallNS) <= staleAfter
+}
+
 func (s *Store) Reconcile(catalog *catalogSnapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	previousMappings := s.mappedSegments
+	previousLearning := s.learningSegment
 	next := make(map[string]*liveMarket, len(catalog.Markets))
 	index := make(map[string][]string, len(catalog.Markets))
 	identityIndex := make(map[string]string, len(catalog.Markets))
+	topicMap := make(map[uint16]*liveMarket)
+	mappedSegments := make(map[string]uint16)
+	activeSegments := make(map[string]struct{})
+	var preserved uint64
 	for _, market := range catalog.Markets {
 		key := market.Identity.key()
 		existing := s.markets[key]
@@ -132,16 +164,32 @@ func (s *Store) Reconcile(catalog *catalogSnapshot) {
 		}
 		if existing != nil {
 			reconciled.ring = existing.ring
-			if market.Segments[KindBBO] != "" {
+			if segment := market.Segments[KindBBO]; segment != "" &&
+				segment == existing.catalog.Segments[KindBBO] {
 				reconciled.bbo.value.Store(existing.bbo.value.Load())
 			}
-			if market.Segments[KindBook] != "" {
+			if segment := market.Segments[KindBook]; segment != "" &&
+				segment == existing.catalog.Segments[KindBook] {
 				reconciled.book.value.Store(existing.book.value.Load())
-				if market.Segments[KindBook] == existing.catalog.Segments[KindBook] {
-					reconciled.fair.Store(existing.fair.Load())
-					reconciled.fairState.Store(existing.fairState.Load())
-				}
+				reconciled.fair.Store(existing.fair.Load())
+				reconciled.fairState.Store(existing.fairState.Load())
 			}
+		}
+		for kind, segment := range market.Segments {
+			if segment == "" {
+				continue
+			}
+			activeSegments[segment] = struct{}{}
+			if existing == nil || existing.catalog.Segments[kind] != segment {
+				continue
+			}
+			topicID, mapped := previousMappings[segment]
+			if !mapped {
+				continue
+			}
+			topicMap[topicID] = reconciled
+			mappedSegments[segment] = topicID
+			preserved++
 		}
 		next[key] = reconciled
 		canonical := canonicalSymbol(market.Symbol)
@@ -151,9 +199,17 @@ func (s *Store) Reconcile(catalog *catalogSnapshot) {
 	s.markets = next
 	s.symbolIndex = index
 	s.identityIndex = identityIndex
-	s.topicMap = make(map[uint16]*liveMarket)
-	s.mappedSegments = make(map[string]uint16)
+	s.topicMap = topicMap
+	s.mappedSegments = mappedSegments
 	s.learningSegment = ""
+	if _, active := activeSegments[previousLearning]; active {
+		s.learningSegment = previousLearning
+	}
+	s.mappingsPreserved.Add(preserved)
+	if invalidated := uint64(len(previousMappings)); invalidated > preserved {
+		invalidated -= preserved
+		s.mappingsInvalidated.Add(invalidated)
+	}
 }
 
 func (s *Store) Disconnect() {
@@ -247,6 +303,11 @@ func (s *Store) Apply(frame GatewayFrame) error {
 			s.mu.Unlock()
 			return err
 		}
+		if market == nil {
+			s.unmappedFrames.Add(1)
+			s.mu.Unlock()
+			return nil
+		}
 		s.topicMap[frame.TopicID] = market
 		if segment := market.catalog.Segments[frame.Kind]; segment != "" {
 			s.mappedSegments[segment] = frame.TopicID
@@ -331,7 +392,7 @@ func (s *Store) Apply(frame GatewayFrame) error {
 }
 
 func (s *Store) identify(frame GatewayFrame) (*liveMarket, error) {
-	base, quote, slots, count := frameIdentity(frame)
+	base, quote, _, _ := frameIdentity(frame)
 	var candidates []*liveMarket
 	for _, market := range s.markets {
 		if _, active := market.catalog.Segments[frame.Kind]; !active {
@@ -342,18 +403,6 @@ func (s *Store) identify(frame GatewayFrame) (*liveMarket, error) {
 		}
 		candidates = append(candidates, market)
 	}
-	if len(candidates) == 1 {
-		return candidates[0], nil
-	}
-	var narrowed []*liveMarket
-	for _, candidate := range candidates {
-		if profileMatchesSlots(candidate.catalog.Profile, slots, count) {
-			narrowed = append(narrowed, candidate)
-		}
-	}
-	if len(narrowed) == 1 {
-		return narrowed[0], nil
-	}
 	if s.learningSegment != "" {
 		learning, err := parseSegment(s.learningSegment)
 		if err == nil && streamKind(learning.Stream) == frame.Kind {
@@ -363,8 +412,12 @@ func (s *Store) identify(frame GatewayFrame) (*liveMarket, error) {
 				}
 			}
 		}
+		return nil, nil
 	}
-	return nil, fmt.Errorf("SQGW topic %d identity %s/%s is ambiguous or unknown", frame.TopicID, base, quote)
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	return nil, nil
 }
 
 func (s *Store) BeginLearning(segment string) {
@@ -378,6 +431,10 @@ func (s *Store) SegmentMapped(segment string) bool {
 	defer s.mu.RUnlock()
 	_, mapped := s.mappedSegments[segment]
 	return mapped
+}
+
+func (s *Store) RecordTopicRelearn() {
+	s.topicRelearns.Add(1)
 }
 
 func canonicalSymbol(value string) string {
@@ -514,20 +571,28 @@ func (s *Store) FairPriceModelID() string {
 }
 
 type FairPriceStats struct {
-	Computed      uint64
-	Invalid       uint64
-	Crossed       uint64
-	UncrossFailed uint64
-	Degraded      uint64
+	Computed            uint64
+	Invalid             uint64
+	Crossed             uint64
+	UncrossFailed       uint64
+	Degraded            uint64
+	UnmappedFrames      uint64
+	MappingsPreserved   uint64
+	MappingsInvalidated uint64
+	TopicRelearns       uint64
 }
 
 func (s *Store) FairPriceStats() FairPriceStats {
 	return FairPriceStats{
-		Computed:      s.fairComputed.Load(),
-		Invalid:       s.fairInvalid.Load(),
-		Crossed:       s.fairCrossed.Load(),
-		UncrossFailed: s.fairUncrossFailed.Load(),
-		Degraded:      s.fairDegraded.Load(),
+		Computed:            s.fairComputed.Load(),
+		Invalid:             s.fairInvalid.Load(),
+		Crossed:             s.fairCrossed.Load(),
+		UncrossFailed:       s.fairUncrossFailed.Load(),
+		Degraded:            s.fairDegraded.Load(),
+		UnmappedFrames:      s.unmappedFrames.Load(),
+		MappingsPreserved:   s.mappingsPreserved.Load(),
+		MappingsInvalidated: s.mappingsInvalidated.Load(),
+		TopicRelearns:       s.topicRelearns.Load(),
 	}
 }
 
@@ -558,6 +623,10 @@ func (s *Store) Markets() []Market {
 }
 
 func (s *Store) Ready() bool {
+	return s.ReadyAt(time.Now())
+}
+
+func (s *Store) ReadyAt(now time.Time) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if len(s.markets) == 0 {
@@ -566,18 +635,32 @@ func (s *Store) Ready() bool {
 	for _, market := range s.markets {
 		if market.catalog.Segments[KindBBO] != "" {
 			snapshot := market.bbo.value.Load()
-			if snapshot == nil || !snapshot.Ready {
+			if !s.SnapshotFresh(snapshot, now) {
 				return false
 			}
 		}
 		if market.catalog.Segments[KindBook] != "" {
 			snapshot := market.book.value.Load()
-			if snapshot == nil || !snapshot.Ready {
+			if !s.SnapshotFresh(snapshot, now) {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+func (s *Store) StaleTopicCount(now time.Time) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := 0
+	for _, market := range s.markets {
+		for kind, segment := range market.catalog.Segments {
+			if segment != "" && !s.SnapshotFresh(marketSnapshot(market, kind), now) {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func fillMarketFromIdentity(

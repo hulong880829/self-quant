@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	accountv1 "selfquant/backend/gen/account/v1"
 	"selfquant/backend/internal/account"
+	"selfquant/backend/internal/polymarketauth"
 )
 
 type accountService interface {
@@ -23,13 +24,19 @@ type accountService interface {
 	GetPolymarketCredentials(context.Context, string, int64) (account.PolymarketCredentials, error)
 	RefreshPolymarketCredentials(context.Context, string, int64) (account.PolymarketCredentials, error)
 	InvalidatePolymarketCredentials(context.Context, string, int64) error
+	ActivatePolymarketCredentials(context.Context, string, int64) error
 	DeleteTradingAccount(context.Context, string, int64) error
 	GetTradingAccountSnapshot(context.Context, string, int64) (account.TradingAccountSnapshot, error)
+	GetCachedTradingAccountSnapshot(context.Context, string, int64) (account.TradingAccountSnapshot, error)
 	GetProductGroupSnapshot(context.Context, string, string) (account.ProductGroupSnapshot, error)
 	GetProductAccountSnapshotsInternal(context.Context, string, string, string) (account.ProductAccountSnapshots, error)
 	SyncProductTradeFillsInternal(context.Context, string, string, string, time.Time) ([]account.TradeFillSyncResult, error)
 	GetTradingCredentials(context.Context, string, int64) (account.TradingCredentials, error)
 	GetTradingCredentialsInternal(context.Context, string, string, int64) (account.TradingCredentials, error)
+	GetTradingAccountMeta(context.Context, string, int64) (account.TradingAccountMeta, error)
+	InspectTradingReadiness(context.Context, string, int64) (account.TradingReadiness, error)
+	GetTradingAccountFeeRates(context.Context, string, int64) (account.TradingAccountFees, error)
+	SyncTradingAccountFeeRates(context.Context, string, int64) (account.TradingAccountFees, error)
 	GetAICredential(context.Context, string, string) (account.AICredentialView, error)
 	UpsertAICredential(context.Context, string, string, string) (account.AICredentialView, error)
 	DeleteAICredential(context.Context, string, string) error
@@ -116,8 +123,23 @@ func (s *AccountServer) GetTradingAccountSnapshot(
 	if strings.TrimSpace(request.GetToken()) == "" {
 		return nil, status.Error(codes.Unauthenticated, "session required")
 	}
-	item, err := s.service.GetTradingAccountSnapshot(ctx, request.GetToken(), request.GetTradingAccountId())
+	var (
+		item account.TradingAccountSnapshot
+		err  error
+	)
+	if request.GetCacheOnly() {
+		item, err = s.service.GetCachedTradingAccountSnapshot(
+			ctx, request.GetToken(), request.GetTradingAccountId(),
+		)
+	} else {
+		item, err = s.service.GetTradingAccountSnapshot(
+			ctx, request.GetToken(), request.GetTradingAccountId(),
+		)
+	}
 	if err != nil {
+		if errors.Is(err, account.ErrSnapshotCacheMiss) {
+			return nil, status.Error(codes.FailedPrecondition, "snapshot_cache_miss")
+		}
 		slog.ErrorContext(ctx, "account snapshot failed", "account_id", request.GetTradingAccountId(), "error", err)
 		return nil, mapTradingAccountError(err, "account snapshot unavailable")
 	}
@@ -302,6 +324,21 @@ func (s *AccountServer) InvalidatePolymarketCredentials(
 	return &accountv1.DeleteTradingAccountResponse{}, nil
 }
 
+func (s *AccountServer) ActivatePolymarketCredentials(
+	ctx context.Context,
+	request *accountv1.GetPolymarketCredentialsRequest,
+) (*accountv1.DeleteTradingAccountResponse, error) {
+	if strings.TrimSpace(request.GetToken()) == "" {
+		return nil, status.Error(codes.Unauthenticated, "session required")
+	}
+	if err := s.service.ActivatePolymarketCredentials(
+		ctx, request.GetToken(), request.GetTradingAccountId(),
+	); err != nil {
+		return nil, mapTradingAccountError(err, "activate polymarket credentials failed")
+	}
+	return &accountv1.DeleteTradingAccountResponse{}, nil
+}
+
 type AccountServer struct {
 	accountv1.UnimplementedAccountServiceServer
 	service accountService
@@ -382,12 +419,18 @@ func (s *AccountServer) CreateTradingAccount(
 		return nil, status.Error(codes.Unauthenticated, "session required")
 	}
 	created, err := s.service.CreateTradingAccount(ctx, token, account.CreateTradingAccountInput{
-		ProductName: request.GetProductName(),
-		Exchange:    request.GetExchange(),
-		AccountName: request.GetAccountName(),
-		APIKey:      request.GetApiKey(),
-		APISecret:   request.GetApiSecret(),
-		Passphrase:  request.GetPassphrase(),
+		ProductName:      request.GetProductName(),
+		Exchange:         request.GetExchange(),
+		AccountName:      request.GetAccountName(),
+		APIKey:           request.GetApiKey(),
+		APISecret:        request.GetApiSecret(),
+		Passphrase:       request.GetPassphrase(),
+		TradingAPIKey:    request.GetTradingApiKey(),
+		TradingAPISecret: request.GetTradingApiSecret(),
+		SigningAddress:   request.GetSigningAddress(),
+		VaultAddress:     request.GetVaultAddress(),
+		AccountIndex:     request.AccountIndex,
+		APIKeyIndex:      request.ApiKeyIndex,
 	})
 	if err != nil {
 		return nil, mapTradingAccountError(err, "create trading account failed")
@@ -415,6 +458,50 @@ func (s *AccountServer) GetTradingCredentials(
 	return tradingCredentialsToProto(credentials), nil
 }
 
+func (s *AccountServer) GetTradingAccountMeta(
+	ctx context.Context,
+	request *accountv1.GetTradingAccountMetaRequest,
+) (*accountv1.GetTradingAccountMetaResponse, error) {
+	token := strings.TrimSpace(request.GetToken())
+	if token == "" {
+		return nil, status.Error(codes.Unauthenticated, "session required")
+	}
+	if request.GetTradingAccountId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "trading account id is required")
+	}
+	meta, err := s.service.GetTradingAccountMeta(ctx, token, request.GetTradingAccountId())
+	if err != nil {
+		return nil, mapTradingAccountError(err, "get trading account meta failed")
+	}
+	return &accountv1.GetTradingAccountMetaResponse{
+		TradingAccountId: meta.ID,
+		ProductName:      meta.ProductName,
+		Exchange:         meta.Exchange,
+		AccountName:      meta.AccountName,
+		CredentialKind:   meta.CredentialKind,
+		AccountIndex:     meta.AccountIndex,
+		ApiKeyIndex:      meta.APIKeyIndex,
+	}, nil
+}
+
+func (s *AccountServer) InspectTradingReadiness(
+	ctx context.Context,
+	request *accountv1.InspectTradingReadinessRequest,
+) (*accountv1.InspectTradingReadinessResponse, error) {
+	token := strings.TrimSpace(request.GetToken())
+	if token == "" {
+		return nil, status.Error(codes.Unauthenticated, "session required")
+	}
+	if request.GetTradingAccountId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "trading account id is required")
+	}
+	ready, err := s.service.InspectTradingReadiness(ctx, token, request.GetTradingAccountId())
+	if err != nil {
+		return nil, mapTradingAccountError(err, "inspect trading readiness failed")
+	}
+	return readinessToProto(ready), nil
+}
+
 func tradingCredentialsToProto(credentials account.TradingCredentials) *accountv1.GetTradingCredentialsResponse {
 	return &accountv1.GetTradingCredentialsResponse{
 		TradingAccountId: credentials.TradingAccountID,
@@ -424,6 +511,27 @@ func tradingCredentialsToProto(credentials account.TradingCredentials) *accountv
 		ApiKey:           credentials.APIKey,
 		ApiSecret:        credentials.APISecret,
 		Passphrase:       credentials.Passphrase,
+		CredentialKind:   credentials.CredentialKind,
+		SigningAddress:   credentials.SigningAddress,
+		VaultAddress:     credentials.VaultAddress,
+		AccountIndex:     credentials.AccountIndex,
+		ApiKeyIndex:      credentials.APIKeyIndex,
+	}
+}
+
+func readinessToProto(ready account.TradingReadiness) *accountv1.InspectTradingReadinessResponse {
+	return &accountv1.InspectTradingReadinessResponse{
+		TradingAccountId:         ready.TradingAccountID,
+		Exchange:                 ready.Exchange,
+		CredentialsPresent:       ready.CredentialsPresent,
+		CredentialsVerified:      ready.CredentialsVerified,
+		TradingMode:              ready.TradingMode,
+		TradingReady:             ready.TradingReady,
+		TradingStatus:            ready.TradingStatus,
+		TradingUnavailableCode:   ready.TradingUnavailableCode,
+		TradingUnavailableReason: ready.TradingUnavailableReason,
+		ResolvedAccountIndex:     ready.ResolvedAccountIndex,
+		ResolvedApiKeyIndex:      ready.ResolvedAPIKeyIndex,
 	}
 }
 
@@ -536,18 +644,88 @@ func (s *AccountServer) DeleteTradingAccount(
 
 func toProtoTradingAccount(item account.TradingAccountView) *accountv1.TradingAccount {
 	return &accountv1.TradingAccount{
-		Id:            item.ID,
-		ProductName:   item.ProductName,
-		Exchange:      item.Exchange,
-		AccountName:   item.AccountName,
-		ApiKeyMasked:  item.APIKeyMasked,
-		HasPassphrase: item.HasPassphrase,
-		CreatedAt:     timestamppb.New(item.CreatedAt),
-		UpdatedAt:     timestamppb.New(item.UpdatedAt),
-		WalletAddress: item.WalletAddress,
-		WalletType:    item.WalletType,
-		BindingStatus: item.BindingStatus,
+		Id:                       item.ID,
+		ProductName:              item.ProductName,
+		Exchange:                 item.Exchange,
+		AccountName:              item.AccountName,
+		ApiKeyMasked:             item.APIKeyMasked,
+		HasPassphrase:            item.HasPassphrase,
+		CreatedAt:                timestamppb.New(item.CreatedAt),
+		UpdatedAt:                timestamppb.New(item.UpdatedAt),
+		WalletAddress:            item.WalletAddress,
+		WalletType:               item.WalletType,
+		BindingStatus:            item.BindingStatus,
+		CredentialsPresent:       item.CredentialsPresent,
+		CredentialsVerified:      item.CredentialsVerified,
+		TradingMode:              item.TradingMode,
+		TradingReady:             item.TradingReady,
+		TradingStatus:            item.TradingStatus,
+		TradingUnavailableCode:   item.TradingUnavailableCode,
+		TradingUnavailableReason: item.TradingUnavailableReason,
+		ResolvedAccountIndex:     item.ResolvedAccountIndex,
+		ResolvedApiKeyIndex:      item.ResolvedAPIKeyIndex,
+		SpotFee:                  marketFeeToProto(item.Fees.Spot),
+		ContractFee:              marketFeeToProto(item.Fees.Contract),
+		FeeSource:                item.Fees.Source,
+		FeeUpdatedAt:             optionalTimestamp(item.Fees.UpdatedAt),
+		FeeSyncStatus:            item.Fees.SyncStatus,
+		FeeSyncError:             item.Fees.SyncError,
+		FeeStale:                 item.Fees.Stale,
+		UnsupportedMarkets:       item.Fees.UnsupportedMarkets,
 	}
+}
+
+func marketFeeToProto(item account.MarketFeeView) *accountv1.MarketFeeRate {
+	return &accountv1.MarketFeeRate{
+		Status: item.Status, Maker: item.Maker, Taker: item.Taker,
+	}
+}
+
+func feesToProto(item account.TradingAccountFees) *accountv1.GetTradingAccountFeeRatesResponse {
+	return &accountv1.GetTradingAccountFeeRatesResponse{
+		SpotFee:            marketFeeToProto(item.Spot),
+		ContractFee:        marketFeeToProto(item.Contract),
+		FeeSource:          item.Source,
+		FeeUpdatedAt:       optionalTimestamp(item.UpdatedAt),
+		FeeSyncStatus:      item.SyncStatus,
+		FeeSyncError:       item.SyncError,
+		FeeStale:           item.Stale,
+		UnsupportedMarkets: item.UnsupportedMarkets,
+	}
+}
+
+func (s *AccountServer) GetTradingAccountFeeRates(
+	ctx context.Context,
+	request *accountv1.GetTradingAccountFeeRatesRequest,
+) (*accountv1.GetTradingAccountFeeRatesResponse, error) {
+	if strings.TrimSpace(request.GetToken()) == "" {
+		return nil, status.Error(codes.Unauthenticated, "session required")
+	}
+	if request.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "trading account id is required")
+	}
+	fees, err := s.service.GetTradingAccountFeeRates(ctx, request.GetToken(), request.GetId())
+	if err != nil {
+		return nil, mapTradingAccountError(err, "trading account fee rates unavailable")
+	}
+	return feesToProto(fees), nil
+}
+
+func (s *AccountServer) SyncTradingAccountFeeRates(
+	ctx context.Context,
+	request *accountv1.SyncTradingAccountFeeRatesRequest,
+) (*accountv1.GetTradingAccountFeeRatesResponse, error) {
+	if strings.TrimSpace(request.GetToken()) == "" {
+		return nil, status.Error(codes.Unauthenticated, "session required")
+	}
+	if request.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "trading account id is required")
+	}
+	fees, err := s.service.SyncTradingAccountFeeRates(ctx, request.GetToken(), request.GetId())
+	if err != nil {
+		return nil, mapTradingAccountError(err, "trading account fee sync failed")
+	}
+	return feesToProto(fees), nil
 }
 
 func mapTradingAccountError(err error, internalMessage string) error {
@@ -566,9 +744,25 @@ func mapTradingAccountError(err error, internalMessage string) error {
 		return status.Error(codes.AlreadyExists, "trading account already exists")
 	case errors.Is(err, account.ErrTradingAccountNotFound):
 		return status.Error(codes.NotFound, "trading account not found")
+	case errors.Is(err, account.ErrTradingAccountHasActiveArbitrage),
+		errors.Is(err, account.ErrTradingAccountHasActiveTWAP):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, account.ErrSnapshotUnavailable):
 		return status.Error(codes.Unavailable, "account snapshot unavailable")
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, "polymarket upstream timed out")
+	case errors.Is(err, context.Canceled):
+		return status.Error(codes.Canceled, "polymarket request canceled")
 	default:
+		var authErr *polymarketauth.AuthError
+		if errors.As(err, &authErr) {
+			switch {
+			case authErr.StatusCode == 429:
+				return status.Error(codes.ResourceExhausted, "polymarket auth rate limited")
+			case authErr.StatusCode >= 500:
+				return status.Error(codes.Unavailable, "polymarket auth unavailable")
+			}
+		}
 		return status.Error(codes.Internal, internalMessage)
 	}
 }

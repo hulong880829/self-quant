@@ -24,19 +24,61 @@ import (
 	accountv1 "selfquant/backend/gen/account/v1"
 	fundingv1 "selfquant/backend/gen/funding/v1"
 	reportv1 "selfquant/backend/gen/report/v1"
+	"selfquant/backend/internal/account"
 )
 
 type testFundingServer struct {
 	fundingv1.UnimplementedFundingServiceServer
-	err               error
-	opportunityStatus string
-	opportunityStale  bool
+	err                    error
+	opportunityStatus      string
+	opportunityStale       bool
+	batchGetCalls          int
+	batchGetErr            error
+	listRatesCalls         int
+	listSpreadsCalls       int
+	listOpportunitiesCalls int
+	historyCalls           int
+}
+
+func (s *testFundingServer) BatchGetFundingRates(
+	_ context.Context,
+	request *fundingv1.BatchGetFundingRatesRequest,
+) (*fundingv1.BatchGetFundingRatesResponse, error) {
+	s.batchGetCalls++
+	if s.batchGetErr != nil {
+		return nil, s.batchGetErr
+	}
+	if s.err != nil {
+		return nil, s.err
+	}
+	now := time.Now().UTC()
+	results := make([]*fundingv1.FundingRateLookupResult, 0, len(request.GetKeys()))
+	for _, key := range request.GetKeys() {
+		results = append(results, &fundingv1.FundingRateLookupResult{
+			Key:    key,
+			Status: "hit",
+			Item: &fundingv1.FundingRate{
+				Exchange: key.GetExchange(), ExchangeSymbol: key.GetExchangeSymbol(),
+				GlobalSymbol: key.GetExchangeSymbol(), BaseAsset: key.GetBaseAsset(),
+				QuoteAsset: key.GetQuoteAsset(), Cumulative_24H: "0.0003",
+				AnnualizedRate: "0.1095", FundingIntervalSeconds: 28800,
+				Turnover_24HUsd: "120000000", PositionNotionalUsd: "6000000",
+				FundingRate: "0.0001", MarkPrice: "60000", IndexPrice: "59990",
+				LastPrice: "60001", SourceUpdatedAt: timestamppb.New(now),
+				NextFundingAt: timestamppb.New(now.Add(time.Hour)),
+			},
+		})
+	}
+	return &fundingv1.BatchGetFundingRatesResponse{
+		Results: results, SnapshotVersion: "123", ServerTime: timestamppb.New(now),
+	}, nil
 }
 
 func (s *testFundingServer) ListFundingRates(
 	_ context.Context,
 	_ *fundingv1.ListFundingRatesRequest,
 ) (*fundingv1.ListFundingRatesResponse, error) {
+	s.listRatesCalls++
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -64,6 +106,7 @@ func (s *testFundingServer) ListFundingSpreads(
 	_ context.Context,
 	_ *fundingv1.ListFundingSpreadsRequest,
 ) (*fundingv1.ListFundingSpreadsResponse, error) {
+	s.listSpreadsCalls++
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -73,6 +116,7 @@ func (s *testFundingServer) ListFundingSpreads(
 			GlobalSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 			LongLeg: &fundingv1.FundingSpreadLeg{
 				Exchange: "binance", ExchangeSymbol: "BTCUSDT",
+				GlobalSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 				EffectiveFundingRate: "0.0001", FundingIntervalSeconds: 28800,
 				NextFundingAt:       timestamppb.New(now.Add(time.Hour)),
 				PositionNotionalUsd: "5000000", Turnover_24HUsd: "20000000",
@@ -80,6 +124,7 @@ func (s *testFundingServer) ListFundingSpreads(
 			},
 			ShortLeg: &fundingv1.FundingSpreadLeg{
 				Exchange: "okx", ExchangeSymbol: "BTC-USDT-SWAP",
+				GlobalSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 				EffectiveFundingRate: "0.0002", FundingIntervalSeconds: 28800,
 				NextFundingAt:       timestamppb.New(now.Add(time.Hour)),
 				PositionNotionalUsd: "4000000", Turnover_24HUsd: "30000000",
@@ -98,19 +143,21 @@ func (s *testFundingServer) ListFundingOpportunities(
 	_ context.Context,
 	request *fundingv1.ListFundingOpportunitiesRequest,
 ) (*fundingv1.ListFundingOpportunitiesResponse, error) {
+	s.listOpportunitiesCalls++
 	if s.err != nil {
 		return nil, s.err
 	}
-	if request.GetPeriod() != "1h" {
+	if request.GetPeriod() != "8h" && request.GetPeriod() != "24h" {
 		return nil, status.Error(codes.InvalidArgument, "invalid period")
 	}
 	now := time.Now().UTC()
 	return &fundingv1.ListFundingOpportunitiesResponse{
 		Items: []*fundingv1.FundingOpportunityRanking{{
 			Rank: 1, GlobalSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT",
-			Period: "1h",
+			Period: request.GetPeriod(),
 			LongLeg: &fundingv1.FundingSpreadLeg{
 				Exchange: "binance", ExchangeSymbol: "BTCUSDT",
+				GlobalSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 				EffectiveFundingRate: "0.0001", FundingIntervalSeconds: 28800,
 				NextFundingAt:       timestamppb.New(now.Add(time.Hour)),
 				PositionNotionalUsd: "5000000", Turnover_24HUsd: "20000000",
@@ -118,6 +165,7 @@ func (s *testFundingServer) ListFundingOpportunities(
 			},
 			ShortLeg: &fundingv1.FundingSpreadLeg{
 				Exchange: "okx", ExchangeSymbol: "BTC-USDT-SWAP",
+				GlobalSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 				EffectiveFundingRate: "0.0002", FundingIntervalSeconds: 28800,
 				NextFundingAt:       timestamppb.New(now.Add(time.Hour)),
 				PositionNotionalUsd: "4000000", Turnover_24HUsd: "30000000",
@@ -129,7 +177,8 @@ func (s *testFundingServer) ListFundingOpportunities(
 			CombinedExpectedAnnualized: "0.5", FirstPassageProbability: "0.8",
 			ProfitProbability: "0.75", ExpectedExitMinutes: "32", P5Return: "-0.0002",
 			MinPositionNotionalUsd: "4000000", MinTurnover_24HUsd: "20000000",
-			Coverage: "0.98", Confidence: "0.85", ModelState: "ready",
+			Coverage: "0.98", Confidence: "0.85", ModelState: "replay_7d",
+			SampleCount: 160, ExpectedPaybackMinutes: "24.5", PaybackStatus: "ready",
 			UpdatedAt: timestamppb.New(now),
 		}},
 		Total: 1, SnapshotVersion: "rank-123", ServerTime: timestamppb.New(now),
@@ -143,6 +192,7 @@ func (s *testFundingServer) GetFundingHistory(
 	_ context.Context,
 	_ *fundingv1.GetFundingHistoryRequest,
 ) (*fundingv1.GetFundingHistoryResponse, error) {
+	s.historyCalls++
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -155,11 +205,13 @@ func (s *testFundingServer) GetFundingHistory(
 
 type testAccountServer struct {
 	accountv1.UnimplementedAccountServiceServer
-	loginErr    error
-	validateErr error
-	token       string
-	accounts    []*accountv1.TradingAccount
-	nextID      int64
+	loginErr          error
+	validateErr       error
+	deleteErr         error
+	token             string
+	accounts          []*accountv1.TradingAccount
+	nextID            int64
+	snapshotCacheMiss bool
 }
 
 func (s *testAccountServer) Login(
@@ -228,6 +280,9 @@ func (s *testAccountServer) GetTradingAccountSnapshot(
 	if err := s.requireToken(request.GetToken()); err != nil {
 		return nil, err
 	}
+	if request.GetCacheOnly() && s.snapshotCacheMiss {
+		return nil, status.Error(codes.FailedPrecondition, "snapshot_cache_miss")
+	}
 	return &accountv1.GetTradingAccountSnapshotResponse{
 		Snapshot: &accountv1.TradingAccountSnapshot{
 			TradingAccountId: request.GetTradingAccountId(), Exchange: "binance",
@@ -276,12 +331,39 @@ func (s *testAccountServer) CreateTradingAccount(
 	now := timestamppb.New(time.Now().UTC())
 	created := &accountv1.TradingAccount{
 		Id: s.nextID, ProductName: request.GetProductName(),
-		Exchange:    strings.ToLower(request.GetExchange()),
-		AccountName: request.GetAccountName(), ApiKeyMasked: "abcd****mnop",
+		Exchange:      strings.ToLower(request.GetExchange()),
+		AccountName:   request.GetAccountName(),
 		HasPassphrase: request.GetPassphrase() != "", CreatedAt: now, UpdatedAt: now,
+		FeeSyncStatus: "pending",
+		SpotFee:       &accountv1.MarketFeeRate{Status: "unknown"},
+		ContractFee:   &accountv1.MarketFeeRate{Status: "unknown"},
 	}
 	s.accounts = append(s.accounts, created)
 	return &accountv1.CreateTradingAccountResponse{Account: created}, nil
+}
+
+func (s *testAccountServer) GetTradingAccountFeeRates(
+	_ context.Context,
+	request *accountv1.GetTradingAccountFeeRatesRequest,
+) (*accountv1.GetTradingAccountFeeRatesResponse, error) {
+	if err := s.requireToken(request.GetToken()); err != nil {
+		return nil, err
+	}
+	for _, item := range s.accounts {
+		if item.GetId() == request.GetId() {
+			return &accountv1.GetTradingAccountFeeRatesResponse{
+				SpotFee:            item.GetSpotFee(),
+				ContractFee:        item.GetContractFee(),
+				FeeSource:          item.GetFeeSource(),
+				FeeUpdatedAt:       item.GetFeeUpdatedAt(),
+				FeeSyncStatus:      item.GetFeeSyncStatus(),
+				FeeSyncError:       item.GetFeeSyncError(),
+				FeeStale:           item.GetFeeStale(),
+				UnsupportedMarkets: item.GetUnsupportedMarkets(),
+			}, nil
+		}
+	}
+	return nil, status.Error(codes.NotFound, "trading account not found")
 }
 
 func (s *testAccountServer) DeleteTradingAccount(
@@ -290,6 +372,9 @@ func (s *testAccountServer) DeleteTradingAccount(
 ) (*accountv1.DeleteTradingAccountResponse, error) {
 	if err := s.requireToken(request.GetToken()); err != nil {
 		return nil, err
+	}
+	if s.deleteErr != nil {
+		return nil, s.deleteErr
 	}
 	for index, item := range s.accounts {
 		if item.GetId() == request.GetId() {
@@ -394,7 +479,9 @@ func TestFundingSpreadSnapshotContractAndETag(t *testing.T) {
 		t.Fatalf("response=%+v", response)
 	}
 	longLeg, ok := response.Data[0]["longLeg"].(map[string]any)
-	if !ok || longLeg["exchange"] != "Binance" ||
+	if !ok || longLeg["globalSymbol"] != "BTCUSDT" ||
+		longLeg["baseAsset"] != "BTC" || longLeg["quoteAsset"] != "USDT" ||
+		longLeg["exchange"] != "Binance" ||
 		longLeg["settlementIntervalHours"] != float64(8) {
 		t.Fatalf("longLeg=%+v", response.Data[0]["longLeg"])
 	}
@@ -417,7 +504,7 @@ func TestFundingSpreadSnapshotContractAndETag(t *testing.T) {
 
 func TestFundingOpportunityContractAndETag(t *testing.T) {
 	router := testRouter(t, &testFundingServer{}, nil)
-	target := "/api/v1/funding-opportunities?period=1h&minLegNotionalUsd=1000000&minLegVolume24hUsd=1000000"
+	target := "/api/v1/funding-opportunities?period=8h&minLegNotionalUsd=1000000&minLegVolume24hUsd=1000000"
 	request := httptest.NewRequest(http.MethodGet, target, nil)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
@@ -434,7 +521,10 @@ func TestFundingOpportunityContractAndETag(t *testing.T) {
 		t.Fatal(err)
 	}
 	if response.Meta.Total != 1 || len(response.Data) != 1 ||
-		response.Data[0]["combinedExpectedAnnualized"] != "0.5" {
+		response.Data[0]["combinedExpectedAnnualized"] != "0.5" ||
+		response.Data[0]["sampleCount"] != float64(160) ||
+		response.Data[0]["expectedPaybackMinutes"] != "24.5" ||
+		response.Data[0]["paybackStatus"] != "ready" {
 		t.Fatalf("response=%+v", response)
 	}
 	etag := recorder.Header().Get("ETag")
@@ -450,11 +540,34 @@ func TestFundingOpportunityContractAndETag(t *testing.T) {
 	}
 }
 
+func TestFundingOpportunityDefaultsToEightHours(t *testing.T) {
+	router := testRouter(t, &testFundingServer{}, nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodGet, "/api/v1/funding-opportunities", nil),
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data []struct {
+			Period string `json:"period"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Data) != 1 || response.Data[0].Period != "8h" {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
 func TestStaleFundingOpportunityNeverReturnsNotModified(t *testing.T) {
 	router := testRouter(t, &testFundingServer{
 		opportunityStatus: "stale", opportunityStale: true,
 	}, nil)
-	target := "/api/v1/funding-opportunities?period=1h"
+	target := "/api/v1/funding-opportunities?period=8h"
 	first := httptest.NewRecorder()
 	router.ServeHTTP(first, httptest.NewRequest(http.MethodGet, target, nil))
 	request := httptest.NewRequest(http.MethodGet, target, nil)
@@ -673,6 +786,7 @@ func TestTradingAccountSnapshotContracts(t *testing.T) {
 	router := testRouter(t, &testFundingServer{}, &testAccountServer{token: "tok-1"})
 	for _, path := range []string{
 		"/api/v1/trading-accounts/7/snapshot",
+		"/api/v1/trading-accounts/7/snapshot?cacheOnly=true",
 		"/api/v1/trading-account-products/funding-arb/snapshot",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
@@ -705,6 +819,33 @@ func TestTradingAccountSnapshotContracts(t *testing.T) {
 	}
 }
 
+func TestTradingAccountSnapshotCacheOnlyMissReturns204(t *testing.T) {
+	router := testRouter(t, &testFundingServer{}, &testAccountServer{
+		token: "tok-1", snapshotCacheMiss: true,
+	})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/trading-accounts/7/snapshot?cacheOnly=true", nil)
+	request.AddCookie(&http.Cookie{Name: "sq_session", Value: "tok-1"})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected empty body, got %q", recorder.Body.String())
+	}
+
+	live := httptest.NewRequest(http.MethodGet, "/api/v1/trading-accounts/7/snapshot", nil)
+	live.AddCookie(&http.Cookie{Name: "sq_session", Value: "tok-1"})
+	liveRec := httptest.NewRecorder()
+	router.ServeHTTP(liveRec, live)
+	if liveRec.Code != http.StatusOK {
+		t.Fatalf("live status=%d body=%s", liveRec.Code, liveRec.Body.String())
+	}
+	if !strings.Contains(liveRec.Body.String(), `"availableFundsUsd"`) {
+		t.Fatalf("live snapshot totals missing: %s", liveRec.Body.String())
+	}
+}
+
 func TestTradingAccountsCRUDContract(t *testing.T) {
 	router := testRouter(t, &testFundingServer{}, &testAccountServer{token: "tok-1"})
 	cookie := &http.Cookie{Name: "sq_session", Value: "tok-1"}
@@ -734,8 +875,14 @@ func TestTradingAccountsCRUDContract(t *testing.T) {
 	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
-	if created.Data["accountName"] != "main" || created.Data["apiKeyMasked"] == nil {
+	if created.Data["accountName"] != "main" {
 		t.Fatalf("created=%+v", created.Data)
+	}
+	if _, exists := created.Data["apiKeyMasked"]; exists {
+		t.Fatalf("masked key leaked: %+v", created.Data)
+	}
+	if _, exists := created.Data["apiKey"]; exists {
+		t.Fatalf("api key leaked: %+v", created.Data)
 	}
 	if _, exists := created.Data["apiSecret"]; exists {
 		t.Fatalf("secret leaked: %+v", created.Data)
@@ -758,8 +905,28 @@ func TestTradingAccountsCRUDContract(t *testing.T) {
 	if listed.Meta["total"] != float64(1) || len(listed.Data) != 1 {
 		t.Fatalf("listed=%+v", listed)
 	}
+	if _, exists := listed.Data[0]["apiKeyMasked"]; exists {
+		t.Fatalf("list leaked apiKeyMasked: %+v", listed.Data[0])
+	}
+	if listed.Data[0]["feeSyncStatus"] != "pending" {
+		t.Fatalf("list fees=%+v", listed.Data[0])
+	}
 
 	id := int64(listed.Data[0]["id"].(float64))
+	feeReq := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/trading-accounts/"+strconv.FormatInt(id, 10)+"/fee-rates",
+		nil,
+	)
+	feeReq.AddCookie(cookie)
+	feeRec := httptest.NewRecorder()
+	router.ServeHTTP(feeRec, feeReq)
+	if feeRec.Code != http.StatusOK {
+		t.Fatalf("fee-rates status=%d body=%s", feeRec.Code, feeRec.Body.String())
+	}
+	if strings.Contains(feeRec.Body.String(), "apiKey") || strings.Contains(feeRec.Body.String(), "apiSecret") {
+		t.Fatalf("fee-rates leaked credentials: %s", feeRec.Body.String())
+	}
 	deleteReq := httptest.NewRequest(
 		http.MethodDelete,
 		"/api/v1/trading-accounts/"+strconv.FormatInt(id, 10),
@@ -773,6 +940,28 @@ func TestTradingAccountsCRUDContract(t *testing.T) {
 	}
 }
 
+func TestDeleteTradingAccountMapsActiveJobConflict(t *testing.T) {
+	message := account.ErrTradingAccountHasActiveArbitrage.Error()
+	router := testRouter(t, &testFundingServer{}, &testAccountServer{
+		token:     "tok-1",
+		deleteErr: status.Error(codes.FailedPrecondition, message),
+	})
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/trading-accounts/7", nil)
+	request.AddCookie(&http.Cookie{Name: "sq_session", Value: "tok-1"})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"] != message {
+		t.Fatalf("body=%+v", body)
+	}
+}
+
 func TestTradingAccountsCORSAllowsDelete(t *testing.T) {
 	t.Setenv("GATEWAY_CORS_ORIGIN", "http://example.test")
 	router := testRouter(t, &testFundingServer{}, &testAccountServer{})
@@ -782,6 +971,34 @@ func TestTradingAccountsCORSAllowsDelete(t *testing.T) {
 	router.ServeHTTP(recorder, request)
 	if !strings.Contains(recorder.Header().Get("Access-Control-Allow-Methods"), "DELETE") {
 		t.Fatalf("allow methods=%q", recorder.Header().Get("Access-Control-Allow-Methods"))
+	}
+}
+
+func TestArbitrageCORSAllowsPatch(t *testing.T) {
+	t.Setenv("GATEWAY_CORS_ORIGIN", "http://example.test")
+	router := testRouter(t, &testFundingServer{}, &testAccountServer{})
+	request := httptest.NewRequest(
+		http.MethodOptions,
+		"/api/v1/trader/arbitrage-combinations/combination-id",
+		nil,
+	)
+	request.Header.Set("Origin", "http://example.test")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status=%d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Header().Get("Access-Control-Allow-Methods"), "PATCH") {
+		t.Fatalf("allow methods=%q", recorder.Header().Get("Access-Control-Allow-Methods"))
+	}
+	if recorder.Header().Get("Access-Control-Allow-Origin") != "http://example.test" {
+		t.Fatalf("allow origin=%q", recorder.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if recorder.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Fatalf(
+			"allow credentials=%q",
+			recorder.Header().Get("Access-Control-Allow-Credentials"),
+		)
 	}
 }
 
@@ -809,6 +1026,12 @@ func TestReportDailyJSONIncludesVolumeAndQuality(t *testing.T) {
 	if empty["volume24h"] != nil {
 		t.Fatalf("empty volume must be null: %+v", empty)
 	}
+	recomputing := reportDailyJSON(&reportv1.DailySnapshot{
+		ReportDate: "2026-08-30", ReturnRate: "-0.0238", Status: "recomputing",
+	})
+	if recomputing["status"] != "recomputing" || recomputing["dailyReturn"] != nil {
+		t.Fatalf("recomputing json=%+v", recomputing)
+	}
 }
 
 func TestReportAUMSeriesJSONReversesNewestFirstDailyRows(t *testing.T) {
@@ -835,5 +1058,109 @@ func TestReportAUMSeriesJSONReversesNewestFirstDailyRows(t *testing.T) {
 	}
 	if daily[0].GetReportDate() != "2026-08-16" {
 		t.Fatalf("daily rows were mutated: %+v", daily)
+	}
+}
+
+func fundingLookupJSON(keys string) string {
+	return `{"keys":` + keys + `}`
+}
+
+func TestFundingLookupDoesNotRequireSessionCookie(t *testing.T) {
+	fundingServer := &testFundingServer{}
+	router := testRouter(t, fundingServer, nil)
+	request := httptest.NewRequest(
+		http.MethodPost, "/api/v1/funding-rates/lookup",
+		strings.NewReader(fundingLookupJSON(`[{"exchange":"binance","exchangeSymbol":"BTCUSDT"}]`)),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if fundingServer.batchGetCalls != 1 {
+		t.Fatalf("funding called=%d", fundingServer.batchGetCalls)
+	}
+}
+
+func TestFundingLookupIgnoresForgedCookie(t *testing.T) {
+	fundingServer := &testFundingServer{}
+	router := testRouter(t, fundingServer, &testAccountServer{})
+	request := httptest.NewRequest(
+		http.MethodPost, "/api/v1/funding-rates/lookup",
+		strings.NewReader(fundingLookupJSON(`[{"exchange":"aster","exchangeSymbol":"BTCUSDT"}]`)),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(&http.Cookie{Name: "sq_session", Value: "forged"})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if fundingServer.batchGetCalls != 1 {
+		t.Fatalf("funding called=%d", fundingServer.batchGetCalls)
+	}
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name == "sq_session" && cookie.MaxAge < 0 {
+			t.Fatalf("lookup must not clear cookies: %v", recorder.Result().Cookies())
+		}
+	}
+}
+
+func TestFundingLookupIgnoresAccountTimeout(t *testing.T) {
+	fundingServer := &testFundingServer{}
+	router := testRouter(t, fundingServer, &testAccountServer{
+		validateErr: status.Error(codes.DeadlineExceeded, "timeout"),
+	})
+	request := httptest.NewRequest(
+		http.MethodPost, "/api/v1/funding-rates/lookup",
+		strings.NewReader(fundingLookupJSON(`[{"exchange":"binance","exchangeSymbol":"BTCUSDT"}]`)),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(&http.Cookie{Name: "sq_session", Value: "signed-token"})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if fundingServer.batchGetCalls != 1 {
+		t.Fatalf("funding called=%d", fundingServer.batchGetCalls)
+	}
+}
+
+func TestFundingLookupReturnsHit(t *testing.T) {
+	fundingServer := &testFundingServer{}
+	router := testRouter(t, fundingServer, nil)
+	request := httptest.NewRequest(
+		http.MethodPost, "/api/v1/funding-rates/lookup",
+		strings.NewReader(fundingLookupJSON(
+			`[{"exchange":"aster","exchangeSymbol":"BTCUSDT","baseAsset":"BTC","quoteAsset":"USDT"}]`,
+		)),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if fundingServer.batchGetCalls != 1 {
+		t.Fatalf("funding called=%d", fundingServer.batchGetCalls)
+	}
+	var payload struct {
+		Results []struct {
+			Status string `json:"status"`
+			Item   struct {
+				Exchange       string `json:"exchange"`
+				ExchangeSymbol string `json:"exchangeSymbol"`
+				Cumulative24h  string `json:"cumulative24h"`
+			} `json:"item"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Results) != 1 || payload.Results[0].Status != "hit" ||
+		payload.Results[0].Item.Cumulative24h != "0.0003" {
+		t.Fatalf("payload=%+v", payload)
 	}
 }

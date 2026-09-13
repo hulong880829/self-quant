@@ -83,6 +83,7 @@ function ReportsContent() {
   const [draft, setDraft] = React.useState<FlowDraft>(emptyDraft);
   const [flowBusy, setFlowBusy] = React.useState(false);
   const [flowError, setFlowError] = React.useState<string | null>(null);
+  const [recomputeNotice, setRecomputeNotice] = React.useState<string | null>(null);
   const reportRequest = React.useRef(0);
 
   React.useEffect(() => {
@@ -127,6 +128,12 @@ function ReportsContent() {
     if (requestId !== reportRequest.current) return;
     if (reportResult.status === "fulfilled") {
       setReport(reportResult.value);
+      const stillRecomputing =
+        reportResult.value.status === "recomputing" ||
+        reportResult.value.rows.some((row) => row.status === "recomputing");
+      if (!stillRecomputing) {
+        setRecomputeNotice(null);
+      }
     } else {
       setReport(null);
       setReportError(errorMessage(reportResult.reason, "加载报表失败"));
@@ -146,6 +153,18 @@ function ReportsContent() {
     const timer = window.setTimeout(() => void refreshSelected(selectedId), 0);
     return () => window.clearTimeout(timer);
   }, [refreshSelected, selectedId]);
+
+  const reportRecomputing =
+    report?.status === "recomputing" ||
+    Boolean(report?.rows.some((row) => row.status === "recomputing"));
+
+  React.useEffect(() => {
+    if (!selectedId || !reportRecomputing) return;
+    const timer = window.setInterval(() => {
+      void refreshSelected(selectedId);
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [refreshSelected, reportRecomputing, selectedId]);
 
   function openNewFlow(type: "subscription" | "redemption") {
     const now = new Date();
@@ -188,12 +207,15 @@ function ReportsContent() {
         occurredAt: occurredAt.toISOString(),
         note: draft.note.trim(),
       };
-      await createProductCashFlow(selectedId, {
+      const created = await createProductCashFlow(selectedId, {
         ...fields,
         type: flowType,
         status: "confirmed",
       });
       setFlowOpen(false);
+      if (created.recomputeStatus === "queued" && created.flowDate) {
+        setRecomputeNotice(`正在重算 ${created.flowDate} 日报`);
+      }
       await refreshSelected(selectedId);
     } catch (error) {
       setFlowError(errorMessage(error, "保存资金流水失败"));
@@ -297,6 +319,11 @@ function ReportsContent() {
             </section>
           ) : report ? (
             <>
+              {(recomputeNotice || reportRecomputing) && (
+                <section className="rounded-xl border border-sky-500/30 bg-sky-500/[0.06] px-4 py-3 text-xs text-sky-800 dark:text-sky-300">
+                  {recomputeNotice ?? "正在按资金流水重算日报，收益率暂不展示。"}
+                </section>
+              )}
               <ReportSummary
                 report={report}
                 refreshing={reportLoading}
@@ -411,7 +438,9 @@ function ReportSummary({
           label="资金规模 AUM"
           value={latest ? formatMoney(latest.aum, report.product.currency) : "—"}
           detail={
-            aumChange === null ? "暂无昨日对比" : `${formatRatio(aumChange)} 较昨日`
+            aumChange === null
+              ? "暂无资金规模对比"
+              : `${formatRatio(aumChange)} 资金规模变化（含申赎）`
           }
           positive={aumChange === null ? undefined : aumChange >= 0}
         />
@@ -423,7 +452,11 @@ function ReportSummary({
               ? formatMoney(latest.absoluteReturn, report.product.currency)
               : "—"
           }
-          detail={`日收益 ${formatNullableRatio(latest?.dailyReturn)}`}
+          detail={
+            latest?.status === "recomputing"
+              ? "该日正在重算，暂不展示收益率"
+              : `日收益 ${formatNullableRatio(latest?.dailyReturn)} · 收益已排除申购、赎回等外部资金流影响`
+          }
           positive={
             latest ? latest.absoluteReturn >= 0 : undefined
           }
@@ -444,6 +477,9 @@ function ReportSummary({
 }
 
 function QualityNotice({ report }: { report: ProductReport }) {
+  if (report.status === "recomputing") {
+    return null;
+  }
   if (report.status === "final" && !report.partial && report.errors.length === 0) {
     return null;
   }
@@ -506,7 +542,9 @@ function AumChart({ report }: { report: ProductReport }) {
             </div>
           </div>
           <div>
-            <div className="text-[9px] uppercase tracking-wider text-muted-foreground">区间变化</div>
+            <div className="text-[9px] uppercase tracking-wider text-muted-foreground">
+              资金规模变化（含申赎）
+            </div>
             <div
               className={cn(
                 "mt-1 flex items-center justify-end gap-1 font-mono text-sm font-semibold",
@@ -605,7 +643,7 @@ function ReportTable({ report }: { report: ProductReport }) {
         <div>
           <h3 className="text-sm font-medium">绩效明细</h3>
           <p className="mt-0.5 text-[11px] text-muted-foreground">
-            收益与风险指标按交易日记录
+            收益已排除申购、赎回等外部资金流影响
           </p>
         </div>
         <Badge variant="outline">单位：{report.product.currency}</Badge>
@@ -642,22 +680,30 @@ function ReportTable({ report }: { report: ProductReport }) {
                   <td className="whitespace-nowrap px-4 py-3 text-left font-mono font-medium">
                     <div className="flex items-center gap-1.5">
                       {row.date}
-                      {row.status !== "final" || row.partial ? (
-                        <span className="text-[9px] text-amber-600">临时</span>
+                      {row.status === "recomputing" ? (
+                        <span className="text-[9px] text-sky-600">重算中</span>
+                      ) : row.status !== "final" || row.partial ? (
+                        <span className="text-[9px] text-amber-600">
+                          {row.status === "failed" ? "异常" : "临时"}
+                        </span>
                       ) : null}
                     </div>
                   </td>
                   <MoneyReturnCell value={row.absoluteReturn} />
-                  <RatioCell value={row.dailyReturn} />
-                  <RatioCell value={row.annualizedReturn} />
-                  <RatioCell value={row.annualized7d} />
-                  <RatioCell value={row.annualized30d} />
+                  <td className="px-4 py-3 text-right font-mono tabular-nums">
+                    {row.status === "recomputing"
+                      ? "重算中"
+                      : formatNullableRatio(row.dailyReturn)}
+                  </td>
+                  <RatioCell value={row.annualizedReturn} insufficient />
+                  <RatioCell value={row.annualized7d} insufficient />
+                  <RatioCell value={row.annualized30d} insufficient />
                   <RatioCell value={row.maxDrawdown} />
                   <td className="px-4 py-3 text-right font-mono tabular-nums">
                     {formatNullableRatio(row.capitalUtilization)}
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums">
-                    {row.sharpe == null ? "—" : row.sharpe.toFixed(2)}
+                    {row.sharpe == null ? "数据不足" : row.sharpe.toFixed(2)}
                   </td>
                   <td className="px-4 py-3 text-right font-mono font-medium tabular-nums">
                     {formatNumber(row.aum)}
@@ -703,10 +749,11 @@ function CashFlowSection({
         <StateMessage>暂无手工资金流水</StateMessage>
       ) : (
         <WideTableScroll>
-          <table className="w-full min-w-[760px] text-xs">
+          <table className="w-full min-w-[860px] text-xs">
             <thead className="sticky top-0 z-10 bg-muted/35 text-[10px] text-muted-foreground">
               <tr className="border-b">
                 <ReportHeader align="left">实际发生时间</ReportHeader>
+                <ReportHeader align="left">归属报表日</ReportHeader>
                 <ReportHeader align="left">类型</ReportHeader>
                 <ReportHeader>金额</ReportHeader>
                 <ReportHeader align="left">备注</ReportHeader>
@@ -718,6 +765,9 @@ function CashFlowSection({
                 <tr key={flow.id} className="border-b last:border-0">
                   <td className="whitespace-nowrap px-4 py-3 font-mono">
                     {formatDateTime(flow.occurredAt)}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 font-mono">
+                    {flow.flowDate || "—"}
                   </td>
                   <td className="px-4 py-3">{flowTypeLabel(flow.type)}</td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums">
@@ -767,7 +817,7 @@ function CashFlowSheet({
             登记{flowTypeLabel(type)}
           </SheetTitle>
           <SheetDescription>
-            提交后按已确认流水参与下一期收益修正，不会发起交易所转账。
+            提交后按实际发生时间归属报表日并重算该日收益，不会发起交易所转账。
           </SheetDescription>
         </SheetHeader>
         <form
@@ -921,7 +971,13 @@ function MoneyReturnCell({ value }: { value: number }) {
   );
 }
 
-function RatioCell({ value }: { value: number | null }) {
+function RatioCell({
+  value,
+  insufficient = false,
+}: {
+  value: number | null;
+  insufficient?: boolean;
+}) {
   return (
     <td
       className={cn(
@@ -930,7 +986,7 @@ function RatioCell({ value }: { value: number | null }) {
         value !== null && value < 0 && "text-rose-600",
       )}
     >
-      {formatNullableRatio(value)}
+      {value == null && insufficient ? "数据不足" : formatNullableRatio(value)}
     </td>
   );
 }
@@ -979,6 +1035,7 @@ function formatDateTime(value: string) {
 function statusLabel(status: string) {
   if (status === "provisional") return "临时";
   if (status === "failed") return "失败";
+  if (status === "recomputing") return "重算中";
   return "正式";
 }
 

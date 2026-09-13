@@ -1,6 +1,7 @@
 package spread
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +53,85 @@ func TestNormalizeRequestCompareVenue(t *testing.T) {
 		Venue: "binance", CompareVenue: "okx;drop", BaseAsset: "BTC", QuoteAsset: "USDT", Range: "24h",
 	}); err == nil {
 		t.Fatal("invalid compare venue was accepted")
+	}
+}
+
+func TestNormalizeRequestAcceptsChineseAsset(t *testing.T) {
+	request, err := NormalizeRequest(HistoryRequest{
+		Venue: "aster", BaseAsset: "龙虾", QuoteAsset: "usdt", Range: "24h",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.BaseAsset != "龙虾" || request.QuoteAsset != "USDT" ||
+		request.VenueCanonicalSymbol != "龙虾USDT" ||
+		CanonicalSymbol(request.BaseAsset, request.QuoteAsset) != "龙虾USDT" {
+		t.Fatalf("normalized=%+v", request)
+	}
+
+	explicit, err := NormalizeRequest(HistoryRequest{
+		Venue: "aster", CompareVenue: "bitget", BaseAsset: "龙虾", QuoteAsset: "USDT",
+		VenueCanonicalSymbol: "龙虾USDT", CompareVenueCanonicalSymbol: "龙虾USDT",
+		Range: "24h",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.VenueCanonicalSymbol != "龙虾USDT" ||
+		explicit.CompareVenueCanonicalSymbol != "龙虾USDT" {
+		t.Fatalf("explicit=%+v", explicit)
+	}
+}
+
+func TestNormalizeRequestAcceptsSingleCharacterAssets(t *testing.T) {
+	for _, tc := range []struct {
+		base, canonical string
+	}{
+		{base: "T", canonical: "TUSDT"},
+		{base: "1", canonical: "1USDT"},
+	} {
+		request, err := NormalizeRequest(HistoryRequest{
+			Venue: "bybit", BaseAsset: tc.base, QuoteAsset: "USDT", Range: "24h",
+		})
+		if err != nil {
+			t.Fatalf("base=%s err=%v", tc.base, err)
+		}
+		if request.BaseAsset != tc.base || request.QuoteAsset != "USDT" ||
+			request.VenueCanonicalSymbol != tc.canonical ||
+			CanonicalSymbol(request.BaseAsset, request.QuoteAsset) != tc.canonical {
+			t.Fatalf("normalized=%+v want canonical=%s", request, tc.canonical)
+		}
+	}
+	if _, err := NormalizeRequest(HistoryRequest{
+		Venue: "bybit", BaseAsset: "T/", QuoteAsset: "USDT", Range: "24h",
+	}); err == nil {
+		t.Fatal("invalid asset was accepted")
+	}
+}
+
+func TestValidAssetAndCanonicalSymbol(t *testing.T) {
+	for _, valid := range []string{"T", "1", "A", "BTC", "1000PEPE", "龙虾"} {
+		if !ValidAsset(valid) {
+			t.Fatalf("valid asset was rejected: %q", valid)
+		}
+	}
+	if !ValidCanonicalSymbol("BTCUSDT") || !ValidCanonicalSymbol("龙虾USDT") ||
+		!ValidCanonicalSymbol("TUSDT") || !ValidCanonicalSymbol("1USDT") {
+		t.Fatal("latin or chinese canonical symbols were rejected")
+	}
+	if ValidCanonicalSymbol("A") || ValidCanonicalSymbol("1") {
+		t.Fatal("too-short canonical symbol was accepted")
+	}
+	if ValidAsset(strings.Repeat("龙", 17)) || ValidCanonicalSymbol(strings.Repeat("A", 33)) {
+		t.Fatal("too-long token was accepted")
+	}
+	for _, invalid := range []string{
+		"", "-", "T/", "T USDT", "BT C", "BT/C", "BT;C", "BT\nC", "BT\x00C",
+		string([]byte{'B', 0xff, 'C'}),
+	} {
+		if ValidAsset(invalid) || ValidCanonicalSymbol(invalid) {
+			t.Fatalf("invalid token was accepted: %q", invalid)
+		}
 	}
 }
 

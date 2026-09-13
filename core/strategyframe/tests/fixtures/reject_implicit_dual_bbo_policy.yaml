@@ -1,0 +1,7 @@
+mds:
+  source: external_shm
+  segments:
+    - name: /selfquant.test.ticker.2
+    - name: /selfquant.test.orderbook.2
+oms:
+  strictness: strict

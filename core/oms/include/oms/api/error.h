@@ -25,7 +25,8 @@ enum class Error : std::uint8_t {
   NotReady = 16,
   ShuttingDown = 17,
   DeadlineCapacityExceeded = 18,
-  Unsupported = 19
+  Unsupported = 19,
+  Deferred = 20
 };
 
 using ErrorCode = Error;
@@ -60,5 +61,6 @@ static_assert(static_cast<std::uint8_t>(Error::ShuttingDown) == 17);
 static_assert(
     static_cast<std::uint8_t>(Error::DeadlineCapacityExceeded) == 18);
 static_assert(static_cast<std::uint8_t>(Error::Unsupported) == 19);
+static_assert(static_cast<std::uint8_t>(Error::Deferred) == 20);
 
 }  // namespace oms::api

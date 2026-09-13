@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -44,9 +45,11 @@ int main() {
   (void)register_book_api;
   (void)read_bbo_api;
   const std::array<std::string_view, 2> venues{"okx", "binance"};
+  const auto ticker_segment =
+      std::string("/selfquant.mds.spot.btcusdt.ticker.") +
+      std::to_string(utils::md::wire::kSchemaMajor);
   return mds::publish::make_publisher_segment_name(
-                 "spot", "BTCUSDT", "ticker") ==
-             "/selfquant.mds.spot.btcusdt.ticker.1" &&
+                 "spot", "BTCUSDT", "ticker") == ticker_segment &&
          mds::consume::make_aggregate_profile(
              utils::md::ProductType::Perpetual, "USDT", venues) ==
              "agg_perp_usdt_binance-okx"

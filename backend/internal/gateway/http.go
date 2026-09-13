@@ -109,16 +109,23 @@ func NewRouter(
 	router.Post("/api/v1/auth/logout", handler.logout)
 	router.Get("/api/v1/trading-accounts", handler.listTradingAccounts)
 	router.Post("/api/v1/trading-accounts", handler.createTradingAccount)
+	router.Get("/api/v1/trading-accounts/{id}/fee-rates", handler.getTradingAccountFeeRates)
+	router.Post("/api/v1/trading-accounts/{id}/fee-rates/sync", handler.syncTradingAccountFeeRates)
 	router.Get("/api/v1/trading-accounts/{id}/snapshot", handler.getTradingAccountSnapshot)
 	router.Get("/api/v1/trading-account-products/{productName}/snapshot", handler.getProductGroupSnapshot)
 	router.Delete("/api/v1/trading-accounts/{id}", handler.deleteTradingAccount)
+	router.Post("/api/v1/trading-accounts/{id}/trading-readiness", handler.inspectTradingReadiness)
 	router.Get("/api/v1/funding-rates", handler.listFundingRates)
+	router.Post("/api/v1/funding-rates/lookup", handler.lookupFundingRates)
 	router.Get("/api/v1/funding-spreads", handler.listFundingSpreads)
 	router.Get("/api/v1/funding-opportunities", handler.listFundingOpportunities)
 	router.Get(
 		"/api/v1/funding-rates/{exchange}/{exchangeSymbol}/history",
 		handler.getFundingHistory,
 	)
+	router.Get("/swagger", redirectSwaggerIndex)
+	router.Get("/swagger/", serveSwaggerUI)
+	router.Get("/swagger/openapi.json", serveOpenAPISpec)
 	if handler.spread != nil {
 		router.Get(
 			"/api/v1/basis-spreads/{venue}/{baseAsset}/{quoteAsset}/history",
@@ -139,6 +146,7 @@ func NewRouter(
 	}
 	if handler.trader != nil {
 		router.Get("/api/v1/trader/accounts/{accountId}/instruments", handler.listTraderInstruments)
+		router.Post("/api/v1/trader/accounts/{accountId}/account-profile/apply", handler.applyTraderAccountProfile)
 		router.Post("/api/v1/trader/orders", handler.placeTraderOrder)
 		router.Get("/api/v1/trader/orders", handler.listTraderOrders)
 		router.Get("/api/v1/trader/orders/{id}", handler.getTraderOrder)
@@ -151,6 +159,7 @@ func NewRouter(
 		router.Post("/api/v1/trader/arbitrage-combinations", handler.createArbitrageCombination)
 		router.Get("/api/v1/trader/arbitrage-combinations", handler.listArbitrageCombinations)
 		router.Get("/api/v1/trader/arbitrage-combinations/{id}", handler.getArbitrageCombination)
+		router.Patch("/api/v1/trader/arbitrage-combinations/{id}", handler.updateArbitrageCombination)
 		router.Delete("/api/v1/trader/arbitrage-combinations/{id}", handler.closeArbitrageCombination)
 	}
 	if handler.report != nil {
@@ -187,10 +196,22 @@ func (h *Handler) getTradingAccountSnapshot(writer http.ResponseWriter, request 
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid trading account id"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), 12*time.Second)
+	cacheOnly := strings.EqualFold(strings.TrimSpace(request.URL.Query().Get("cacheOnly")), "true")
+	timeout := 12 * time.Second
+	if cacheOnly {
+		timeout = 2 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), timeout)
 	defer cancel()
-	response, err := h.account.GetTradingAccountSnapshot(ctx, &accountv1.GetTradingAccountSnapshotRequest{Token: token, TradingAccountId: id})
+	response, err := h.account.GetTradingAccountSnapshot(ctx, &accountv1.GetTradingAccountSnapshotRequest{
+		Token: token, TradingAccountId: id, CacheOnly: cacheOnly,
+	})
 	if err != nil {
+		if cacheOnly && status.Code(err) == codes.FailedPrecondition &&
+			status.Convert(err).Message() == "snapshot_cache_miss" {
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
 		h.writeAccountError(writer, err, "account snapshot unavailable")
 		return
 	}
@@ -283,7 +304,7 @@ func corsMiddleware(origin string) func(http.Handler) http.Handler {
 				writer.Header().Set("Access-Control-Expose-Headers", "ETag")
 				writer.Header().Set(
 					"Access-Control-Allow-Methods",
-					"GET, POST, DELETE, OPTIONS",
+					"GET, POST, PATCH, DELETE, OPTIONS",
 				)
 			}
 			if request.Method == http.MethodOptions {
@@ -458,31 +479,90 @@ func (h *Handler) sessionToken(request *http.Request) (string, bool) {
 }
 
 type createTradingAccountBody struct {
-	ProductName   string `json:"productName"`
-	Exchange      string `json:"exchange"`
-	AccountName   string `json:"accountName"`
-	APIKey        string `json:"apiKey"`
-	APISecret     string `json:"apiSecret"`
-	Passphrase    string `json:"passphrase"`
-	PrivateKey    string `json:"privateKey"`
-	WalletType    string `json:"walletType"`
-	FunderAddress string `json:"funderAddress"`
+	ProductName      string `json:"productName"`
+	Exchange         string `json:"exchange"`
+	AccountName      string `json:"accountName"`
+	APIKey           string `json:"apiKey"`
+	APISecret        string `json:"apiSecret"`
+	Passphrase       string `json:"passphrase"`
+	PrivateKey       string `json:"privateKey"`
+	WalletType       string `json:"walletType"`
+	FunderAddress    string `json:"funderAddress"`
+	TradingAPIKey    string `json:"tradingApiKey"`
+	TradingAPISecret string `json:"tradingApiSecret"`
+	SigningAddress   string `json:"signingAddress"`
+	VaultAddress     string `json:"vaultAddress"`
+	AccountIndex     *int64 `json:"accountIndex"`
+	APIKeyIndex      *int32 `json:"apiKeyIndex"`
 }
 
 func tradingAccountJSON(item *accountv1.TradingAccount) map[string]any {
+	payload := map[string]any{
+		"id":                       item.GetId(),
+		"productName":              item.GetProductName(),
+		"exchange":                 displayExchange(item.GetExchange()),
+		"exchangeSlug":             strings.ToLower(item.GetExchange()),
+		"accountName":              item.GetAccountName(),
+		"hasPassphrase":            item.GetHasPassphrase(),
+		"walletAddress":            item.GetWalletAddress(),
+		"walletType":               item.GetWalletType(),
+		"bindingStatus":            item.GetBindingStatus(),
+		"credentialsPresent":       item.GetCredentialsPresent(),
+		"credentialsVerified":      item.GetCredentialsVerified(),
+		"tradingMode":              item.GetTradingMode(),
+		"tradingReady":             item.GetTradingReady(),
+		"tradingStatus":            item.GetTradingStatus(),
+		"tradingUnavailableCode":   item.GetTradingUnavailableCode(),
+		"tradingUnavailableReason": item.GetTradingUnavailableReason(),
+		"spotFee":                  marketFeeJSON(item.GetSpotFee()),
+		"contractFee":              marketFeeJSON(item.GetContractFee()),
+		"feeSource":                item.GetFeeSource(),
+		"feeUpdatedAt":             optionalRFC3339(item.GetFeeUpdatedAt()),
+		"feeSyncStatus":            item.GetFeeSyncStatus(),
+		"feeSyncError":             item.GetFeeSyncError(),
+		"feeStale":                 item.GetFeeStale(),
+		"unsupportedMarkets":       item.GetUnsupportedMarkets(),
+		"createdAt":                item.GetCreatedAt().AsTime().UTC().Format(time.RFC3339Nano),
+		"updatedAt":                item.GetUpdatedAt().AsTime().UTC().Format(time.RFC3339Nano),
+	}
+	if item.ResolvedAccountIndex != nil {
+		payload["resolvedAccountIndex"] = item.GetResolvedAccountIndex()
+	}
+	if item.ResolvedApiKeyIndex != nil {
+		payload["resolvedApiKeyIndex"] = item.GetResolvedApiKeyIndex()
+	}
+	return payload
+}
+
+func marketFeeJSON(item *accountv1.MarketFeeRate) map[string]any {
+	if item == nil {
+		return map[string]any{"status": "", "maker": "", "taker": ""}
+	}
 	return map[string]any{
-		"id":            item.GetId(),
-		"productName":   item.GetProductName(),
-		"exchange":      displayExchange(item.GetExchange()),
-		"exchangeSlug":  strings.ToLower(item.GetExchange()),
-		"accountName":   item.GetAccountName(),
-		"apiKeyMasked":  item.GetApiKeyMasked(),
-		"hasPassphrase": item.GetHasPassphrase(),
-		"walletAddress": item.GetWalletAddress(),
-		"walletType":    item.GetWalletType(),
-		"bindingStatus": item.GetBindingStatus(),
-		"createdAt":     item.GetCreatedAt().AsTime().UTC().Format(time.RFC3339Nano),
-		"updatedAt":     item.GetUpdatedAt().AsTime().UTC().Format(time.RFC3339Nano),
+		"status": item.GetStatus(), "maker": item.GetMaker(), "taker": item.GetTaker(),
+	}
+}
+
+func optionalRFC3339(value *timestamppb.Timestamp) string {
+	if value == nil {
+		return ""
+	}
+	return value.AsTime().UTC().Format(time.RFC3339Nano)
+}
+
+func feeRatesJSON(item *accountv1.GetTradingAccountFeeRatesResponse) map[string]any {
+	if item == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"spotFee":            marketFeeJSON(item.GetSpotFee()),
+		"contractFee":        marketFeeJSON(item.GetContractFee()),
+		"feeSource":          item.GetFeeSource(),
+		"feeUpdatedAt":       optionalRFC3339(item.GetFeeUpdatedAt()),
+		"feeSyncStatus":      item.GetFeeSyncStatus(),
+		"feeSyncError":       item.GetFeeSyncError(),
+		"feeStale":           item.GetFeeStale(),
+		"unsupportedMarkets": item.GetUnsupportedMarkets(),
 	}
 }
 
@@ -502,6 +582,9 @@ func (h *Handler) writeAccountError(writer http.ResponseWriter, err error, fallb
 	case codes.NotFound:
 		httpStatus = http.StatusNotFound
 		message = "trading account not found"
+	case codes.FailedPrecondition:
+		httpStatus = http.StatusConflict
+		message = status.Convert(err).Message()
 	case codes.DeadlineExceeded:
 		httpStatus = http.StatusGatewayTimeout
 		message = "account service timed out"
@@ -553,7 +636,7 @@ func (h *Handler) createTradingAccount(writer http.ResponseWriter, request *http
 		})
 		return
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
 	defer cancel()
 	var created *accountv1.TradingAccount
 	var err error
@@ -572,13 +655,19 @@ func (h *Handler) createTradingAccount(writer http.ResponseWriter, request *http
 		}
 	} else {
 		response, createErr := h.account.CreateTradingAccount(ctx, &accountv1.CreateTradingAccountRequest{
-			Token:       token,
-			ProductName: body.ProductName,
-			Exchange:    body.Exchange,
-			AccountName: body.AccountName,
-			ApiKey:      body.APIKey,
-			ApiSecret:   body.APISecret,
-			Passphrase:  body.Passphrase,
+			Token:            token,
+			ProductName:      body.ProductName,
+			Exchange:         body.Exchange,
+			AccountName:      body.AccountName,
+			ApiKey:           body.APIKey,
+			ApiSecret:        body.APISecret,
+			Passphrase:       body.Passphrase,
+			TradingApiKey:    body.TradingAPIKey,
+			TradingApiSecret: body.TradingAPISecret,
+			SigningAddress:   body.SigningAddress,
+			VaultAddress:     body.VaultAddress,
+			AccountIndex:     body.AccountIndex,
+			ApiKeyIndex:      body.APIKeyIndex,
 		})
 		err = createErr
 		if response != nil {
@@ -621,6 +710,97 @@ func (h *Handler) deleteTradingAccount(writer http.ResponseWriter, request *http
 	writeJSON(writer, http.StatusOK, map[string]any{"deleted": true})
 }
 
+func (h *Handler) getTradingAccountFeeRates(writer http.ResponseWriter, request *http.Request) {
+	h.handleFeeRates(writer, request, false)
+}
+
+func (h *Handler) syncTradingAccountFeeRates(writer http.ResponseWriter, request *http.Request) {
+	h.handleFeeRates(writer, request, true)
+}
+
+func (h *Handler) handleFeeRates(writer http.ResponseWriter, request *http.Request, sync bool) {
+	token, ok := h.sessionToken(request)
+	if !ok {
+		writeJSON(writer, http.StatusUnauthorized, map[string]string{
+			"error": "authentication required",
+		})
+		return
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(request, "id")), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{
+			"error": "trading account id is required",
+		})
+		return
+	}
+	timeout := 2 * time.Second
+	if sync {
+		timeout = 8 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), timeout)
+	defer cancel()
+	var response *accountv1.GetTradingAccountFeeRatesResponse
+	if sync {
+		response, err = h.account.SyncTradingAccountFeeRates(ctx, &accountv1.SyncTradingAccountFeeRatesRequest{
+			Token: token, Id: id,
+		})
+	} else {
+		response, err = h.account.GetTradingAccountFeeRates(ctx, &accountv1.GetTradingAccountFeeRatesRequest{
+			Token: token, Id: id,
+		})
+	}
+	if err != nil {
+		h.writeAccountError(writer, err, "trading account fee rates unavailable")
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"data": feeRatesJSON(response)})
+}
+
+func (h *Handler) inspectTradingReadiness(writer http.ResponseWriter, request *http.Request) {
+	token, ok := h.sessionToken(request)
+	if !ok {
+		writeJSON(writer, http.StatusUnauthorized, map[string]string{
+			"error": "authentication required",
+		})
+		return
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(request, "id")), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{
+			"error": "trading account id is required",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 12*time.Second)
+	defer cancel()
+	response, err := h.account.InspectTradingReadiness(ctx, &accountv1.InspectTradingReadinessRequest{
+		Token: token, TradingAccountId: id,
+	})
+	if err != nil {
+		h.writeAccountError(writer, err, "trading readiness unavailable")
+		return
+	}
+	payload := map[string]any{
+		"tradingAccountId":         response.GetTradingAccountId(),
+		"exchange":                 displayExchange(response.GetExchange()),
+		"exchangeSlug":             strings.ToLower(response.GetExchange()),
+		"credentialsPresent":       response.GetCredentialsPresent(),
+		"credentialsVerified":      response.GetCredentialsVerified(),
+		"tradingMode":              response.GetTradingMode(),
+		"tradingReady":             response.GetTradingReady(),
+		"tradingStatus":            response.GetTradingStatus(),
+		"tradingUnavailableCode":   response.GetTradingUnavailableCode(),
+		"tradingUnavailableReason": response.GetTradingUnavailableReason(),
+	}
+	if response.ResolvedAccountIndex != nil {
+		payload["resolvedAccountIndex"] = response.GetResolvedAccountIndex()
+	}
+	if response.ResolvedApiKeyIndex != nil {
+		payload["resolvedApiKeyIndex"] = response.GetResolvedApiKeyIndex()
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"data": payload})
+}
+
 func (h *Handler) listFundingRates(writer http.ResponseWriter, request *http.Request) {
 	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
 	defer cancel()
@@ -651,49 +831,140 @@ func (h *Handler) listFundingRates(writer http.ResponseWriter, request *http.Req
 	}
 	data := make([]map[string]any, 0, len(response.GetItems()))
 	for _, item := range response.GetItems() {
-		nextFundingAt := item.GetNextFundingAt().AsTime().UTC()
-		sourceUpdatedAt := item.GetSourceUpdatedAt().AsTime().UTC()
-		var nextFundingRate any
-		if item.NextFundingRate != nil {
-			nextFundingRate = item.GetNextFundingRate()
-		}
-		latestPrice := item.GetLastPrice()
-		if latestPrice == "0" || latestPrice == "" {
-			latestPrice = item.GetMarkPrice()
-		}
-		data = append(data, map[string]any{
-			"id":                      item.GetExchange() + "-" + strings.ToLower(item.GetExchangeSymbol()),
-			"exchange":                displayExchange(item.GetExchange()),
-			"exchangeSymbol":          item.GetExchangeSymbol(),
-			"symbol":                  item.GetGlobalSymbol(),
-			"baseAsset":               item.GetBaseAsset(),
-			"quoteAsset":              item.GetQuoteAsset(),
-			"positionQuantity":        item.GetPositionQuantity(),
-			"positionNotional":        item.GetPositionNotionalUsd(),
-			"dailyVolume":             item.GetTurnover_24HUsd(),
-			"annualizedRate":          item.GetAnnualizedRate(),
-			"currentFundingRate":      item.GetFundingRate(),
-			"nextFundingRate":         nextFundingRate,
-			"settlementIntervalHours": item.GetFundingIntervalSeconds() / 3600,
-			"nextFundingAt":           nextFundingAt.Format(time.RFC3339Nano),
-			"cumulative24h":           item.GetCumulative_24H(),
-			"cumulative7d":            item.GetCumulative_7D(),
-			"latestPrice":             latestPrice,
-			"priceChange24h":          item.GetPriceChange_24H(),
-			"sourceUpdatedAt":         sourceUpdatedAt.Format(time.RFC3339Nano),
-			"stale":                   item.GetStale(),
-			"index": map[string]any{
-				"name":   strings.ToUpper(item.GetExchange()) + "_INDEX",
-				"value":  item.GetIndexPrice(),
-				"weight": "100",
-			},
-		})
+		data = append(data, fundingRateJSON(item))
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"data": data,
 		"meta": map[string]any{
 			"total":           len(data),
 			"availableTotal":  response.GetTotal(),
+			"snapshotVersion": response.GetSnapshotVersion(),
+			"serverTime":      serverTime.Format(time.RFC3339Nano),
+		},
+	})
+}
+
+func fundingRateJSON(item *fundingv1.FundingRate) map[string]any {
+	nextFundingAt := item.GetNextFundingAt().AsTime().UTC()
+	sourceUpdatedAt := item.GetSourceUpdatedAt().AsTime().UTC()
+	var nextFundingRate any
+	if item.NextFundingRate != nil {
+		nextFundingRate = item.GetNextFundingRate()
+	}
+	latestPrice := item.GetLastPrice()
+	if latestPrice == "0" || latestPrice == "" {
+		latestPrice = item.GetMarkPrice()
+	}
+	row := map[string]any{
+		"id":                      item.GetExchange() + "-" + strings.ToLower(item.GetExchangeSymbol()),
+		"exchange":                displayExchange(item.GetExchange()),
+		"exchangeSymbol":          item.GetExchangeSymbol(),
+		"symbol":                  item.GetGlobalSymbol(),
+		"baseAsset":               item.GetBaseAsset(),
+		"quoteAsset":              item.GetQuoteAsset(),
+		"positionQuantity":        item.GetPositionQuantity(),
+		"positionNotional":        item.GetPositionNotionalUsd(),
+		"dailyVolume":             item.GetTurnover_24HUsd(),
+		"annualizedRate":          item.GetAnnualizedRate(),
+		"currentFundingRate":      item.GetFundingRate(),
+		"nextFundingRate":         nextFundingRate,
+		"settlementIntervalHours": item.GetFundingIntervalSeconds() / 3600,
+		"nextFundingAt":           nextFundingAt.Format(time.RFC3339Nano),
+		"cumulative24h":           item.GetCumulative_24H(),
+		"cumulative7d":            item.GetCumulative_7D(),
+		"latestPrice":             latestPrice,
+		"priceChange24h":          item.GetPriceChange_24H(),
+		"sourceUpdatedAt":         sourceUpdatedAt.Format(time.RFC3339Nano),
+		"stale":                   item.GetStale(),
+		"venueContractType":       venueContractTypeJSON(item.GetVenueContractType()),
+		"index": map[string]any{
+			"name":   strings.ToUpper(item.GetExchange()) + "_INDEX",
+			"value":  item.GetIndexPrice(),
+			"weight": "100",
+		},
+	}
+	if item.History_24HComplete != nil {
+		row["history24hComplete"] = item.GetHistory_24HComplete()
+	}
+	if item.History_7DComplete != nil {
+		row["history7dComplete"] = item.GetHistory_7DComplete()
+	}
+	return row
+}
+
+type fundingLookupBody struct {
+	Keys []fundingLookupKeyBody `json:"keys"`
+}
+
+type fundingLookupKeyBody struct {
+	Exchange       string `json:"exchange"`
+	ExchangeSymbol string `json:"exchangeSymbol"`
+	BaseAsset      string `json:"baseAsset"`
+	QuoteAsset     string `json:"quoteAsset"`
+}
+
+func (h *Handler) lookupFundingRates(writer http.ResponseWriter, request *http.Request) {
+	var body fundingLookupBody
+	decoder := json.NewDecoder(request.Body)
+	if err := decoder.Decode(&body); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid lookup payload"})
+		return
+	}
+	keys := make([]*fundingv1.FundingRateLookupKey, 0, len(body.Keys))
+	for _, item := range body.Keys {
+		keys = append(keys, &fundingv1.FundingRateLookupKey{
+			Exchange:       item.Exchange,
+			ExchangeSymbol: item.ExchangeSymbol,
+			BaseAsset:      item.BaseAsset,
+			QuoteAsset:     item.QuoteAsset,
+		})
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	defer cancel()
+	response, err := h.funding.BatchGetFundingRates(ctx, &fundingv1.BatchGetFundingRatesRequest{
+		Keys: keys,
+	})
+	if err != nil {
+		if status.Code(err) == codes.InvalidArgument {
+			writeJSON(writer, http.StatusBadRequest, map[string]string{
+				"error": status.Convert(err).Message(),
+			})
+			return
+		}
+		httpStatus := http.StatusBadGateway
+		switch status.Code(err) {
+		case codes.DeadlineExceeded:
+			httpStatus = http.StatusGatewayTimeout
+		case codes.Unavailable:
+			httpStatus = http.StatusServiceUnavailable
+		}
+		writeJSON(writer, httpStatus, map[string]any{
+			"error":     "funding service unavailable",
+			"requestId": middleware.GetReqID(request.Context()),
+		})
+		return
+	}
+	serverTime := response.GetServerTime().AsTime().UTC()
+	results := make([]map[string]any, 0, len(response.GetResults()))
+	for _, item := range response.GetResults() {
+		key := item.GetKey()
+		row := map[string]any{
+			"key": map[string]any{
+				"exchange":       key.GetExchange(),
+				"exchangeSymbol": key.GetExchangeSymbol(),
+				"baseAsset":      key.GetBaseAsset(),
+				"quoteAsset":     key.GetQuoteAsset(),
+			},
+			"status": item.GetStatus(),
+		}
+		if item.GetStatus() == "hit" && item.GetItem() != nil {
+			row["item"] = fundingRateJSON(item.GetItem())
+		}
+		results = append(results, row)
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"results": results,
+		"meta": map[string]any{
 			"snapshotVersion": response.GetSnapshotVersion(),
 			"serverTime":      serverTime.Format(time.RFC3339Nano),
 		},
@@ -732,7 +1003,7 @@ func (h *Handler) listFundingSpreads(writer http.ResponseWriter, request *http.R
 	for _, item := range response.GetItems() {
 		longLeg := fundingSpreadLegJSON(item.GetLongLeg())
 		shortLeg := fundingSpreadLegJSON(item.GetShortLeg())
-		data = append(data, map[string]any{
+		row := map[string]any{
 			"id": item.GetGlobalSymbol() + "-" +
 				item.GetLongLeg().GetExchange() + "-" + item.GetShortLeg().GetExchange(),
 			"symbol":              item.GetGlobalSymbol(),
@@ -747,7 +1018,14 @@ func (h *Handler) listFundingSpreads(writer http.ResponseWriter, request *http.R
 			"minDailyVolume":      item.GetMinTurnover_24HUsd(),
 			"sourceUpdatedAt":     item.GetUpdatedAt().AsTime().UTC().Format(time.RFC3339Nano),
 			"stale":               item.GetStale(),
-		})
+		}
+		if item.History_24HComplete != nil {
+			row["history24hComplete"] = item.GetHistory_24HComplete()
+		}
+		if item.History_7DComplete != nil {
+			row["history7dComplete"] = item.GetHistory_7DComplete()
+		}
+		data = append(data, row)
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"data": data,
@@ -760,9 +1038,12 @@ func (h *Handler) listFundingSpreads(writer http.ResponseWriter, request *http.R
 }
 
 func fundingSpreadLegJSON(item *fundingv1.FundingSpreadLeg) map[string]any {
-	return map[string]any{
+	row := map[string]any{
 		"exchange":                displayExchange(item.GetExchange()),
 		"exchangeSymbol":          item.GetExchangeSymbol(),
+		"globalSymbol":            item.GetGlobalSymbol(),
+		"baseAsset":               item.GetBaseAsset(),
+		"quoteAsset":              item.GetQuoteAsset(),
 		"fundingRate":             item.GetEffectiveFundingRate(),
 		"settlementIntervalHours": item.GetFundingIntervalSeconds() / 3600,
 		"nextFundingAt":           item.GetNextFundingAt().AsTime().UTC().Format(time.RFC3339Nano),
@@ -771,23 +1052,31 @@ func fundingSpreadLegJSON(item *fundingv1.FundingSpreadLeg) map[string]any {
 		"latestPrice":             item.GetLastPrice(),
 		"sourceUpdatedAt":         item.GetSourceUpdatedAt().AsTime().UTC().Format(time.RFC3339Nano),
 		"stale":                   item.GetStale(),
+		"venueContractType":       venueContractTypeJSON(item.GetVenueContractType()),
 	}
+	if item != nil && item.History_24HComplete != nil {
+		row["history24hComplete"] = item.GetHistory_24HComplete()
+	}
+	if item != nil && item.History_7DComplete != nil {
+		row["history7dComplete"] = item.GetHistory_7DComplete()
+	}
+	return row
 }
 
 func (h *Handler) listFundingOpportunities(writer http.ResponseWriter, request *http.Request) {
 	query := request.URL.Query()
 	period := strings.ToLower(strings.TrimSpace(query.Get("period")))
 	if period == "" {
-		period = "1h"
+		period = "8h"
 	}
-	limit := 200
+	limit := 100
 	if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed <= 0 {
 			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "limit must be positive"})
 			return
 		}
-		limit = min(parsed, 1000)
+		limit = min(parsed, 100)
 	}
 	requestMessage := &fundingv1.ListFundingOpportunitiesRequest{
 		Period: period, MinLegNotionalUsd: strings.TrimSpace(query.Get("minLegNotionalUsd")),
@@ -851,10 +1140,14 @@ func (h *Handler) listFundingOpportunities(writer http.ResponseWriter, request *
 			"p5Return":                   item.GetP5Return(),
 			"minPositionNotional":        item.GetMinPositionNotionalUsd(),
 			"minDailyVolume":             item.GetMinTurnover_24HUsd(),
-			"coverage":                   item.GetCoverage(), "confidence": item.GetConfidence(),
-			"modelState":      item.GetModelState(),
-			"sourceUpdatedAt": item.GetUpdatedAt().AsTime().UTC().Format(time.RFC3339Nano),
-			"stale":           item.GetStale(),
+			"coverage":                   item.GetCoverage(),
+			"confidence":                 item.GetConfidence(),
+			"modelState":                 item.GetModelState(),
+			"sampleCount":                item.GetSampleCount(),
+			"expectedPaybackMinutes":     item.GetExpectedPaybackMinutes(),
+			"paybackStatus":              item.GetPaybackStatus(),
+			"sourceUpdatedAt":            item.GetUpdatedAt().AsTime().UTC().Format(time.RFC3339Nano),
+			"stale":                      item.GetStale(),
 		})
 	}
 	calculatedAt := ""
@@ -948,6 +1241,13 @@ func displayExchange(value string) string {
 		}
 		return strings.ToUpper(value[:1]) + strings.ToLower(value[1:])
 	}
+}
+
+func venueContractTypeJSON(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "PERPETUAL"
+	}
+	return value
 }
 
 func writeJSON(writer http.ResponseWriter, status int, payload any) {

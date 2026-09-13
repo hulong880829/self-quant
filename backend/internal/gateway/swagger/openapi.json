@@ -1,0 +1,1458 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "SelfQuant 资金费率与基差价差 API",
+    "description": "API Gateway 公开的 Funding / Spread HTTP 接口。金额与费率使用定点十进制字符串，避免浮点误差。本页仅文档化下列 6 条路径，不包含账户、交易、报表、AI 或 Polymarket。全部接口无需登录，请求不携带 Cookie。",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "与当前 Gateway 同源"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Funding",
+      "description": "资金费率快照、按键查询、跨所资金费价差、机会排名与结算历史"
+    },
+    {
+      "name": "Spread",
+      "description": "现货与永续基差价差历史"
+    }
+  ],
+  "paths": {
+    "/api/v1/funding-rates": {
+      "get": {
+        "tags": ["Funding"],
+        "summary": "列出资金费率快照",
+        "description": "返回当前资金费率快照。ETag 为双引号包裹的 snapshotVersion（形如 `\"123\"`）。请求头 If-None-Match 与 ETag 全等时返回 304 且无响应体。Cache-Control 为 no-cache。",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IfNoneMatch"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "资金费率列表",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControlNoCache"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FundingRateListResponse"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "If-None-Match 与当前 ETag 全等，内容未变化"
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          },
+          "502": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          },
+          "504": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          }
+        }
+      }
+    },
+    "/api/v1/funding-rates/lookup": {
+      "post": {
+        "tags": ["Funding"],
+        "summary": "按键批量查询资金费率",
+        "description": "公开接口，无需登录，不读取 Cookie。请求体 keys 必填，上限 256。status 为 hit 时含 item；status 为 missing 时无 item。400 常见错误：非法 JSON（invalid lookup payload）、keys are required、too many keys。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FundingRateLookupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "按请求顺序返回的查询结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FundingRateLookupResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "非法 JSON、keys 为空或超过 256",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          },
+          "504": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          }
+        }
+      }
+    },
+    "/api/v1/funding-spreads": {
+      "get": {
+        "tags": ["Funding"],
+        "summary": "列出跨所资金费价差",
+        "description": "longLeg 为收取资金费的一侧，shortLeg 为支付资金费的一侧。history24hComplete / history7dComplete 表示对应窗口历史是否完整。ETag 为 `\"` + snapshotVersion + `\"`；If-None-Match 全等则 304。Cache-Control 为 no-cache。",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IfNoneMatch"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "资金费价差列表",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControlNoCache"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FundingSpreadListResponse"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "If-None-Match 与当前 ETag 全等，内容未变化"
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          },
+          "502": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          },
+          "504": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          }
+        }
+      }
+    },
+    "/api/v1/funding-opportunities": {
+      "get": {
+        "tags": ["Funding"],
+        "summary": "列出资金费套利机会排名",
+        "description": "按综合年化等指标对跨所资金费机会排序。period 仅 8h / 24h，默认 8h；非法 period 返回 400（period must be one of 8h, 24h）。limit 为 1～100，默认 100。\n\n资金费年化（fundingExpectedAnnualized）：持有资金费腿预期年化收益。价差年化（spreadExpectedAnnualized）：基差/价差收敛预期年化。综合年化（combinedExpectedAnnualized）：资金费年化与价差年化合计。coverage 为样本覆盖率字符串。confidence 为模型置信度字符串。modelState 为模型状态。stale 表示快照已过期。\n\nETag 由 snapshotVersion、status、generation 以及查询参数 period / minLegNotionalUsd / minLegVolume24hUsd / limit 拼接，并加双引号。仅当 status=ready 且 stale=false 且 If-None-Match 全等时返回 304。",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "description": "排名窗口。仅允许 8h 或 24h，默认 8h。",
+            "schema": {
+              "type": "string",
+              "enum": ["8h", "24h"],
+              "default": "8h"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "返回条数上限，1～100，默认 100。非正整数返回 400（limit must be positive）；大于 100 时截断为 100。",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 100
+            }
+          },
+          {
+            "name": "minLegNotionalUsd",
+            "in": "query",
+            "description": "单腿最低持仓名义金额（USD）过滤，定点十进制字符串。",
+            "schema": {
+              "$ref": "#/components/schemas/DecimalString"
+            }
+          },
+          {
+            "name": "minLegVolume24hUsd",
+            "in": "query",
+            "description": "单腿最低 24 小时成交额（USD）过滤，定点十进制字符串。",
+            "schema": {
+              "$ref": "#/components/schemas/DecimalString"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IfNoneMatch"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "机会排名列表；status 非 ready 或 stale 时即使 ETag 匹配也返回 200",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControlNoCache"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FundingOpportunityListResponse"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "status=ready、stale=false，且 If-None-Match 与 ETag 全等"
+          },
+          "400": {
+            "description": "limit 非法或 period 不是 8h/24h",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          },
+          "504": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          }
+        }
+      }
+    },
+    "/api/v1/funding-rates/{exchange}/{exchangeSymbol}/history": {
+      "get": {
+        "tags": ["Funding"],
+        "summary": "查询资金费率结算历史",
+        "description": "按交易所与交易所符号返回最近结算点。exchange 会转为小写。limit 为 1～100，默认 10。该路径错误体多数不含 requestId。",
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "path",
+            "required": true,
+            "description": "交易所标识，服务端转为小写，例如 binance、okx。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "exchangeSymbol",
+            "in": "path",
+            "required": true,
+            "description": "交易所合约符号，例如 BTCUSDT、BTC-USDT-SWAP。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "返回条数，1～100，默认 10。非正整数返回 400（limit must be a positive integer）。",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 10
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "结算历史点",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FundingHistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "limit 非法或参数无效；错误体通常无 requestId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "资金费历史服务失败；错误体通常无 requestId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "资金费历史服务不可用；错误体通常无 requestId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "资金费历史查询超时；错误体通常无 requestId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/basis-spreads/{venue}/{baseAsset}/{quoteAsset}/history": {
+      "get": {
+        "tags": ["Spread"],
+        "summary": "查询现货与永续基差价差历史",
+        "description": "venue 转为小写，baseAsset / quoteAsset 转为大写。range 为 1h、4h、8h、24h、7d，默认 24h。compareVenue 可选，但不能等于 venue。venueSymbol / compareVenueSymbol 为可选规范符号。spreadBps 与 coverage 为定点十进制字符串，samples 为整数。availability 为 available 或 unavailable。ETag 由查询键与 asOf 哈希生成并加双引号；If-None-Match 全等则 304。Cache-Control 为 public, max-age=15。",
+        "parameters": [
+          {
+            "name": "venue",
+            "in": "path",
+            "required": true,
+            "description": "主交易所，服务端转为小写。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "baseAsset",
+            "in": "path",
+            "required": true,
+            "description": "基础资产，服务端转为大写，例如 BTC。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "quoteAsset",
+            "in": "path",
+            "required": true,
+            "description": "计价资产，服务端转为大写，例如 USDT。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "range",
+            "in": "query",
+            "description": "历史窗口，默认 24h。",
+            "schema": {
+              "type": "string",
+              "enum": ["1h", "4h", "8h", "24h", "7d"],
+              "default": "24h"
+            }
+          },
+          {
+            "name": "compareVenue",
+            "in": "query",
+            "description": "对照交易所，小写。不能等于 venue，否则 400。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "venueSymbol",
+            "in": "query",
+            "description": "主所规范交易对符号，服务端转为大写。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "compareVenueSymbol",
+            "in": "query",
+            "description": "对照所规范交易对符号，服务端转为大写。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IfNoneMatch"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "基差价差历史",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              },
+              "Cache-Control": {
+                "description": "public, max-age=15",
+                "schema": {
+                  "type": "string",
+                  "example": "public, max-age=15"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BasisSpreadHistoryResponse"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "If-None-Match 与当前 ETag 全等，内容未变化"
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          },
+          "502": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          },
+          "504": {
+            "$ref": "#/components/responses/ErrorWithRequestId"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "IfNoneMatch": {
+        "name": "If-None-Match",
+        "in": "header",
+        "description": "与响应 ETag 全等比较；匹配则 304。",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "headers": {
+      "ETag": {
+        "description": "弱缓存校验标签，值为双引号包裹的版本字符串。",
+        "schema": {
+          "type": "string",
+          "example": "\"123\""
+        }
+      },
+      "CacheControlNoCache": {
+        "description": "no-cache",
+        "schema": {
+          "type": "string",
+          "example": "no-cache"
+        }
+      }
+    },
+    "responses": {
+      "ErrorWithRequestId": {
+        "description": "错误；error 必填，requestId 可选",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "DecimalString": {
+        "type": "string",
+        "description": "定点十进制数字符串，用于金额、费率、基点与覆盖率，避免浮点误差。",
+        "example": "0.000125"
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "错误说明"
+          },
+          "requestId": {
+            "type": "string",
+            "description": "可选请求编号；资金费历史错误体多数不返回该字段"
+          }
+        }
+      },
+      "FundingRateIndex": {
+        "type": "object",
+        "description": "指数占位对象。name 为交易所大写名加 _INDEX，weight 固定为 100。",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "指数名称",
+            "example": "BINANCE_INDEX"
+          },
+          "value": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "指数价格"
+          },
+          "weight": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "权重，当前固定为 100"
+          }
+        }
+      },
+      "FundingRate": {
+        "type": "object",
+        "description": "单条资金费率。费率与名义金额均为定点十进制字符串；settlementIntervalHours 为整数小时。",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "exchange 与小写 exchangeSymbol 拼接"
+          },
+          "exchange": {
+            "type": "string",
+            "description": "展示用交易所名"
+          },
+          "exchangeSymbol": {
+            "type": "string",
+            "description": "交易所合约符号"
+          },
+          "symbol": {
+            "type": "string",
+            "description": "全局符号"
+          },
+          "baseAsset": {
+            "type": "string",
+            "description": "基础资产"
+          },
+          "quoteAsset": {
+            "type": "string",
+            "description": "计价资产"
+          },
+          "positionQuantity": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "持仓数量"
+          },
+          "positionNotional": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "持仓名义金额（USD）"
+          },
+          "dailyVolume": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "24 小时成交额（USD）"
+          },
+          "annualizedRate": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "资金费率年化"
+          },
+          "currentFundingRate": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "当前资金费率（每结算周期）"
+          },
+          "nextFundingRate": {
+            "type": "string",
+            "nullable": true,
+            "description": "下一期预测资金费率；无预测时为 null",
+            "example": "0.0001"
+          },
+          "settlementIntervalHours": {
+            "type": "integer",
+            "description": "结算间隔小时数，由秒数除以 3600 得到"
+          },
+          "nextFundingAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "下次结算时间，RFC3339Nano"
+          },
+          "cumulative24h": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "近 24 小时累计资金费"
+          },
+          "cumulative7d": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "近 7 天累计资金费"
+          },
+          "latestPrice": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "最新价；缺省时回退标记价格"
+          },
+          "priceChange24h": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "24 小时涨跌幅"
+          },
+          "sourceUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "源数据更新时间，RFC3339Nano"
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "快照是否过期"
+          },
+          "venueContractType": {
+            "type": "string",
+            "description": "合约类型，缺省为 PERPETUAL"
+          },
+          "index": {
+            "$ref": "#/components/schemas/FundingRateIndex"
+          },
+          "history24hComplete": {
+            "type": "boolean",
+            "description": "近 24 小时资金费历史是否完整；源未提供时省略"
+          },
+          "history7dComplete": {
+            "type": "boolean",
+            "description": "近 7 天资金费历史是否完整；源未提供时省略"
+          }
+        }
+      },
+      "FundingRateListMeta": {
+        "type": "object",
+        "description": "资金费率列表元数据",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "description": "本次返回条数"
+          },
+          "availableTotal": {
+            "type": "integer",
+            "description": "快照中可用总数"
+          },
+          "snapshotVersion": {
+            "type": "string",
+            "description": "快照版本，亦用于 ETag"
+          },
+          "serverTime": {
+            "type": "string",
+            "format": "date-time",
+            "description": "服务端时间，RFC3339Nano"
+          }
+        }
+      },
+      "FundingRateListResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FundingRate"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/FundingRateListMeta"
+          }
+        }
+      },
+      "FundingRateLookupKey": {
+        "type": "object",
+        "description": "资金费率查询键",
+        "properties": {
+          "exchange": {
+            "type": "string",
+            "description": "交易所"
+          },
+          "exchangeSymbol": {
+            "type": "string",
+            "description": "交易所合约符号"
+          },
+          "baseAsset": {
+            "type": "string",
+            "description": "基础资产"
+          },
+          "quoteAsset": {
+            "type": "string",
+            "description": "计价资产"
+          }
+        }
+      },
+      "FundingRateLookupRequest": {
+        "type": "object",
+        "required": ["keys"],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 256,
+            "description": "查询键列表，必填，最多 256 条",
+            "items": {
+              "$ref": "#/components/schemas/FundingRateLookupKey"
+            }
+          }
+        }
+      },
+      "FundingRateLookupResult": {
+        "type": "object",
+        "description": "单条查询结果。hit 含 item，missing 不含 item。",
+        "required": ["key", "status"],
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/FundingRateLookupKey"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["hit", "missing"],
+            "description": "hit 表示命中并返回 item；missing 表示未命中且无 item"
+          },
+          "item": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/FundingRate"
+              }
+            ],
+            "description": "仅 status=hit 时出现"
+          }
+        }
+      },
+      "FundingRateLookupMeta": {
+        "type": "object",
+        "description": "批量查询元数据",
+        "properties": {
+          "snapshotVersion": {
+            "type": "string",
+            "description": "快照版本"
+          },
+          "serverTime": {
+            "type": "string",
+            "format": "date-time",
+            "description": "服务端时间，RFC3339Nano"
+          }
+        }
+      },
+      "FundingRateLookupResponse": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FundingRateLookupResult"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/FundingRateLookupMeta"
+          }
+        }
+      },
+      "FundingSpreadLeg": {
+        "type": "object",
+        "description": "资金费价差的一条腿。longLeg 收取资金费，shortLeg 支付资金费。",
+        "properties": {
+          "exchange": {
+            "type": "string",
+            "description": "展示用交易所名"
+          },
+          "exchangeSymbol": {
+            "type": "string",
+            "description": "交易所合约符号"
+          },
+          "globalSymbol": {
+            "type": "string",
+            "description": "全局符号"
+          },
+          "baseAsset": {
+            "type": "string",
+            "description": "基础资产"
+          },
+          "quoteAsset": {
+            "type": "string",
+            "description": "计价资产"
+          },
+          "fundingRate": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "有效资金费率"
+          },
+          "settlementIntervalHours": {
+            "type": "integer",
+            "description": "结算间隔小时数"
+          },
+          "nextFundingAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "下次结算时间，RFC3339Nano"
+          },
+          "positionNotional": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "持仓名义金额（USD）"
+          },
+          "dailyVolume": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "24 小时成交额（USD）"
+          },
+          "latestPrice": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "最新价"
+          },
+          "sourceUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "源数据更新时间，RFC3339Nano"
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "该腿数据是否过期"
+          },
+          "venueContractType": {
+            "type": "string",
+            "description": "合约类型，缺省为 PERPETUAL"
+          },
+          "history24hComplete": {
+            "type": "boolean",
+            "description": "近 24 小时历史是否完整；源未提供时省略"
+          },
+          "history7dComplete": {
+            "type": "boolean",
+            "description": "近 7 天历史是否完整；源未提供时省略"
+          }
+        }
+      },
+      "FundingSpread": {
+        "type": "object",
+        "description": "跨所资金费价差。longLeg 收资金费，shortLeg 付资金费。",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "全局符号与多空交易所拼接"
+          },
+          "symbol": {
+            "type": "string",
+            "description": "全局符号"
+          },
+          "baseAsset": {
+            "type": "string",
+            "description": "基础资产"
+          },
+          "quoteAsset": {
+            "type": "string",
+            "description": "计价资产"
+          },
+          "longLeg": {
+            "$ref": "#/components/schemas/FundingSpreadLeg"
+          },
+          "shortLeg": {
+            "$ref": "#/components/schemas/FundingSpreadLeg"
+          },
+          "spreadAnnualized": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "单期价差年化"
+          },
+          "spread24hAnnualized": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "近 24 小时价差年化"
+          },
+          "spread7dAnnualized": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "近 7 天价差年化"
+          },
+          "minPositionNotional": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "两腿持仓名义金额的较小值（USD）"
+          },
+          "minDailyVolume": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "两腿 24 小时成交额的较小值（USD）"
+          },
+          "sourceUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "更新时间，RFC3339Nano"
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "价差是否过期"
+          },
+          "history24hComplete": {
+            "type": "boolean",
+            "description": "近 24 小时历史是否完整；源未提供时省略"
+          },
+          "history7dComplete": {
+            "type": "boolean",
+            "description": "近 7 天历史是否完整；源未提供时省略"
+          }
+        }
+      },
+      "FundingSpreadListMeta": {
+        "type": "object",
+        "description": "价差列表元数据",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "description": "本次返回条数"
+          },
+          "snapshotVersion": {
+            "type": "string",
+            "description": "快照版本，亦用于 ETag"
+          },
+          "serverTime": {
+            "type": "string",
+            "format": "date-time",
+            "description": "服务端时间，RFC3339Nano"
+          }
+        }
+      },
+      "FundingSpreadListResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FundingSpread"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/FundingSpreadListMeta"
+          }
+        }
+      },
+      "FundingOpportunity": {
+        "type": "object",
+        "description": "资金费套利机会。资金费年化为持有资金费预期年化；价差年化为价差收敛预期年化；综合年化为二者合计。",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "全局符号、多空交易所与 period 拼接"
+          },
+          "rank": {
+            "type": "integer",
+            "description": "排名，从 1 开始"
+          },
+          "symbol": {
+            "type": "string",
+            "description": "全局符号"
+          },
+          "baseAsset": {
+            "type": "string",
+            "description": "基础资产"
+          },
+          "quoteAsset": {
+            "type": "string",
+            "description": "计价资产"
+          },
+          "period": {
+            "type": "string",
+            "enum": ["8h", "24h"],
+            "description": "排名窗口"
+          },
+          "longLeg": {
+            "$ref": "#/components/schemas/FundingSpreadLeg"
+          },
+          "shortLeg": {
+            "$ref": "#/components/schemas/FundingSpreadLeg"
+          },
+          "currentMidSpreadBps": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "当前中间价差（基点）"
+          },
+          "currentExecutableSpreadBps": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "当前可成交价差（基点）"
+          },
+          "targetSpreadBps": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "目标价差（基点）"
+          },
+          "periodExpectedReturn": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "窗口内预期收益"
+          },
+          "fundingExpectedAnnualized": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "资金费年化：持有资金费腿的预期年化收益"
+          },
+          "spreadExpectedAnnualized": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "价差年化：基差或价差收敛的预期年化"
+          },
+          "combinedExpectedAnnualized": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "综合年化：资金费年化与价差年化合计"
+          },
+          "firstPassageProbability": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "首次穿过目标价差的概率"
+          },
+          "profitProbability": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "盈利概率"
+          },
+          "expectedExitMinutes": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "预期退出时间（分钟）"
+          },
+          "p5Return": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "5% 分位收益"
+          },
+          "minPositionNotional": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "两腿持仓名义金额较小值（USD）"
+          },
+          "minDailyVolume": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "两腿 24 小时成交额较小值（USD）"
+          },
+          "coverage": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "样本覆盖率"
+          },
+          "confidence": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "模型置信度"
+          },
+          "modelState": {
+            "type": "string",
+            "description": "模型状态，例如 replay_7d"
+          },
+          "sampleCount": {
+            "type": "integer",
+            "description": "样本数量"
+          },
+          "expectedPaybackMinutes": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "预期回本时间（分钟）"
+          },
+          "paybackStatus": {
+            "type": "string",
+            "description": "回本状态"
+          },
+          "sourceUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "更新时间，RFC3339Nano"
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "该机会是否过期"
+          }
+        }
+      },
+      "FundingOpportunityListMeta": {
+        "type": "object",
+        "description": "机会排名元数据。304 仅在 status=ready 且 stale=false 时生效。",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "description": "符合条件的总条数"
+          },
+          "snapshotVersion": {
+            "type": "string",
+            "description": "快照版本"
+          },
+          "serverTime": {
+            "type": "string",
+            "format": "date-time",
+            "description": "服务端时间，RFC3339Nano"
+          },
+          "calculatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "本次计算时间，RFC3339Nano"
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "排名是否过期"
+          },
+          "status": {
+            "type": "string",
+            "description": "模型状态，例如 ready；空且未过期时 Gateway 视为 ready"
+          },
+          "lastSuccessfulAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "上次成功计算时间，RFC3339Nano"
+          },
+          "dataThrough": {
+            "type": "string",
+            "format": "date-time",
+            "description": "数据截止时间，RFC3339Nano"
+          },
+          "generation": {
+            "type": "integer",
+            "description": "排名代数"
+          }
+        }
+      },
+      "FundingOpportunityListResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FundingOpportunity"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/FundingOpportunityListMeta"
+          }
+        }
+      },
+      "FundingHistoryPoint": {
+        "type": "object",
+        "description": "单次资金费结算点",
+        "properties": {
+          "rate": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "结算费率"
+          },
+          "settledAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "结算时间，RFC3339Nano"
+          }
+        }
+      },
+      "FundingHistoryMeta": {
+        "type": "object",
+        "description": "资金费历史元数据",
+        "properties": {
+          "exchange": {
+            "type": "string",
+            "description": "小写交易所"
+          },
+          "exchangeSymbol": {
+            "type": "string",
+            "description": "交易所合约符号"
+          },
+          "total": {
+            "type": "integer",
+            "description": "本次返回点数"
+          }
+        }
+      },
+      "FundingHistoryResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FundingHistoryPoint"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/FundingHistoryMeta"
+          }
+        }
+      },
+      "BasisSpreadPoint": {
+        "type": "object",
+        "description": "基差价差时序点。spreadBps 为字符串，samples 为整数。",
+        "properties": {
+          "ts": {
+            "type": "string",
+            "format": "date-time",
+            "description": "时间戳，RFC3339Nano"
+          },
+          "spreadBps": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "价差（基点），定点十进制字符串"
+          },
+          "spotAsk": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "现货卖一"
+          },
+          "perpetualAsk": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "永续卖一"
+          },
+          "samples": {
+            "type": "integer",
+            "description": "该桶内样本数"
+          }
+        }
+      },
+      "BasisSpreadSummary": {
+        "type": "object",
+        "description": "窗口汇总。基点与覆盖率为定点十进制字符串。",
+        "properties": {
+          "currentBps": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "当前价差（基点）"
+          },
+          "minBps": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "窗口最低价差（基点）"
+          },
+          "maxBps": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "窗口最高价差（基点）"
+          },
+          "avgBps": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "窗口平均价差（基点）"
+          },
+          "coverage": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecimalString"
+              }
+            ],
+            "description": "样本覆盖率"
+          }
+        }
+      },
+      "BasisSpreadHistoryResponse": {
+        "type": "object",
+        "description": "现货与永续基差价差历史",
+        "properties": {
+          "venue": {
+            "type": "string",
+            "description": "主交易所（小写）"
+          },
+          "compareVenue": {
+            "type": "string",
+            "description": "对照交易所（小写）；未指定时可能为空"
+          },
+          "baseAsset": {
+            "type": "string",
+            "description": "基础资产（大写）"
+          },
+          "quoteAsset": {
+            "type": "string",
+            "description": "计价资产（大写）"
+          },
+          "canonicalSymbol": {
+            "type": "string",
+            "description": "规范交易对"
+          },
+          "range": {
+            "type": "string",
+            "enum": ["1h", "4h", "8h", "24h", "7d"],
+            "description": "请求窗口"
+          },
+          "resolutionSeconds": {
+            "type": "integer",
+            "description": "点间隔秒数"
+          },
+          "availability": {
+            "type": "string",
+            "enum": ["available", "unavailable"],
+            "description": "数据是否可用"
+          },
+          "asOf": {
+            "type": "string",
+            "format": "date-time",
+            "description": "数据截止时间，RFC3339Nano"
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BasisSpreadPoint"
+            }
+          },
+          "summary": {
+            "$ref": "#/components/schemas/BasisSpreadSummary"
+          }
+        }
+      }
+    }
+  }
+}

@@ -2,11 +2,14 @@ package exchange
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 type binanceAdapter struct {
@@ -53,6 +56,38 @@ func (a *binanceAdapter) GetBBO(ctx context.Context, instrument Instrument) (BBO
 	return bbo(payload.BidPrice, payload.AskPrice, time.Now())
 }
 
+func (a *binanceAdapter) GetPositionMode(
+	ctx context.Context,
+	credentials Credentials,
+	instrument Instrument,
+) (string, error) {
+	if instrument.ContractType == "spot" {
+		return PositionModeOneWay, nil
+	}
+	raw, err := a.signed(
+		ctx, http.MethodGet, "/papi/v1/um/positionSide/dual",
+		credentials, url.Values{}, nil,
+	)
+	if err != nil {
+		return "", err
+	}
+	var payload struct {
+		DualSidePosition bool   `json:"dualSidePosition"`
+		Code             int    `json:"code"`
+		Message          string `json:"msg"`
+	}
+	if err := unmarshalJSON(raw, &payload); err != nil {
+		return "", err
+	}
+	if payload.Code != 0 {
+		return "", fmt.Errorf("%w: Binance code %d: %s", ErrRejected, payload.Code, payload.Message)
+	}
+	if payload.DualSidePosition {
+		return PositionModeHedge, nil
+	}
+	return PositionModeOneWay, nil
+}
+
 func (a *binanceAdapter) PlaceOrder(
 	ctx context.Context,
 	credentials Credentials,
@@ -89,9 +124,23 @@ func (a *binanceAdapter) PlaceOrder(
 	}
 	raw, err := a.signed(ctx, http.MethodPost, binancePath(request.Instrument.ContractType), credentials, values, nil)
 	if err != nil {
-		return Result{}, err
+		result, reqErr := binanceRequestError(raw, err)
+		if binanceUnknownOrder(result) {
+			return a.queryAfterUnknownOrder(ctx, credentials, QueryRequest{
+				Instrument:    request.Instrument,
+				ClientOrderID: request.ClientOrderID,
+			})
+		}
+		return result, reqErr
 	}
-	return parseBinanceOrder(raw)
+	parsed, parseErr := parseBinanceOrder(raw)
+	if binanceUnknownOrder(parsed) {
+		return a.queryAfterUnknownOrder(ctx, credentials, QueryRequest{
+			Instrument:    request.Instrument,
+			ClientOrderID: request.ClientOrderID,
+		})
+	}
+	return parsed, parseErr
 }
 
 func (a *binanceAdapter) GetOrder(
@@ -107,12 +156,64 @@ func (a *binanceAdapter) GetOrder(
 	}
 	raw, err := a.signed(ctx, http.MethodGet, binancePath(request.Instrument.ContractType), credentials, values, nil)
 	if err != nil {
-		return Result{}, err
+		return unknownQueryError(binanceRequestError(raw, err))
 	}
-	return parseBinanceOrder(raw)
+	return unknownQueryError(parseBinanceOrder(raw))
+}
+
+func (a *binanceAdapter) ResolveOrder(
+	ctx context.Context,
+	credentials Credentials,
+	request QueryRequest,
+) (OrderResolution, error) {
+	if err := requireOrderLookupID(request); err != nil {
+		return OrderResolution{}, err
+	}
+	return exactOrderResolution(a.GetOrder(ctx, credentials, request))
 }
 
 func (a *binanceAdapter) CancelOrder(
+	ctx context.Context,
+	credentials Credentials,
+	request CancelRequest,
+) (Result, error) {
+	accepted, err := a.sendCancelOrder(ctx, credentials, request)
+	if binanceUnknownOrder(accepted) {
+		if !errors.Is(err, ErrUncertain) {
+			err = fmt.Errorf("%w: Binance code -2011: %s", ErrUncertain, accepted.ErrorMessage)
+		}
+		return commandOnlyCancelResult(accepted, err)
+	}
+	if err != nil {
+		return commandOnlyCancelResult(accepted, err)
+	}
+	if trustedBinanceCancelTerminal(accepted) {
+		accepted.LocalCommandAck = false
+		return accepted, nil
+	}
+	return commandOnlyCancelResult(accepted, nil)
+}
+
+func (a *binanceAdapter) CancelAndGetOrder(
+	ctx context.Context,
+	credentials Credentials,
+	request CancelRequest,
+) (Result, error) {
+	accepted, err := a.sendCancelOrder(ctx, credentials, request)
+	if binanceUnknownOrder(accepted) {
+		return a.queryAfterUnknownOrder(ctx, credentials, QueryRequest{
+			Instrument:    request.Instrument,
+			ClientOrderID: request.ClientOrderID,
+			VenueOrderID:  request.VenueOrderID,
+		})
+	}
+	if err != nil {
+		return accepted, err
+	}
+	return getOrderAfterCancel(ctx, a.GetOrder, credentials, request, accepted, "Binance")
+}
+
+func (a *binanceAdapter) sendCancelOrder(
 	ctx context.Context,
 	credentials Credentials,
 	request CancelRequest,
@@ -125,9 +226,22 @@ func (a *binanceAdapter) CancelOrder(
 	}
 	raw, err := a.signed(ctx, http.MethodDelete, binancePath(request.Instrument.ContractType), credentials, values, nil)
 	if err != nil {
-		return Result{}, err
+		return binanceRequestError(raw, err)
 	}
 	return parseBinanceOrder(raw)
+}
+
+func trustedBinanceCancelTerminal(result Result) bool {
+	if !trustedCancelTerminal(result) {
+		return false
+	}
+	filled := strings.TrimSpace(result.FilledQuantity)
+	avg := strings.TrimSpace(result.AveragePrice)
+	if avg != "" && avg != "0" {
+		return true
+	}
+	quantity, err := decimal.NewFromString(filled)
+	return err == nil && quantity.IsZero()
 }
 
 func (a *binanceAdapter) signed(
@@ -159,13 +273,14 @@ func binancePath(contractType string) string {
 
 func parseBinanceOrder(raw []byte) (Result, error) {
 	var payload struct {
-		OrderID     any    `json:"orderId"`
-		Status      string `json:"status"`
-		ExecutedQty string `json:"executedQty"`
-		AvgPrice    string `json:"avgPrice"`
-		Price       string `json:"price"`
-		Code        int    `json:"code"`
-		Msg         string `json:"msg"`
+		OrderID            flexString `json:"orderId"`
+		Status             string     `json:"status"`
+		ExecutedQty        string     `json:"executedQty"`
+		CumulativeQuoteQty string     `json:"cummulativeQuoteQty"`
+		AvgPrice           string     `json:"avgPrice"`
+		Price              string     `json:"price"`
+		Code               int        `json:"code"`
+		Msg                string     `json:"msg"`
 	}
 	if err := unmarshalJSON(raw, &payload); err != nil {
 		return Result{}, err
@@ -175,11 +290,76 @@ func parseBinanceOrder(raw []byte) (Result, error) {
 	}
 	filled := firstNonEmpty(payload.ExecutedQty)
 	avg := firstNonEmpty(payload.AvgPrice)
+	if (avg == "" || avg == "0") && filled != "" && payload.CumulativeQuoteQty != "" {
+		executed, quantityErr := decimal.NewFromString(filled)
+		quote, quoteErr := decimal.NewFromString(payload.CumulativeQuoteQty)
+		if quantityErr == nil && quoteErr == nil && executed.IsPositive() && !quote.IsNegative() {
+			avg = quote.Div(executed).String()
+		}
+	}
 	return Result{
-		VenueOrderID:   fmt.Sprint(payload.OrderID),
+		VenueOrderID:   payload.OrderID.String(),
 		Status:         normalizeStatus(payload.Status),
 		FilledQuantity: filled,
 		AveragePrice:   avg,
 		Raw:            rawMap(raw),
 	}, nil
+}
+
+func (a *binanceAdapter) queryAfterUnknownOrder(
+	ctx context.Context,
+	credentials Credentials,
+	request QueryRequest,
+) (Result, error) {
+	latest, queryErr := a.GetOrder(ctx, credentials, request)
+	if queryErr == nil && terminalOrderStatus(latest.Status) {
+		return latest, nil
+	}
+	if queryErr == nil {
+		return latest, fmt.Errorf(
+			"%w: Binance -2011 then order remains %s", ErrUncertain, latest.Status,
+		)
+	}
+	return Result{
+		Status: "unknown", ErrorCode: "-2011", ErrorMessage: latest.ErrorMessage,
+		Raw: latest.Raw,
+	}, fmt.Errorf("%w: Binance -2011 query failed: %v", ErrUncertain, queryErr)
+}
+
+func binanceUnknownOrder(result Result) bool {
+	return strings.TrimSpace(result.ErrorCode) == "-2011"
+}
+
+func binanceRequestError(raw []byte, requestErr error) (Result, error) {
+	result := Result{Raw: rawMap(raw)}
+	var payload struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if len(raw) == 0 || unmarshalJSON(raw, &payload) != nil || payload.Code == 0 {
+		return result, requestErr
+	}
+	result.Status = "rejected"
+	result.ErrorCode = fmt.Sprintf("%d", payload.Code)
+	result.ErrorMessage = payload.Msg
+	switch payload.Code {
+	case -2013:
+		result.Status = "unknown"
+		return result, fmt.Errorf(
+			"%w: Binance code %d: %s", ErrOrderNotFound, payload.Code, payload.Msg,
+		)
+	case -2011, -1001, -1007:
+		result.Status = "unknown"
+		return result, fmt.Errorf(
+			"%w: Binance code %d: %s", ErrUncertain, payload.Code, payload.Msg,
+		)
+	case -1008, -1015:
+		result.Status = "unknown"
+		return result, fmt.Errorf(
+			"%w: Binance code %d: %s", ErrRateLimited, payload.Code, payload.Msg,
+		)
+	}
+	return result, fmt.Errorf(
+		"%w: Binance code %d: %s", ErrRejected, payload.Code, payload.Msg,
+	)
 }

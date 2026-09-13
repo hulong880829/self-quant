@@ -83,6 +83,8 @@ func (c *signedClient) do(
 	body []byte,
 	target any,
 ) ([]byte, error) {
+	mutating := method != http.MethodGet && method != http.MethodHead &&
+		method != http.MethodOptions
 	if err := c.wait(ctx); err != nil {
 		return nil, err
 	}
@@ -91,12 +93,15 @@ func (c *signedClient) do(
 		return nil, err
 	}
 	req.Header = headers.Clone()
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
 	if len(body) > 0 && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
+		if mutating {
 			return nil, fmt.Errorf("%w: %v", ErrUncertain, err)
 		}
 		return nil, err
@@ -104,10 +109,16 @@ func (c *signedClient) do(
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
+		if mutating {
+			return nil, fmt.Errorf("%w: read venue response: %v", ErrUncertain, err)
+		}
 		return nil, err
 	}
 	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusRequestTimeout {
-		return raw, fmt.Errorf("%w: upstream status %d", ErrUncertain, resp.StatusCode)
+		if mutating {
+			return raw, fmt.Errorf("%w: upstream status %d", ErrUncertain, resp.StatusCode)
+		}
+		return raw, fmt.Errorf("upstream status %d: %s", resp.StatusCode, venueErrorMessage(raw))
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		delay := retryAfter(resp.Header.Get("Retry-After"))
@@ -122,6 +133,9 @@ func (c *signedClient) do(
 	}
 	if target != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, target); err != nil {
+			if mutating {
+				return raw, fmt.Errorf("%w: decode venue response: %v", ErrUncertain, err)
+			}
 			return raw, fmt.Errorf("decode venue response: %w", err)
 		}
 	}

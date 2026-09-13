@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "utils/md/decimal.h"
+#include "utils/md/market_identity.h"
 #include "utils/md/order_book.h"
 #include "utils/md/symbol.h"
 #include "utils/md/wire.h"
@@ -60,8 +61,54 @@ concept CanEmplaceInt = requires(Queue& queue) { queue.try_emplace(1); };
 static_assert(!CanEmplaceInt<queue::BoundedMpscQueue<ThrowingQueueValue, 4>>);
 static_assert(CanEmplaceInt<queue::BoundedMpscQueue<QueueValue, 4>>);
 
+void TestCanonicalMarketIdentity() {
+  using md::parse_canonical_product;
+  using md::parse_canonical_venue;
+  using md::ProductType;
+  using md::Venue;
+
+  assert(parse_canonical_venue("binance") == Venue::Binance);
+  assert(parse_canonical_venue("okx") == Venue::Okx);
+  assert(parse_canonical_venue("bybit") == Venue::Bybit);
+  assert(parse_canonical_venue("gate") == Venue::Gate);
+  assert(parse_canonical_venue("bitget") == Venue::Bitget);
+  assert(parse_canonical_venue("polymarket") == Venue::Polymarket);
+  assert(parse_canonical_venue("sse") == Venue::Sse);
+  assert(parse_canonical_venue("hyperliquid") == Venue::Hyperliquid);
+  assert(parse_canonical_venue("aster") == Venue::Aster);
+  assert(parse_canonical_venue("lighter") == Venue::Lighter);
+
+  assert(parse_canonical_product("spot") == ProductType::Spot);
+  assert(parse_canonical_product("perpetual") == ProductType::Perpetual);
+  assert(parse_canonical_product("future") == ProductType::Future);
+  assert(parse_canonical_product("binary_option") == ProductType::BinaryOption);
+  assert(parse_canonical_product("equity") == ProductType::Equity);
+
+  assert(!parse_canonical_venue({}));
+  assert(!parse_canonical_venue("unknown"));
+  assert(!parse_canonical_venue("BINANCE"));
+  assert(!parse_canonical_venue("Binance"));
+  assert(!parse_canonical_venue("not-a-venue"));
+  assert(!parse_canonical_product({}));
+  assert(!parse_canonical_product("unknown"));
+  assert(!parse_canonical_product("Perpetual"));
+  assert(!parse_canonical_product("SPOT"));
+  assert(!parse_canonical_product("perp"));
+  assert(!parse_canonical_product("swap"));
+  assert(!parse_canonical_product("linear"));
+  assert(!parse_canonical_product("usdm"));
+  assert(!parse_canonical_product("usd-m"));
+  assert(!parse_canonical_product("usdt-futures"));
+  assert(!parse_canonical_product("binary-option"));
+  assert(!parse_canonical_product("binaryoption"));
+  assert(!parse_canonical_product("BINARY_OPTION"));
+}
+
 void TestLayout() {
+  static_assert(sizeof(md::EventHeader) == 64);
+  static_assert(sizeof(md::BboOrigin) == sizeof(std::uint16_t));
   static_assert(sizeof(md::wire::RecordHeader) == 72);
+  static_assert(sizeof(md::wire::BboRecord) == 104);
   static_assert(sizeof(md::wire::TickerRecord) == 176);
   static_assert(offsetof(md::wire::TickerRecord, open_price) == 144);
   static_assert(offsetof(md::wire::TickerRecord, close_price) == 168);
@@ -86,6 +133,14 @@ void TestSymbol() {
   assert(a->canonical == "BTCUSDT" && a->canonical == b->canonical);
   assert(normalizer.InstrumentKey(md::Venue::Binance, md::ProductType::Spot, *a) !=
          normalizer.InstrumentKey(md::Venue::Binance, md::ProductType::Perpetual, *a, "USDT"));
+  assert(!normalizer.Normalize("龙虾USDT"));
+  bool alias_rejected = false;
+  try {
+    normalizer.AddAssetAlias("龙虾", "LOBSTER");
+  } catch (const std::invalid_argument &) {
+    alias_rejected = true;
+  }
+  assert(alias_rejected);
 
   md::Instrument instrument{};
   instrument.instrument_id = 7;
@@ -258,6 +313,18 @@ void TestWireCodec() {
   assert(md::wire::DecodeBbo(
              std::span<const std::byte>(buffer.data(), encoded.size),
              bbo_record) == md::wire::CodecError::Ok);
+  header.flags = md::wire::kBboOriginTickerStream;
+  encoded = md::wire::EncodeBbo(buffer, header, {100, 2}, {101, 3});
+  assert(encoded);
+  assert(md::wire::DecodeBbo(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             bbo_record) == md::wire::CodecError::Ok);
+  assert(bbo_record.header.flags == md::wire::kBboOriginTickerStream);
+  bbo_record.header.flags = md::wire::kBboOriginMask;
+  std::memcpy(buffer.data(), &bbo_record, sizeof(bbo_record));
+  assert(md::wire::DecodeBbo(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             bbo_record) == md::wire::CodecError::InvalidField);
   md::TickerEvent ticker{};
   ticker.bid = {100, 2};
   ticker.ask = {101, 3};
@@ -270,6 +337,7 @@ void TestWireCodec() {
   ticker.high_price = 110;
   ticker.low_price = 90;
   ticker.close_price = 105;
+  header.flags = md::wire::kBboOriginOrderBookStream;
   encoded = md::wire::EncodeTicker(buffer, header, ticker);
   assert(encoded && encoded.size == sizeof(md::wire::TickerRecord));
   md::wire::TickerRecord ticker_record{};
@@ -277,10 +345,22 @@ void TestWireCodec() {
              std::span<const std::byte>(buffer.data(), encoded.size),
              ticker_record) == md::wire::CodecError::Ok);
   assert(ticker_record.close_price == 105);
+  assert(ticker_record.header.flags ==
+         md::wire::kBboOriginOrderBookStream);
   assert(md::wire::Decode(
              std::span<const std::byte>(buffer.data(), encoded.size), visitor) ==
          md::wire::CodecError::Ok);
 
+  header.flags = md::wire::kBboOriginMask;
+  assert(!md::wire::EncodeBbo(buffer, header, {100, 2}, {101, 3}));
+  assert(!md::wire::EncodeTicker(buffer, header, ticker));
+  header.flags = md::wire::kBboOriginTickerStream | (1U << 15U);
+  assert(!md::wire::EncodeBbo(buffer, header, {100, 2}, {101, 3}));
+  header.flags = md::wire::kBboOriginTickerStream;
+  assert(!md::wire::EncodeDelta(buffer, header, md::Side::Bid, {100, 4}));
+  header.flags = 0;
+  encoded = md::wire::EncodeTicker(buffer, header, ticker);
+  assert(encoded);
   md::wire::RecordHeader ticker_header{};
   std::memcpy(&ticker_header, buffer.data(), sizeof(ticker_header));
   --ticker_header.record_length;
@@ -500,6 +580,7 @@ void TestTimestampAndHardware() {
 }
 
 int main() {
+  TestCanonicalMarketIdentity();
   TestLayout();
   TestSymbol();
   TestLadder();

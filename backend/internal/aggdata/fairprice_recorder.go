@@ -49,11 +49,19 @@ type FairPriceRecorder struct {
 	repositoryMu sync.RWMutex
 	repository   *FairPriceRepository
 
-	droppedBatches  atomic.Uint64
-	writeFailures   atomic.Uint64
-	reconnects      atomic.Uint64
-	cleanupFailures atomic.Uint64
-	deletedRows     atomic.Uint64
+	droppedBatches   atomic.Uint64
+	writeFailures    atomic.Uint64
+	reconnects       atomic.Uint64
+	cleanupFailures  atomic.Uint64
+	deletedRows      atomic.Uint64
+	skippedDuplicate atomic.Uint64
+	skippedStale     atomic.Uint64
+	lastPersisted    map[string]fairPriceSequence
+}
+
+type fairPriceSequence struct {
+	epoch    uint64
+	sequence uint64
 }
 
 var ErrFairPriceHistoryUnavailable = errors.New("fair price history is unavailable")
@@ -78,7 +86,8 @@ func NewFairPriceRecorder(
 	}
 	return &FairPriceRecorder{
 		store: store, logger: logger, config: config,
-		queue: make(chan fairPriceBatch, 1),
+		queue:         make(chan fairPriceBatch, 1),
+		lastPersisted: make(map[string]fairPriceSequence),
 	}, nil
 }
 
@@ -155,9 +164,18 @@ func (r *FairPriceRecorder) sample(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			snapshots := r.store.FairSnapshots()
+			fresh := snapshots[:0]
+			for _, snapshot := range snapshots {
+				if r.store.FairSnapshotFresh(snapshot, now) {
+					fresh = append(fresh, snapshot)
+				} else {
+					r.skippedStale.Add(1)
+				}
+			}
 			batch := fairPriceBatch{
 				observedAt: now.UTC().Truncate(time.Second),
-				snapshots:  r.store.FairSnapshots(),
+				snapshots:  fresh,
 			}
 			if len(batch.snapshots) == 0 {
 				continue
@@ -180,6 +198,10 @@ func (r *FairPriceRecorder) writeLoop(
 		case <-ctx.Done():
 			return false
 		case batch := <-r.queue:
+			batch.snapshots = r.unpersisted(batch.snapshots)
+			if len(batch.snapshots) == 0 {
+				continue
+			}
 			writeCtx, cancel := context.WithTimeout(ctx, r.config.OperationTimeout)
 			err := repository.Upsert(writeCtx, batch.observedAt, batch.snapshots)
 			cancel()
@@ -191,6 +213,11 @@ func (r *FairPriceRecorder) writeLoop(
 				default:
 				}
 				return true
+			}
+			for _, snapshot := range batch.snapshots {
+				r.lastPersisted[fairPriceSnapshotKey(snapshot)] = fairPriceSequence{
+					epoch: snapshot.RingEpoch, sequence: snapshot.RingSequence,
+				}
 			}
 		case now := <-cleanup.C:
 			r.cleanup(ctx, repository, now.Add(-r.config.Retention))
@@ -239,9 +266,31 @@ func (r *FairPriceRecorder) logStats(ctx context.Context) {
 				"reconnects", r.reconnects.Load(),
 				"cleanup_failures", r.cleanupFailures.Load(),
 				"deleted_rows", r.deletedRows.Load(),
+				"skipped_duplicate_snapshots", r.skippedDuplicate.Load(),
+				"skipped_stale_snapshots", r.skippedStale.Load(),
 			)
 		}
 	}
+}
+
+func (r *FairPriceRecorder) unpersisted(
+	snapshots []*FairPriceSnapshot,
+) []*FairPriceSnapshot {
+	result := snapshots[:0]
+	for _, snapshot := range snapshots {
+		previous, exists := r.lastPersisted[fairPriceSnapshotKey(snapshot)]
+		if exists && previous.epoch == snapshot.RingEpoch &&
+			previous.sequence == snapshot.RingSequence {
+			r.skippedDuplicate.Add(1)
+			continue
+		}
+		result = append(result, snapshot)
+	}
+	return result
+}
+
+func fairPriceSnapshotKey(snapshot *FairPriceSnapshot) string {
+	return snapshot.Profile + "\x00" + snapshot.Symbol + "\x00" + snapshot.ModelID
 }
 
 func enqueueLatest(queue chan fairPriceBatch, value fairPriceBatch) bool {

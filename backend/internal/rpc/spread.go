@@ -36,7 +36,9 @@ func (s *SpreadServer) GetBasisSpreadHistory(
 	history, err := s.service.GetHistory(ctx, spread.HistoryRequest{
 		Venue: request.GetVenue(), CompareVenue: request.GetCompareVenue(),
 		BaseAsset: request.GetBaseAsset(), QuoteAsset: request.GetQuoteAsset(),
-		Range: parsedRange,
+		VenueCanonicalSymbol:        request.GetVenueCanonicalSymbol(),
+		CompareVenueCanonicalSymbol: request.GetCompareVenueCanonicalSymbol(),
+		Range:                       parsedRange,
 	})
 	if err != nil {
 		return nil, mapSpreadError(err)

@@ -13,8 +13,24 @@ import (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
+type OpenOptions struct {
+	ApplicationName string
+}
+
 func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
+	return OpenWithOptions(ctx, databaseURL, OpenOptions{})
+}
+
+func OpenWithOptions(
+	ctx context.Context,
+	databaseURL string,
+	options OpenOptions,
+) (*pgxpool.Pool, error) {
+	config, err := poolConfig(databaseURL, options)
+	if err != nil {
+		return nil, fmt.Errorf("create postgres pool: %w", err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("create postgres pool: %w", err)
 	}
@@ -27,6 +43,17 @@ func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 		return nil, err
 	}
 	return pool, nil
+}
+
+func poolConfig(databaseURL string, options OpenOptions) (*pgxpool.Config, error) {
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	if options.ApplicationName != "" {
+		config.ConnConfig.RuntimeParams["application_name"] = options.ApplicationName
+	}
+	return config, nil
 }
 
 // Migrate applies embedded migrations once while holding a PostgreSQL advisory lock.

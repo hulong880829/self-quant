@@ -138,3 +138,49 @@ func (a *bybitAdapter) Snapshot(ctx context.Context, credentials Credentials) (S
 	attachQuantities(&result)
 	return result, nil
 }
+
+func (a *bybitAdapter) AccountFeeRates(
+	ctx context.Context,
+	credentials Credentials,
+) (AccountFeeRates, error) {
+	spot, spotErr := a.feeRate(ctx, credentials, "spot")
+	contract, contractErr := a.feeRate(ctx, credentials, "linear")
+	result := AccountFeeRates{Source: "venue", Spot: spot, Contract: contract}
+	if spotErr != nil && contractErr != nil {
+		return AccountFeeRates{}, fmt.Errorf("bybit fee rates: spot %v; contract %v", spotErr, contractErr)
+	}
+	if spotErr != nil {
+		result.Spot = unknownMarket()
+		return result, fmt.Errorf("bybit spot fee rate: %w", spotErr)
+	}
+	if contractErr != nil {
+		result.Contract = unknownMarket()
+		return result, fmt.Errorf("bybit contract fee rate: %w", contractErr)
+	}
+	return result, nil
+}
+
+func (a *bybitAdapter) feeRate(
+	ctx context.Context,
+	credentials Credentials,
+	category string,
+) (MarketFee, error) {
+	var payload struct {
+		RetCode int    `json:"retCode"`
+		RetMsg  string `json:"retMsg"`
+		Result  struct {
+			List []struct {
+				MakerFeeRate string `json:"makerFeeRate"`
+				TakerFeeRate string `json:"takerFeeRate"`
+			} `json:"list"`
+		} `json:"result"`
+	}
+	path := "/v5/account/fee-rate?category=" + category + "&symbol=BTCUSDT"
+	if err := a.get(ctx, path, credentials, &payload); err != nil {
+		return MarketFee{}, err
+	}
+	if payload.RetCode != 0 || len(payload.Result.List) == 0 {
+		return MarketFee{}, fmt.Errorf("bybit fee-rate rejected: %s", payload.RetMsg)
+	}
+	return parseMarketFee(payload.Result.List[0].MakerFeeRate, payload.Result.List[0].TakerFeeRate)
+}

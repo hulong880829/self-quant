@@ -35,6 +35,11 @@ New venues use `<venue>_<product>` where perpetual is shortened to `perp`
 `bitget_perp`, `gate_spot`, `gate_perp`, `hyperliquid_spot`, and
 `hyperliquid_perp`). Network connection multiplexing never combines Rings:
 each `(venue, product, symbol, stream)` remains independently discoverable.
+Hyperliquid main-DEX symbols use asset names rather than protocol-internal
+pair aliases: perpetual `BTC` is published as canonical `BTCUSDC`, while a
+spot universe entry such as `@107` is published from its token pair (for
+example `HYPEUSDC`). The original `BTC` or `@107` remains the venue symbol
+used in WebSocket subscriptions.
 
 Aggregate profiles are
 `agg_<product>_<quote>_<sorted-unique-venues>`. For example:

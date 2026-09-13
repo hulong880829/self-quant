@@ -11,4 +11,8 @@ alwaysApply: false
 - Prefer RAII and explicit ownership; avoid raw owning pointers.
 - Make ownership, synchronization, lifetime, and atomic ordering explicit.
 - Do not introduce data races or silently ignore failures.
-- In low-latency paths, avoid allocation, blocking calls, unnecessary copies, and exception-based control flow.
+- Do not introduce fallback, retry, or silent recovery unless explicitly required.
+- Do not refactor unrelated code or add speculative abstractions.
+- In low-latency paths, avoid allocation, blocking calls, unnecessary copies, unnecessary virtual dispatch, and exception-based control flow.
+- Preserve cache locality and avoid false sharing where relevant.
+- Do not claim performance improvements without measurement or a clear mechanical reason.

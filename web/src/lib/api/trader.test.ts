@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ARBITRAGE_EXCHANGES,
+  CEX_EXCHANGES,
   cancelTraderTwap,
   cancelTraderOrder,
   createTraderTwap,
@@ -18,6 +20,26 @@ afterEach(() => {
 });
 
 describe("trader api client", () => {
+  it("keeps CEX and arbitrage venue semantics separate", () => {
+    expect([...CEX_EXCHANGES]).toEqual([
+      "binance",
+      "okx",
+      "bybit",
+      "bitget",
+      "gate",
+    ]);
+    expect([...ARBITRAGE_EXCHANGES]).toEqual([
+      "binance",
+      "okx",
+      "bybit",
+      "bitget",
+      "gate",
+      "hyperliquid",
+      "aster",
+      "lighter",
+    ]);
+  });
+
   it("loads instruments and places an order with an idempotency key", async () => {
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (input) => {
       const url = String(input);

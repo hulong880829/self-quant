@@ -1,6 +1,9 @@
 package exchange
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestOKXQuantityRoundTripUsesContractMultiplier(t *testing.T) {
 	instrument := Instrument{
@@ -35,6 +38,24 @@ func TestGateQuantityRoundTripAndRejectsFractionalContracts(t *testing.T) {
 	}
 	if _, err := ToVenueQuantity(instrument, "0.0005"); err == nil {
 		t.Fatal("expected fractional contract quantity to be rejected")
+	}
+}
+
+func TestOKXQuantityAllowsFractionalContractsAtLotStep(t *testing.T) {
+	instrument := Instrument{
+		Exchange: "okx", ContractType: "perpetual", ContractSize: "10",
+		QuantityStep: "1",
+	}
+	wire, err := ToVenueQuantity(instrument, "154")
+	if err != nil || wire != "15.4" {
+		t.Fatalf("wire=%s err=%v", wire, err)
+	}
+	base, err := FromVenueQuantity(instrument, wire)
+	if err != nil || base != "154" {
+		t.Fatalf("base=%s err=%v", base, err)
+	}
+	if _, err := ToVenueQuantity(instrument, "154.5"); !errors.Is(err, ErrInvalidQuantity) {
+		t.Fatalf("expected invalid quantity, got %v", err)
 	}
 }
 

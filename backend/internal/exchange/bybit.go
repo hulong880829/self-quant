@@ -52,7 +52,14 @@ type bybitInstrument struct {
 		TickSize string `json:"tickSize"`
 	} `json:"priceFilter"`
 	LotSizeFilter struct {
-		QtyStep string `json:"qtyStep"`
+		QtyStep           string `json:"qtyStep"`
+		MinOrderQty       string `json:"minOrderQty"`
+		MaxOrderQty       string `json:"maxOrderQty"`
+		MaxMktOrderQty    string `json:"maxMktOrderQty"`
+		MaxMarketOrderQty string `json:"maxMarketOrderQty"`
+		MinNotionalValue  string `json:"minNotionalValue"`
+		MinOrderAmt       string `json:"minOrderAmt"`
+		MaxOrderAmt       string `json:"maxOrderAmt"`
 	} `json:"lotSizeFilter"`
 }
 
@@ -71,6 +78,26 @@ func parseBybitInstruments(items []bybitInstrument, contractType string) []Instr
 		}
 		tick, _ := parseFloat(item.PriceFilter.TickSize)
 		step, _ := parseFloat(item.LotSizeFilter.QtyStep)
+		minQuantity, minQuantityStatus := knownConstraint(item.LotSizeFilter.MinOrderQty)
+		minNotionalRaw := item.LotSizeFilter.MinNotionalValue
+		if minNotionalRaw == "" {
+			minNotionalRaw = item.LotSizeFilter.MinOrderAmt
+		}
+		minNotional, minNotionalStatus := knownConstraint(minNotionalRaw)
+		maxQuantity, maxQuantityStatus := maximumDecimalConstraint(item.LotSizeFilter.MaxOrderQty)
+		marketStep, marketStepStatus := knownDecimalConstraint(item.LotSizeFilter.QtyStep)
+		marketMinQuantity, marketMinQuantityStatus := knownDecimalConstraint(
+			item.LotSizeFilter.MinOrderQty,
+		)
+		marketMaxRaw := item.LotSizeFilter.MaxMktOrderQty
+		if marketMaxRaw == "" {
+			marketMaxRaw = item.LotSizeFilter.MaxMarketOrderQty
+		}
+		if marketMaxRaw == "" {
+			marketMaxRaw = item.LotSizeFilter.MaxOrderQty
+		}
+		marketMaxQuantity, marketMaxQuantityStatus := maximumDecimalConstraint(marketMaxRaw)
+		marketMinNotional, marketMinNotionalStatus := knownDecimalConstraint(minNotionalRaw)
 		settle := item.SettleCoin
 		if contractType == ContractTypeSpot {
 			settle = item.QuoteCoin
@@ -87,6 +114,13 @@ func parseBybitInstruments(items []bybitInstrument, contractType string) []Instr
 			IntervalHours: minutes / 60, SettleAsset: settle,
 			ContractType: contractType, Status: "active", ContractSize: 1,
 			PriceTick: tick, QuantityStep: step, Metadata: metadata,
+			MinQuantity: minQuantity, MinNotional: minNotional,
+			MinQuantityStatus: minQuantityStatus, MinNotionalStatus: minNotionalStatus,
+			MaxQuantity: maxQuantity, MaxQuantityStatus: maxQuantityStatus,
+			MarketQuantityStep: marketStep, MarketQuantityStepStatus: marketStepStatus,
+			MarketMinQuantity: marketMinQuantity, MarketMinQuantityStatus: marketMinQuantityStatus,
+			MarketMaxQuantity: marketMaxQuantity, MarketMaxQuantityStatus: marketMaxQuantityStatus,
+			MarketMinNotional: marketMinNotional, MarketMinNotionalStatus: marketMinNotionalStatus,
 			SourceUpdatedAt: time.Now().UTC(),
 		})
 	}
@@ -106,8 +140,11 @@ func (b *Bybit) SyncInstruments(ctx context.Context, contractType string) ([]Ins
 	for _, category := range categories {
 		cursor := ""
 		for {
-			query := url.Values{"category": {category}, "limit": {"1000"}}
-			if cursor != "" {
+			query := url.Values{"category": {category}}
+			if category != "spot" {
+				query.Set("limit", "1000")
+			}
+			if category != "spot" && cursor != "" {
 				query.Set("cursor", cursor)
 			}
 			var payload bybitEnvelope[bybitInstrument]
@@ -118,6 +155,9 @@ func (b *Bybit) SyncInstruments(ctx context.Context, contractType string) ([]Ins
 				return nil, fmt.Errorf("bybit: %s", payload.RetMsg)
 			}
 			all = append(all, parseBybitInstruments(payload.Result.List, contractType)...)
+			if category == "spot" {
+				break
+			}
 			if payload.Result.NextPageCursor == "" || payload.Result.NextPageCursor == cursor {
 				break
 			}

@@ -188,6 +188,8 @@ int main() {
   wire::AggOrderBookRecord book{};
   book.header =
       wire::MakeHeader(utils::md::MessageType::AggOrderBook, sizeof(book));
+  book.header.state =
+      static_cast<std::uint8_t>(utils::md::BookState::Live);
   book.member_count = 1;
   book.member_mask = 1;
   book.active_mask = 1;
@@ -250,6 +252,8 @@ int main() {
   bool saw_bbo = false;
   bool saw_book = false;
   bool saw_reset_gap = false;
+  std::uint64_t book_generation = 0;
+  std::size_t book_records = 0;
   for (const auto &file : files) {
     const auto validated = record::validate_file(file);
     assert(validated);
@@ -257,6 +261,7 @@ int main() {
     const auto read = record::read_file(file, [&](const record::Record &value) {
       if (value.metadata.kind == record::Kind::AggBbo) {
         saw_bbo = true;
+        assert((value.bbo.header.flags & wire::kBboOriginMask) == 0);
         if (value.metadata.ring_sequence == 2) {
           assert((value.metadata.flags & record::kGap) == 0);
           assert(value.cross_window.raw_min == 3);
@@ -272,6 +277,13 @@ int main() {
         }
       } else {
         saw_book = true;
+        assert((value.order_book.header.flags & wire::kBboOriginMask) == 0);
+        ++book_records;
+        assert(value.metadata.ring_sequence == 8);
+        if (book_generation == 0) {
+          book_generation = value.metadata.generation;
+        }
+        assert(value.metadata.generation == book_generation);
         assert(value.order_book.bid_count == 2);
         assert(value.order_book.ask_count == 2);
         assert(value.order_book.bids[1].price == 99);
@@ -283,6 +295,7 @@ int main() {
     assert(read);
   }
   assert(saw_bbo && saw_book && saw_reset_gap);
+  assert(book_records == 2);
 
   record::Record legacy_source{};
   legacy_source.metadata = {.wall_ns = 1,

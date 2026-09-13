@@ -1,0 +1,35 @@
+{
+  "timezone": "UTC",
+  "serverTime": 1787917346044,
+  "symbols": [
+    {
+      "symbol": "BTCUSDT",
+      "status": "TRADING",
+      "contractType": "PERPETUAL",
+      "baseAsset": "BTC",
+      "quoteAsset": "USDT",
+      "marginAsset": "USDT",
+      "contractSize": 1,
+      "pricePrecision": 1,
+      "quantityPrecision": 3,
+      "filters": [
+        {
+          "filterType": "PRICE_FILTER",
+          "minPrice": "1",
+          "maxPrice": "1000000",
+          "tickSize": "0.1"
+        },
+        {
+          "filterType": "LOT_SIZE",
+          "minQty": "0.001",
+          "maxQty": "1000",
+          "stepSize": "0.001"
+        },
+        {
+          "filterType": "MIN_NOTIONAL",
+          "notional": "5"
+        }
+      ]
+    }
+  ]
+}

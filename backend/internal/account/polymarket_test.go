@@ -142,3 +142,59 @@ func TestRefreshPolymarketCredentialsIsOwnerScopedAndAtomicAtStoreBoundary(t *te
 		t.Fatalf("cross-account refresh err=%v", err)
 	}
 }
+
+func TestRefreshPolymarketCredentialsKeepsInvalidBindingStatus(t *testing.T) {
+	service, _ := newTradingTestService(t)
+	store := &memoryPolymarketStore{}
+	service.WithPolymarket(store, refreshingIssuer{})
+	session, err := service.Login(context.Background(), "admin", "admin123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.CreatePolymarketTradingAccount(
+		context.Background(), session.Token,
+		CreatePolymarketTradingAccountInput{
+			AccountName: "poly", PrivateKey: "private",
+			WalletType: "eoa",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InvalidatePolymarketCredentials(
+		context.Background(), session.Token, created.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.GetPolymarketCredentials(
+		context.Background(), session.Token, created.ID,
+	); err != ErrPolymarketCredentialsInvalid {
+		t.Fatalf("get while invalid err=%v", err)
+	}
+	if _, err := service.RefreshPolymarketCredentials(
+		context.Background(), session.Token, created.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if store.record.BindingStatus != "invalid" {
+		t.Fatalf("status=%q", store.record.BindingStatus)
+	}
+	if _, err := service.GetPolymarketCredentials(
+		context.Background(), session.Token, created.ID,
+	); err != ErrPolymarketCredentialsInvalid {
+		t.Fatalf("get after refresh err=%v", err)
+	}
+	if err := service.ActivatePolymarketCredentials(
+		context.Background(), session.Token, created.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if store.record.BindingStatus != "active" {
+		t.Fatalf("status=%q", store.record.BindingStatus)
+	}
+	if _, err := service.GetPolymarketCredentials(
+		context.Background(), session.Token, created.ID,
+	); err != nil {
+		t.Fatalf("get after activate err=%v", err)
+	}
+}

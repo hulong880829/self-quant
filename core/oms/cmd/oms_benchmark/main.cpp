@@ -12,12 +12,24 @@
 
 #include <poll.h>
 #include <time.h>
+#if defined(__x86_64__) || defined(__i386__)
+#include <x86intrin.h>
+#endif
 
 #include "oms/api/execution_channel.h"
 
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+std::uint64_t ReadCycles() noexcept {
+#if defined(__x86_64__) || defined(__i386__)
+  unsigned auxiliary{};
+  return __rdtscp(&auxiliary);
+#else
+  return 0;
+#endif
+}
 
 struct Options {
   std::uint32_t samples{5'000};
@@ -87,8 +99,9 @@ oms::api::InstrumentInit MakeInstrument() noexcept {
   return result;
 }
 
-oms::api::NewOrderRequest MakeOrder(std::uint64_t sequence) noexcept {
-  oms::api::NewOrderRequest request{};
+oms::api::SubmitOrderRequest MakeOrder(std::uint64_t sequence) noexcept {
+  oms::api::SubmitOrderRequest submitted{};
+  auto& request = submitted.order;
   constexpr std::string_view prefix = "bench-";
   std::memcpy(request.client_order_id.value.data(), prefix.data(),
               prefix.size());
@@ -106,12 +119,27 @@ oms::api::NewOrderRequest MakeOrder(std::uint64_t sequence) noexcept {
   request.time_in_force = oms::api::TimeInForce::GTC;
   request.quantity = {100, 2, {}};
   request.price = {10'000, 2, {}};
-  return request;
+  submitted.routing.kind = oms::api::ExecutionRouteKind::Crypto;
+  submitted.routing.venue =
+      static_cast<std::uint8_t>(utils::md::Venue::Binance);
+  submitted.routing.product_type =
+      static_cast<std::uint8_t>(utils::md::ProductType::Spot);
+  submitted.routing.price_scale = 2;
+  submitted.routing.quantity_scale = 2;
+  submitted.routing.catalog_revision = 1;
+  submitted.routing.tick_size = 1;
+  submitted.routing.lot_size = 1;
+  constexpr char symbol[] = "OMS_BENCH";
+  std::memcpy(submitted.routing.crypto.venue_symbol.value.data(), symbol,
+              sizeof(symbol) - 1);
+  submitted.routing.crypto.venue_symbol.length = sizeof(symbol) - 1;
+  return submitted;
 }
 
 struct Capture {
   oms::api::RequestToken target{};
   Clock::time_point observed{};
+  std::uint64_t observed_cycles{};
   bool matched{};
 
   static void OnUpdate(void* context,
@@ -122,6 +150,7 @@ struct Capture {
         update.order.type == oms::api::UpdateType::Submitted &&
         update.order.token == capture.target) {
       capture.observed = Clock::now();
+      capture.observed_cycles = ReadCycles();
       capture.matched = true;
     }
   }
@@ -204,10 +233,13 @@ bool RunMode(const Options& options, oms::api::ExecutionMode mode) {
   auto& channel = *created.value;
 
   std::vector<std::uint64_t> samples;
+  std::vector<std::uint64_t> cycle_samples;
   samples.reserve(options.samples);
+  cycle_samples.reserve(options.samples);
   for (std::uint32_t index = 0; index < total; ++index) {
     Capture capture;
     const auto start = Clock::now();
+    const std::uint64_t start_cycles = ReadCycles();
     const auto placed = channel.place_order(1, MakeOrder(index + 1U));
     if (!placed) return false;
     capture.target = placed.value;
@@ -217,10 +249,17 @@ bool RunMode(const Options& options, oms::api::ExecutionMode mode) {
           std::chrono::duration_cast<std::chrono::nanoseconds>(
               capture.observed - start)
               .count()));
+      cycle_samples.push_back(
+          capture.observed_cycles >= start_cycles
+              ? capture.observed_cycles - start_cycles
+              : 0);
     }
   }
 
   std::sort(samples.begin(), samples.end());
+  std::sort(cycle_samples.begin(), cycle_samples.end());
+  std::uint64_t cycle_total{};
+  for (const std::uint64_t value : cycle_samples) cycle_total += value;
   const IdleObservation idle = ObserveIdle(channel, mode, options.idle_ms);
   const auto metrics = channel.metrics();
   const auto shutdown = channel.shutdown();
@@ -237,6 +276,11 @@ bool RunMode(const Options& options, oms::api::ExecutionMode mode) {
             << ",\"p99\":" << Quantile(samples, 99, 100)
             << ",\"p99_9\":" << Quantile(samples, 999, 1000)
             << ",\"max\":" << samples.back()
+            << "},\"cycles\":{\"avg\":"
+            << cycle_total / cycle_samples.size()
+            << ",\"p99\":" << Quantile(cycle_samples, 99, 100)
+            << ",\"p99_9\":" << Quantile(cycle_samples, 999, 1000)
+            << ",\"max\":" << cycle_samples.back()
             << "},\"idle_observation\":{\"requested_ms\":"
             << options.idle_ms << ",\"waits\":" << idle.waits
             << ",\"wall_ns\":" << idle.wall_ns

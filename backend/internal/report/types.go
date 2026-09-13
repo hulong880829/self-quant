@@ -10,6 +10,7 @@ var (
 	ErrUnauthenticated = errors.New("authentication required")
 	ErrInvalidInput    = errors.New("invalid report input")
 	ErrSourceDisabled  = errors.New("account source is not configured")
+	ErrDuplicate       = errors.New("duplicate cash flow")
 )
 
 type Product struct {
@@ -31,39 +32,48 @@ type Product struct {
 }
 
 type DailySnapshot struct {
-	ID               int64
-	ProductID        int64
-	ReportDate       string
-	OpeningEquityUSD string
-	ClosingEquityUSD string
-	NetCashFlowUSD   string
-	PnLUSD           string
-	ReturnRate       string
-	AbsoluteReturn   string
-	AnnualizedReturn string
-	Annualized7D     string
-	Annualized30D    string
-	MaxDrawdown      string
-	Sharpe           string
-	Volume24hUSD     string
-	SampleCount      int
-	Status           string
-	FinalizedAt      time.Time
+	ID                int64
+	ProductID         int64
+	ReportDate        string
+	OpeningEquityUSD  string
+	ClosingEquityUSD  string
+	NetCashFlowUSD    string
+	PnLUSD            string
+	ReturnRate        string
+	AbsoluteReturn    string
+	AnnualizedReturn  string
+	Annualized7D      string
+	Annualized30D     string
+	MaxDrawdown       string
+	Sharpe            string
+	Volume24hUSD      string
+	SampleCount       int
+	Status            string
+	FinalizedAt       time.Time
+	SubscriptionUSD   string
+	RedemptionUSD     string
+	CashFlowCount     int
+	PeriodRuleVersion int
+	PeriodStart       time.Time
+	PeriodEnd         time.Time
 }
 
 type CashFlow struct {
-	ID          int64
-	ProductID   int64
-	FlowDate    string
-	OccurredAt  time.Time
-	AmountUSD   string
-	FlowType    string
-	Note        string
-	Confirmed   bool
-	ConfirmedBy string
-	ConfirmedAt time.Time
-	CreatedBy   string
-	CreatedAt   time.Time
+	ID                int64
+	ProductID         int64
+	FlowDate          string
+	OccurredAt        time.Time
+	AmountUSD         string
+	FlowType          string
+	Note              string
+	Confirmed         bool
+	ConfirmedBy       string
+	ConfirmedAt       time.Time
+	CreatedBy         string
+	CreatedAt         time.Time
+	RecomputeStatus   string
+	IdempotencyKey    string
+	PeriodRuleVersion int
 }
 
 type AccountEquity struct {

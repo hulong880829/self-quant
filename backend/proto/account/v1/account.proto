@@ -15,6 +15,7 @@ service AccountService {
   rpc GetPolymarketCredentials(GetPolymarketCredentialsRequest) returns (GetPolymarketCredentialsResponse);
   rpc RefreshPolymarketCredentials(GetPolymarketCredentialsRequest) returns (GetPolymarketCredentialsResponse);
   rpc InvalidatePolymarketCredentials(GetPolymarketCredentialsRequest) returns (DeleteTradingAccountResponse);
+  rpc ActivatePolymarketCredentials(GetPolymarketCredentialsRequest) returns (DeleteTradingAccountResponse);
   rpc DeleteTradingAccount(DeleteTradingAccountRequest) returns (DeleteTradingAccountResponse);
   rpc GetTradingAccountSnapshot(GetTradingAccountSnapshotRequest) returns (GetTradingAccountSnapshotResponse);
   rpc GetProductGroupSnapshot(GetProductGroupSnapshotRequest) returns (GetProductGroupSnapshotResponse);
@@ -22,11 +23,15 @@ service AccountService {
   rpc SyncProductTradeFillsInternal(SyncProductTradeFillsInternalRequest) returns (SyncProductTradeFillsInternalResponse);
   rpc GetTradingCredentials(GetTradingCredentialsRequest) returns (GetTradingCredentialsResponse);
   rpc GetTradingCredentialsInternal(GetTradingCredentialsInternalRequest) returns (GetTradingCredentialsResponse);
+  rpc GetTradingAccountMeta(GetTradingAccountMetaRequest) returns (GetTradingAccountMetaResponse);
+  rpc InspectTradingReadiness(InspectTradingReadinessRequest) returns (InspectTradingReadinessResponse);
   rpc GetAICredential(GetAICredentialRequest) returns (AICredentialResponse);
   rpc UpsertAICredential(UpsertAICredentialRequest) returns (AICredentialResponse);
   rpc DeleteAICredential(DeleteAICredentialRequest) returns (DeleteAICredentialResponse);
   rpc GetAICredentialSecret(GetAICredentialRequest) returns (AICredentialSecretResponse);
   rpc UpdateAICredentialStatus(UpdateAICredentialStatusRequest) returns (AICredentialResponse);
+  rpc GetTradingAccountFeeRates(GetTradingAccountFeeRatesRequest) returns (GetTradingAccountFeeRatesResponse);
+  rpc SyncTradingAccountFeeRates(SyncTradingAccountFeeRatesRequest) returns (GetTradingAccountFeeRatesResponse);
 }
 
 message LoginRequest {
@@ -61,6 +66,50 @@ message TradingAccount {
   string wallet_address = 9;
   string wallet_type = 10;
   string binding_status = 11;
+  bool credentials_present = 12;
+  bool credentials_verified = 13;
+  string trading_mode = 14;
+  bool trading_ready = 15;
+  string trading_status = 16;
+  string trading_unavailable_code = 17;
+  string trading_unavailable_reason = 18;
+  optional int64 resolved_account_index = 19;
+  optional int32 resolved_api_key_index = 20;
+  MarketFeeRate spot_fee = 21;
+  MarketFeeRate contract_fee = 22;
+  string fee_source = 23;
+  google.protobuf.Timestamp fee_updated_at = 24;
+  string fee_sync_status = 25;
+  string fee_sync_error = 26;
+  bool fee_stale = 27;
+  repeated string unsupported_markets = 28;
+}
+
+message MarketFeeRate {
+  string status = 1;
+  string maker = 2;
+  string taker = 3;
+}
+
+message GetTradingAccountFeeRatesRequest {
+  string token = 1;
+  int64 id = 2;
+}
+
+message SyncTradingAccountFeeRatesRequest {
+  string token = 1;
+  int64 id = 2;
+}
+
+message GetTradingAccountFeeRatesResponse {
+  MarketFeeRate spot_fee = 1;
+  MarketFeeRate contract_fee = 2;
+  string fee_source = 3;
+  google.protobuf.Timestamp fee_updated_at = 4;
+  string fee_sync_status = 5;
+  string fee_sync_error = 6;
+  bool fee_stale = 7;
+  repeated string unsupported_markets = 8;
 }
 
 message ListTradingAccountsRequest {
@@ -79,6 +128,12 @@ message CreateTradingAccountRequest {
   string api_key = 5;
   string api_secret = 6;
   string passphrase = 7;
+  string trading_api_key = 8;
+  string trading_api_secret = 9;
+  string signing_address = 10;
+  string vault_address = 11;
+  optional int64 account_index = 12;
+  optional int32 api_key_index = 13;
 }
 
 message CreateTradingAccountResponse {
@@ -163,6 +218,7 @@ message TradingAccountSnapshot {
 message GetTradingAccountSnapshotRequest {
   string token = 1;
   int64 trading_account_id = 2;
+  bool cache_only = 3;
 }
 
 message GetTradingAccountSnapshotResponse {
@@ -251,6 +307,45 @@ message GetTradingCredentialsResponse {
   string api_key = 5;
   string api_secret = 6;
   string passphrase = 7;
+  string credential_kind = 8;
+  string signing_address = 9;
+  string vault_address = 10;
+  optional int64 account_index = 11;
+  optional int32 api_key_index = 12;
+}
+
+message GetTradingAccountMetaRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+}
+
+message GetTradingAccountMetaResponse {
+  int64 trading_account_id = 1;
+  string product_name = 2;
+  string exchange = 3;
+  string account_name = 4;
+  string credential_kind = 5;
+  optional int64 account_index = 6;
+  optional int32 api_key_index = 7;
+}
+
+message InspectTradingReadinessRequest {
+  string token = 1;
+  int64 trading_account_id = 2;
+}
+
+message InspectTradingReadinessResponse {
+  int64 trading_account_id = 1;
+  string exchange = 2;
+  bool credentials_present = 3;
+  bool credentials_verified = 4;
+  string trading_mode = 5;
+  bool trading_ready = 6;
+  string trading_status = 7;
+  string trading_unavailable_code = 8;
+  string trading_unavailable_reason = 9;
+  optional int64 resolved_account_index = 10;
+  optional int32 resolved_api_key_index = 11;
 }
 
 message AICredential {

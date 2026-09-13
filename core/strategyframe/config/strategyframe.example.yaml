@@ -1,5 +1,7 @@
 mds:
   source: external_shm
+  bbo_policy: ticker_only
+  bbo_policy_starvation_ms: 2000
   segments:
     - name: /selfquant.mds.binance.spot.btcusdt.ticker.2
       expected_reader_budget: 1
@@ -16,6 +18,7 @@ oms:
   session_epoch: 1
   event_budget: 64
   metric_sample_rate: 100
+  retire_deferred_warning_count: 10
   startup_timeout_ns: 10000000000
   memory:
     lock_pages: false
@@ -34,6 +37,7 @@ oms:
     position_table: 1024
     fill_dedup: 8192
     timer_table: 1024
+    instrument_directory: 4096
   instruments:
     - instrument_id: 1
       venue: binance

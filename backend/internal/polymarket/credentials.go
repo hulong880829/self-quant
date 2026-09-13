@@ -62,6 +62,20 @@ func (p *AccountCredentialProvider) Invalidate(
 	return err
 }
 
+func (p *AccountCredentialProvider) Activate(
+	ctx context.Context,
+	token string,
+	accountID int64,
+) error {
+	_, err := p.client.ActivatePolymarketCredentials(
+		ctx,
+		&accountv1.GetPolymarketCredentialsRequest{
+			Token: token, TradingAccountId: accountID,
+		},
+	)
+	return err
+}
+
 func (p *AccountCredentialProvider) Owner(
 	ctx context.Context,
 	token string,

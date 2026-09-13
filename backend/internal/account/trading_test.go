@@ -59,6 +59,19 @@ func (m *memoryTradingStore) Create(_ context.Context, record TradingAccountReco
 	return record, nil
 }
 
+func (m *memoryTradingStore) UpdateIndexes(_ context.Context, owner string, id int64, accountIndex *int64, apiKeyIndex *int16) error {
+	for index, record := range m.records {
+		if record.OwnerUsername == owner && record.ID == id {
+			record.AccountIndex = accountIndex
+			record.APIKeyIndex = apiKeyIndex
+			record.UpdatedAt = time.Now().UTC()
+			m.records[index] = record
+			return nil
+		}
+	}
+	return ErrTradingAccountNotFound
+}
+
 func (m *memoryTradingStore) DeleteByOwner(_ context.Context, owner string, id int64) error {
 	for index, record := range m.records {
 		if record.OwnerUsername == owner && record.ID == id {
@@ -107,7 +120,7 @@ func TestTradingAccountCreateListDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Exchange != "binance" || created.APIKeyMasked != "abcd********mnop" || !created.HasPassphrase {
+	if created.Exchange != "binance" || created.APIKeyMasked != "" || !created.HasPassphrase {
 		t.Fatalf("created=%+v", created)
 	}
 	if len(store.records) != 1 || string(store.records[0].APISecretEnc) == "secret-value" {
@@ -226,6 +239,109 @@ func TestGetTradingCredentialsOwnerScoped(t *testing.T) {
 	}
 }
 
+func TestWalletDEXTradingAccountBindAndList(t *testing.T) {
+	const (
+		walletKey    = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+		otherAddress = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+	)
+	service, _ := newTradingTestService(t)
+	session, err := service.Login(context.Background(), "admin", "admin123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, exchange := range []string{"hyperliquid", "aster", "lighter"} {
+		created, createErr := service.CreateTradingAccount(context.Background(), session.Token, CreateTradingAccountInput{
+			ProductName: "DEX", Exchange: exchange, AccountName: exchange,
+			APIKey: otherAddress, APISecret: walletKey,
+		})
+		if createErr != nil {
+			t.Fatalf("%s create: %v", exchange, createErr)
+		}
+		if created.WalletAddress != otherAddress || created.APIKeyMasked == walletKey {
+			t.Fatalf("%s view=%+v", exchange, created)
+		}
+		if !created.CredentialsPresent || created.TradingReady || created.TradingStatus != TradingStatusChecking {
+			t.Fatalf("%s list view leaked readiness: %+v", exchange, created)
+		}
+		credentials, credErr := service.GetTradingCredentials(context.Background(), session.Token, created.ID)
+		if credErr != nil {
+			t.Fatalf("%s credentials err=%v", exchange, credErr)
+		}
+		if credentials.CredentialKind != defaultAPIWalletKind(exchange) ||
+			credentials.APIKey != otherAddress || credentials.APISecret != walletKey {
+			t.Fatalf("%s credentials=%+v", exchange, credentials)
+		}
+		meta, metaErr := service.GetTradingAccountMeta(context.Background(), session.Token, created.ID)
+		if metaErr != nil || meta.Exchange != exchange || meta.CredentialKind != defaultAPIWalletKind(exchange) {
+			t.Fatalf("%s meta=%+v err=%v", exchange, meta, metaErr)
+		}
+	}
+	listed, err := service.ListTradingAccounts(context.Background(), session.Token)
+	if err != nil || len(listed) != 3 {
+		t.Fatalf("listed=%+v err=%v", listed, err)
+	}
+	for _, item := range listed {
+		if item.WalletAddress != otherAddress {
+			t.Fatalf("walletAddress=%q item=%+v", item.WalletAddress, item)
+		}
+	}
+}
+
+func TestWalletDEXTradingCredentialsDecryptVenueFields(t *testing.T) {
+	const (
+		walletKey      = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+		walletAddress  = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+		signingAddress = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+	)
+	accountIndex, apiKeyIndex := int64(17), int32(3)
+	inputs := []CreateTradingAccountInput{
+		{ProductName: "DEX", Exchange: "aster", AccountName: "aster", APIKey: walletAddress,
+			APISecret: walletKey, TradingAPIKey: "aster-key", TradingAPISecret: "aster-secret"},
+		{ProductName: "DEX", Exchange: "hyperliquid", AccountName: "hyperliquid", APIKey: walletAddress,
+			APISecret: walletKey, TradingAPISecret: walletKey, SigningAddress: signingAddress},
+		{ProductName: "DEX", Exchange: "lighter", AccountName: "lighter", APIKey: walletAddress,
+			APISecret: walletKey, TradingAPISecret: walletKey, AccountIndex: &accountIndex,
+			APIKeyIndex: &apiKeyIndex},
+	}
+	service, _ := newTradingTestService(t)
+	session, err := service.Login(context.Background(), "admin", "admin123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range inputs {
+		created, err := service.CreateTradingAccount(context.Background(), session.Token, input)
+		if err != nil {
+			t.Fatalf("%s create: %v", input.Exchange, err)
+		}
+		credentials, err := service.GetTradingCredentials(context.Background(), session.Token, created.ID)
+		if err != nil {
+			t.Fatalf("%s credentials: %v", input.Exchange, err)
+		}
+		if credentials.CredentialKind != credentialKindForCreate(input) ||
+			credentials.APISecret == "" {
+			t.Fatalf("%s credentials=%+v", input.Exchange, credentials)
+		}
+	}
+}
+
+func TestWalletDEXTradingAccountRejectsInvalidCredentials(t *testing.T) {
+	service, _ := newTradingTestService(t)
+	session, err := service.Login(context.Background(), "admin", "admin123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []CreateTradingAccountInput{
+		{ProductName: "DEX", Exchange: "hyperliquid", AccountName: "bad-addr",
+			APIKey: "not-an-address", APISecret: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"},
+		{ProductName: "DEX", Exchange: "aster", AccountName: "bad-key",
+			APIKey: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", APISecret: "0x1234"},
+	} {
+		if _, createErr := service.CreateTradingAccount(context.Background(), session.Token, input); createErr != ErrInvalidTradingAccount {
+			t.Fatalf("input=%+v err=%v", input, createErr)
+		}
+	}
+}
+
 func TestGetTradingCredentialsRejectsPolymarket(t *testing.T) {
 	service, store := newTradingTestService(t)
 	session, err := service.Login(context.Background(), "admin", "admin123")
@@ -255,5 +371,49 @@ func TestTradingAccountRequiresValidSession(t *testing.T) {
 	_, err := service.ListTradingAccounts(context.Background(), "bad-token")
 	if err != ErrInvalidToken {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestIncompleteExtensionGroupIsNotMixed(t *testing.T) {
+	const (
+		walletKey     = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+		walletAddress = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+	)
+	service, store := newTradingTestService(t)
+	session, err := service.Login(context.Background(), "admin", "admin123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateTradingAccount(context.Background(), session.Token, CreateTradingAccountInput{
+		ProductName: "DEX", Exchange: "aster", AccountName: "partial",
+		APIKey: walletAddress, APISecret: walletKey, TradingAPIKey: "only-key",
+	}); err != ErrInvalidTradingAccount {
+		t.Fatalf("create incomplete extension err=%v", err)
+	}
+	created, err := service.CreateTradingAccount(context.Background(), session.Token, CreateTradingAccountInput{
+		ProductName: "DEX", Exchange: "aster", AccountName: "wallet",
+		APIKey: walletAddress, APISecret: walletKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.records[0].CredentialKind = CredentialKindAsterHMAC
+	if _, err := service.GetTradingCredentials(context.Background(), session.Token, created.ID); err != ErrInvalidTradingAccount {
+		t.Fatalf("mixed decrypt err=%v", err)
+	}
+	meta, err := service.GetTradingAccountMeta(context.Background(), session.Token, created.ID)
+	if err != nil || meta.Exchange != "aster" {
+		t.Fatalf("meta should not load secrets: %+v err=%v", meta, err)
+	}
+}
+
+func TestCredentialsPresentDoesNotImplyTradingReady(t *testing.T) {
+	ready := TradingReadiness{CredentialsPresent: true, TradingReady: false, TradingStatus: TradingStatusChecking}
+	if ready.CredentialsPresent && ready.TradingReady {
+		t.Fatal("credentialsPresent must not imply tradingReady")
+	}
+	aster := asterReadinessFromAccountOK(false)
+	if !aster.CredentialsVerified || aster.TradingReady {
+		t.Fatalf("aster read-only readiness=%+v", aster)
 	}
 }

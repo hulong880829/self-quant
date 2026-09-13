@@ -49,6 +49,7 @@ struct ClickHouseBboMetrics {
   std::uint64_t rows_requeued{};
   std::uint64_t shutdown_drops{};
   std::uint64_t stale_skips{};
+  std::uint64_t decode_failed{};
 };
 
 class ClickHouseBboRecorder {

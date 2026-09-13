@@ -125,3 +125,47 @@ func (a *bitgetAdapter) Snapshot(ctx context.Context, credentials Credentials) (
 	attachQuantities(&result)
 	return result, nil
 }
+
+func (a *bitgetAdapter) AccountFeeRates(
+	ctx context.Context,
+	credentials Credentials,
+) (AccountFeeRates, error) {
+	spot, spotErr := a.tradeRate(ctx, credentials, "SPOT")
+	contract, contractErr := a.tradeRate(ctx, credentials, "USDT-FUTURES")
+	result := AccountFeeRates{Source: "venue", Spot: spot, Contract: contract}
+	if spotErr != nil && contractErr != nil {
+		return AccountFeeRates{}, fmt.Errorf("bitget fee rates: spot %v; contract %v", spotErr, contractErr)
+	}
+	if spotErr != nil {
+		result.Spot = unknownMarket()
+		return result, fmt.Errorf("bitget spot trade rate: %w", spotErr)
+	}
+	if contractErr != nil {
+		result.Contract = unknownMarket()
+		return result, fmt.Errorf("bitget contract trade rate: %w", contractErr)
+	}
+	return result, nil
+}
+
+func (a *bitgetAdapter) tradeRate(
+	ctx context.Context,
+	credentials Credentials,
+	category string,
+) (MarketFee, error) {
+	var payload struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			MakerFeeRate string `json:"makerFeeRate"`
+			TakerFeeRate string `json:"takerFeeRate"`
+		} `json:"data"`
+	}
+	path := "/api/v3/account/fee-rate?symbol=BTCUSDT&category=" + category
+	if err := a.get(ctx, path, credentials, &payload); err != nil {
+		return MarketFee{}, err
+	}
+	if payload.Code != "00000" {
+		return MarketFee{}, fmt.Errorf("bitget fee-rate rejected: %s", payload.Msg)
+	}
+	return parseMarketFee(payload.Data.MakerFeeRate, payload.Data.TakerFeeRate)
+}

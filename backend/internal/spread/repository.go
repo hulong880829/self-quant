@@ -82,7 +82,6 @@ func (r *Repository) QueryHistory(ctx context.Context, request HistoryRequest) (
 		queryCtx, cancel = context.WithTimeout(ctx, r.timeout)
 		defer cancel()
 	}
-	symbol := CanonicalSymbol(normalized.BaseAsset, normalized.QuoteAsset)
 	from := normalized.Now.Add(-normalized.Range.Window())
 	query := historyQuery(
 		r.database, r.table, int(normalized.Range.Resolution().Seconds()),
@@ -90,7 +89,8 @@ func (r *Repository) QueryHistory(ctx context.Context, request HistoryRequest) (
 	)
 	args := []any{
 		clickhouse.Named("venue", normalized.Venue),
-		clickhouse.Named("symbol", symbol),
+		clickhouse.Named("venue_symbol", normalized.VenueCanonicalSymbol),
+		clickhouse.Named("compare_symbol", normalized.CompareVenueCanonicalSymbol),
 		clickhouse.Named("from", from),
 		clickhouse.Named("to", normalized.Now),
 	}
@@ -130,14 +130,15 @@ func historyQuery(database, table string, resolutionSeconds int, compareVenue st
 		return fmt.Sprintf(`
 SELECT
 	toStartOfInterval(ts, INTERVAL %d SECOND) AS bucket,
-	argMaxIf(ask_price, ts, venue = @compare_venue) AS spot_ask_raw,
-	argMaxIf(price_scale, ts, venue = @compare_venue) AS spot_scale,
-	argMaxIf(ask_price, ts, venue = @venue) AS perp_ask_raw,
-	argMaxIf(price_scale, ts, venue = @venue) AS perp_scale,
+	argMaxIf(ask_price, ts, venue = @compare_venue AND canonical_symbol = @compare_symbol) AS spot_ask_raw,
+	argMaxIf(price_scale, ts, venue = @compare_venue AND canonical_symbol = @compare_symbol) AS spot_scale,
+	argMaxIf(ask_price, ts, venue = @venue AND canonical_symbol = @venue_symbol) AS perp_ask_raw,
+	argMaxIf(price_scale, ts, venue = @venue AND canonical_symbol = @venue_symbol) AS perp_scale,
 	toUInt32(countIf(venue IN (@venue, @compare_venue))) AS samples
 FROM %s.%s
 PREWHERE venue IN (@venue, @compare_venue)
-	AND canonical_symbol = @symbol
+	AND ((venue = @venue AND canonical_symbol = @venue_symbol)
+		OR (venue = @compare_venue AND canonical_symbol = @compare_symbol))
 	AND product = 'perpetual'
 	AND ts >= @from AND ts < @to
 GROUP BY bucket
@@ -155,7 +156,7 @@ SELECT
 	toUInt32(countIf(product IN ('spot', 'perpetual'))) AS samples
 FROM %s.%s
 PREWHERE venue = @venue
-	AND canonical_symbol = @symbol
+	AND canonical_symbol = @venue_symbol
 	AND product IN ('spot', 'perpetual')
 	AND ts >= @from AND ts < @to
 GROUP BY bucket

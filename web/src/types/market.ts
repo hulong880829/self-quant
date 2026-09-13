@@ -5,6 +5,9 @@ export type Exchange =
   | "Bitget"
   | "Gate"
   | "Hyperliquid"
+  | "Aster"
+  | "Lighter"
+  | "Entropy"
   | "Polymarket";
 
 export interface FundingHistoryPoint {
@@ -39,6 +42,9 @@ export interface FundingOpportunity {
   priceChange24h: number;
   updatedAt: string;
   stale?: boolean;
+  history24hComplete?: boolean;
+  history7dComplete?: boolean;
+  venueContractType?: string;
   fundingHistory: FundingHistoryPoint[];
   index: IndexInfo;
 }
@@ -46,6 +52,9 @@ export interface FundingOpportunity {
 export interface FundingSpreadLeg {
   exchange: Exchange;
   exchangeSymbol: string;
+  globalSymbol: string;
+  baseAsset: string;
+  quoteAsset: string;
   fundingRate: number;
   settlementIntervalHours: number;
   nextSettlementAt: string;
@@ -54,6 +63,9 @@ export interface FundingSpreadLeg {
   latestPrice: number;
   updatedAt: string;
   stale: boolean;
+  history24hComplete?: boolean;
+  history7dComplete?: boolean;
+  venueContractType?: string;
 }
 
 export interface FundingSpread {
@@ -70,9 +82,12 @@ export interface FundingSpread {
   minDailyVolume: number;
   updatedAt: string;
   stale: boolean;
+  history24hComplete?: boolean;
+  history7dComplete?: boolean;
 }
 
-export type FundingOpportunityPeriod = "1h" | "4h" | "8h" | "24h";
+export type FundingOpportunityPeriod = "8h" | "24h";
+export type PaybackStatus = "ready" | "never" | "insufficient_sample";
 
 export interface RankedFundingOpportunity {
   id: string;
@@ -99,11 +114,16 @@ export interface RankedFundingOpportunity {
   coverage: number;
   confidence: number;
   modelState: string;
+  sampleCount: number;
+  expectedPaybackMinutes: number | null;
+  paybackStatus: PaybackStatus;
   updatedAt: string;
   stale: boolean;
 }
 
 export type RateDirection = "all" | "positive" | "negative";
+
+export type ContractKind = "crypto" | "tradifi" | "hip3";
 
 export interface FundingFilters {
   search: string;
@@ -111,5 +131,6 @@ export interface FundingFilters {
   minDailyVolume: number;
   intervalHours: number | "all";
   exchanges: Exchange[];
+  contractKinds: ContractKind[];
   direction: RateDirection;
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
+	"selfquant/backend/internal/trader/exchange"
 )
 
 type orderStore interface {
@@ -23,11 +25,50 @@ type orderStore interface {
 }
 
 type Repository struct {
-	pool *pgxpool.Pool
+	pool         *pgxpool.Pool
+	sqlMetrics   repositorySQLMetrics
+	fillAverages *orderFillAverageTracker
 }
 
+const (
+	maxOrderReconcileFailures     = 10
+	maxOrderReconcileUncertainAge = 5 * time.Minute
+	arbitrageOrderReconcileError  = "order state remained uncertain after bounded reconciliation"
+)
+
+const leaseDueOrdersSQL = `/* trader:lease_due_orders_equivalent */
+	WITH candidate_ids AS (
+		SELECT id FROM trader_orders
+		WHERE status IN ('pending','open','partially_filled','unknown')
+		UNION ALL
+		SELECT o.id
+		FROM trader_orders o
+		WHERE o.arbitrage_execution_id IS NOT NULL
+		  AND o.reconcile_failures>0
+		  AND EXISTS (
+			SELECT 1
+			FROM trader_arbitrage_executions e
+			JOIN trader_arbitrage_combinations c ON c.id=e.combination_id
+			WHERE e.id=o.arbitrage_execution_id
+			  AND c.status='running'
+			  AND c.position_uncertain
+			  AND c.error_message=$2
+		  )
+	)
+	SELECT ` + orderColumns + `
+	FROM trader_orders
+	WHERE id IN (SELECT DISTINCT id FROM candidate_ids)
+	  AND next_reconcile_at <= now()
+	  AND (reconcile_lease_until IS NULL OR reconcile_lease_until < now())
+	ORDER BY next_reconcile_at,updated_at
+	LIMIT $1
+	FOR UPDATE OF trader_orders SKIP LOCKED`
+
 func NewRepository(pool *pgxpool.Pool) *Repository {
-	return &Repository{pool: pool}
+	return &Repository{
+		pool:         pool,
+		fillAverages: newOrderFillAverageTracker(hyperliquidArbitrageFillAverageEnabled),
+	}
 }
 
 func (r *Repository) CreateIntent(ctx context.Context, order Order) (Order, bool, error) {
@@ -124,7 +165,20 @@ func (r *Repository) ListByOwnerAccount(
 }
 
 func (r *Repository) UpdateResult(ctx context.Context, orderID string, result VenueResult) (Order, error) {
-	return r.applyOrderUpdate(ctx, orderID, result, time.Now(), time.Time{}, false, nil)
+	updated, _, err := r.UpdateResultWithFillDelta(ctx, orderID, result)
+	return updated, err
+}
+
+func (r *Repository) UpdateResultWithFillDelta(
+	ctx context.Context,
+	orderID string,
+	result VenueResult,
+) (Order, bool, error) {
+	eventAt := result.Reference.EventAt
+	if eventAt.IsZero() && !result.LocalCommandAck {
+		eventAt = time.Now()
+	}
+	return r.applyOrderUpdate(ctx, orderID, result, eventAt, time.Time{}, false, nil, false)
 }
 
 func (r *Repository) DeferReconcile(ctx context.Context, orderID string, next time.Time) error {
@@ -150,9 +204,11 @@ func (r *Repository) ApplyStreamUpdate(
 	if receivedAt.IsZero() {
 		receivedAt = time.Now()
 	}
-	return r.applyOrderUpdate(
+	updated, _, err := r.applyOrderUpdate(
 		ctx, orderID, update.Result, eventAt, receivedAt, true, update.Fills,
+		update.SkipVenueWatermark,
 	)
+	return updated, err
 }
 
 func (r *Repository) applyOrderUpdate(
@@ -163,10 +219,11 @@ func (r *Repository) applyOrderUpdate(
 	receivedAt time.Time,
 	stream bool,
 	fills []OrderFill,
-) (Order, error) {
+	skipVenueWatermark bool,
+) (Order, bool, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return Order{}, fmt.Errorf("begin trader order update: %w", err)
+		return Order{}, false, fmt.Errorf("begin trader order update: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -176,10 +233,37 @@ func (r *Repository) applyOrderUpdate(
 		WHERE id=$1::uuid FOR UPDATE`, orderID,
 	).Scan(orderScanTargets(&current)...)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Order{}, ErrNotFound
+		return Order{}, false, ErrNotFound
 	}
 	if err != nil {
-		return Order{}, fmt.Errorf("lock trader order: %w", err)
+		return Order{}, false, fmt.Errorf("lock trader order: %w", err)
+	}
+
+	var (
+		handle           orderFillAverageHandle
+		pending          orderFillAveragePending
+		trackerLocked    bool
+		trackerPrepared  bool
+		trackerCommitted bool
+		markTerminal     bool
+		terminalExpiry   time.Time
+	)
+	track := r.fillAverages.enabled(current)
+	if track {
+		handle = r.fillAverages.Acquire(current.ID)
+		handle.state.mu.Lock()
+		trackerLocked = true
+		defer func() {
+			if !trackerLocked {
+				return
+			}
+			if trackerPrepared && !trackerCommitted {
+				r.fillAverages.Abort(pending)
+			}
+			handle.state.mu.Unlock()
+			trackerLocked = false
+			r.fillAverages.Release(handle, markTerminal, terminalExpiry)
+		}()
 	}
 
 	venueOrderID := current.VenueOrderID
@@ -192,18 +276,21 @@ func (r *Repository) applyOrderUpdate(
 		fill.Quantity = strings.TrimSpace(fill.Quantity)
 		fill.Price = strings.TrimSpace(fill.Price)
 		if fill.TradeID == "" || venueOrderID == "" {
-			return Order{}, fmt.Errorf("%w: fill trade and venue order IDs are required", ErrInvalidArgument)
+			return Order{}, false, fmt.Errorf("%w: fill trade and venue order IDs are required", ErrInvalidArgument)
 		}
 		quantity, parseErr := decimal.NewFromString(fill.Quantity)
 		if parseErr != nil || !quantity.IsPositive() {
-			return Order{}, fmt.Errorf("%w: invalid fill quantity", ErrInvalidArgument)
+			return Order{}, false, fmt.Errorf("%w: invalid fill quantity", ErrInvalidArgument)
 		}
 		if fill.Price == "" {
 			fill.Price = "0"
 		}
 		price, parseErr := decimal.NewFromString(fill.Price)
 		if parseErr != nil || price.IsNegative() {
-			return Order{}, fmt.Errorf("%w: invalid fill price", ErrInvalidArgument)
+			return Order{}, false, fmt.Errorf("%w: invalid fill price", ErrInvalidArgument)
+		}
+		if strings.EqualFold(current.Exchange, "hyperliquid") && !price.IsPositive() {
+			continue
 		}
 		var executedAt any
 		if !fill.ExecutedAt.IsZero() {
@@ -224,20 +311,39 @@ func (r *Repository) applyOrderUpdate(
 			continue
 		}
 		if err != nil {
-			return Order{}, fmt.Errorf("insert trader order fill: %w", err)
+			return Order{}, false, fmt.Errorf("insert trader order fill: %w", err)
 		}
 		insertedFills = append(insertedFills, fill)
 	}
 
-	merged, err := mergeOrderUpdate(current, result, eventAt, insertedFills)
+	merged, err := mergeOrderUpdate(current, result, eventAt, insertedFills, skipVenueWatermark)
 	if err != nil {
-		return Order{}, err
+		return Order{}, false, err
 	}
+	authoritativeTerminal := isAuthoritativeTerminalResult(result, stream, merged.Status)
+	if track {
+		authoritative := current.FilledQuantity
+		if stream && !skipVenueWatermark {
+			authoritative = merged.FilledQuantity
+		}
+		var average string
+		var write bool
+		pending, average, write = r.fillAverages.Prepare(
+			handle, current, merged.Status, authoritative, fills, insertedFills,
+		)
+		trackerPrepared = true
+		if write {
+			merged.AveragePrice = average
+		}
+	}
+	filledQuantityChanged := !parseDecimal(current.FilledQuantity).Equal(parseDecimal(merged.FilledQuantity))
 	var streamEventAt, venueEventAt any
 	if stream {
 		streamEventAt = receivedAt
 	}
-	venueEventAt = eventAt
+	if !result.LocalCommandAck && !skipVenueWatermark {
+		venueEventAt = eventAt
+	}
 	var updated Order
 	err = tx.QueryRow(ctx, `
 		UPDATE trader_orders SET
@@ -249,31 +355,107 @@ func (r *Repository) applyOrderUpdate(
 				ELSE GREATEST(COALESCE(last_venue_event_at,'-infinity'),$9::timestamptz) END,
 			updated_at=now(),
 			last_reconciled_at=CASE WHEN $10 THEN last_reconciled_at ELSE now() END,
-			reconcile_failures=CASE WHEN $10 THEN reconcile_failures ELSE 0 END,
-			reconcile_lease_until=CASE WHEN $10 THEN reconcile_lease_until ELSE NULL END,
+			reconcile_failures=CASE WHEN $11 THEN 0 WHEN $10 THEN reconcile_failures ELSE 0 END,
+			reconcile_lease_until=CASE WHEN $11 THEN NULL WHEN $10 THEN reconcile_lease_until ELSE NULL END,
 			next_reconcile_at=CASE
-				WHEN $3 IN ('filled','canceled','rejected','expired') THEN 'infinity'::timestamptz
+				WHEN $11 THEN 'infinity'::timestamptz
+				WHEN $3 IN ('filled','canceled','rejected','expired') THEN next_reconcile_at
 				WHEN $3 IN ('pending','unknown','partially_filled') THEN now()+interval '2 seconds'
 				ELSE now()+interval '5 seconds'
-			END
+			END,
+			absence_confirmations=0
 		WHERE id=$1::uuid
 		RETURNING `+orderColumns,
 		orderID, merged.VenueOrderID, merged.Status, merged.FilledQuantity,
 		merged.AveragePrice, merged.ErrorCode, merged.ErrorMessage,
-		streamEventAt, venueEventAt, stream,
+		streamEventAt, venueEventAt, stream, authoritativeTerminal,
 	).Scan(orderScanTargets(&updated)...)
 	if err != nil {
-		return Order{}, fmt.Errorf("merge trader order: %w", err)
+		return Order{}, false, fmt.Errorf("merge trader order: %w", err)
+	}
+	if venueReferencePresent(result.Reference) {
+		ref := result.Reference
+		if ref.VenueOrderID == "" {
+			ref.VenueOrderID = merged.VenueOrderID
+		}
+		if result.LocalCommandAck && !current.LastVenueEventAt.IsZero() {
+			ref.ReconcileStatus = ""
+		}
+		if ref.EventAt.IsZero() && !result.LocalCommandAck && !skipVenueWatermark {
+			ref.EventAt = eventAt
+		}
+		var refEventAt any
+		if !result.LocalCommandAck && !skipVenueWatermark && !ref.EventAt.IsZero() {
+			refEventAt = ref.EventAt
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO trader_order_venue_refs(
+				order_id,venue_client_order_id,venue_order_id,cloid,tx_hash,nonce,
+				account_index,api_key_index,client_order_index,last_venue_event_at,reconcile_status
+			) VALUES(
+				$1::uuid,NULLIF($2,''),NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),
+				CASE WHEN $9::bigint<>0 THEN $6::bigint ELSE NULL END,
+				CASE WHEN $9::bigint<>0 THEN $7::bigint ELSE NULL END,
+				CASE WHEN $9::bigint<>0 THEN $8::smallint ELSE NULL END,
+				NULLIF($9,0),$10,NULLIF($11,'')
+			)
+			ON CONFLICT(order_id) DO UPDATE SET
+				venue_client_order_id=COALESCE(EXCLUDED.venue_client_order_id,trader_order_venue_refs.venue_client_order_id),
+				venue_order_id=COALESCE(EXCLUDED.venue_order_id,trader_order_venue_refs.venue_order_id),
+				cloid=COALESCE(EXCLUDED.cloid,trader_order_venue_refs.cloid),
+				tx_hash=COALESCE(EXCLUDED.tx_hash,trader_order_venue_refs.tx_hash),
+				nonce=COALESCE(EXCLUDED.nonce,trader_order_venue_refs.nonce),
+				account_index=COALESCE(EXCLUDED.account_index,trader_order_venue_refs.account_index),
+				api_key_index=COALESCE(EXCLUDED.api_key_index,trader_order_venue_refs.api_key_index),
+				client_order_index=COALESCE(EXCLUDED.client_order_index,trader_order_venue_refs.client_order_index),
+				last_venue_event_at=COALESCE(EXCLUDED.last_venue_event_at,trader_order_venue_refs.last_venue_event_at),
+				reconcile_status=COALESCE(EXCLUDED.reconcile_status,trader_order_venue_refs.reconcile_status),
+				updated_at=now()`,
+			orderID, ref.ClientOrderID, ref.VenueOrderID, ref.Cloid, ref.TxHash, ref.Nonce,
+			ref.AccountIndex, ref.APIKeyIndex, ref.ClientOrderIndex, refEventAt, ref.ReconcileStatus,
+		)
+		if err != nil {
+			return Order{}, false, fmt.Errorf("upsert trader order venue reference: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return Order{}, fmt.Errorf("commit trader order update: %w", err)
+		return Order{}, false, fmt.Errorf("commit trader order update: %w", err)
+	}
+	if track {
+		r.fillAverages.Commit(handle, pending)
+		trackerCommitted = true
+		if pending.writeAverage {
+			slog.Debug(
+				"hyperliquid_fill_average_updated",
+				slog.String("order_id", current.ID),
+				slog.String("average_price", merged.AveragePrice),
+				slog.String("filled_quantity", merged.FilledQuantity),
+			)
+		}
+		if r.fillAverages.shouldMarkTerminal(handle, merged.Status) {
+			markTerminal = true
+			terminalExpiry = time.Now().Add(orderFillAverageTerminalTTL)
+		}
+		handle.state.mu.Unlock()
+		trackerLocked = false
+		r.fillAverages.Release(handle, markTerminal, terminalExpiry)
 	}
 	if updated.TwapJobID != "" {
 		if _, refreshErr := r.RefreshTwapProgress(ctx, updated.TwapJobID); refreshErr != nil {
-			return Order{}, refreshErr
+			return updated, filledQuantityChanged, refreshErr
 		}
 	}
-	return updated, nil
+	return updated, filledQuantityChanged, nil
+}
+
+func venueReferencePresent(ref exchange.VenueReference) bool {
+	return strings.TrimSpace(ref.ClientOrderID) != "" ||
+		strings.TrimSpace(ref.VenueOrderID) != "" ||
+		strings.TrimSpace(ref.Cloid) != "" ||
+		strings.TrimSpace(ref.TxHash) != "" ||
+		ref.Nonce != 0 || ref.AccountIndex != 0 || ref.APIKeyIndex != 0 ||
+		ref.ClientOrderIndex != 0 || !ref.EventAt.IsZero() ||
+		strings.TrimSpace(ref.ReconcileStatus) != ""
 }
 
 func mergeOrderUpdate(
@@ -281,9 +463,50 @@ func mergeOrderUpdate(
 	result VenueResult,
 	eventAt time.Time,
 	insertedFills []OrderFill,
+	skipVenueWatermark bool,
 ) (Order, error) {
 	merged := current
 	lastEventAt := current.LastVenueEventAt
+	if result.LocalCommandAck && hasVenueEventWatermark(lastEventAt) {
+		if merged.VenueOrderID == "" && strings.TrimSpace(result.VenueOrderID) != "" {
+			merged.VenueOrderID = strings.TrimSpace(result.VenueOrderID)
+		}
+		oldFilled, err := decimal.NewFromString(current.FilledQuantity)
+		if err != nil {
+			return Order{}, fmt.Errorf("parse stored filled quantity: %w", err)
+		}
+		incomingFilled := strings.TrimSpace(result.FilledQuantity)
+		if incomingFilled == "" {
+			return merged, nil
+		}
+		candidate, parseErr := decimal.NewFromString(incomingFilled)
+		if parseErr != nil || candidate.IsNegative() {
+			return Order{}, fmt.Errorf("%w: invalid cumulative filled quantity", ErrInvalidArgument)
+		}
+		if !candidate.GreaterThan(oldFilled) {
+			return merged, nil
+		}
+		if strings.TrimSpace(result.AveragePrice) == "" {
+			return merged, nil
+		}
+		average, err := decimal.NewFromString(strings.TrimSpace(result.AveragePrice))
+		if err != nil || average.IsNegative() {
+			return Order{}, fmt.Errorf("%w: invalid average price", ErrInvalidArgument)
+		}
+		merged.FilledQuantity = candidate.String()
+		merged.AveragePrice = average.String()
+		return merged, nil
+	}
+
+	if skipVenueWatermark {
+		// Hyperliquid userFills are audit-only: insert fill rows, but do not
+		// change cumulative quantity, status, or last_venue_event_at.
+		if merged.VenueOrderID == "" && strings.TrimSpace(result.VenueOrderID) != "" {
+			merged.VenueOrderID = strings.TrimSpace(result.VenueOrderID)
+		}
+		return merged, nil
+	}
+
 	fresh := lastEventAt.IsZero() || eventAt.IsZero() || !eventAt.Before(lastEventAt)
 
 	if merged.VenueOrderID == "" && strings.TrimSpace(result.VenueOrderID) != "" {
@@ -421,7 +644,17 @@ func (r *Repository) LeaseDueOrders(
 	ctx context.Context,
 	limit int,
 	lease time.Duration,
-) ([]Order, error) {
+) (items []Order, resultErr error) {
+	started := time.Now()
+	r.sqlMetrics.leaseCalls.Add(1)
+	defer func() {
+		r.sqlMetrics.leaseDurationMS.Add(
+			uint64(time.Since(started).Milliseconds()),
+		)
+		if resultErr != nil {
+			r.sqlMetrics.leaseErrors.Add(1)
+		}
+	}()
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
@@ -433,19 +666,13 @@ func (r *Repository) LeaseDueOrders(
 		return nil, fmt.Errorf("begin reconcile lease: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	rows, err := tx.Query(ctx, `
-		SELECT `+orderColumns+`
-		FROM trader_orders
-		WHERE status IN ('pending','open','partially_filled','unknown')
-		  AND next_reconcile_at <= now()
-		  AND (reconcile_lease_until IS NULL OR reconcile_lease_until < now())
-		ORDER BY next_reconcile_at, updated_at
-		LIMIT $1
-		FOR UPDATE SKIP LOCKED`, limit)
+	rows, err := tx.Query(
+		ctx, leaseDueOrdersSQL, limit, arbitrageOrderReconcileError,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("lease due trader orders: %w", err)
 	}
-	items := make([]Order, 0, limit)
+	items = make([]Order, 0, limit)
 	for rows.Next() {
 		var item Order
 		if err := rows.Scan(orderScanTargets(&item)...); err != nil {
@@ -458,13 +685,27 @@ func (r *Repository) LeaseDueOrders(
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	for _, item := range items {
-		if _, err := tx.Exec(ctx, `
+	r.sqlMetrics.leaseReturned.Add(uint64(len(items)))
+	if len(items) > 0 {
+		ids := make([]string, len(items))
+		for index := range items {
+			ids[index] = items[index].ID
+		}
+		tag, err := tx.Exec(ctx, `
+			/* trader:lease_due_orders_bulk_update */
 			UPDATE trader_orders
 			SET reconcile_lease_until=now()+$2::interval
-			WHERE id=$1::uuid`, item.ID, lease.String()); err != nil {
+			WHERE id=ANY($1::uuid[])`, ids, lease.String())
+		if err != nil {
 			return nil, fmt.Errorf("set reconcile lease: %w", err)
 		}
+		if tag.RowsAffected() != int64(len(items)) {
+			return nil, fmt.Errorf(
+				"set reconcile lease: updated %d trader orders, expected %d",
+				tag.RowsAffected(), len(items),
+			)
+		}
+		r.sqlMetrics.leaseWrites.Add(uint64(tag.RowsAffected()))
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit reconcile lease: %w", err)
@@ -478,16 +719,92 @@ func (r *Repository) MarkReconcileFailure(
 	next time.Time,
 ) error {
 	_, err := r.pool.Exec(ctx, `
-		UPDATE trader_orders SET
-			reconcile_failures=reconcile_failures+1,
-			reconcile_lease_until=NULL,
-			next_reconcile_at=$2,
-			last_reconciled_at=now()
-		WHERE id=$1::uuid`, orderID, next)
+		WITH failed AS (
+			UPDATE trader_orders SET
+				reconcile_failures=reconcile_failures+1,
+				absence_confirmations=0,
+				reconcile_lease_until=NULL,
+				next_reconcile_at=$2,
+				last_reconciled_at=now()
+			WHERE id=$1::uuid
+			  AND status IN ('pending','open','partially_filled','unknown')
+			RETURNING arbitrage_execution_id,reconcile_failures,created_at
+		),
+		uncertain_combinations AS (
+			SELECT DISTINCT e.combination_id
+			FROM failed f
+			JOIN trader_arbitrage_executions e
+			  ON e.id=f.arbitrage_execution_id
+			WHERE f.reconcile_failures >= $3
+			   OR now()-f.created_at >= $4::interval
+		)
+		UPDATE trader_arbitrage_combinations c SET
+			position_uncertain=TRUE,
+			runtime_state='position_uncertain',
+			error_message=$5,
+			updated_at=now(),
+			version=version+1
+		FROM uncertain_combinations u
+		WHERE c.id=u.combination_id
+		  AND c.status IN ('running','closing')`,
+		orderID, next, maxOrderReconcileFailures, maxOrderReconcileUncertainAge.String(),
+		arbitrageOrderReconcileError,
+	)
 	if err != nil {
 		return fmt.Errorf("mark reconcile failure: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) ConfirmOrderAbsence(
+	ctx context.Context,
+	orderID string,
+	expectedUpdatedAt time.Time,
+	next time.Time,
+) (Order, bool, error) {
+	if next.IsZero() {
+		next = time.Now().UTC().Add(2 * time.Second)
+	}
+	var updated Order
+	err := r.pool.QueryRow(ctx, `
+		UPDATE trader_orders SET
+			absence_confirmations=absence_confirmations+1,
+			reconcile_lease_until=NULL,
+			last_reconciled_at=now(),
+			updated_at=now(),
+			status=CASE WHEN absence_confirmations+1 >= $4 THEN 'rejected' ELSE status END,
+			error_code=CASE WHEN absence_confirmations+1 >= $4 THEN $5 ELSE error_code END,
+			error_message=CASE WHEN absence_confirmations+1 >= $4 THEN $6 ELSE error_message END,
+			filled_quantity=CASE WHEN absence_confirmations+1 >= $4 THEN 0 ELSE filled_quantity END,
+			reconcile_failures=CASE WHEN absence_confirmations+1 >= $4 THEN 0 ELSE reconcile_failures END,
+			next_reconcile_at=CASE
+				WHEN absence_confirmations+1 >= $4 THEN 'infinity'::timestamptz
+				ELSE $3
+			END
+		WHERE id=$1::uuid
+		  AND updated_at=$2
+		  AND venue_order_id=''
+		  AND filled_quantity=0
+		  AND status IN ('pending','open','partially_filled','unknown')
+		  AND NOT EXISTS (
+			SELECT 1 FROM trader_order_fills f WHERE f.order_id=trader_orders.id
+		  )
+		RETURNING `+orderColumns,
+		orderID, expectedUpdatedAt, next, confirmedAbsentRejectAfter,
+		errorConfirmedAbsentAfterUncertainSubmit,
+		"venue confirmed the order was never accepted",
+	).Scan(orderScanTargets(&updated)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		current, getErr := r.getOrder(ctx, `WHERE id=$1::uuid`, orderID)
+		if getErr != nil {
+			return Order{}, false, getErr
+		}
+		return current, false, nil
+	}
+	if err != nil {
+		return Order{}, false, fmt.Errorf("confirm order absence: %w", err)
+	}
+	return updated, confirmedAbsentReliableZeroFill(updated), nil
 }
 
 func (r *Repository) getByIdempotency(ctx context.Context, key string) (Order, error) {
@@ -511,8 +828,9 @@ const orderColumns = `
 	id::text, idempotency_key, owner_username, trading_account_id, product_name,
 	exchange, instrument_id, contract_type, exchange_symbol, client_order_id,
 	base_asset, quote_asset,
-	COALESCE(venue_order_id,''), side, order_type, quantity::text,
-	COALESCE(price::text,''), filled_quantity::text, average_price::text,
+	COALESCE(venue_order_id,''), side, order_type, trim_scale(quantity)::text,
+	COALESCE(trim_scale(price)::text,''), trim_scale(filled_quantity)::text,
+	trim_scale(average_price)::text,
 	status, error_code, error_message, request_fingerprint, created_at, updated_at,
 	COALESCE(last_reconciled_at, 'epoch'::timestamptz),
 	reconcile_failures,
@@ -525,7 +843,8 @@ const orderColumns = `
 	COALESCE(last_venue_event_at, 'epoch'::timestamptz),
 	COALESCE(twap_job_id::text,''), COALESCE(twap_slice_index,0),
 	COALESCE(twap_attempt_index,0),COALESCE(arbitrage_execution_id::text,''),
-	COALESCE(arbitrage_leg,''),COALESCE(arbitrage_role,''),COALESCE(reduce_only,FALSE)`
+	COALESCE(arbitrage_leg,''),COALESCE(arbitrage_role,''),COALESCE(reduce_only,FALSE),
+	COALESCE(absence_confirmations,0)`
 
 func orderScanTargets(order *Order) []any {
 	return []any{
@@ -540,6 +859,7 @@ func orderScanTargets(order *Order) []any {
 		&order.LastStreamEventAt, &order.LastVenueEventAt,
 		&order.TwapJobID, &order.TwapSliceIndex, &order.TwapAttemptIndex,
 		&order.ArbitrageExecutionID, &order.ArbitrageLeg, &order.ArbitrageRole, &order.ReduceOnly,
+		&order.AbsenceConfirmations,
 	}
 }
 

@@ -1,0 +1,9 @@
+mds:
+  source: replay
+  required_instruments:
+    - {venue: aster, product: spot, symbol: BTCUSDT}
+    - {venue: lighter, product: perpetual, symbol: BTCUSDC}
+
+oms: {}
+
+strategy: {}

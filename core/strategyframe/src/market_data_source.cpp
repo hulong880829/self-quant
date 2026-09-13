@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -49,14 +50,6 @@ MarketUpdateHeader Header(const utils::md::wire::RecordHeader& value,
           value.book_generation};
 }
 
-Venue ToVenue(utils::md::Venue value) noexcept {
-  return static_cast<Venue>(value);
-}
-
-ProductType ToProduct(utils::md::ProductType value) noexcept {
-  return static_cast<ProductType>(value);
-}
-
 std::mutex& SelfHostedMutex() {
   static std::mutex value;
   return value;
@@ -75,11 +68,13 @@ struct FixedBook {
   InstrumentId instrument_id{};
   std::uint32_t generation{};
   bool snapshot{};
+  bool live{};
 
   void reset(std::uint32_t next_generation = 0) noexcept {
     bid_count = ask_count = 0;
     generation = next_generation;
     snapshot = false;
+    live = false;
   }
 
   bool begin(const utils::md::wire::SnapshotBeginRecord& record) noexcept {
@@ -127,6 +122,7 @@ struct FixedBook {
       return false;
     }
     snapshot = false;
+    live = true;
     return true;
   }
 
@@ -166,6 +162,55 @@ struct FixedBook {
   }
 };
 
+struct BboValue {
+  std::int64_t bid_price{};
+  std::int64_t bid_quantity{};
+  std::int64_t ask_price{};
+  std::int64_t ask_quantity{};
+
+  [[nodiscard]] bool operator==(const BboValue&) const noexcept = default;
+};
+
+struct BboOriginState {
+  std::uint64_t source_seq{};
+  std::uint64_t exchange_ts_ns{};
+  BboValue value{};
+  bool seen{};
+};
+
+struct BboArbitrationState {
+  std::array<BboOriginState, 2> origins{};
+  std::array<BboOriginState, 2> excluded{};
+  BboValue selected_value{};
+  std::uint64_t selected_exchange_ts_ns{};
+  std::uint64_t last_exchange_ts_ns{};
+  std::uint64_t first_excluded_ns{};
+  std::uint32_t generation{};
+  utils::md::BboOrigin selected_origin{utils::md::BboOrigin::Unknown};
+  bool selected{};
+  bool accepted{};
+  bool starvation_reported{};
+  bool unknown_reported{};
+
+  void reset(std::uint32_t next_generation = 0) noexcept {
+    *this = {};
+    generation = next_generation;
+  }
+};
+
+utils::md::BboOrigin Origin(std::uint16_t flags) noexcept {
+  const auto value = flags & utils::md::wire::kBboOriginMask;
+  if (value == utils::md::wire::kBboOriginTickerStream)
+    return utils::md::BboOrigin::TickerStream;
+  if (value == utils::md::wire::kBboOriginOrderBookStream)
+    return utils::md::BboOrigin::OrderBookStream;
+  return utils::md::BboOrigin::Unknown;
+}
+
+std::size_t OriginIndex(utils::md::BboOrigin origin) noexcept {
+  return origin == utils::md::BboOrigin::OrderBookStream ? 1U : 0U;
+}
+
 }  // namespace
 
 struct MarketDataSource::Impl {
@@ -182,6 +227,7 @@ struct MarketDataSource::Impl {
   struct InstrumentSlot {
     InstrumentId id{};
     InstrumentMeta meta{};
+    BboArbitrationState bbo{};
     bool tombstone{};
   };
   struct BookSlot {
@@ -211,6 +257,7 @@ struct MarketDataSource::Impl {
   std::array<InstrumentSlot, kInstrumentCapacity> instruments{};
   std::deque<std::vector<std::byte>> replay;
   std::unique_ptr<mds::producer::ProducerRuntime> producer_runtime;
+  RuntimeMetrics metrics{};
   bool started{};
   bool self_hosted{};
 
@@ -347,6 +394,7 @@ struct MarketDataSource::Impl {
         auto& target = reusable == nullptr ? slot : *reusable;
         target.id = value.instrument_id;
         target.meta.value = value;
+        target.bbo = {};
         target.tombstone = false;
         return true;
       }
@@ -355,6 +403,7 @@ struct MarketDataSource::Impl {
     if (reusable != nullptr) {
       reusable->id = value.instrument_id;
       reusable->meta.value = value;
+      reusable->bbo = {};
       reusable->tombstone = false;
       return true;
     }
@@ -389,6 +438,7 @@ struct MarketDataSource::Impl {
         target.id = value.instrument_id;
         target.meta.catalog = value;
         target.meta.catalog_generation = generation;
+        target.bbo = {};
         target.tombstone = false;
         return CatalogUpsert::Changed;
       }
@@ -398,10 +448,191 @@ struct MarketDataSource::Impl {
       reusable->id = value.instrument_id;
       reusable->meta.catalog = value;
       reusable->meta.catalog_generation = generation;
+      reusable->bbo = {};
       reusable->tombstone = false;
       return CatalogUpsert::Changed;
     }
     return CatalogUpsert::Failed;
+  }
+
+  InstrumentSlot* slot_for(InstrumentId id) noexcept {
+    if (id == 0) return nullptr;
+    std::size_t index = id % instruments.size();
+    for (std::size_t probe = 0; probe < instruments.size(); ++probe) {
+      auto& slot = instruments[index];
+      if (slot.id == id) return &slot;
+      if (slot.id == 0 && !slot.tombstone) return nullptr;
+      index = (index + 1) % instruments.size();
+    }
+    return nullptr;
+  }
+
+  bool policy_accepts(utils::md::BboOrigin origin) const noexcept {
+    switch (config.bbo_policy) {
+      case BboPolicy::TickerOnly:
+        return origin == utils::md::BboOrigin::TickerStream;
+      case BboPolicy::OrderBookOnly:
+        return origin == utils::md::BboOrigin::OrderBookStream;
+      case BboPolicy::NewestExchangeTime:
+        return origin != utils::md::BboOrigin::Unknown;
+      case BboPolicy::LegacyPassthrough:
+        return true;
+    }
+    return false;
+  }
+
+  bool suppress() noexcept {
+    ++metrics.bbo_callbacks_suppressed;
+    return true;
+  }
+
+  bool validate_book_top(Stream& stream,
+                         const utils::md::wire::RecordHeader& header,
+                         const BboValue& value) noexcept {
+    auto* book = book_for(stream, header.instrument_id, false);
+    if (book != nullptr && book->generation == header.book_generation &&
+        book->live && !book->snapshot && book->bid_count != 0 &&
+        book->ask_count != 0 &&
+        book->bids[0].price.value == value.bid_price &&
+        book->bids[0].quantity.value == value.bid_quantity &&
+        book->asks[0].price.value == value.ask_price &&
+        book->asks[0].quantity.value == value.ask_quantity) {
+      return true;
+    }
+    ++metrics.book_top_mismatch;
+    if (book != nullptr) book->reset(header.book_generation);
+    return false;
+  }
+
+  bool emit_bbo(InstrumentSlot& instrument,
+                const utils::md::wire::RecordHeader& header,
+                const BboValue& value) noexcept {
+    BboUpdate update{
+        Header(header, instrument.meta.value.venue,
+               instrument.meta.value.product_type),
+        {Fixed(value.bid_price, instrument.meta.value.price_scale),
+         Fixed(value.bid_quantity, instrument.meta.value.quantity_scale)},
+        {Fixed(value.ask_price, instrument.meta.value.price_scale),
+         Fixed(value.ask_quantity, instrument.meta.value.quantity_scale)}};
+    ++metrics.bbo_callbacks_emitted;
+    return !sink.bbo || sink.bbo(sink.context, update);
+  }
+
+  bool arbitrate_bbo(Stream& stream, InstrumentSlot& instrument,
+                     const utils::md::wire::RecordHeader& header,
+                     const BboValue& value) noexcept {
+    const auto origin = Origin(header.flags);
+    auto& state = instrument.bbo;
+    if (origin == utils::md::BboOrigin::Unknown) {
+      ++metrics.bbo_origin_unknown;
+      if (config.bbo_policy != BboPolicy::LegacyPassthrough &&
+          !state.unknown_reported) {
+        std::fprintf(
+            stderr,
+            "strategyframe: unknown BBO origin for instrument %llu\n",
+            static_cast<unsigned long long>(header.instrument_id));
+        state.unknown_reported = true;
+      }
+    }
+    if (!policy_accepts(origin)) {
+      ++metrics.bbo_policy_excluded;
+      if (origin != utils::md::BboOrigin::Unknown) {
+        auto& diagnostic = state.excluded[OriginIndex(origin)];
+        diagnostic = {header.source_seq, header.exchange_ts_ns, value, true};
+      }
+      if (!state.accepted && !state.starvation_reported) {
+        const std::uint64_t now = NowNs();
+        if (state.first_excluded_ns == 0) state.first_excluded_ns = now;
+        if (config.bbo_policy_starvation_ns == 0 ||
+            now - state.first_excluded_ns >=
+                config.bbo_policy_starvation_ns) {
+          ++metrics.bbo_policy_starved;
+          state.starvation_reported = true;
+          std::fprintf(
+              stderr,
+              "strategyframe: BBO policy starved instrument %llu\n",
+              static_cast<unsigned long long>(header.instrument_id));
+        }
+      }
+      return suppress();
+    }
+
+    if (config.bbo_policy == BboPolicy::LegacyPassthrough) {
+      if (origin == utils::md::BboOrigin::OrderBookStream &&
+          !validate_book_top(stream, header, value)) {
+        return suppress();
+      }
+      return emit_bbo(instrument, header, value);
+    }
+
+    if (state.generation != 0 &&
+        header.book_generation < state.generation) {
+      ++metrics.bbo_generation_dropped;
+      return suppress();
+    }
+    if (header.book_generation > state.generation) {
+      state.reset(header.book_generation);
+    }
+    if (origin == utils::md::BboOrigin::OrderBookStream &&
+        !validate_book_top(stream, header, value)) {
+      return suppress();
+    }
+
+    auto& source = state.origins[OriginIndex(origin)];
+    if (source.seen && source.source_seq == header.source_seq &&
+        source.exchange_ts_ns == header.exchange_ts_ns &&
+        source.value == value) {
+      ++metrics.bbo_replay_dropped;
+      return suppress();
+    }
+    if (source.seen && header.source_seq != 0 &&
+        source.source_seq != 0 && header.source_seq < source.source_seq) {
+      ++metrics.bbo_stale_sequence_dropped;
+      return suppress();
+    }
+    if (source.seen && header.source_seq != 0 &&
+        header.source_seq == source.source_seq && !(source.value == value)) {
+      ++metrics.bbo_stale_sequence_dropped;
+      return suppress();
+    }
+    if (header.exchange_ts_ns != 0 && state.last_exchange_ts_ns != 0 &&
+        header.exchange_ts_ns < state.last_exchange_ts_ns) {
+      ++metrics.bbo_stale_time_dropped;
+      return suppress();
+    }
+
+    source = {header.source_seq, header.exchange_ts_ns, value, true};
+    if (header.exchange_ts_ns > state.last_exchange_ts_ns) {
+      state.last_exchange_ts_ns = header.exchange_ts_ns;
+    }
+    state.accepted = true;
+    if (state.selected && state.selected_origin != origin &&
+        header.exchange_ts_ns == state.selected_exchange_ts_ns &&
+        value == state.selected_value) {
+      ++metrics.bbo_cross_source_dropped;
+      return suppress();
+    }
+
+    if (config.bbo_policy == BboPolicy::NewestExchangeTime &&
+        state.selected && state.selected_origin != origin) {
+      bool ticker_wins_tie{};
+      if (header.exchange_ts_ns == state.selected_exchange_ts_ns) {
+        ticker_wins_tie = true;
+      } else if (header.exchange_ts_ns == 0 ||
+                 state.selected_exchange_ts_ns == 0) {
+        ticker_wins_tie = header.exchange_ts_ns == 0;
+      }
+      if (ticker_wins_tie &&
+          origin != utils::md::BboOrigin::TickerStream) {
+        return suppress();
+      }
+    }
+
+    state.selected = true;
+    state.selected_origin = origin;
+    state.selected_exchange_ts_ns = header.exchange_ts_ns;
+    state.selected_value = value;
+    return emit_bbo(instrument, header, value);
   }
 
   FixedBook* book_for(Stream& stream, InstrumentId id,
@@ -449,6 +680,7 @@ struct MarketDataSource::Impl {
       if (slot.id == id) {
         slot.id = 0;
         slot.meta = {};
+        slot.bbo = {};
         slot.tombstone = true;
         break;
       }
@@ -484,8 +716,7 @@ struct MarketDataSource::Impl {
     const auto* value = meta(header.instrument_id);
     if (!value) return true;
     OrderBookUpdate update{
-        Header(header, ToVenue(value->value.venue),
-               ToProduct(value->value.product_type)),
+        Header(header, value->value.venue, value->value.product_type),
         {book.bids.data(), book.bid_count},
         {book.asks.data(), book.ask_count}};
     return !sink.book || sink.book(sink.context, update);
@@ -517,7 +748,9 @@ struct MarketDataSource::Impl {
       return !sink.instrument ||
              sink.instrument(sink.context, record.instrument);
     }
-    const InstrumentMeta* instrument = meta(generic.instrument_id);
+    InstrumentSlot* instrument_slot = slot_for(generic.instrument_id);
+    const InstrumentMeta* instrument =
+        instrument_slot == nullptr ? nullptr : &instrument_slot->meta;
     if (type == utils::md::MessageType::Bbo ||
         type == utils::md::MessageType::Ticker) {
       if (!instrument) return true;
@@ -537,14 +770,9 @@ struct MarketDataSource::Impl {
         ask_price = record.ask_price;
         ask_quantity = record.ask_quantity;
       }
-      BboUpdate update{
-          Header(generic, ToVenue(instrument->value.venue),
-                 ToProduct(instrument->value.product_type)),
-          {Fixed(bid_price, instrument->value.price_scale),
-           Fixed(bid_quantity, instrument->value.quantity_scale)},
-          {Fixed(ask_price, instrument->value.price_scale),
-           Fixed(ask_quantity, instrument->value.quantity_scale)}};
-      return !sink.bbo || sink.bbo(sink.context, update);
+      return arbitrate_bbo(
+          stream, *instrument_slot, generic,
+          {bid_price, bid_quantity, ask_price, ask_quantity});
     }
     if (type == utils::md::MessageType::SnapshotBegin) {
       SnapshotBeginRecord record{};
@@ -575,6 +803,7 @@ struct MarketDataSource::Impl {
       if (!instrument || DecodeDelta(bytes, record) != CodecError::Ok)
         return false;
       auto* book = book_for(stream, record.header.instrument_id, false);
+      if (book != nullptr && !book->live) return true;
       if (book == nullptr ||
           !book->delta(record, instrument->value.price_scale,
                        instrument->value.quantity_scale))
@@ -698,6 +927,10 @@ Error MarketDataSource::poll(std::size_t budget,
 void MarketDataSource::stop() noexcept { impl_->stop(); }
 
 bool MarketDataSource::ready() const noexcept { return impl_->started; }
+
+const RuntimeMetrics& MarketDataSource::metrics() const noexcept {
+  return impl_->metrics;
+}
 
 void MarketDataSource::retire_instrument(
     InstrumentId instrument_id) noexcept {

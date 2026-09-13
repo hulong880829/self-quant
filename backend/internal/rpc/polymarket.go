@@ -130,7 +130,9 @@ func (s *PolymarketServer) GetAccountSummary(
 			AccountName:      summary.AccountName, WalletAddress: summary.WalletAddress,
 			AvailableBalance: summary.AvailableBalance,
 			PositionValue:    summary.PositionValue, TotalAssets: summary.TotalAssets,
-			SourceUpdatedAt: timestamppb.New(summary.SourceUpdatedAt), Stale: summary.Stale,
+			SourceUpdatedAt: timestamppb.New(summary.SourceUpdatedAt),
+			Stale:           summary.Stale,
+			BindingStatus:   summary.BindingStatus,
 		},
 	}, nil
 }

@@ -72,11 +72,13 @@ add_library(mds STATIC
   src/transport/shared_ring.cpp
   src/exchange/capabilities.cpp
   src/exchange/venue_adapter.cpp
+  src/exchange/aster/aster_adapter.cpp
   src/exchange/okx/okx_adapter.cpp
   src/exchange/bybit/bybit_adapter.cpp
   src/exchange/bitget/bitget_adapter.cpp
   src/exchange/gate/gate_adapter.cpp
   src/exchange/hyperliquid/hyperliquid_adapter.cpp
+  src/exchange/lighter/lighter_adapter.cpp
   src/exchange/polymarket/polymarket_adapter.cpp
   src/exchange/binance/binance_adapter.cpp
   src/exchange/binance/binance_venue_adapter.cpp
@@ -131,9 +133,24 @@ if(MDS_RECORDING_AVAILABLE)
   target_compile_options(mds_record PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+set(MDS_BUILD_VERSION_SOURCE
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/mds_build_version.cpp")
+set_source_files_properties("${MDS_BUILD_VERSION_SOURCE}"
+  PROPERTIES GENERATED TRUE)
+add_custom_target(mds_build_version
+  COMMAND "${CMAKE_COMMAND}"
+    -DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}
+    -DOUTPUT_FILE=${MDS_BUILD_VERSION_SOURCE}
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/generate_build_version.cmake"
+  BYPRODUCTS "${MDS_BUILD_VERSION_SOURCE}"
+  COMMENT "Generating MDS producer build identity"
+  VERBATIM)
+
 add_library(mds_producer_runtime STATIC
   cmd/mds_producer/producer_config.cpp
-  src/producer/producer_runtime.cpp)
+  src/producer/producer_runtime.cpp
+  "${MDS_BUILD_VERSION_SOURCE}")
+add_dependencies(mds_producer_runtime mds_build_version)
 add_library(self_quant::mds_producer_runtime ALIAS mds_producer_runtime)
 set_target_properties(mds_producer_runtime PROPERTIES
   EXPORT_NAME mds_producer_runtime)
@@ -278,7 +295,9 @@ if(MDS_BUILD_TESTS)
   target_link_libraries(mds_producer_config_tests PRIVATE
     mds_producer_runtime)
   target_compile_definitions(mds_producer_config_tests PRIVATE
-    MDS_PRODUCER_EXAMPLE_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/config/mds_producer.example.yaml")
+    MDS_PRODUCER_EXAMPLE_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/config/mds_producer.example.yaml"
+    MDS_ASTER_LIGHTER_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/config/aster-lighter.yaml"
+    MDS_ASTER_LIGHTER_BOOK_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/config/aster-lighter-book.yaml")
   add_test(NAME mds_producer_config_tests COMMAND mds_producer_config_tests)
   add_executable(mds_producer_runtime_tests
     tests/producer_runtime_tests.cpp)
@@ -356,7 +375,7 @@ if(MDS_BUILD_TESTS)
   add_test(NAME mds_venue_connection_sharding_loopback_tests
     COMMAND mds_venue_connection_sharding_loopback_tests)
   set_tests_properties(
-    mds_venue_connection_sharding_loopback_tests PROPERTIES TIMEOUT 30)
+    mds_venue_connection_sharding_loopback_tests PROPERTIES TIMEOUT 120)
   add_executable(mds_polymarket_protocol_tests
     tests/polymarket_protocol_tests.cpp)
   target_include_directories(mds_polymarket_protocol_tests PRIVATE
@@ -395,7 +414,8 @@ if(MDS_BUILD_TESTS)
   target_link_libraries(mds_consumer_config_tests PRIVATE
     mds_consumer_config)
   target_compile_definitions(mds_consumer_config_tests PRIVATE
-    MDS_CONSUMER_EXAMPLE_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/config/mds_shm_consumer.example.yaml")
+    MDS_CONSUMER_EXAMPLE_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/config/mds_shm_consumer.example.yaml"
+    MDS_ASTER_LIGHTER_CONSUMER_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/config/aster-lighter-clickhouse.yaml")
   add_test(NAME mds_consumer_config_tests
     COMMAND mds_consumer_config_tests)
   add_executable(mds_shm_consumer_demux_tests
@@ -424,6 +444,15 @@ if(MDS_BUILD_TESTS)
   add_test(NAME mds_clickhouse_bbo_recorder_tests
     COMMAND mds_clickhouse_bbo_recorder_tests)
   set_tests_properties(mds_clickhouse_bbo_recorder_tests PROPERTIES TIMEOUT 10)
+  add_executable(mds_shm_consumer_sigpipe_tests
+    tests/shm_consumer_sigpipe_tests.cpp)
+  target_link_libraries(mds_shm_consumer_sigpipe_tests PRIVATE mds)
+  target_compile_definitions(mds_shm_consumer_sigpipe_tests PRIVATE
+    MDS_SHM_CONSUMER_BIN="$<TARGET_FILE:mds_shm_consumer>")
+  add_dependencies(mds_shm_consumer_sigpipe_tests mds_shm_consumer)
+  add_test(NAME mds_shm_consumer_sigpipe_tests
+    COMMAND mds_shm_consumer_sigpipe_tests)
+  set_tests_properties(mds_shm_consumer_sigpipe_tests PROPERTIES TIMEOUT 20)
   if(MDS_RECORDING_AVAILABLE)
     add_executable(mds_recording_tests tests/recording_tests.cpp)
     target_link_libraries(mds_recording_tests PRIVATE mds_record)

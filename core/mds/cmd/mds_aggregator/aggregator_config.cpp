@@ -2,6 +2,7 @@
 
 #include "mds/consume/aggregate_segment.h"
 #include "mds/exchange/capabilities.h"
+#include "mds/exchange/symbol_policy.h"
 #include "mds/publish/wire_publisher.h"
 #include "utils/md/wire.h"
 
@@ -43,10 +44,11 @@ void reject_unknown(const YAML::Node &node,
 }
 
 std::string uppercase(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char character) {
-                   return static_cast<char>(std::toupper(character));
-                 });
+  for (char &character : value) {
+    if (character >= 'a' && character <= 'z') {
+      character = static_cast<char>(character - ('a' - 'A'));
+    }
+  }
   return value;
 }
 
@@ -55,10 +57,7 @@ bool power_of_two(std::size_t value) noexcept {
 }
 
 bool valid_token(std::string_view value, std::size_t maximum) noexcept {
-  return !value.empty() && value.size() <= maximum &&
-         std::all_of(value.begin(), value.end(), [](unsigned char character) {
-           return std::isalnum(character) != 0;
-         });
+  return exchange::valid_utf8_symbol(value, maximum);
 }
 
 std::uint64_t ttl_override_us(const YAML::Node &node, std::string_view key,

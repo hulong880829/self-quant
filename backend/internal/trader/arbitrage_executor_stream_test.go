@@ -70,6 +70,24 @@ func TestArbitrageExecutorMapsStreamNewToOpen(t *testing.T) {
 	}
 }
 
+func TestArbitrageExecutorPersistsStreamOrderReason(t *testing.T) {
+	store := &executorStreamStore{result: Order{ID: "order-1", Status: "canceled"}}
+	executor := &ArbitrageExecutor{orders: store}
+	_, err := executor.applyOrderStreamUpdate(context.Background(), Order{
+		ID: "order-1", FilledQuantity: "0",
+	}, orderstream.Update{
+		Type: orderstream.UpdateOrder, Status: orderstream.StatusCanceled,
+		ErrorCode: "31", ErrorMessage: "post only would take liquidity",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.update.Result.ErrorCode != "31" ||
+		store.update.Result.ErrorMessage != "post only would take liquidity" {
+		t.Fatalf("stream=%+v", store.update)
+	}
+}
+
 func TestArbitrageExecutorConvertsVenueContractsToBase(t *testing.T) {
 	store := &executorStreamStore{result: Order{
 		ID: "order-1", Status: "partially_filled", FilledQuantity: "0.004",

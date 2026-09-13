@@ -2,9 +2,11 @@ package exchange
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -56,6 +58,47 @@ func (a *bitgetAdapter) GetBBO(ctx context.Context, instrument Instrument) (BBO,
 	return bbo(item.BidPrice, item.AskPrice, timestamp)
 }
 
+func (a *bitgetAdapter) GetPositionMode(
+	ctx context.Context,
+	credentials Credentials,
+	instrument Instrument,
+) (string, error) {
+	if instrument.ContractType == "spot" {
+		return PositionModeOneWay, nil
+	}
+	raw, err := a.signed(
+		ctx, http.MethodGet, "/api/v3/account/settings",
+		credentials, nil, nil,
+	)
+	if err != nil {
+		return "", err
+	}
+	var payload struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			HoldMode string `json:"holdMode"`
+		} `json:"data"`
+	}
+	if err := unmarshalJSON(raw, &payload); err != nil {
+		return "", err
+	}
+	if payload.Code != "00000" {
+		return "", fmt.Errorf(
+			"%w: Bitget account settings code %s: %s",
+			ErrRejected, payload.Code, payload.Msg,
+		)
+	}
+	switch payload.Data.HoldMode {
+	case "one_way_mode":
+		return PositionModeOneWay, nil
+	case "hedge_mode":
+		return PositionModeHedge, nil
+	default:
+		return "", fmt.Errorf("unknown Bitget position mode %q", payload.Data.HoldMode)
+	}
+}
+
 func (a *bitgetAdapter) PlaceOrder(ctx context.Context, credentials Credentials, request OrderRequest) (Result, error) {
 	timeInForce := "gtc"
 	if request.OrderType == "market" {
@@ -89,12 +132,15 @@ func (a *bitgetAdapter) PlaceOrder(ctx context.Context, credentials Credentials,
 	}
 	raw, err := a.signed(ctx, http.MethodPost, "/api/v3/trade/place-order", credentials, compactJSON(body), nil)
 	if err != nil {
-		return Result{}, err
+		return bitgetRequestError(raw, err, bitgetCallPlace)
 	}
-	return parseBitgetOrder(raw, true)
+	return parseBitgetOrder(raw, bitgetCallPlace)
 }
 
 func (a *bitgetAdapter) GetOrder(ctx context.Context, credentials Credentials, request QueryRequest) (Result, error) {
+	if err := requireOrderLookupID(request); err != nil {
+		return Result{}, err
+	}
 	values := url.Values{"category": {bitgetCategory(request.Instrument)}}
 	if request.VenueOrderID != "" {
 		values.Set("orderId", request.VenueOrderID)
@@ -103,12 +149,36 @@ func (a *bitgetAdapter) GetOrder(ctx context.Context, credentials Credentials, r
 	}
 	raw, err := a.signed(ctx, http.MethodGet, "/api/v3/trade/order-info?"+values.Encode(), credentials, nil, nil)
 	if err != nil {
-		return Result{}, err
+		return unknownQueryError(bitgetRequestError(raw, err, bitgetCallQuery))
 	}
-	return parseBitgetOrder(raw, false)
+	return unknownQueryError(parseBitgetOrder(raw, bitgetCallQuery))
+}
+
+func (a *bitgetAdapter) ResolveOrder(
+	ctx context.Context,
+	credentials Credentials,
+	request QueryRequest,
+) (OrderResolution, error) {
+	if err := requireOrderLookupID(request); err != nil {
+		return OrderResolution{}, err
+	}
+	return exactOrderResolution(a.GetOrder(ctx, credentials, request))
 }
 
 func (a *bitgetAdapter) CancelOrder(ctx context.Context, credentials Credentials, request CancelRequest) (Result, error) {
+	accepted, err := a.sendCancelOrder(ctx, credentials, request)
+	return commandOnlyCancelResult(accepted, err)
+}
+
+func (a *bitgetAdapter) CancelAndGetOrder(ctx context.Context, credentials Credentials, request CancelRequest) (Result, error) {
+	accepted, err := a.sendCancelOrder(ctx, credentials, request)
+	if err != nil && !errors.Is(err, ErrAmbiguousCancel) {
+		return accepted, err
+	}
+	return getOrderAfterCancel(ctx, a.GetOrder, credentials, request, accepted, "Bitget")
+}
+
+func (a *bitgetAdapter) sendCancelOrder(ctx context.Context, credentials Credentials, request CancelRequest) (Result, error) {
 	body := map[string]string{"category": bitgetCategory(request.Instrument)}
 	if request.VenueOrderID != "" {
 		body["orderId"] = request.VenueOrderID
@@ -117,13 +187,9 @@ func (a *bitgetAdapter) CancelOrder(ctx context.Context, credentials Credentials
 	}
 	raw, err := a.signed(ctx, http.MethodPost, "/api/v3/trade/cancel-order", credentials, compactJSON(body), nil)
 	if err != nil {
-		return Result{}, err
+		return bitgetRequestError(raw, err, bitgetCallCancel)
 	}
-	result, err := parseBitgetOrder(raw, true)
-	if err == nil && result.Status == "unknown" {
-		result.Status = "canceled"
-	}
-	return result, err
+	return parseBitgetOrder(raw, bitgetCallCancel)
 }
 
 func (a *bitgetAdapter) signed(
@@ -133,8 +199,18 @@ func (a *bitgetAdapter) signed(
 	body []byte,
 	target any,
 ) ([]byte, error) {
+	return a.signedPaths(ctx, method, path, path, credentials, body, target)
+}
+
+func (a *bitgetAdapter) signedPaths(
+	ctx context.Context,
+	method, requestPath, signPath string,
+	credentials Credentials,
+	body []byte,
+	target any,
+) ([]byte, error) {
 	ts := nowMillis()
-	signPayload := ts + method + path + string(body)
+	signPayload := ts + method + signPath + string(body)
 	headers := http.Header{
 		"ACCESS-KEY":        {credentials.APIKey},
 		"ACCESS-PASSPHRASE": {credentials.Passphrase},
@@ -142,7 +218,30 @@ func (a *bitgetAdapter) signed(
 		"ACCESS-SIGN":       {hmacBase64(credentials.APISecret, signPayload)},
 		"locale":            {"en-US"},
 	}
-	return a.client.do(ctx, method, path, headers, body, target)
+	return a.client.do(ctx, method, requestPath, headers, body, target)
+}
+
+func bitgetSigningQuery(values url.Values) string {
+	if len(values) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var buf strings.Builder
+	for _, key := range keys {
+		for _, value := range values[key] {
+			if buf.Len() > 0 {
+				buf.WriteByte('&')
+			}
+			buf.WriteString(key)
+			buf.WriteByte('=')
+			buf.WriteString(value)
+		}
+	}
+	return buf.String()
 }
 
 func bitgetCategory(instrument Instrument) string {
@@ -155,7 +254,15 @@ func bitgetCategory(instrument Instrument) string {
 	return "USDT-FUTURES"
 }
 
-func parseBitgetOrder(raw []byte, place bool) (Result, error) {
+type bitgetCall string
+
+const (
+	bitgetCallPlace  bitgetCall = "place"
+	bitgetCallQuery  bitgetCall = "query"
+	bitgetCallCancel bitgetCall = "cancel"
+)
+
+func parseBitgetOrder(raw []byte, call bitgetCall) (Result, error) {
 	var payload struct {
 		Code, Msg string
 		Data      struct {
@@ -173,10 +280,37 @@ func parseBitgetOrder(raw []byte, place bool) (Result, error) {
 		return Result{}, err
 	}
 	if payload.Code != "" && payload.Code != "00000" {
-		return Result{Status: "rejected", ErrorCode: payload.Code, ErrorMessage: payload.Msg, Raw: rawMap(raw)}, ErrRejected
+		result := Result{
+			Status: "rejected", ErrorCode: payload.Code,
+			ErrorMessage: payload.Msg, Raw: rawMap(raw),
+		}
+		switch payload.Code {
+		case "25204":
+			result.Status = "unknown"
+			switch call {
+			case bitgetCallQuery:
+				return result, fmt.Errorf(
+					"%w: Bitget code %s: %s", ErrOrderNotFound, payload.Code, payload.Msg,
+				)
+			case bitgetCallPlace:
+				return result, fmt.Errorf(
+					"%w: Bitget code %s: %s", ErrUncertain, payload.Code, payload.Msg,
+				)
+			default:
+				return result, ErrAmbiguousCancel
+			}
+		case "40010", "40725", "45001":
+			result.Status = "unknown"
+			return result, ErrUncertain
+		default:
+			if call == bitgetCallQuery {
+				result.Status = "unknown"
+			}
+			return result, ErrRejected
+		}
 	}
 	status := normalizeStatus(firstNonEmpty(payload.Data.OrderStatus, payload.Data.Status))
-	if status == "unknown" && payload.Data.OrderID != "" && place {
+	if status == "unknown" && payload.Data.OrderID != "" && call == bitgetCallPlace {
 		status = "pending"
 	}
 	return Result{
@@ -185,4 +319,27 @@ func parseBitgetOrder(raw []byte, place bool) (Result, error) {
 		AveragePrice:   firstNonEmpty(payload.Data.AvgPrice, payload.Data.PriceAvg),
 		Raw:            rawMap(raw),
 	}, nil
+}
+
+func bitgetRequestError(raw []byte, requestErr error, call bitgetCall) (Result, error) {
+	result := Result{Raw: rawMap(raw)}
+	if len(raw) == 0 {
+		if call == bitgetCallQuery {
+			return unknownQueryError(result, requestErr)
+		}
+		return result, requestErr
+	}
+	parsed, parseErr := parseBitgetOrder(raw, call)
+	if parseErr == nil || errors.Is(parseErr, ErrRejected) ||
+		errors.Is(parseErr, ErrRateLimited) || errors.Is(parseErr, ErrUncertain) ||
+		errors.Is(parseErr, ErrAmbiguousCancel) || errors.Is(parseErr, ErrOrderNotFound) {
+		if call == bitgetCallQuery {
+			return unknownQueryError(parsed, parseErr)
+		}
+		return parsed, parseErr
+	}
+	if call == bitgetCallQuery {
+		return unknownQueryError(result, requestErr)
+	}
+	return result, requestErr
 }

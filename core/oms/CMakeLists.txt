@@ -18,6 +18,7 @@ add_library(self_quant_oms STATIC
   internal/oms/runtime/event_notifier.cpp
   internal/oms/runtime/replay_script.cpp
   internal/oms/runtime/timer_notifier.cpp
+  src/execution_directory.cpp
   src/execution_channel.cpp
   src/oms_api.cpp
   src/order_table.cpp

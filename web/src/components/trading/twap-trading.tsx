@@ -16,11 +16,16 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { fetchTradingAccounts, groupAccountsByProduct, type TradingAccount } from "@/lib/api/accounts";
 import {
-  CEX_EXCHANGES,
+  isWalletDexExchange,
+  tradingAccountStatusLabel,
+  type TradingAccount,
+} from "@/lib/api/accounts";
+import { useProductTradingAccounts } from "@/hooks/use-product-trading-accounts";
+import {
   cancelTraderTwap,
   createTraderTwap,
+  fetchTraderInstrumentCatalog,
   fetchTraderInstruments,
   fetchTraderTwap,
   fetchTraderTwapOrders,
@@ -32,7 +37,9 @@ import {
   type TraderTwap,
   type TraderTwapOrderType,
   type TraderTwapView,
+  type TraderVenueCapabilities,
 } from "@/lib/api/trader";
+import { useCloseOnHidden } from "@/lib/close-on-hidden";
 import { cn } from "@/lib/utils";
 
 const selectClassName =
@@ -65,6 +72,28 @@ function instrumentOptions(items: TraderInstrument[]) {
   }));
 }
 
+async function loadInstrumentCatalog(
+  accountId: number,
+  contractType: TraderContractType,
+): Promise<{ items: TraderInstrument[]; capabilities: TraderVenueCapabilities }> {
+  if (typeof fetchTraderInstrumentCatalog === "function") {
+    return fetchTraderInstrumentCatalog(accountId, contractType);
+  }
+  return {
+    items: await fetchTraderInstruments(accountId, contractType),
+    capabilities: {
+      products: ["spot", "perpetual"],
+      quoteAssets: [],
+      timeInForce: ["GTC", "IOC", "POST_ONLY"],
+      postOnly: true,
+      reduceOnly: true,
+      makerTwap: true,
+      privateOrderStream: false,
+      oneWayOnly: false,
+    },
+  };
+}
+
 function formatNumber(value: string): string {
   const number = Number(value);
   if (!Number.isFinite(number)) return value || "—";
@@ -75,6 +104,12 @@ function formatTime(value: string): string {
   if (!value) return "—";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function orderStatusLabel(status: string): string {
+  if (status === "pending") return "已提交，待交易所确认";
+  if (status === "unknown") return "状态不确定，正在对账";
+  return status;
 }
 
 function progressOf(twap: TraderTwap): number {
@@ -117,13 +152,13 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function TwapTradingView() {
-  const [accounts, setAccounts] = React.useState<TradingAccount[]>([]);
-  const [accountsError, setAccountsError] = React.useState<string | null>(null);
+  const { accounts, products, accountsError, inspectOne } = useProductTradingAccounts();
   const [productName, setProductName] = React.useState("");
   const [exchangeSlug, setExchangeSlug] = React.useState("");
   const [accountId, setAccountId] = React.useState<number | null>(null);
   const [contractType, setContractType] = React.useState<TraderContractType>("perpetual");
   const [instruments, setInstruments] = React.useState<TraderInstrument[]>([]);
+  const [capabilities, setCapabilities] = React.useState<TraderVenueCapabilities | null>(null);
   const [instrumentId, setInstrumentId] = React.useState<number | null>(null);
   const [side, setSide] = React.useState<TraderSide>("buy");
   const [totalQty, setTotalQty] = React.useState("");
@@ -147,12 +182,11 @@ export function TwapTradingView() {
   const [detail, setDetail] = React.useState<TraderTwap | null>(null);
   const [detailOrders, setDetailOrders] = React.useState<TraderOrder[]>([]);
   const [detailLoading, setDetailLoading] = React.useState(false);
+  const hideHostRef = useCloseOnHidden(() => {
+    setConfirmOpen(false);
+    setDetailOpen(false);
+  });
 
-  const cexAccounts = React.useMemo(
-    () => accounts.filter((item) => CEX_EXCHANGES.has(item.exchangeSlug)),
-    [accounts],
-  );
-  const products = React.useMemo(() => groupAccountsByProduct(cexAccounts), [cexAccounts]);
   const productAccounts = React.useMemo(
     () => products.find((item) => item.productName === productName)?.accounts ?? [],
     [productName, products],
@@ -165,32 +199,62 @@ export function TwapTradingView() {
   const selectedAccount = exchangeAccounts.find((item) => item.id === accountId) ?? null;
   const selectedInstrument = instruments.find((item) => item.id === instrumentId) ?? null;
 
+  const catalogCache = React.useRef(
+    new Map<string, { items: TraderInstrument[]; capabilities: TraderVenueCapabilities }>(),
+  );
+
+  const loadCachedCatalog = React.useCallback(
+    async (targetAccountId: number, targetType: TraderContractType) => {
+      const key = `${targetAccountId}:${targetType}`;
+      const cached = catalogCache.current.get(key);
+      if (cached) {
+        return cached;
+      }
+      const catalog = await loadInstrumentCatalog(targetAccountId, targetType);
+      catalogCache.current.set(key, catalog);
+      return catalog;
+    },
+    [],
+  );
+
   React.useEffect(() => {
-    void fetchTradingAccounts()
-      .then((items) => {
-        setAccounts(items);
-        const firstProduct = groupAccountsByProduct(
-          items.filter((item) => CEX_EXCHANGES.has(item.exchangeSlug)),
-        )[0];
-        const firstAccount = firstProduct?.accounts[0];
-        setProductName(firstProduct?.productName ?? "");
-        setExchangeSlug(firstAccount?.exchangeSlug ?? "");
-        setAccountId(firstAccount?.id ?? null);
-      })
-      .catch((error: unknown) => {
-        setAccountsError(error instanceof Error ? error.message : "账户加载失败");
-      });
-  }, []);
+    if (productName && products.some((item) => item.productName === productName)) {
+      const current = products.find((item) => item.productName === productName);
+      if (current && !current.accounts.some((item) => item.id === accountId)) {
+        const first = current.accounts[0];
+        setExchangeSlug(first?.exchangeSlug ?? "");
+        setAccountId(first?.id ?? null);
+      }
+      return;
+    }
+    const firstProduct = products[0];
+    const firstAccount = firstProduct?.accounts[0];
+    setProductName(firstProduct?.productName ?? "");
+    setExchangeSlug(firstAccount?.exchangeSlug ?? "");
+    setAccountId(firstAccount?.id ?? null);
+  }, [accountId, productName, products]);
 
   React.useEffect(() => {
     if (accountId == null) {
       return;
     }
     let active = true;
-    void fetchTraderInstruments(accountId, contractType)
-      .then((items) => {
+    void loadCachedCatalog(accountId, contractType)
+      .then((catalog) => {
         if (!active) return;
+        if (!catalog.capabilities.products.includes(contractType)) {
+          setCapabilities(catalog.capabilities);
+          setInstruments([]);
+          setInstrumentId(null);
+          setContractType(catalog.capabilities.products[0] ?? "perpetual");
+          return;
+        }
+        const items = catalog.items;
         setInstruments(items);
+        setCapabilities(catalog.capabilities);
+        setOrderType((current) =>
+          !catalog.capabilities.makerTwap && current === "maker" ? "market" : current,
+        );
         setInstrumentId((current) =>
           current && items.some((item) => item.id === current) ? current : items[0]?.id ?? null,
         );
@@ -198,13 +262,14 @@ export function TwapTradingView() {
       .catch((error: unknown) => {
         if (!active) return;
         setInstruments([]);
+        setCapabilities(null);
         setInstrumentId(null);
         setMessage(error instanceof Error ? error.message : "标的加载失败");
       });
     return () => {
       active = false;
     };
-  }, [accountId, contractType]);
+  }, [accountId, contractType, loadCachedCatalog]);
 
   const refreshTwaps = React.useCallback(async (
     targetView: TraderTwapView,
@@ -300,6 +365,12 @@ export function TwapTradingView() {
 
   function validateForm(): string | null {
     if (!selectedAccount || !selectedInstrument) return "请选择账户和交易标的";
+    if (!selectedAccount.tradingReady) {
+      if (selectedAccount.tradingStatus === "checking" || selectedAccount.tradingStatus === "") {
+        return "交易能力检查中";
+      }
+      return selectedAccount.tradingUnavailableReason || "当前账户不可交易";
+    }
     if (!positiveDecimal(totalQty)) return "请输入有效的总数量";
     if (!startAt || !endAt || new Date(endAt).getTime() <= new Date(startAt).getTime()) {
       return "结束时间必须晚于开始时间";
@@ -329,6 +400,12 @@ export function TwapTradingView() {
     if (!selectedAccount || !selectedInstrument || busy) return;
     setBusy(true);
     try {
+      if (isWalletDexExchange(selectedAccount.exchangeSlug)) {
+        const ready = await inspectOne(selectedAccount.id);
+        if (!ready.tradingReady) {
+          throw new Error(ready.tradingUnavailableReason || "当前账户不可交易");
+        }
+      }
       const twap = await createTraderTwap({
         tradingAccountId: selectedAccount.id,
         instrumentId: selectedInstrument.id,
@@ -394,7 +471,7 @@ export function TwapTradingView() {
   }
 
   return (
-    <div className="flex min-h-0 flex-col">
+    <div ref={hideHostRef} className="flex min-h-0 flex-col">
       <header className="shrink-0 border-b px-5 py-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -454,7 +531,9 @@ export function TwapTradingView() {
                       setInstrumentId(null);
                     }}>
                       {exchangeAccounts.length === 0 ? <option value="">暂无账户</option> : null}
-                      {exchangeAccounts.map((item) => <option key={item.id} value={item.id}>{item.accountName}</option>)}
+                      {exchangeAccounts.map((item) => (
+                        <option key={item.id} value={item.id}>{tradingAccountStatusLabel(item)}</option>
+                      ))}
                     </select>
                   </Field>
                   <Field label="合约类型">
@@ -463,8 +542,11 @@ export function TwapTradingView() {
                       setInstruments([]);
                       setInstrumentId(null);
                     }}>
-                      <option value="perpetual">线性永续</option>
-                      <option value="spot">现货</option>
+                      {(capabilities?.products.length ? capabilities.products : ["perpetual"]).map((product) => (
+                        <option key={product} value={product}>
+                          {product === "perpetual" ? "线性永续" : "现货"}
+                        </option>
+                      ))}
                     </select>
                   </Field>
                   <Field label="交易标的">
@@ -475,12 +557,22 @@ export function TwapTradingView() {
                       onValueChange={(next) => setInstrumentId(Number(next) || null)}
                       options={instrumentOptions(instruments)}
                       placeholder="搜索 BTC 或 BTCUSDT"
-                      emptyText="无匹配标的"
+                      emptyText={instruments.length === 0 ? "交易标的尚未同步" : "无匹配标的"}
                       disabled={instruments.length === 0}
                     />
                   </Field>
                 </div>
               )}
+              {selectedAccount && !selectedAccount.tradingReady ? (
+                <p className="mt-3 text-sm text-amber-700">
+                  {selectedAccount.tradingStatus === "checking" || selectedAccount.tradingStatus === ""
+                    ? "交易能力检查中"
+                    : selectedAccount.tradingUnavailableReason || "当前账户不可交易"}
+                </p>
+              ) : null}
+              {accountId != null && instruments.length === 0 ? (
+                <p className="mt-3 text-sm text-muted-foreground">交易标的尚未同步</p>
+              ) : null}
             </section>
 
             <section className="rounded-xl border bg-background/40 p-4">
@@ -523,7 +615,9 @@ export function TwapTradingView() {
                   </div>
                   <Field label="子订单方式">
                     <div className="grid grid-cols-2 rounded-lg border bg-muted/30 p-1">
-                      {(["maker", "market"] as const).map((type) => (
+                      {(["maker", "market"] as const)
+                        .filter((type) => type !== "maker" || capabilities?.makerTwap !== false)
+                        .map((type) => (
                         <button key={type} type="button" onClick={() => setOrderType(type)} className={cn("rounded-md px-3 py-1.5 text-sm transition-colors", orderType === type ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}>
                           {type === "maker" ? "Maker 限价" : "Market 市价"}
                         </button>
@@ -550,7 +644,7 @@ export function TwapTradingView() {
                     <SummaryRow label="方式" value={orderType === "maker" ? `Maker · 超时 ${orderTimeoutSeconds || "—"} 秒` : "Market"} />
                   </dl>
                   <div className="mt-auto pt-6">
-                    <Button type="submit" className="w-full" disabled={!selectedAccount || !selectedInstrument || busy || activeCount >= 5}>创建 TWAP 计划</Button>
+                    <Button type="submit" className="w-full" disabled={!selectedAccount?.tradingReady || !selectedInstrument || busy || activeCount >= 5}>创建 TWAP 计划</Button>
                     <p className={cn("mt-2 text-center text-[11px]", message?.includes("失败") ? "text-rose-600" : "text-muted-foreground")}>
                       {message || "首次点击只打开确认，不会立即创建计划"}
                     </p>
@@ -582,7 +676,7 @@ export function TwapTradingView() {
       </div>
 
       <Sheet open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <SheetContent>
+        <SheetContent container={hideHostRef}>
           <SheetHeader>
             <SheetTitle>确认创建 TWAP</SheetTitle>
             <SheetDescription>请核对执行窗口与风险参数。确认时会生成唯一幂等键并仅提交一次。</SheetDescription>
@@ -606,7 +700,7 @@ export function TwapTradingView() {
       </Sheet>
 
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
-        <SheetContent className="sm:max-w-2xl">
+        <SheetContent className="sm:max-w-2xl" container={hideHostRef}>
           <SheetHeader>
             <SheetTitle>TWAP 详情</SheetTitle>
             <SheetDescription>{detail?.id || "加载计划与子订单…"}</SheetDescription>
@@ -651,7 +745,7 @@ export function TwapTradingView() {
                             <td className="py-2">{order.side === "buy" ? "买" : "卖"} / {order.orderType === "limit" ? "限价" : "市价"}<div className="text-muted-foreground">片 {order.twapSliceIndex} · 尝试 {order.twapAttemptIndex + 1}</div></td>
                             <td className="py-2 font-mono">{formatNumber(order.quantity)} {order.baseAsset}</td>
                             <td className="py-2 font-mono">{formatNumber(order.filledQuantity)}</td>
-                            <td className="py-2">{order.status}</td>
+                            <td className="py-2">{orderStatusLabel(order.status)}</td>
                           </tr>
                         ))}
                       </tbody>

@@ -5,6 +5,7 @@ import { createIdempotencyKey, isUUID } from "../idempotency-key";
 import {
   applySnapshotParts,
   cancelPolymarketOrder,
+  fetchPolymarketAccountSummary,
   fetchPolymarketOpenOrders,
   mapPolymarketAccountEvent,
   mapPolymarketOpenOrder,
@@ -207,6 +208,40 @@ describe("polymarket API mapper", () => {
       status: "LIVE",
       orderType: "GTC",
       createdAt: "2026-08-09T08:00:00Z",
+    });
+  });
+
+  it("fetches account summary including stale cutoff and binding status", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            tradingAccountId: 7,
+            accountName: "polyhu",
+            walletAddress: "0xabc",
+            availableBalance: "44.374326",
+            positionValue: "0",
+            totalAssets: "44.374326",
+            sourceUpdatedAt: "2026-08-26T06:48:00Z",
+            stale: true,
+            bindingStatus: "invalid",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchPolymarketAccountSummary(7)).resolves.toEqual({
+      tradingAccountId: 7,
+      accountName: "polyhu",
+      walletAddress: "0xabc",
+      availableBalance: 44.374326,
+      positionValue: 0,
+      totalAssets: 44.374326,
+      sourceUpdatedAt: "2026-08-26T06:48:00Z",
+      stale: true,
+      bindingStatus: "invalid",
     });
   });
 

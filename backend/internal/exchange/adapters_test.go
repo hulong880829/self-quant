@@ -137,12 +137,153 @@ func TestHyperliquidFixture(t *testing.T) {
 	var contexts []hyperliquidContext
 	mustJSON(t, `{"universe":[{"name":"BTC","isDelisted":false}]}`, &meta)
 	mustJSON(t, `[{"funding":"0.0006"}]`, &contexts)
-	rates, err := parseHyperliquidCurrent(meta, contexts, time.Unix(1720000000, 0))
+	rates, err := parseHyperliquidCurrent(meta, contexts, time.Unix(1720000000, 0), "")
 	if err != nil || len(rates) != 1 || rates[0].Rate != 0.0006 {
 		t.Fatalf("parse hyperliquid: rates=%+v err=%v", rates, err)
 	}
-	if got := parseHyperliquidInstruments(meta)[0].GlobalSymbol; got != "BTCUSDC" {
+	if got := parseHyperliquidInstruments(meta, "")[0].GlobalSymbol; got != "BTCUSDC" {
 		t.Fatalf("global symbol = %q", got)
+	}
+}
+
+func TestBinanceIncludesTradifiPerpetual(t *testing.T) {
+	var payload binanceExchangeInfo
+	mustJSON(t, `{"symbols":[{
+		"symbol":"BTCUSDT","baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT",
+		"status":"TRADING","contractType":"PERPETUAL","filters":[]
+	},{
+		"symbol":"ZHIPUUSDT","baseAsset":"ZHIPU","quoteAsset":"USDT","marginAsset":"USDT",
+		"status":"TRADING","contractType":"TRADIFI_PERPETUAL","filters":[]
+	},{
+		"symbol":"BTCUSDT_QM","baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT",
+		"status":"TRADING","contractType":"CURRENT_QUARTER","filters":[]
+	},{
+		"symbol":"DEADUSDT","baseAsset":"DEAD","quoteAsset":"USDT","marginAsset":"USDT",
+		"status":"BREAK","contractType":"TRADIFI_PERPETUAL","filters":[]
+	}]}`, &payload)
+	instruments := parseBinanceInstruments(payload)
+	if len(instruments) != 2 {
+		t.Fatalf("instruments=%+v", instruments)
+	}
+	if instruments[0].ExchangeSymbol != "BTCUSDT" ||
+		instruments[0].ContractType != ContractTypePerpetual ||
+		instruments[1].ExchangeSymbol != "ZHIPUUSDT" ||
+		instruments[1].ContractType != ContractTypePerpetual ||
+		instruments[1].BaseAsset != "ZHIPU" ||
+		instruments[1].GlobalSymbol != "ZHIPUUSDT" ||
+		instruments[1].IntervalHours != 8 {
+		t.Fatalf("parsed=%+v", instruments)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(instruments[1].Metadata, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata["ContractType"] != "TRADIFI_PERPETUAL" {
+		t.Fatalf("metadata=%s", instruments[1].Metadata)
+	}
+}
+
+func TestHyperliquidHIP3QualifiesCoinAndBase(t *testing.T) {
+	var meta hyperliquidMeta
+	mustJSON(t, `{"universe":[{"name":"ZHIPU","isDelisted":false},{"name":"xyz:TSLA","isDelisted":false}]}`, &meta)
+	instruments := parseHyperliquidInstruments(meta, "xyz")
+	if len(instruments) != 2 {
+		t.Fatalf("instruments=%+v", instruments)
+	}
+	if instruments[0].ExchangeSymbol != "xyz:ZHIPU" ||
+		instruments[0].BaseAsset != "ZHIPU" ||
+		instruments[0].GlobalSymbol != "ZHIPUUSDC" ||
+		instruments[1].ExchangeSymbol != "xyz:TSLA" ||
+		instruments[1].BaseAsset != "TSLA" {
+		t.Fatalf("hip3 instruments=%+v", instruments)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(instruments[0].Metadata, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata["dex"] != "xyz" || metadata["name"] != "ZHIPU" {
+		t.Fatalf("metadata=%s", instruments[0].Metadata)
+	}
+	rates, err := parseHyperliquidCurrent(meta, []hyperliquidContext{{Funding: "0.0001"}, {Funding: "0.0002"}}, time.Unix(1720000000, 0), "xyz")
+	if err != nil || len(rates) != 2 || rates[0].ExchangeSymbol != "xyz:ZHIPU" {
+		t.Fatalf("rates=%+v err=%v", rates, err)
+	}
+	if got := parseHyperliquidInstruments(meta, "")[0].ExchangeSymbol; got != "ZHIPU" {
+		t.Fatalf("default symbol=%q", got)
+	}
+}
+
+func TestHyperliquidMergesDefaultAndXYZ(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload struct {
+			Type string `json:"type"`
+			Dex  string `json:"dex"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode: %v", err)
+			http.Error(writer, "bad", http.StatusBadRequest)
+			return
+		}
+		if payload.Type != "metaAndAssetCtxs" {
+			t.Errorf("type=%q", payload.Type)
+		}
+		switch payload.Dex {
+		case "":
+			_, _ = writer.Write([]byte(`[{"universe":[{"name":"BTC","isDelisted":false}]},[{"funding":"0.0001"}]]`))
+		case "xyz":
+			_, _ = writer.Write([]byte(`[{"universe":[{"name":"ZHIPU","isDelisted":false}]},[{"funding":"0.0002"}]]`))
+		default:
+			http.Error(writer, "unknown dex", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	adapter := &Hyperliquid{client: newClient(server.URL, 3*time.Second)}
+	instruments, err := adapter.SyncInstruments(context.Background(), ContractTypePerpetual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instruments) != 2 ||
+		instruments[0].ExchangeSymbol != "BTC" ||
+		instruments[1].ExchangeSymbol != "xyz:ZHIPU" {
+		t.Fatalf("instruments=%+v", instruments)
+	}
+	rates, err := adapter.FetchCurrent(context.Background(), nil)
+	if err != nil || len(rates) != 2 ||
+		rates[0].ExchangeSymbol != "BTC" ||
+		rates[1].ExchangeSymbol != "xyz:ZHIPU" {
+		t.Fatalf("rates=%+v err=%v", rates, err)
+	}
+}
+
+func TestHyperliquidHistoryUsesQualifiedCoin(t *testing.T) {
+	var coin string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload struct {
+			Type string `json:"type"`
+			Coin string `json:"coin"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode: %v", err)
+			return
+		}
+		coin = payload.Coin
+		_ = json.NewEncoder(writer).Encode([]hyperliquidHistory{{
+			Coin: "ZHIPU", FundingRate: "0.0003", Time: 1720000000000,
+		}})
+	}))
+	defer server.Close()
+	adapter := &Hyperliquid{client: newClient(server.URL, 3*time.Second)}
+	rates, err := adapter.FetchHistory(context.Background(), Instrument{
+		ExchangeSymbol: "xyz:ZHIPU", IntervalHours: 1,
+	}, time.Unix(1710000000, 0), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coin != "xyz:ZHIPU" {
+		t.Fatalf("history coin=%q", coin)
+	}
+	if len(rates) != 1 || rates[0].ExchangeSymbol != "xyz:ZHIPU" {
+		t.Fatalf("rates=%+v", rates)
 	}
 }
 
@@ -200,6 +341,8 @@ func TestOKXPerpetualInstrumentUsesInstFamily(t *testing.T) {
 		"instFamily":"BTC-USDT",
 		"state":"live",
 		"ctType":"linear",
+		"ctValCcy":"BTC",
+		"ctVal":"0.01",
 		"baseCcy":"",
 		"quoteCcy":"",
 		"settleCcy":"USDT"
@@ -271,7 +414,7 @@ func TestPerpetualInstrumentFixturesRejectNonLiveMarkets(t *testing.T) {
 
 	var hyperliquid hyperliquidMeta
 	mustJSON(t, `{"universe":[{"name":"BTC","isDelisted":true}]}`, &hyperliquid)
-	if instruments := parseHyperliquidInstruments(hyperliquid); len(instruments) != 0 {
+	if instruments := parseHyperliquidInstruments(hyperliquid, ""); len(instruments) != 0 {
 		t.Fatalf("hyperliquid non-live: %+v", instruments)
 	}
 }
@@ -466,12 +609,12 @@ func TestBitgetPerpetualUsesSupportMarginCoins(t *testing.T) {
 	mustJSON(t, `[{
 		"symbol":"BTCUSDT","symbolStatus":"normal","symbolType":"perpetual",
 		"baseCoin":"BTC","quoteCoin":"USDT","sizeMultiplier":"0.001",
-		"priceEndStep":"1","pricePlace":"1","minTradeNum":"0.001",
+		"priceEndStep":"1","pricePlace":"1","volumePlace":"3","minTradeNum":"0.001",
 		"supportMarginCoins":["USDT"]
 	},{
 		"symbol":"BTCUSD","symbolStatus":"normal","symbolType":"perpetual",
 		"baseCoin":"BTC","quoteCoin":"USD","sizeMultiplier":"1",
-		"priceEndStep":"0.1","minTradeNum":"1",
+		"priceEndStep":"0.1","volumePlace":"0","minTradeNum":"1",
 		"supportMarginCoins":["BTC"]
 	}]`, &items)
 
@@ -484,6 +627,10 @@ func TestBitgetPerpetualUsesSupportMarginCoins(t *testing.T) {
 	}
 	if instruments[0].PriceTick != 0.1 {
 		t.Fatalf("linear price tick=%v", instruments[0].PriceTick)
+	}
+	if instruments[0].QuantityStep != 0.001 ||
+		instruments[0].MinQuantity != 0.001 {
+		t.Fatalf("linear quantity constraints=%+v", instruments[0])
 	}
 	if instruments[1].SettleAsset != "BTC" {
 		t.Fatalf("inverse settle=%q", instruments[1].SettleAsset)

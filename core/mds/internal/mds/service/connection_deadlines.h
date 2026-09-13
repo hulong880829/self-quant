@@ -10,6 +10,7 @@ namespace mds::service {
 
 [[nodiscard]] constexpr bool RecoveryStreamReady(
     bool ticker_required, bool ticker_live,
+    bool ticker_requires_first_data,
     bool orderbook_required, bool metadata_ready,
     bool image_ready, bool book_live,
     bool awaiting_snapshot_bridge) noexcept {
@@ -17,7 +18,8 @@ namespace mds::service {
   // is their readiness boundary. Combined ticker+book streams require a real
   // ticker event as well as a fully bridged book.
   const bool ticker_ready =
-      !ticker_required || ticker_live || !orderbook_required;
+      !ticker_required || ticker_live ||
+      (!ticker_requires_first_data && !orderbook_required);
   const bool book_ready =
       !orderbook_required ||
       (metadata_ready && image_ready && book_live &&
@@ -73,6 +75,98 @@ class SubscriptionBudget {
 
  private:
   std::array<Clock::time_point, 480> requests_{};
+  std::size_t begin_{};
+  std::size_t size_{};
+};
+
+// Shared by every connection/shard for a venue whose documented limit is
+// process-wide (Lighter's client-message limit is IP-wide). The deployment
+// still guarantees that only one such producer uses an egress IP.
+class ClientMessageBudget {
+ public:
+  using Clock = std::chrono::steady_clock;
+  static constexpr std::size_t kMaximumLimit = 199;
+
+  void prune(Clock::time_point now) noexcept {
+    constexpr auto window = std::chrono::minutes(1);
+    while (size_ > 0 && now - requests_[begin_] >= window) {
+      begin_ = (begin_ + 1) % requests_.size();
+      --size_;
+    }
+  }
+
+  [[nodiscard]] bool allow(Clock::time_point now,
+                           std::size_t limit) noexcept {
+    prune(now);
+    return limit > 0 && size_ < std::min(limit, requests_.size());
+  }
+
+  [[nodiscard]] Clock::time_point retry_at(
+      Clock::time_point now, std::size_t limit) noexcept {
+    prune(now);
+    if (limit > 0 && size_ < std::min(limit, requests_.size())) {
+      return now;
+    }
+    return size_ == 0 ? now + std::chrono::minutes(1)
+                      : requests_[begin_] + std::chrono::minutes(1);
+  }
+
+  void record(Clock::time_point now) noexcept {
+    if (size_ == requests_.size()) {
+      begin_ = (begin_ + 1) % requests_.size();
+      --size_;
+    }
+    requests_[(begin_ + size_) % requests_.size()] = now;
+    ++size_;
+  }
+
+  [[nodiscard]] std::size_t size() const noexcept { return size_; }
+
+ private:
+  std::array<Clock::time_point, kMaximumLimit> requests_{};
+  std::size_t begin_{};
+  std::size_t size_{};
+};
+
+class ConnectionAttemptBudget {
+ public:
+  using Clock = std::chrono::steady_clock;
+  static constexpr std::size_t kLimitPerMinute = 255;
+
+  void prune(Clock::time_point now) noexcept {
+    constexpr auto window = std::chrono::minutes(1);
+    while (size_ > 0 && now - requests_[begin_] >= window) {
+      begin_ = (begin_ + 1) % requests_.size();
+      --size_;
+    }
+  }
+
+  [[nodiscard]] bool allow(Clock::time_point now) noexcept {
+    prune(now);
+    return size_ < requests_.size();
+  }
+
+  [[nodiscard]] Clock::time_point retry_at(
+      Clock::time_point now) noexcept {
+    prune(now);
+    return size_ < requests_.size()
+               ? now
+               : requests_[begin_] + std::chrono::minutes(1);
+  }
+
+  void record(Clock::time_point now) noexcept {
+    if (size_ == requests_.size()) {
+      begin_ = (begin_ + 1) % requests_.size();
+      --size_;
+    }
+    requests_[(begin_ + size_) % requests_.size()] = now;
+    ++size_;
+  }
+
+  [[nodiscard]] std::size_t size() const noexcept { return size_; }
+
+ private:
+  std::array<Clock::time_point, kLimitPerMinute> requests_{};
   std::size_t begin_{};
   std::size_t size_{};
 };

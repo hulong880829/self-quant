@@ -5,25 +5,27 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"selfquant/backend/internal/exchange"
 )
 
 type Synchronizer struct {
-	repository       *Repository
-	adapters         []exchange.Adapter
-	snapshots        *SnapshotStore
-	logger           *slog.Logger
-	instrumentMu     sync.Mutex
-	currentMu        sync.Mutex
-	historyMu        sync.Mutex
-	dataMu           sync.RWMutex
-	instruments      map[string][]exchange.Instrument
-	historyAttempted map[string]bool
+	repository        *Repository
+	lock              instrumentLocker
+	adapters          []exchange.Adapter
+	snapshots         *SnapshotStore
+	logger            *slog.Logger
+	instrumentMu      sync.Mutex
+	currentMu         sync.Mutex
+	historyMu         sync.Mutex
+	dataMu            sync.RWMutex
+	instruments       map[string][]exchange.Instrument
+	aggregateRuns     atomic.Uint64
+	snapshotPublishes atomic.Uint64
 }
 
 func NewSynchronizer(
@@ -32,11 +34,24 @@ func NewSynchronizer(
 	snapshots *SnapshotStore,
 	logger *slog.Logger,
 ) *Synchronizer {
-	return &Synchronizer{
-		repository: repository, adapters: adapters, snapshots: snapshots, logger: logger,
-		instruments:      make(map[string][]exchange.Instrument),
-		historyAttempted: make(map[string]bool),
+	if snapshots == nil {
+		snapshots = NewSnapshotStore()
 	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Synchronizer{
+		repository: repository, lock: nopHistoryLock{}, adapters: adapters,
+		snapshots: snapshots, logger: logger,
+		instruments: make(map[string][]exchange.Instrument),
+	}
+}
+
+func (s *Synchronizer) WithLock(lock instrumentLocker) *Synchronizer {
+	if lock != nil {
+		s.lock = lock
+	}
+	return s
 }
 
 func instrumentBucket(exchangeName, contractType string) string {
@@ -56,7 +71,7 @@ func (s *Synchronizer) Hydrate(ctx context.Context) error {
 	s.dataMu.Lock()
 	s.instruments = grouped
 	s.dataMu.Unlock()
-	if err := s.repository.RefreshAggregates(ctx); err != nil {
+	if err := s.refreshAggregates(ctx); err != nil {
 		return err
 	}
 	return s.RefreshSnapshot(ctx)
@@ -68,18 +83,27 @@ func (s *Synchronizer) RefreshSnapshot(ctx context.Context) error {
 		return err
 	}
 	s.snapshots.Replace(rates, total, time.Now())
+	s.snapshotPublishes.Add(1)
 	return nil
 }
 
-func (s *Synchronizer) SyncInstruments(ctx context.Context) error {
+func (s *Synchronizer) refreshAggregates(ctx context.Context) error {
+	s.aggregateRuns.Add(1)
+	return s.repository.RefreshAggregates(ctx)
+}
+
+func (s *Synchronizer) SyncInstruments(ctx context.Context) ([]FundingInstrument, error) {
 	s.instrumentMu.Lock()
 	defer s.instrumentMu.Unlock()
 	var errs []error
+	var newPerpetuals []FundingInstrument
 	for _, adapter := range s.adapters {
-		for _, contractType := range []string{
-			exchange.ContractTypeSpot,
-			exchange.ContractTypePerpetual,
-		} {
+		hadCatalog, err := s.repository.HasExchangeInstruments(ctx, adapter.Name())
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, contractType := range exchange.AdapterContractTypes(adapter) {
 			refreshed, err := adapter.SyncInstruments(ctx, contractType)
 			if !authoritativeInstrumentRefresh(refreshed, err) {
 				if err != nil {
@@ -95,9 +119,13 @@ func (s *Synchronizer) SyncInstruments(ctx context.Context) error {
 				}
 				continue
 			}
-			if err := s.repository.UpsertInstruments(ctx, refreshed); err != nil {
+			inserted, err := s.repository.UpsertInstruments(ctx, refreshed)
+			if err != nil {
 				errs = append(errs, err)
 				continue
+			}
+			if contractType == exchange.ContractTypePerpetual {
+				newPerpetuals = append(newPerpetuals, qualifyNewPerpetuals(hadCatalog, inserted)...)
 			}
 			if err := s.repository.DeactivateMissingInstruments(
 				ctx, adapter.Name(), contractType, refreshed,
@@ -110,13 +138,13 @@ func (s *Synchronizer) SyncInstruments(ctx context.Context) error {
 			s.dataMu.Unlock()
 			s.logger.Info("instrument market synchronized",
 				"exchange", adapter.Name(), "contract_type", contractType,
-				"instruments", len(refreshed))
+				"instruments", len(refreshed), "inserted", len(inserted))
 		}
 	}
 	if err := s.RefreshSnapshot(ctx); err != nil {
 		errs = append(errs, err)
 	}
-	return errors.Join(errs...)
+	return newPerpetuals, errors.Join(errs...)
 }
 
 func authoritativeInstrumentRefresh(instruments []exchange.Instrument, err error) bool {
@@ -163,16 +191,14 @@ func (s *Synchronizer) SyncCurrent(ctx context.Context) error {
 			errs = append(errs, err)
 			s.logger.Warn("current funding synchronization failed",
 				"exchange", adapter.Name(), "error", err)
-		} else if err := s.repository.UpsertRates(ctx, current); err != nil {
+		} else if err := s.repository.UpsertCurrentRates(ctx, current); err != nil {
 			errs = append(errs, err)
 		} else {
 			if err := s.repository.UpdateInstrumentIntervals(ctx, current); err != nil {
 				errs = append(errs, err)
 			}
 			s.updateIntervals(adapter.Name(), current)
-			if err := s.repository.RefreshAggregates(ctx); err != nil {
-				errs = append(errs, err)
-			} else if err := s.RefreshSnapshot(ctx); err != nil {
+			if err := s.RefreshSnapshot(ctx); err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -180,126 +206,13 @@ func (s *Synchronizer) SyncCurrent(ctx context.Context) error {
 			"exchange", adapter.Name(), "instruments", len(instruments),
 			"current_rates", len(current), "elapsed", time.Since(started))
 	}
-	if err := s.repository.RefreshAggregates(ctx); err != nil {
+	if err := s.refreshAggregates(ctx); err != nil {
 		errs = append(errs, err)
 	}
 	if err := s.RefreshSnapshot(ctx); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
-}
-
-func (s *Synchronizer) SyncHistory(ctx context.Context, bootstrap bool) error {
-	s.historyMu.Lock()
-	defer s.historyMu.Unlock()
-	watermarks, err := s.repository.HistoryWatermarks(ctx)
-	if err != nil {
-		return err
-	}
-	starts, err := s.repository.HistoryStarts(ctx)
-	if err != nil {
-		return err
-	}
-	var errs []error
-	for _, adapter := range s.adapters {
-		instruments := s.perpetuals(adapter.Name())
-		if err := s.syncHistory(
-			ctx, adapter, instruments, watermarks, starts, bootstrap,
-		); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if err := s.repository.RefreshAggregates(ctx); err != nil {
-		errs = append(errs, err)
-	}
-	if err := s.RefreshSnapshot(ctx); err != nil {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
-}
-
-func (s *Synchronizer) syncHistory(
-	ctx context.Context,
-	adapter exchange.Adapter,
-	instruments []exchange.Instrument,
-	watermarks map[string]time.Time,
-	starts map[string]time.Time,
-	bootstrap bool,
-) error {
-	now := time.Now().UTC()
-	var firstErr error
-	failures := 0
-	processed := 0
-	for _, instrument := range instruments {
-		effectiveHours := instrument.IntervalHours
-		if effectiveHours <= 0 {
-			effectiveHours = 8
-		}
-		interval := time.Duration(effectiveHours * float64(time.Hour))
-		key := instrumentKey(instrument.Exchange, instrument.ExchangeSymbol)
-		watermark := watermarks[key]
-		if !bootstrap && watermark.IsZero() && s.historyAttempted[key] {
-			continue
-		}
-		if !bootstrap && !watermark.IsZero() && now.Before(watermark.Add(interval)) {
-			continue
-		}
-		historyStart := starts[key]
-		since := historySince(now, watermark, historyStart, interval, bootstrap)
-		historyLimit := int(math.Ceil(now.Sub(since).Hours()/effectiveHours)) + 2
-		rates, err := adapter.FetchHistory(ctx, instrument, since, historyLimit)
-		if err != nil {
-			failures++
-			if firstErr == nil {
-				firstErr = err
-			}
-		} else {
-			normalizeHistoryIntervals(rates, effectiveHours)
-			if err := s.repository.UpsertRates(ctx, rates); err != nil {
-				failures++
-				if firstErr == nil {
-					firstErr = err
-				}
-			} else {
-				s.historyAttempted[key] = true
-				if len(rates) > 0 {
-					s.logger.Debug("funding history coverage",
-						"exchange", adapter.Name(), "symbol", instrument.ExchangeSymbol,
-						"from", rates[0].FundingTime,
-						"to", rates[len(rates)-1].FundingTime, "records", len(rates))
-				}
-			}
-		}
-		processed++
-		if processed%100 == 0 {
-			if err := waitContext(ctx, time.Second); err != nil {
-				return err
-			}
-		}
-	}
-	if failures > 0 {
-		return fmt.Errorf("%s history synchronization: %d requests failed: %w",
-			adapter.Name(), failures, firstErr)
-	}
-	return nil
-}
-
-func historySince(
-	now time.Time,
-	watermark time.Time,
-	historyStart time.Time,
-	interval time.Duration,
-	bootstrap bool,
-) time.Time {
-	yearAgo := now.AddDate(-1, 0, 0)
-	hasFullWindow := !historyStart.IsZero() &&
-		!historyStart.After(yearAgo.Add(interval))
-	if !watermark.IsZero() && (!bootstrap || hasFullWindow) {
-		if overlap := watermark.Add(-2 * interval); overlap.After(yearAgo) {
-			return overlap
-		}
-	}
-	return yearAgo
 }
 
 func normalizeHistoryIntervals(rates []exchange.FundingRate, fallbackHours float64) {
@@ -326,35 +239,6 @@ func normalizeHistoryIntervals(rates []exchange.FundingRate, fallbackHours float
 	}
 }
 
-func (s *Synchronizer) ReconcileRecentHistory(ctx context.Context) error {
-	s.historyMu.Lock()
-	defer s.historyMu.Unlock()
-	since := time.Now().UTC().AddDate(0, 0, -8)
-	var errs []error
-	for _, adapter := range s.adapters {
-		instruments := s.perpetuals(adapter.Name())
-		emptyWatermarks := make(map[string]time.Time)
-		fullWindowStarts := make(map[string]time.Time)
-		for _, instrument := range instruments {
-			key := instrumentKey(instrument.Exchange, instrument.ExchangeSymbol)
-			emptyWatermarks[key] = since
-			fullWindowStarts[key] = time.Now().UTC().AddDate(-1, 0, 0)
-		}
-		if err := s.syncHistory(
-			ctx, adapter, instruments, emptyWatermarks, fullWindowStarts, true,
-		); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if err := s.repository.RefreshAggregates(ctx); err != nil {
-		errs = append(errs, err)
-	}
-	if err := s.RefreshSnapshot(ctx); err != nil {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
-}
-
 func (s *Synchronizer) CleanupHistory(ctx context.Context) error {
 	cutoff := time.Now().UTC().AddDate(-1, 0, 0)
 	for {
@@ -369,6 +253,24 @@ func (s *Synchronizer) CleanupHistory(ctx context.Context) error {
 			return err
 		}
 	}
+}
+
+const (
+	snapshotRowLimit  = 10000
+	snapshotByteLimit = 16 << 20
+)
+
+func EstimateSnapshotBytes(rates []Rate) int {
+	bytes := 0
+	for _, rate := range rates {
+		bytes += 192 + len(rate.Exchange) + len(rate.ExchangeSymbol) +
+			len(rate.GlobalSymbol) + len(rate.BaseAsset) + len(rate.QuoteAsset)
+	}
+	return bytes
+}
+
+func SnapshotCapacityExceeded(rates []Rate) bool {
+	return len(rates) >= snapshotRowLimit || EstimateSnapshotBytes(rates) >= snapshotByteLimit
 }
 
 func waitContext(ctx context.Context, duration time.Duration) error {

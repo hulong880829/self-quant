@@ -22,17 +22,21 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import {
+  applyTradingAccountProfile,
   createTradingAccount,
   deleteTradingAccount,
   fetchProductGroupSnapshot,
   fetchTradingAccountSnapshot,
   fetchTradingAccounts,
   groupAccountsByProduct,
+  isWalletDexExchange,
+  formatAccountFeeSummary,
   type PortfolioPosition,
   type ProductGroupSnapshot,
   type TradingAccountSnapshot,
   type ProductGroup,
   type TradingAccount,
+  type AccountProfileResult,
 } from "@/lib/api/accounts";
 import { formatCurrency } from "@/lib/market-format";
 import { cn } from "@/lib/utils";
@@ -71,8 +75,18 @@ const exchangeOptions: Exchange[] = [
   "Bitget",
   "Gate",
   "Hyperliquid",
+  "Aster",
+  "Lighter",
   "Polymarket",
 ];
+
+const accountProfileExchanges = new Set([
+  "binance",
+  "okx",
+  "bybit",
+  "bitget",
+  "gate",
+]);
 
 function MetricHeader({
   label,
@@ -114,6 +128,11 @@ export function AccountDashboard() {
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
   const [addOpen, setAddOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  const [profileBusyId, setProfileBusyId] = React.useState<number | null>(null);
+  const [profileResults, setProfileResults] = React.useState<
+    Record<number, AccountProfileResult>
+  >({});
+  const [profileErrors, setProfileErrors] = React.useState<Record<number, string>>({});
 
   const [productName, setProductName] = React.useState("");
   const [exchange, setExchange] = React.useState<Exchange>("Binance");
@@ -122,6 +141,8 @@ export function AccountDashboard() {
   const [apiSecret, setApiSecret] = React.useState("");
   const [passphrase, setPassphrase] = React.useState("");
   const [privateKey, setPrivateKey] = React.useState("");
+  const [walletAddress, setWalletAddress] = React.useState("");
+  const [vaultAddress, setVaultAddress] = React.useState("");
   const [walletType, setWalletType] = React.useState<"eoa" | "deposit">("eoa");
   const [funderAddress, setFunderAddress] = React.useState("");
   const [formError, setFormError] = React.useState<string | null>(null);
@@ -201,6 +222,8 @@ export function AccountDashboard() {
     selection?.type === "account"
       ? accounts.find((item) => item.id === selection.id) ?? null
       : null;
+  const selectedProfile = selected ? profileResults[selected.id] : undefined;
+  const selectedProfileError = selected ? profileErrors[selected.id] : undefined;
   const selectedGroup =
     selection?.type === "group"
       ? groups.find((item) => item.productName === selection.productName) ?? null
@@ -272,6 +295,8 @@ export function AccountDashboard() {
     setApiSecret("");
     setPassphrase("");
     setPrivateKey("");
+    setWalletAddress("");
+    setVaultAddress("");
     setWalletType("eoa");
     setFunderAddress("");
     setFormError(null);
@@ -291,8 +316,10 @@ export function AccountDashboard() {
         apiSecret,
         passphrase,
         privateKey,
+        walletAddress,
         walletType,
         funderAddress,
+        vaultAddress,
       });
       setAddOpen(false);
       resetForm();
@@ -320,6 +347,31 @@ export function AccountDashboard() {
       setError(err instanceof Error ? err.message : "删除失败");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function onApplyAccountProfile() {
+    if (!selected || !accountProfileExchanges.has(selected.exchangeSlug)) return;
+    const confirmed = window.confirm(
+      `确认检查并设置交易账户「${selected.accountName}」？只修改当前账户；平台不会自动撤单、平仓、还款或迁移资产。`,
+    );
+    if (!confirmed) return;
+    setProfileBusyId(selected.id);
+    setProfileErrors((current) => {
+      const next = { ...current };
+      delete next[selected.id];
+      return next;
+    });
+    try {
+      const result = await applyTradingAccountProfile(selected.id);
+      setProfileResults((current) => ({ ...current, [selected.id]: result }));
+    } catch (err) {
+      setProfileErrors((current) => ({
+        ...current,
+        [selected.id]: err instanceof Error ? err.message : "账户模式检查与设置失败",
+      }));
+    } finally {
+      setProfileBusyId(null);
     }
   }
 
@@ -355,6 +407,13 @@ export function AccountDashboard() {
             删除账户
           </Button>
         </div>
+      </div>
+
+      <div className="rounded-lg border border-primary/20 bg-primary/[0.04] px-4 py-3 text-sm">
+        <div className="font-medium">CEX 交易账户模式要求</div>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          平台 CEX 交易账户仅支持统一账户、跨币种全仓保证金和净持仓模式；设置可能因交易所条件被拒绝，平台不会自动撤单、平仓或还款。
+        </p>
       </div>
 
       <WorkspacePanel className="flex-1 lg:grid-cols-[280px_minmax(0,1fr)]">
@@ -427,39 +486,58 @@ export function AccountDashboard() {
                       {selected.exchange} · {selected.accountName}
                     </div>
                     <div className="mt-0.5 text-xs text-muted-foreground">
-                      产品：{selected.productName} · Key {selected.apiKeyMasked}
+                      产品：{selected.productName}
+                      {selected.walletAddress
+                        ? ` · ${selected.walletAddress}`
+                        : ""}
+                      {" · "}
+                      {formatAccountFeeSummary(selected.fees)}
                       {selected.hasPassphrase ? " · Passphrase 已配置" : ""}
                     </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-5 rounded-lg border bg-muted/30 px-3 py-2">
-                    <MetricHeader
-                      label="账户权益"
-                      value={formatDecimalCurrency(
-                        snapshot && "accountEquityUsd" in snapshot
-                          ? snapshot.accountEquityUsd
-                          : "",
-                      )}
-                    />
-                    <MetricHeader
-                      label="可用资金"
-                      value={formatDecimalCurrency(
-                        snapshot && "availableFundsUsd" in snapshot
-                          ? snapshot.availableFundsUsd
-                          : "",
-                      )}
-                    />
-                    <MetricHeader
-                      label="风险"
-                      value={
-                        selected.exchange === "Polymarket"
-                          ? "—"
-                          : snapshot &&
-                              "riskPercent" in snapshot &&
-                              snapshot.riskPercent
-                            ? `${formatDecimal(snapshot.riskPercent)}%`
-                            : "—"
-                      }
-                    />
+                  <div className="flex flex-wrap items-center gap-2">
+                    {accountProfileExchanges.has(selected.exchangeSlug) ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void onApplyAccountProfile()}
+                        disabled={profileBusyId === selected.id}
+                      >
+                        {profileBusyId === selected.id
+                          ? "检查设置中…"
+                          : "一键检查并设置"}
+                      </Button>
+                    ) : null}
+                    <div className="flex flex-wrap items-center gap-5 rounded-lg border bg-muted/30 px-3 py-2">
+                      <MetricHeader
+                        label="账户权益"
+                        value={formatDecimalCurrency(
+                          snapshot && "accountEquityUsd" in snapshot
+                            ? snapshot.accountEquityUsd
+                            : "",
+                        )}
+                      />
+                      <MetricHeader
+                        label="可用资金"
+                        value={formatDecimalCurrency(
+                          snapshot && "availableFundsUsd" in snapshot
+                            ? snapshot.availableFundsUsd
+                            : "",
+                        )}
+                      />
+                      <MetricHeader
+                        label="风险"
+                        value={
+                          selected.exchange === "Polymarket"
+                            ? "—"
+                            : snapshot &&
+                                "riskPercent" in snapshot &&
+                                snapshot.riskPercent
+                              ? `${formatDecimal(snapshot.riskPercent)}%`
+                              : "—"
+                        }
+                      />
+                    </div>
                   </div>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
@@ -476,6 +554,14 @@ export function AccountDashboard() {
                     <span className="text-destructive">{snapshotError}</span>
                   ) : null}
                 </div>
+                {selectedProfileError ? (
+                  <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {selectedProfileError}
+                  </div>
+                ) : null}
+                {selectedProfile ? (
+                  <AccountProfileResultView result={selectedProfile} />
+                ) : null}
               </div>
               <AccountPositionsTable
                 polymarket={selected.exchange === "Polymarket"}
@@ -543,7 +629,45 @@ export function AccountDashboard() {
                 disabled={busy}
               />
             </label>
-            {exchange === "Polymarket" ? (
+            {isWalletDexExchange(exchange) ? (
+              <>
+                <label className="grid gap-1.5 text-sm">
+                  <span className="text-muted-foreground">钱包地址</span>
+                  <Input
+                    value={walletAddress}
+                    onChange={(event) => setWalletAddress(event.target.value)}
+                    placeholder="0x…"
+                    autoComplete="off"
+                    required
+                    disabled={busy}
+                  />
+                </label>
+                <label className="grid gap-1.5 text-sm">
+                  <span className="text-muted-foreground">私钥</span>
+                  <Input
+                    type="password"
+                    value={privateKey}
+                    onChange={(event) => setPrivateKey(event.target.value)}
+                    autoComplete="new-password"
+                    required
+                    disabled={busy}
+                  />
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  只需填写主账户钱包地址和 API Wallet 私钥。交易索引由后端自动发现。
+                </p>
+                <label className="grid gap-1.5 text-sm">
+                  <span className="text-muted-foreground">Vault Address（可选）</span>
+                  <Input
+                    value={vaultAddress}
+                    onChange={(event) => setVaultAddress(event.target.value)}
+                    placeholder="0x…（Vault）"
+                    autoComplete="off"
+                    disabled={busy}
+                  />
+                </label>
+              </>
+            ) : exchange === "Polymarket" ? (
               <>
                 <label className="grid gap-1.5 text-sm">
                   <span className="text-muted-foreground">钱包类型</span>
@@ -634,6 +758,59 @@ export function AccountDashboard() {
         </SheetContent>
       </Sheet>
     </PageFrame>
+  );
+}
+
+const accountProfileStepLabels: Record<
+  AccountProfileResult["steps"][number]["step"],
+  string
+> = {
+  unified_account: "统一账户",
+  multi_asset_cross_margin: "跨币种全仓保证金",
+  one_way_position: "净持仓模式",
+};
+
+const accountProfileStatusLabels: Record<
+  AccountProfileResult["steps"][number]["status"],
+  string
+> = {
+  compliant: "已符合",
+  applied: "已设置",
+  pending: "处理中",
+  manual_required: "需人工处理",
+  failed: "失败",
+};
+
+function AccountProfileResultView({ result }: { result: AccountProfileResult }) {
+  return (
+    <div className="mt-3 grid gap-2 sm:grid-cols-3">
+      {result.steps.map((step) => (
+        <div key={step.step} className="rounded-md border bg-muted/20 px-3 py-2">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="font-medium">{accountProfileStepLabels[step.step]}</span>
+            <span
+              className={cn(
+                "rounded px-1.5 py-0.5 text-[10px]",
+                step.status === "compliant" || step.status === "applied"
+                  ? "bg-emerald-500/10 text-emerald-600"
+                  : step.status === "pending" ||
+                      step.status === "manual_required"
+                    ? "bg-amber-500/10 text-amber-600"
+                    : "bg-destructive/10 text-destructive",
+              )}
+            >
+              {accountProfileStatusLabels[step.status]}
+            </span>
+          </div>
+          {step.message || step.code ? (
+            <div className="mt-1.5 break-words text-[11px] leading-4 text-muted-foreground">
+              {step.code ? `${step.code} · ` : ""}
+              {step.message}
+            </div>
+          ) : null}
+        </div>
+      ))}
+    </div>
   );
 }
 

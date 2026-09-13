@@ -71,10 +71,11 @@ Selector parse_selector(const YAML::Node &node) {
   if (node["symbol"]) {
     selector.kind = SelectorKind::Symbol;
     selector.symbol = node["symbol"].as<std::string>();
-    std::transform(selector.symbol.begin(), selector.symbol.end(),
-                   selector.symbol.begin(), [](unsigned char character) {
-                     return static_cast<char>(std::toupper(character));
-                   });
+    for (char &character : selector.symbol) {
+      if (character >= 'a' && character <= 'z') {
+        character = static_cast<char>(character - ('a' - 'A'));
+      }
+    }
     if (selector.symbol.empty()) {
       throw std::runtime_error("segments[].selector.symbol is required");
     }

@@ -1,0 +1,8 @@
+mds:
+  source: replay
+  required_instruments:
+    - {venue: binance, product: perp, symbol: BTCUSDT}
+
+oms: {}
+
+strategy: {}

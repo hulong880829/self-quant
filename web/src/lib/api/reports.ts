@@ -1,6 +1,7 @@
-export type ReportStatus = "final" | "provisional" | "failed";
+export type ReportStatus = "final" | "provisional" | "failed" | "recomputing";
 export type CashFlowType = "subscription" | "redemption" | "deposit" | "withdrawal";
 export type CashFlowStatus = "pending" | "confirmed" | "canceled";
+export type RecomputeStatus = "queued" | "none" | "";
 
 export interface ReportProduct {
   id: string;
@@ -53,10 +54,12 @@ export interface ProductCashFlow {
   amount: string;
   currency: string;
   occurredAt: string;
+  flowDate: string;
   note: string;
   status: CashFlowStatus;
   createdAt: string;
   updatedAt: string;
+  recomputeStatus: RecomputeStatus;
 }
 
 export interface CreateCashFlowPayload {
@@ -109,8 +112,21 @@ function boolean(value: unknown, path: string, fallback = false): boolean {
 }
 
 function reportStatus(value: unknown, path: string): ReportStatus {
-  if (value === "final" || value === "provisional" || value === "failed") return value;
+  if (
+    value === "final" ||
+    value === "provisional" ||
+    value === "failed" ||
+    value === "recomputing"
+  ) {
+    return value;
+  }
   throw new Error(`${path} 不是有效报表状态`);
+}
+
+function recomputeStatus(value: unknown, path: string): RecomputeStatus {
+  if (value === undefined || value === null || value === "") return "";
+  if (value === "queued" || value === "none") return value;
+  throw new Error(`${path} 不是有效重算状态`);
 }
 
 function cashFlowStatus(value: unknown, path: string): CashFlowStatus {
@@ -234,10 +250,12 @@ export function mapCashFlow(value: unknown, path = "cashFlow"): ProductCashFlow 
     amount: rawAmount,
     currency: text(item.currency, `${path}.currency`),
     occurredAt: text(item.occurredAt, `${path}.occurredAt`),
+    flowDate: text(item.flowDate, `${path}.flowDate`, ""),
     note: text(item.note, `${path}.note`, ""),
     status: cashFlowStatus(item.status, `${path}.status`),
     createdAt: text(item.createdAt, `${path}.createdAt`, ""),
     updatedAt: text(item.updatedAt, `${path}.updatedAt`, ""),
+    recomputeStatus: recomputeStatus(item.recomputeStatus, `${path}.recomputeStatus`),
   };
 }
 

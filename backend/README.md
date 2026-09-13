@@ -143,6 +143,12 @@ HTTP endpoints:
 - `POST /api/v1/ai/credentials/openrouter/test`
 - `POST /api/v1/ai/chat` (SSE)
 
+Funding venue allowlists (`ENABLED_EXCHANGES`, `FUNDING_PUBLISHED_EXCHANGES`,
+`FUNDING_SPREAD_ENABLED_EXCHANGES`) control collection and display. Entropy is
+registered as a Funding-only adapter (`exchange=entropy`, HIP-3 dex `io`) but
+is not in the default Go sets. Enable it explicitly in those three lists when
+ready; never add it to `FUNDING_RANKING_ENABLED_EXCHANGES`.
+
 Auth uses an HttpOnly signed cookie (`ACCOUNT_SESSION_COOKIE`, default
 `sq_session`). Login validates username/password against bcrypt hashes in
 PostgreSQL; sessions are HMAC-signed tokens with TTL (`ACCOUNT_TOKEN_TTL`).
@@ -151,6 +157,17 @@ Trading-account API keys are encrypted at rest with AES-256-GCM
 account routes require a valid session cookie. Set
 `ACCOUNT_COOKIE_SECURE=true` behind HTTPS. CORS must use an explicit
 `GATEWAY_CORS_ORIGIN` and allows credentials.
+
+Hyperliquid, Aster, and Lighter can be bound on the accounts page as wallet
+venues: store the EIP-55 address in `api_key_enc` and the private key in
+`api_secret_enc`. List responses expose `walletAddress`. Account-service
+and trader-service share the three venue endpoints
+(`HYPERLIQUID_INFO_API_URL`, `ASTER_FUTURES_API_URL`, `LIGHTER_API_URL`).
+Arbitrage creation fails closed unless the account readiness check verifies the
+wallet/agent, Aster signer, or Lighter account/API-key indexes. Aster USER_DATA
+queries are signed inside the snapshot adapter. Existing Hyperliquid rows
+created with placeholder API keys must be deleted and rebound with a real
+address and key.
 
 The funding endpoint returns `{ "data": [...], "meta": {...} }` using the wire
 shape consumed by the frontend. Decimal values are encoded as strings. The
@@ -185,6 +202,17 @@ where the venue supports them, and must not allow withdrawals. Start
 Postgres and account-service before trader-service, then api-gateway. Gateway
 readiness includes the trader health check.
 
+The account page can call
+`POST /api/v1/trader/accounts/{accountId}/account-profile/apply` after an
+explicit user confirmation. The operation is owner-scoped to that single
+account and best-effort: unified account, multi-asset cross margin, and
+one-way position mode each return `compliant`, `applied`, `pending`,
+`manual_required`, or `failed`. It never cancels orders, closes positions,
+repays loans, or migrates assets. Venue prerequisites and permission failures
+are returned per step so the user can finish them manually. API keys need the
+venue's account-management permission in addition to read+trade where the
+venue separates that permission; withdrawals must remain disabled.
+
 The same service executes persistent TWAP jobs. Each job is bound to one
 trading account and venue, uses deterministic child-order IDs, and is resumed
 from PostgreSQL after restart. Maker slices use live venue BBO with post-only
@@ -201,15 +229,71 @@ private account WebSockets provide the primary order/fill reports for Binance,
 OKX, Bybit, Bitget, and Gate spot and linear perpetual orders. REST remains the
 source of recovery after disconnects, uncertain submissions, and periodic
 audits. After restart, non-terminal orders are reconciled by client order ID
-before any new submit. Closing stops new triggers, cancels a remaining maker,
-hedges actual base fills, and retains the combination audit trail for seven
-days. Set `TRADER_ARBITRAGE_ORDER_STREAM_ENABLED=false` only as an operational
-fallback to the legacy REST observer.
+before any new submit. Closing stops new triggers, cancels remaining active
+orders, preserves any existing base carry without submitting a hedge, and
+retains the combination audit trail for seven days. Set
+`TRADER_ARBITRAGE_ORDER_STREAM_ENABLED=false` only as an operational fallback
+to the legacy REST observer.
+
+New arbitrage combinations capture each leg's full venue base position once
+before the combination is inserted. The immutable baseline is stored with the
+combination; position audits compare the live venue position with
+`baseline + signed fills from this combination`. A manual or external trade on
+the same account and instrument after creation therefore moves the combination
+to `position_uncertain`, while a pre-existing position that was present in the
+captured baseline does not. Combinations created before the baseline migration
+keep the legacy venue-versus-ledger audit and are not backfilled. Creation also
+reserves each `(trading_account_id, instrument_id)` until the combination is
+`closed` or `failed`; another `running` or `closing` combination using either
+leg is rejected with `active_arbitrage_instrument_conflict`. Baseline snapshot
+failure aborts creation rather than assuming a zero position.
+
+The scheduler treats the two thresholds as a one-way state machine. The Ask
+threshold only submits paired opening trades up to the target after valuing
+`baseline + combination fills` with each leg's current in-memory BBO midpoint.
+Ask orders are always non-reduce-only, including for combinations created
+before baseline capture. The Bid threshold may reduce the paired Ask-direction
+venue position formed by both the immutable baseline and this combination's
+fills; it stops when either leg reaches zero and never opens a reverse position.
+Perpetual Bid orders are reduce-only. Spot Bid quantities are capped by the
+paired local position and by a fresh account snapshot fetched before taking the
+account order lock; a failed snapshot fails closed and places no new spot order.
+The scheduler uses both legs' actual limit/market constraints to reject
+unexecutable tail quantities before claiming an execution, while the executor
+validates again before submission.
+
+Arbitrage positions have three distinct meanings. The signed leg base fields
+are the audit fill ledger and may become negative when Bid reduces a baseline.
+The expected venue position is `immutable baseline + audit fills`. Combination
+PnL inventory starts at zero, includes only Ask-direction exposure genuinely
+added by this combination, and is reduced before a Bid fill is attributed to
+baseline reduction. Baseline-only reduction therefore contributes turnover but
+does not create reverse combination PnL. `position_notional` remains an
+unbounded fill-ledger/display value and is not an order-limit input.
+
+Order reconciliation uses direct lookup followed by venue history and active
+orders where supported. Binance `-2013` is a not-found signal rather than an
+order rejection, and Bybit zero-fill Post-Only/IOC cancellation metadata remains
+a terminal state. A resolver failure stays uncertain. Historical orders that
+caused the exact bounded-reconciliation error can be rescanned; the combination
+returns to `monitoring` only when it is running, venue drift is zero, every
+linked execution and order is terminal, and all reconcile failure counters are
+clear. Position-drift, closing, and manual-intervention states are never cleared
+by this recovery path.
+
+Running combination responses may include signed per-leg venue notionals,
+valuation midpoints, and timestamps. These values reuse the scheduler's public
+BBO WebSocket cache, are expressed in each leg's native quote asset, are not
+persisted, and are omitted when the cached quote is unavailable or stale.
+
 `TRADER_ORDER_STREAM_RECONNECT_*`, `TRADER_ORDER_STREAM_HEARTBEAT`,
 `TRADER_ORDER_STREAM_STALE`, `TRADER_ORDER_STREAM_REST_AUDIT`, and
 `TRADER_ORDER_STREAM_SESSION_IDLE` control reconnect and fallback behavior.
 The `*_ORDER_WS_URL` variables are optional testnet/region overrides; leaving
 them empty selects the product-correct private endpoint for each venue.
+`TRADER_ARBITRAGE_ENABLED_EXCHANGES` is a per-venue execution allowlist. Removing
+a venue stops new arbitrage triggers and combination creation while existing
+claimed executions continue through reconciliation.
 
 `TRADER_ARBITRAGE_DRY_RUN` defaults to `true`. In this mode the scheduler
 subscribes, computes both spreads, and records edge-triggered signals without
@@ -236,13 +320,18 @@ environment variables.
 Official unified-account endpoints used by v1 (do not fall back to classic
 account APIs):
 
-| Venue | API | Place |
-| --- | --- | --- |
-| Binance Portfolio Margin | PAPI | spot `POST /papi/v1/margin/order` (`sideEffectType=NO_SIDE_EFFECT`); linear `POST /papi/v1/um/order` |
-| OKX | v5 | `POST /api/v5/trade/order` (`tdMode=cash` spot, `tdMode=cross` swap) |
-| Bybit | V5 UTA | `POST /v5/order/create` (`category=spot\|linear`; spot market `marketUnit=baseCoin`) |
-| Bitget | UTA v3 | `POST /api/v3/trade/place-order` (`SPOT`, `USDT-FUTURES`, `USDC-FUTURES`) |
-| Gate | v4 unified | spot `POST /api/v4/spot/orders` (`account=unified`); USDT linear `POST /api/v4/futures/usdt/orders` |
+| Venue | API | Place | Account profile target / limitations |
+| --- | --- | --- | --- |
+| Binance Portfolio Margin | PAPI | spot `POST /papi/v1/margin/order` (`sideEffectType=NO_SIDE_EFFECT`); linear `POST /papi/v1/um/order` | Portfolio Margin must already be enabled manually; PAPI sets `dualSidePosition=false` |
+| OKX | v5 | `POST /api/v5/trade/order` (`tdMode=cash` spot, `tdMode=cross` swap) | `acctLv=3`, `posMode=net_mode`; preset and precheck failures require manual cleanup |
+| Bybit | V5 UTA | `POST /v5/order/create` (`category=spot\|linear`; spot market `marketUnit=baseCoin`) | UTA, `REGULAR_MARGIN`, position `mode=0`; upgrades may remain pending |
+| Bitget | UTA v3 | `POST /api/v3/trade/place-order` (`SPOT`, `USDT-FUTURES`, `USDC-FUTURES`) | UTA advanced/multi-asset and `one_way_mode`; requires UTA management permission |
+| Gate | v4 unified | spot `POST /api/v4/spot/orders` (`account=unified`); USDT linear `POST /api/v4/futures/usdt/orders` | `multi_currency` unified mode and `single` futures position mode |
+
+Arbitrage detail responses expose at most the ten most recently updated orders
+that have a durable `trader_order_events.event_type='submitted'` event. Intent-
+only executions are excluded; lifecycle and close logic still use the
+unfiltered order repository method.
 
 Override venue hosts with `BINANCE_PORTFOLIO_API_URL`, `OKX_ACCOUNT_API_URL`,
 `BYBIT_ACCOUNT_API_URL`, `BITGET_ACCOUNT_API_URL`, and `GATE_ACCOUNT_API_URL`.

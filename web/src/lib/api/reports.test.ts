@@ -35,6 +35,13 @@ const row = {
   partial: true,
 };
 
+const recomputingRow = {
+  ...row,
+  dailyReturn: null,
+  status: "recomputing",
+  partial: false,
+};
+
 const cashFlow = {
   id: "flow/1",
   productId: "product/one",
@@ -42,6 +49,7 @@ const cashFlow = {
   amount: "1000.25",
   currency: "USDT",
   occurredAt: "2026-08-12T06:00:00Z",
+  flowDate: "2026-08-12",
   note: "manual",
   status: "confirmed",
   createdAt: "2026-08-12T06:01:00Z",
@@ -83,6 +91,26 @@ describe("report response mapping", () => {
     });
     expect(report.aumSeries).toEqual([{ date: "2026-08-12", aum: 128450 }]);
     expect(report).toMatchObject({ status: "provisional", partial: true });
+  });
+
+  it("maps recomputing status and keeps empty daily return", () => {
+    const report = mapProductReportResponse({
+      data: {
+        product,
+        latest: recomputingRow,
+        rows: [recomputingRow],
+        aumSeries: [{ date: "2026-08-12", aum: "128450.00" }],
+        status: "recomputing",
+        partial: false,
+        errors: [],
+        dataDate: "2026-08-12",
+      },
+    });
+    expect(report.status).toBe("recomputing");
+    expect(report.latest).toMatchObject({
+      dailyReturn: null,
+      status: "recomputing",
+    });
   });
 
   it("rejects numeric JSON decimals", () => {
@@ -170,11 +198,15 @@ describe("report endpoints", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({ data: [cashFlow], meta: { total: 1 } }))
-      .mockResolvedValueOnce(jsonResponse({ data: cashFlow }));
+      .mockResolvedValueOnce(
+        jsonResponse({ data: { ...cashFlow, recomputeStatus: "queued" } }),
+      );
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(fetchProductCashFlows("product/one")).resolves.toHaveLength(1);
-    await createProductCashFlow("product/one", {
+    await expect(fetchProductCashFlows("product/one")).resolves.toEqual([
+      expect.objectContaining({ flowDate: "2026-08-12" }),
+    ]);
+    const created = await createProductCashFlow("product/one", {
       type: "subscription",
       amount: "1000.25",
       currency: "USDT",
@@ -182,6 +214,8 @@ describe("report endpoints", () => {
       note: "manual",
       status: "confirmed",
     });
+    expect(created.flowDate).toBe("2026-08-12");
+    expect(created.recomputeStatus).toBe("queued");
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "/api/v1/reports/products/product%2Fone/cash-flows",
     );

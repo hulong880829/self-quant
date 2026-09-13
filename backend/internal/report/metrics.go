@@ -3,9 +3,17 @@ package report
 import (
 	"math"
 	"strconv"
+	"strings"
 	"sync/atomic"
 
 	"github.com/shopspring/decimal"
+)
+
+const (
+	minSharpeSamples     = 7
+	minAnnualizedSamples = 7
+	minAnnualized7DDays  = 7
+	minAnnualized30DDays = 30
 )
 
 type Metrics struct {
@@ -58,75 +66,104 @@ func CalculatePerformanceMetrics(rows []DailySnapshot) []DailySnapshot {
 	if len(result) == 0 {
 		return result
 	}
-	returns := make([]float64, len(result))
+	returns := make([]parsedReturn, len(result))
 	for index := range result {
-		returns[index], _ = strconv.ParseFloat(result[index].ReturnRate, 64)
+		if result[index].Status == "recomputing" || result[index].Status == "invalid" {
+			continue
+		}
+		returns[index] = parseReturnRate(result[index].ReturnRate)
 	}
 	cumulative := decimal.Zero
-	peak := decimal.Zero
+	nav := 1.0
+	peak := 1.0
 	maxDrawdown := 0.0
 	for index := len(result) - 1; index >= 0; index-- {
 		if pnl, err := decimal.NewFromString(result[index].PnLUSD); err == nil {
 			cumulative = cumulative.Add(pnl)
 		}
 		result[index].AbsoluteReturn = cumulative.String()
-		aum, err := decimal.NewFromString(result[index].ClosingEquityUSD)
-		if err == nil {
-			if peak.IsZero() || aum.GreaterThan(peak) {
-				peak = aum
-			} else if !peak.IsZero() {
-				drawdown, _ := aum.Sub(peak).Div(peak).Float64()
+		if parsed := returns[index]; parsed.ok {
+			nav *= 1 + parsed.value
+			if nav > peak {
+				peak = nav
+			} else if peak > 0 {
+				drawdown := (nav - peak) / peak
 				if drawdown < maxDrawdown {
 					maxDrawdown = drawdown
 				}
 			}
 		}
 		result[index].MaxDrawdown = metricString(maxDrawdown)
-		result[index].Annualized7D = annualizedWindow(returns, index, 7)
-		result[index].Annualized30D = annualizedWindow(returns, index, 30)
-		result[index].AnnualizedReturn = annualizedWindow(returns, index, len(returns)-index)
-		result[index].Sharpe = sharpeWindow(returns, index, len(returns)-index)
+		result[index].Annualized7D = annualizedWindow(returns, index, minAnnualized7DDays, minAnnualized7DDays)
+		result[index].Annualized30D = annualizedWindow(returns, index, minAnnualized30DDays, minAnnualized30DDays)
+		result[index].AnnualizedReturn = annualizedWindow(returns, index, len(returns)-index, minAnnualizedSamples)
+		result[index].Sharpe = sharpeWindow(returns, index, len(returns)-index, minSharpeSamples)
 	}
 	return result
 }
 
-func annualizedWindow(values []float64, start int, size int) string {
+type parsedReturn struct {
+	value float64
+	ok    bool
+}
+
+func parseReturnRate(value string) parsedReturn {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return parsedReturn{}
+	}
+	parsed, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed <= -1 {
+		return parsedReturn{}
+	}
+	return parsedReturn{value: parsed, ok: true}
+}
+
+func annualizedWindow(values []parsedReturn, start int, size int, minValid int) string {
 	end := min(len(values), start+size)
-	if start >= end {
+	if start >= end || end-start < minValid {
 		return ""
 	}
 	total := 0.0
 	count := 0
 	for _, value := range values[start:end] {
-		if math.IsNaN(value) || math.IsInf(value, 0) || value <= -1 {
+		if !value.ok {
 			continue
 		}
-		total += math.Log1p(value)
+		total += math.Log1p(value.value)
 		count++
 	}
-	if count == 0 {
+	if count < minValid {
 		return ""
 	}
 	return metricString(math.Expm1(total / float64(count) * 365))
 }
 
-func sharpeWindow(values []float64, start int, size int) string {
+func sharpeWindow(values []parsedReturn, start int, size int, minValid int) string {
 	end := min(len(values), start+size)
-	count := end - start
-	if count < 2 {
+	if start >= end {
+		return ""
+	}
+	valid := make([]float64, 0, end-start)
+	for _, value := range values[start:end] {
+		if value.ok {
+			valid = append(valid, value.value)
+		}
+	}
+	if len(valid) < minValid {
 		return ""
 	}
 	mean := 0.0
-	for _, value := range values[start:end] {
+	for _, value := range valid {
 		mean += value
 	}
-	mean /= float64(count)
+	mean /= float64(len(valid))
 	variance := 0.0
-	for _, value := range values[start:end] {
+	for _, value := range valid {
 		delta := value - mean
 		variance += delta * delta
 	}
-	deviation := math.Sqrt(variance / float64(count-1))
+	deviation := math.Sqrt(variance / float64(len(valid)-1))
 	if deviation == 0 {
 		return ""
 	}

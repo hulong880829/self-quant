@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 #include <vector>
 
 #include "oms/api/error.h"
@@ -17,7 +18,7 @@ using WideNotional = std::int64_t;
 
 struct OrderRecord {
   api::NewOrderRequest request{};
-  api::ExecutionRoutingSnapshot routing{};
+  api::ResolvedInstrument routing{};
   api::VenueOrderId venue_order_id{};
   api::OrderStatus status{api::OrderStatus::PendingSubmit};
   api::InflightAction inflight{api::InflightAction::None};
@@ -30,6 +31,11 @@ struct OrderRecord {
   bool occupied{};
 };
 
+static_assert(std::is_trivially_copyable_v<OrderRecord>);
+static_assert(std::is_standard_layout_v<OrderRecord>);
+static_assert(sizeof(OrderRecord) == 432);
+static_assert(alignof(OrderRecord) == 16);
+
 class OrderTable {
  public:
   explicit OrderTable(std::size_t capacity);
@@ -40,9 +46,7 @@ class OrderTable {
   [[nodiscard]] std::size_t capacity() const noexcept { return records_.size(); }
   [[nodiscard]] std::size_t size() const noexcept { return size_; }
 
-  api::Error Insert(const api::NewOrderRequest& request,
-                    api::OrderHandle& handle) noexcept;
-  api::Error Insert(const api::PreparedOrderRequest& request,
+  api::Error Insert(const api::SubmitOrderRequest& request,
                     api::OrderHandle& handle) noexcept;
   [[nodiscard]] OrderRecord* Lookup(api::OrderHandle handle) noexcept;
   [[nodiscard]] const OrderRecord* Lookup(api::OrderHandle handle) const noexcept;

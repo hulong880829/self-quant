@@ -1,12 +1,15 @@
 #include "mds/exchange/venue_adapter.h"
 
+#include "mds/exchange/aster/aster_adapter.h"
 #include "mds/exchange/bitget/bitget_adapter.h"
 #include "mds/exchange/binance/binance_venue_adapter.h"
 #include "mds/exchange/bybit/bybit_adapter.h"
 #include "mds/exchange/gate/gate_adapter.h"
 #include "mds/exchange/hyperliquid/hyperliquid_adapter.h"
+#include "mds/exchange/lighter/lighter_adapter.h"
 #include "mds/exchange/okx/okx_adapter.h"
 #include "mds/exchange/polymarket/polymarket_adapter.h"
+#include "mds/exchange/symbol_policy.h"
 #include "utils/md/decimal.h"
 
 #include <charconv>
@@ -14,6 +17,57 @@
 #include <limits>
 
 namespace mds::exchange {
+
+bool decimal_scale_mismatch(std::string_view value,
+                            std::uint8_t configured_scale) noexcept {
+  if (value.empty() || value.front() == '+') {
+    return false;
+  }
+  if (value.front() == '-') {
+    value.remove_prefix(1);
+  }
+  if (value.empty()) {
+    return false;
+  }
+  const auto dot = value.find('.');
+  if (dot == 0 || dot == value.size() - 1 ||
+      (dot != std::string_view::npos &&
+       value.find('.', dot + 1) != std::string_view::npos)) {
+    return false;
+  }
+  for (const char character : value) {
+    if (character != '.' &&
+        (character < '0' || character > '9')) {
+      return false;
+    }
+  }
+  std::size_t end = value.size();
+  while (dot != std::string_view::npos && end > dot + 1 &&
+         value[end - 1] == '0') {
+    --end;
+  }
+  const auto digits =
+      dot == std::string_view::npos ? 0U : end - dot - 1U;
+  if (digits <= configured_scale || digits > 18U) {
+    return false;
+  }
+  std::int64_t parsed{};
+  return utils::md::decimal_to_fixed(
+      value, static_cast<std::uint8_t>(digits), parsed);
+}
+
+bool classify_scale_mismatch(const NormalizedEvent &event,
+                             ParseFailure &failure) noexcept {
+  if (event.symbol_view().empty() ||
+      failure.diagnostic_view().find("reason=scale") ==
+          std::string_view::npos) {
+    return false;
+  }
+  failure.category = ParseFailureCategory::ConfigurationMetadata;
+  failure.scope = ParseFailureScope::Symbol;
+  failure.code = ParseFailureCode::ScaleMismatch;
+  return failure.set_symbol(event.symbol_view());
+}
 
 bool decimal_to_turnover(std::string_view value,
                          std::uint64_t &turnover) noexcept {
@@ -80,7 +134,7 @@ bool decimal_product_to_turnover(std::string_view quantity,
 
 bool copy_symbol(std::string_view value,
                  NormalizedEvent &event) noexcept {
-  if (value.empty() || value.size() >= event.symbol.size()) {
+  if (!valid_utf8_symbol(value, event.symbol.size() - 1U)) {
     return false;
   }
   std::memcpy(event.symbol.data(), value.data(), value.size());
@@ -109,6 +163,10 @@ make_venue_adapter(utils::md::Venue venue,
     return make_gate_adapter(product, max_levels_per_side);
   case utils::md::Venue::Hyperliquid:
     return make_hyperliquid_adapter(product, max_levels_per_side);
+  case utils::md::Venue::Aster:
+    return make_aster_adapter(product, max_levels_per_side);
+  case utils::md::Venue::Lighter:
+    return make_lighter_adapter(product, max_levels_per_side);
   case utils::md::Venue::Polymarket:
     return product == utils::md::ProductType::BinaryOption
                ? polymarket::make_polymarket_adapter(max_levels_per_side)

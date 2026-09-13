@@ -455,15 +455,6 @@ struct OfflineVenue final : Transport {
   bool emit_trading_ready{true};
   bool closed{};
 
-  static bool ResolveSymbol(void*, api::InstrumentId instrument, char* output,
-                            std::size_t capacity,
-                            std::uint8_t& length) noexcept {
-    if (instrument != 7 || capacity < 7) return false;
-    std::memcpy(output, "BTCUSDT", 7);
-    length = 7;
-    return true;
-  }
-
   static bool ResolveCancel(void*, api::OrderHandle handle,
                             ResolvedCancel& output) noexcept {
     if (handle.generation == 0) return false;
@@ -630,8 +621,7 @@ BinanceAdapterConfig Config(OfflineVenue& venue,
   BinanceAdapterConfig result{};
   result.product = product;
   result.credentials = {"offline-key", "offline-secret"};
-  result.callbacks = {&venue, &OfflineVenue::ResolveSymbol,
-                      &OfflineVenue::ResolveCancel};
+  result.callbacks = {&venue, &OfflineVenue::ResolveCancel, nullptr};
   result.transport = &venue;
   return result;
 }
@@ -649,6 +639,14 @@ AdapterPlaceCommand PlaceCommand() {
   command.request.time_in_force = api::TimeInForce::GTC;
   command.request.quantity = {10000000, 8, {}};
   command.request.price = {1000000000000, 8, {}};
+  command.routing.kind = api::ExecutionRouteKind::Crypto;
+  command.routing.venue =
+      static_cast<std::uint8_t>(utils::md::Venue::Binance);
+  command.routing.product_type =
+      static_cast<std::uint8_t>(utils::md::ProductType::Spot);
+  command.routing.catalog_revision = 1;
+  command.routing.crypto.venue_symbol =
+      IdFrom<api::VenueSymbol>("BTCUSDT");
   return command;
 }
 

@@ -1,9 +1,11 @@
 #include "mds/transport/shared_ring.h"
+#include "mds/exchange/symbol_policy.h"
 
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <ctime>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
@@ -25,6 +27,15 @@ constexpr std::size_t align8(std::size_t value) noexcept {
 
 constexpr bool is_power_of_two(std::uint64_t value) noexcept {
   return value != 0 && (value & (value - 1U)) == 0;
+}
+
+std::uint64_t monotonic_now_ns() noexcept {
+  timespec value{};
+  if (clock_gettime(CLOCK_MONOTONIC_RAW, &value) != 0) {
+    return 0;
+  }
+  return static_cast<std::uint64_t>(value.tv_sec) * 1'000'000'000ULL +
+         static_cast<std::uint64_t>(value.tv_nsec);
 }
 
 std::uint32_t crc32c(std::span<const std::byte> bytes) noexcept {
@@ -392,15 +403,79 @@ bool SharedRing::valid_reader(const ReaderHandle &handle) const noexcept {
 
 api::Result<void>
 SharedRing::unregister_reader(ReaderHandle handle) noexcept {
-  if (!valid_reader(handle)) {
-    return {.error = api::ErrorCode::InvalidHandle};
+  if (!header_) {
+    return {.error = api::ErrorCode::NotInitialized,
+            .message = "shared ring is not initialized"};
+  }
+  if (handle.slot >= header_->max_readers) {
+    return {.error = api::ErrorCode::InternalError,
+            .message = "reader slot is out of range"};
+  }
+  if (handle.lease_token == 0) {
+    return {.error = api::ErrorCode::InvalidHandle,
+            .message = "reader lease is no longer held"};
   }
   auto &slot = header_->readers[handle.slot];
-  slot.lease_token.store(0, std::memory_order_relaxed);
-  slot.state.store(static_cast<std::uint32_t>(ReaderState::Free),
-                   std::memory_order_release);
-  header_->registry_generation.fetch_add(1, std::memory_order_release);
-  return {};
+  const auto gone = api::Result<void>{
+      .error = api::ErrorCode::InvalidHandle,
+      .message = "reader lease is no longer held"};
+  const auto in_progress = api::Result<void>{
+      .error = api::ErrorCode::QuotaExceeded,
+      .message = "reader unregister is in progress"};
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    const auto token = slot.lease_token.load(std::memory_order_acquire);
+    if (token != handle.lease_token) {
+      return gone;
+    }
+    const auto state = static_cast<ReaderState>(
+        slot.state.load(std::memory_order_acquire));
+    if (state == ReaderState::Suspect ||
+        state == ReaderState::Initializing) {
+      return in_progress;
+    }
+    if (state != ReaderState::Active) {
+      return gone;
+    }
+    slot.heartbeat_ns.store(monotonic_now_ns(), std::memory_order_release);
+    auto expected = static_cast<std::uint32_t>(ReaderState::Active);
+    if (!slot.state.compare_exchange_strong(
+            expected, static_cast<std::uint32_t>(ReaderState::Initializing),
+            std::memory_order_acq_rel)) {
+      continue;
+    }
+    const auto token_now = slot.lease_token.load(std::memory_order_acquire);
+    const auto state_now = static_cast<ReaderState>(
+        slot.state.load(std::memory_order_acquire));
+    if (token_now != handle.lease_token) {
+      if (state_now == ReaderState::Initializing && token_now != 0) {
+        slot.state.store(static_cast<std::uint32_t>(ReaderState::Active),
+                          std::memory_order_release);
+      }
+      return gone;
+    }
+    if (state_now == ReaderState::Suspect) {
+      return in_progress;
+    }
+    if (state_now != ReaderState::Initializing) {
+      return gone;
+    }
+    slot.lease_token.store(0, std::memory_order_relaxed);
+    slot.state.store(static_cast<std::uint32_t>(ReaderState::Free),
+                       std::memory_order_release);
+    header_->registry_generation.fetch_add(1, std::memory_order_release);
+    return {};
+  }
+  const auto token = slot.lease_token.load(std::memory_order_acquire);
+  if (token != handle.lease_token) {
+    return gone;
+  }
+  const auto state = static_cast<ReaderState>(
+      slot.state.load(std::memory_order_acquire));
+  if (state == ReaderState::Suspect ||
+      state == ReaderState::Initializing) {
+    return in_progress;
+  }
+  return gone;
 }
 
 api::Result<void> SharedRing::heartbeat(ReaderHandle handle,
@@ -586,17 +661,44 @@ std::size_t SharedRing::reclaim_stale(
     if (now_ns < heartbeat || now_ns - heartbeat <= lease_timeout_ns) {
       continue;
     }
-    auto expected = static_cast<std::uint32_t>(state);
+    if (state == ReaderState::Active) {
+      const auto pid = slot.pid.load(std::memory_order_relaxed);
+      const auto marker =
+          slot.process_start_marker.load(std::memory_order_relaxed);
+      const auto token = slot.lease_token.load(std::memory_order_relaxed);
+      if (!process_alive || process_alive(pid, marker)) {
+        continue;
+      }
+      auto expected = static_cast<std::uint32_t>(ReaderState::Active);
+      if (!slot.state.compare_exchange_strong(
+              expected, static_cast<std::uint32_t>(ReaderState::Suspect),
+              std::memory_order_acq_rel)) {
+        continue;
+      }
+      const auto refreshed = slot.heartbeat_ns.load(std::memory_order_acquire);
+      const auto token_now = slot.lease_token.load(std::memory_order_relaxed);
+      const auto pid_now = slot.pid.load(std::memory_order_relaxed);
+      const auto marker_now =
+          slot.process_start_marker.load(std::memory_order_relaxed);
+      if (token_now != token || pid_now != pid || marker_now != marker ||
+          now_ns < refreshed || now_ns - refreshed <= lease_timeout_ns ||
+          (process_alive && process_alive(pid_now, marker_now))) {
+        slot.state.store(static_cast<std::uint32_t>(ReaderState::Active),
+                         std::memory_order_release);
+        continue;
+      }
+      slot.lease_token.store(0, std::memory_order_relaxed);
+      slot.state.store(static_cast<std::uint32_t>(ReaderState::Free),
+                       std::memory_order_release);
+      header_->registry_generation.fetch_add(1, std::memory_order_release);
+      ++reclaimed;
+      continue;
+    }
+
+    auto expected = static_cast<std::uint32_t>(ReaderState::Initializing);
     if (!slot.state.compare_exchange_strong(
             expected, static_cast<std::uint32_t>(ReaderState::Suspect),
             std::memory_order_acq_rel)) {
-      continue;
-    }
-    const auto refreshed = slot.heartbeat_ns.load(std::memory_order_acquire);
-    if (state == ReaderState::Active &&
-        (now_ns < refreshed || now_ns - refreshed <= lease_timeout_ns)) {
-      slot.state.store(static_cast<std::uint32_t>(ReaderState::Active),
-                       std::memory_order_release);
       continue;
     }
     const auto pid = slot.pid.load(std::memory_order_relaxed);
@@ -609,7 +711,7 @@ std::size_t SharedRing::reclaim_stale(
       header_->registry_generation.fetch_add(1, std::memory_order_release);
       ++reclaimed;
     } else {
-      slot.state.store(static_cast<std::uint32_t>(state),
+      slot.state.store(static_cast<std::uint32_t>(ReaderState::Initializing),
                        std::memory_order_release);
     }
   }
@@ -680,8 +782,12 @@ std::string make_segment_name(std::string_view exchange,
                               std::string_view stream,
                               std::uint16_t schema_major,
                               std::uint32_t depth) {
+  auto symbol_component = sanitize(symbol);
+  if (exchange::has_non_ascii(symbol)) {
+    exchange::append_symbol_hash_suffix(symbol_component, symbol);
+  }
   std::string name = "/selfquant.mds." + sanitize(exchange) + "." +
-                     sanitize(product) + "." + sanitize(symbol) + "." +
+                     sanitize(product) + "." + symbol_component + "." +
                      sanitize(stream);
   if (depth != 0) {
     name += ".d" + std::to_string(depth);

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -40,6 +41,9 @@ type Service struct {
 	traderToken      string
 	tradeFills       tradeFillStore
 	aiCredentials    aiCredentialStore
+	readinessHTTP    *http.Client
+	readinessURLs    map[string]string
+	fees             *FeeSync
 }
 
 func NewService(accounts accountLookup, tokens tokenIssuer) *Service {
@@ -74,6 +78,17 @@ func (s *Service) WithInternalReports(token string, fills tradeFillStore) *Servi
 
 func (s *Service) WithInternalTrader(token string) *Service {
 	s.traderToken = token
+	return s
+}
+
+func (s *Service) WithReadiness(client *http.Client, urls map[string]string) *Service {
+	s.readinessHTTP = client
+	s.readinessURLs = urls
+	return s
+}
+
+func (s *Service) WithFeeSync(fees *FeeSync) *Service {
+	s.fees = fees
 	return s
 }
 

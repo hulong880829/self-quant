@@ -8,11 +8,14 @@ import (
 )
 
 const (
-	VenueBinance = "binance"
-	VenueOKX     = "okx"
-	VenueBybit   = "bybit"
-	VenueBitget  = "bitget"
-	VenueGate    = "gate"
+	VenueBinance     = "binance"
+	VenueOKX         = "okx"
+	VenueBybit       = "bybit"
+	VenueBitget      = "bitget"
+	VenueGate        = "gate"
+	VenueHyperliquid = "hyperliquid"
+	VenueLighter     = "lighter"
+	VenueAster       = "aster"
 
 	ProductSpot      = "spot"
 	ProductPerpetual = "perpetual"
@@ -39,7 +42,8 @@ func (k Key) normalized() (Key, error) {
 		return Key{}, fmt.Errorf("%w: empty account", ErrUnsupportedKey)
 	}
 	switch k.Venue {
-	case VenueBinance, VenueOKX, VenueBybit, VenueBitget, VenueGate:
+	case VenueBinance, VenueOKX, VenueBybit, VenueBitget, VenueGate,
+		VenueHyperliquid, VenueLighter, VenueAster:
 	default:
 		return Key{}, fmt.Errorf("%w: venue %q", ErrUnsupportedKey, k.Venue)
 	}
@@ -59,14 +63,33 @@ func (k Key) normalized() (Key, error) {
 
 // Credentials is deliberately self-contained to avoid importing trader packages.
 type Credentials struct {
-	APIKey     string
-	Secret     string
-	Passphrase string
+	APIKey         string
+	Secret         string
+	Passphrase     string
+	CredentialKind string
+	SigningAddress string
+	VaultAddress   string
+	AccountIndex   *int64
+	APIKeyIndex    *int32
+	AuthToken      string
 }
 
-func (c Credentials) validate() error {
-	if strings.TrimSpace(c.APIKey) == "" || strings.TrimSpace(c.Secret) == "" {
-		return errors.New("order stream credentials require API key and secret")
+func (c Credentials) validate(venue string) error {
+	switch venue {
+	case VenueHyperliquid:
+		if strings.TrimSpace(c.Secret) == "" || strings.TrimSpace(c.SigningAddress) == "" {
+			return errors.New("Hyperliquid order stream requires agent key and signing address")
+		}
+	case VenueLighter:
+		if strings.TrimSpace(c.Secret) == "" || c.AccountIndex == nil ||
+			c.APIKeyIndex == nil || *c.AccountIndex < 0 ||
+			*c.APIKeyIndex < 0 || *c.APIKeyIndex > 255 {
+			return errors.New("Lighter order stream requires API private key and valid indexes")
+		}
+	default:
+		if strings.TrimSpace(c.Secret) == "" || strings.TrimSpace(c.APIKey) == "" {
+			return errors.New("order stream credentials require API key and secret")
+		}
 	}
 	return nil
 }
@@ -83,6 +106,7 @@ type Status string
 
 const (
 	StatusUnknown         Status = "unknown"
+	StatusPending         Status = "pending"
 	StatusNew             Status = "new"
 	StatusPartiallyFilled Status = "partially_filled"
 	StatusFilled          Status = "filled"
@@ -108,6 +132,8 @@ type Update struct {
 	LastFilled       string
 	LastPrice        string
 	TradeID          string
+	ErrorCode        string
+	ErrorMessage     string
 	EventTime        time.Time
 	Sequence         int64
 	Error            string
@@ -121,11 +147,14 @@ type VenueURLs struct {
 }
 
 type URLs struct {
-	Binance VenueURLs
-	OKX     VenueURLs
-	Bybit   VenueURLs
-	Bitget  VenueURLs
-	Gate    VenueURLs
+	Binance     VenueURLs
+	OKX         VenueURLs
+	Bybit       VenueURLs
+	Bitget      VenueURLs
+	Gate        VenueURLs
+	Hyperliquid VenueURLs
+	Lighter     VenueURLs
+	Aster       VenueURLs
 }
 
 func DefaultURLs() URLs {
@@ -134,9 +163,12 @@ func DefaultURLs() URLs {
 			SpotWS: "wss://fstream.binance.com/pm/ws", PerpetualWS: "wss://fstream.binance.com/pm/ws",
 			SpotREST: "https://papi.binance.com", PerpetualREST: "https://papi.binance.com",
 		},
-		OKX:    VenueURLs{SpotWS: "wss://ws.okx.com:8443/ws/v5/private", PerpetualWS: "wss://ws.okx.com:8443/ws/v5/private"},
-		Bybit:  VenueURLs{SpotWS: "wss://stream.bybit.com/v5/private", PerpetualWS: "wss://stream.bybit.com/v5/private"},
-		Bitget: VenueURLs{SpotWS: "wss://ws.bitget.com/v3/ws/private", PerpetualWS: "wss://ws.bitget.com/v3/ws/private"},
-		Gate:   VenueURLs{SpotWS: "wss://api.gateio.ws/ws/v4/", PerpetualWS: "wss://fx-ws.gateio.ws/v4/ws/usdt"},
+		OKX:         VenueURLs{SpotWS: "wss://ws.okx.com:8443/ws/v5/private", PerpetualWS: "wss://ws.okx.com:8443/ws/v5/private"},
+		Bybit:       VenueURLs{SpotWS: "wss://stream.bybit.com/v5/private", PerpetualWS: "wss://stream.bybit.com/v5/private"},
+		Bitget:      VenueURLs{SpotWS: "wss://ws.bitget.com/v3/ws/private", PerpetualWS: "wss://ws.bitget.com/v3/ws/private"},
+		Gate:        VenueURLs{SpotWS: "wss://api.gateio.ws/ws/v4/", PerpetualWS: "wss://fx-ws.gateio.ws/v4/ws/usdt"},
+		Hyperliquid: VenueURLs{PerpetualWS: "wss://api.hyperliquid.xyz/ws", PerpetualREST: "https://api.hyperliquid.xyz"},
+		Lighter:     VenueURLs{PerpetualWS: "wss://mainnet.zklighter.elliot.ai/stream", PerpetualREST: "https://mainnet.zklighter.elliot.ai"},
+		Aster:       VenueURLs{PerpetualWS: "wss://fstream.asterdex.com/ws", PerpetualREST: "https://fapi.asterdex.com"},
 	}
 }

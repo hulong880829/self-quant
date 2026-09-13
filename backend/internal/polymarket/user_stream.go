@@ -151,20 +151,21 @@ func (s *userStreamSession) run() {
 			)
 		}
 		if errors.Is(err, errUserStreamUnauthorized) {
-			if !s.authRefreshAttempted {
-				s.authRefreshAttempted = true
-				refreshed, refreshErr := s.manager.service.refreshAfterUnauthorized(
-					s.ctx, s.token, s.accountID,
-				)
-				if refreshErr == nil {
-					s.setCredentials(refreshed)
-					continue
-				}
-			}
-			_ = s.manager.service.credentials.Invalidate(
-				context.WithoutCancel(s.ctx), s.token, s.accountID,
+			refreshed, _, recoverErr := s.manager.service.refreshAndVerifyCredentials(
+				s.ctx, s.token, s.accountID, true,
 			)
-			return
+			if recoverErr == nil {
+				s.setCredentials(refreshed)
+				s.authRefreshAttempted = false
+				continue
+			}
+			if isCLOBUnauthorized(recoverErr) {
+				return
+			}
+			s.manager.logger.Warn(
+				"CLOB user stream credential recovery failed",
+				"account_id", s.accountID, "error", recoverErr,
+			)
 		}
 		if time.Since(started) > time.Minute {
 			backoff = 2 * time.Second

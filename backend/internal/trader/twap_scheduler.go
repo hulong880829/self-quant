@@ -319,6 +319,10 @@ func (s *TwapScheduler) submitSlice(ctx context.Context, job TwapJob) {
 		if _, err := s.service.submitWithOptions(
 			ctx, adapter, credentials, instrument, intent, tif, postOnly,
 		); err != nil && !errors.Is(err, ErrVenueUncertain) {
+			if tradingAuthorizationLost(err) {
+				s.fail(ctx, job, "trading authorization lost")
+				return
+			}
 			s.logger.Warn("twap child submission failed", "job_id", job.ID, "error", sanitizeError(err))
 		}
 	}
@@ -360,25 +364,27 @@ func (s *TwapScheduler) cancelActive(ctx context.Context, job TwapJob) (Order, e
 	}
 	cancelCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	result, err := adapter.CancelOrder(cancelCtx, exchange.Credentials{
-		APIKey: credentials.APIKey, APISecret: credentials.APISecret, Passphrase: credentials.Passphrase,
-	}, exchange.CancelRequest{
+	result, err := adapter.CancelAndGetOrder(cancelCtx, toVenueCredentials(credentials), exchange.CancelRequest{
 		Instrument: toVenueInstrument(instrument), ClientOrderID: order.ClientOrderID,
 		VenueOrderID: order.VenueOrderID,
 	})
 	if err != nil {
 		return Order{}, err
 	}
-	if !terminalStatus(result.Status) {
+	if strings.TrimSpace(result.Status) == "" {
 		result.Status = "canceled"
 	}
 	updated, err := s.orders.UpdateResult(ctx, order.ID, VenueResult{
 		VenueOrderID: result.VenueOrderID, Status: result.Status,
 		FilledQuantity: result.FilledQuantity, AveragePrice: result.AveragePrice,
 		ErrorCode: result.ErrorCode, ErrorMessage: result.ErrorMessage,
+		Reference: result.Reference,
 	})
 	if err == nil {
 		_ = s.store.AppendTwapEvent(ctx, job.ID, "slice_canceled", map[string]any{"orderId": order.ID})
+	}
+	if err == nil && !terminalStatus(updated.Status) {
+		err = fmt.Errorf("%w: cancellation awaiting venue confirmation", ErrVenueUncertain)
 	}
 	return updated, err
 }
@@ -480,6 +486,17 @@ func (s *TwapScheduler) close(ctx context.Context, job TwapJob, status, message 
 
 func (s *TwapScheduler) fail(ctx context.Context, job TwapJob, message string) {
 	s.close(ctx, job, "failed", message)
+}
+
+func tradingAuthorizationLost(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unauthorized") ||
+		strings.Contains(message, "private key") ||
+		strings.Contains(message, "api wallet not found") ||
+		strings.Contains(message, "wallet unauthorized")
 }
 
 func (s *TwapScheduler) retry(ctx context.Context, job TwapJob, err error) {

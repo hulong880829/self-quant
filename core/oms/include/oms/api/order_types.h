@@ -31,9 +31,11 @@ struct alignas(8) FixedId {
 struct ClientOrderIdTag;
 struct VenueOrderIdTag;
 struct TradeIdTag;
+struct VenueSymbolTag;
 using ClientOrderId = FixedId<64, ClientOrderIdTag>;
 using VenueOrderId = FixedId<96, VenueOrderIdTag>;
 using TradeId = FixedId<96, TradeIdTag>;
+using VenueSymbol = FixedId<32, VenueSymbolTag>;
 
 struct RequestToken {
   std::uint32_t lane{};
@@ -156,16 +158,28 @@ struct NewOrderRequest {
 };
 
 enum class ExecutionRouteKind : std::uint8_t {
-  LegacyRegistry = 0,
-  Generic = 1,
+  Crypto = 1,
   Polymarket = 2,
 };
 
-// Immutable venue-routing data captured from the MDS catalog by the caller.
-// Adapters must use this snapshot for prepared orders instead of consulting
-// mutable instrument metadata.
-struct ExecutionRoutingSnapshot {
-  ExecutionRouteKind kind{ExecutionRouteKind::LegacyRegistry};
+// Immutable execution data resolved from one catalog revision. The 48-byte
+// scalar prefix is shared by all venues; the explicit 64-byte arm leaves 24
+// crypto-only bytes reserved without consuming Polymarket's token payload.
+//
+// instrument_id deliberately lives only in SubmitOrderRequest::order. If a
+// future shared field no longer fits, expand this type once to 128 bytes rather
+// than incrementally consuming venue-specific reserved storage.
+struct ResolvedInstrument {
+  struct Crypto {
+    VenueSymbol venue_symbol{};
+    std::array<std::uint8_t, 24> reserved{};
+  };
+  struct Polymarket {
+    std::array<std::uint8_t, 32> condition_id{};
+    std::array<std::uint8_t, 32> token_id{};
+  };
+
+  ExecutionRouteKind kind{ExecutionRouteKind::Crypto};
   std::uint8_t venue{};
   std::uint8_t product_type{};
   std::uint8_t price_scale{};
@@ -173,19 +187,60 @@ struct ExecutionRoutingSnapshot {
   std::uint8_t signature_type{};
   bool negative_risk{};
   PolymarketOutcome outcome{PolymarketOutcome::Unknown};
-  std::uint32_t catalog_generation{};
+  std::uint32_t catalog_revision{};
   std::uint32_t taker_delay_ms{};
   std::int64_t tick_size{};
   std::int64_t lot_size{};
   std::int64_t minimum_order_size{};
   std::uint64_t instrument_expiry_ns{};
-  std::array<std::uint8_t, 32> condition_id{};
-  std::array<std::uint8_t, 32> token_id{};
+  union {
+    Crypto crypto;
+    Polymarket polymarket;
+  };
+
+  constexpr ResolvedInstrument() noexcept : crypto{} {}
 };
 
-struct PreparedOrderRequest {
+enum class QueryScope : std::uint8_t {
+  All = 1,
+  SingleInstrument = 2,
+};
+
+// Venue-native identity used only by query/control paths. Snapshot results
+// deliberately contain only instrument_id; unknown identities are quarantined
+// with SnapshotUnmapped instead of enlarging RuntimeUpdate.
+struct VenueInstrumentRef {
+  struct Polymarket {
+    std::array<std::uint8_t, 32> condition_id{};
+    std::array<std::uint8_t, 32> token_id{};
+  };
+
+  ExecutionRouteKind kind{ExecutionRouteKind::Crypto};
+  std::uint8_t venue{};
+  std::uint8_t product_type{};
+  PolymarketOutcome outcome{PolymarketOutcome::Unknown};
+  union {
+    ResolvedInstrument::Crypto crypto;
+    Polymarket polymarket;
+  };
+
+  constexpr VenueInstrumentRef() noexcept : crypto{} {}
+};
+
+struct QueryRequest {
+  AccountId account_id{};
+  QueryScope scope{QueryScope::All};
+  std::uint8_t reserved[3]{};
+  VenueInstrumentRef instrument{};
+};
+
+enum SnapshotFlag : std::uint32_t {
+  SnapshotUnmapped = 1U << 0U,
+};
+
+struct SubmitOrderRequest {
   NewOrderRequest order{};
-  ExecutionRoutingSnapshot routing{};
+  ResolvedInstrument routing{};
 };
 
 struct CancelOrderRequest {
@@ -194,18 +249,15 @@ struct CancelOrderRequest {
   OrderHandle handle{};
 };
 
-struct RebindPolymarketInstrumentRequest {
+struct RegisterInstrumentRequest {
   RequestToken request_token{};
-  std::array<std::uint8_t, 32> condition_id{};
-  std::array<std::uint8_t, 32> token_id{};
   InstrumentId instrument_id{};
-  PolymarketOutcome outcome{PolymarketOutcome::Unknown};
-  bool negative_risk{};
-  std::uint8_t signature_type{};
-  std::uint8_t reserved{};
-  std::int64_t minimum_order_size{1};
-  std::uint32_t taker_delay_ms{};
-  std::uint32_t reserved1{};
+  ResolvedInstrument routing{};
+};
+
+struct RetireInstrumentRequest {
+  RequestToken request_token{};
+  InstrumentId instrument_id{};
 };
 
 // Cancel updates keep using target_token as the order identity. This explicit
@@ -215,7 +267,7 @@ struct CancelCommandCorrelation {
   RequestToken request_token{};
 };
 
-struct RebindPolymarketInstrumentResult {
+struct InstrumentCommandResult {
   RequestToken request_token{};
   InstrumentId instrument_id{};
 };
@@ -301,17 +353,27 @@ static_assert(std::is_trivially_copyable_v<RequestToken>);
 static_assert(std::is_trivially_copyable_v<OrderHandle>);
 static_assert(std::is_trivially_copyable_v<FixedPoint>);
 static_assert(std::is_trivially_copyable_v<PolymarketOutcome>);
-static_assert(
-    std::is_trivially_copyable_v<RebindPolymarketInstrumentRequest>);
-static_assert(std::is_trivially_copyable_v<RebindPolymarketInstrumentResult>);
-static_assert(std::is_standard_layout_v<RebindPolymarketInstrumentRequest>);
-static_assert(std::is_standard_layout_v<RebindPolymarketInstrumentResult>);
+static_assert(std::is_trivially_copyable_v<VenueSymbol>);
+static_assert(std::is_trivially_copyable_v<ResolvedInstrument::Crypto>);
+static_assert(std::is_trivially_copyable_v<ResolvedInstrument::Polymarket>);
+static_assert(std::is_trivially_copyable_v<RegisterInstrumentRequest>);
+static_assert(std::is_trivially_copyable_v<RetireInstrumentRequest>);
+static_assert(std::is_trivially_copyable_v<InstrumentCommandResult>);
+static_assert(std::is_standard_layout_v<RegisterInstrumentRequest>);
+static_assert(std::is_standard_layout_v<RetireInstrumentRequest>);
+static_assert(std::is_standard_layout_v<InstrumentCommandResult>);
 static_assert(sizeof(PolymarketOutcome) == 1);
-static_assert(sizeof(RebindPolymarketInstrumentRequest) == 112);
-static_assert(sizeof(RebindPolymarketInstrumentResult) == 24);
+static_assert(sizeof(VenueSymbol) == 40);
+static_assert(sizeof(ResolvedInstrument::Crypto) == 64);
+static_assert(sizeof(ResolvedInstrument::Polymarket) == 64);
+static_assert(sizeof(RegisterInstrumentRequest) == 136);
+static_assert(sizeof(RetireInstrumentRequest) == 24);
+static_assert(sizeof(InstrumentCommandResult) == 24);
 static_assert(std::is_trivially_copyable_v<NewOrderRequest>);
-static_assert(std::is_trivially_copyable_v<ExecutionRoutingSnapshot>);
-static_assert(std::is_trivially_copyable_v<PreparedOrderRequest>);
+static_assert(std::is_trivially_copyable_v<ResolvedInstrument>);
+static_assert(std::is_trivially_copyable_v<VenueInstrumentRef>);
+static_assert(std::is_trivially_copyable_v<QueryRequest>);
+static_assert(std::is_trivially_copyable_v<SubmitOrderRequest>);
 static_assert(std::is_trivially_copyable_v<CancelOrderRequest>);
 static_assert(std::is_trivially_copyable_v<CancelCommandCorrelation>);
 static_assert(std::is_trivially_copyable_v<VenueEvent>);
@@ -325,8 +387,10 @@ static_assert(std::is_standard_layout_v<RequestToken>);
 static_assert(std::is_standard_layout_v<OrderHandle>);
 static_assert(std::is_standard_layout_v<FixedPoint>);
 static_assert(std::is_standard_layout_v<NewOrderRequest>);
-static_assert(std::is_standard_layout_v<ExecutionRoutingSnapshot>);
-static_assert(std::is_standard_layout_v<PreparedOrderRequest>);
+static_assert(std::is_standard_layout_v<ResolvedInstrument>);
+static_assert(std::is_standard_layout_v<VenueInstrumentRef>);
+static_assert(std::is_standard_layout_v<QueryRequest>);
+static_assert(std::is_standard_layout_v<SubmitOrderRequest>);
 static_assert(std::is_standard_layout_v<CancelOrderRequest>);
 static_assert(std::is_standard_layout_v<CancelCommandCorrelation>);
 static_assert(std::is_standard_layout_v<VenueEvent>);
@@ -339,8 +403,10 @@ static_assert(sizeof(RequestToken) == 16);
 static_assert(sizeof(OrderHandle) == 16);
 static_assert(sizeof(FixedPoint) == 16);
 static_assert(sizeof(NewOrderRequest) == 144);
-static_assert(sizeof(ExecutionRoutingSnapshot) == 112);
-static_assert(sizeof(PreparedOrderRequest) == 256);
+static_assert(sizeof(ResolvedInstrument) == 112);
+static_assert(sizeof(VenueInstrumentRef) == 72);
+static_assert(sizeof(QueryRequest) == 80);
+static_assert(sizeof(SubmitOrderRequest) == 256);
 static_assert(sizeof(CancelOrderRequest) == 48);
 static_assert(sizeof(CancelCommandCorrelation) == 32);
 static_assert(sizeof(VenueEvent) == 368);

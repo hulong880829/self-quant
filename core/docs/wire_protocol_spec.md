@@ -339,17 +339,19 @@ reader acquire-load writer cursor；按 cursor 定位并跳过尾部/padding；�
 ## 11. Polymarket rolling MDS 映射
 
 Polymarket 行情使用 `Venue::Polymarket` 与 `ProductType::BinaryOption`。MDS
-为 BTC 五分钟方向市场暴露稳定 alias `BTC5MUP`、`BTC5MDOWN`；alias 是
+为 BTC 五分钟方向市场暴露逻辑 alias `BTC5MUP`、`BTC5MDOWN`；alias 是
 MDS-only 标识，不是 Polymarket token，也不能直接作为 OMS 下单标的。
-Gamma REST 仅异步发现当前精确市场及 token；token ID 保留在 adapter
-内部，不加入共享 wire。
+Gamma REST 异步发现当前精确市场及 token。每个 window/outcome 通过
+`resolve_instance(venue, product, alias, slug, outcome)` 获得唯一物理
+`instrument_id`。
 
-滚动到下一市场时，`instrument_id`、`canonical_symbol`、`instrument_key`
-及共享段保持 alias 身份稳定；`venue_symbol` 可携带当前 Gamma slug。slug
-只能伴随 `book_generation` 递增及 `InstrumentUpdate`（`state=Building`）
-一起变化，消费者必须清空旧 book，等待新一代快照恢复 Live。
+`InstrumentCatalog` 的字段语义固定为：`canonical_symbol` 保存逻辑 alias，
+`market_slug` 保存 Gamma slug，80 字节 `venue_symbol` 保存当前 outcome 的
+十进制 token ID，`condition_id`/`outcome` 保存对应路由属性。token 不得复制
+到 32 字节 `Instrument::venue_symbol`。StrategyFrame 从 catalog 解析完整
+token 到 256-bit 二进制 routing，并在 execution directory 注册新物理 ID。
 
 Polymarket 的 BBO、BookDelta、Snapshot 和 InstrumentUpdate 继续使用本规范
-既有记录；不增加 token、slug 或 lifecycle 专用 wire 字段，BBO/Book wire
-schema 与大小不变。WSS 的 `book` snapshot、`price_change`、BBO、tick-size
-及 lifecycle 事件映射到既有状态机和记录。
+既有记录；token/slug 使用既有 `InstrumentCatalogRecord`，不增加 lifecycle
+专用 wire 记录，BBO/Book wire schema 与大小不变。WSS 的 `book` snapshot、
+`price_change`、BBO、tick-size 及 lifecycle 事件映射到既有状态机和记录。

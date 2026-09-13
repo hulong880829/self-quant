@@ -14,7 +14,7 @@ func TestHistoryQueryUsesBucketAggregation(t *testing.T) {
 	query := historyQuery("market_data", "crypto_bbo", 60, "")
 	for _, fragment := range []string{
 		"PREWHERE venue = @venue",
-		"canonical_symbol = @symbol",
+		"canonical_symbol = @venue_symbol",
 		"argMaxIf(ask_price, ts, product = 'spot')",
 		"argMaxIf(ask_price, ts, product = 'perpetual')",
 		"INTERVAL 60 SECOND",
@@ -35,8 +35,8 @@ func TestHistoryQueryUsesCrossVenuePerpetualAsks(t *testing.T) {
 	for _, fragment := range []string{
 		"PREWHERE venue IN (@venue, @compare_venue)",
 		"product = 'perpetual'",
-		"argMaxIf(ask_price, ts, venue = @venue)",
-		"argMaxIf(ask_price, ts, venue = @compare_venue)",
+		"venue = @venue AND canonical_symbol = @venue_symbol",
+		"venue = @compare_venue AND canonical_symbol = @compare_symbol",
 		"INTERVAL 60 SECOND",
 		"HAVING bucket >= @from AND bucket < @to",
 	} {
@@ -49,6 +49,27 @@ func TestHistoryQueryUsesCrossVenuePerpetualAsks(t *testing.T) {
 	}
 	if strings.Contains(query, "product = 'spot'") {
 		t.Fatal("cross-venue query should not read spot")
+	}
+}
+
+func TestNormalizeRequestPreservesPerVenueCanonicalSymbols(t *testing.T) {
+	request, err := NormalizeRequest(HistoryRequest{
+		Venue: "hyperliquid", CompareVenue: "binance",
+		BaseAsset: "ZEC", QuoteAsset: "USDT",
+		VenueCanonicalSymbol: "zecusdc", CompareVenueCanonicalSymbol: "zecusdt",
+		Range: Range24h,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.VenueCanonicalSymbol != "ZECUSDC" ||
+		request.CompareVenueCanonicalSymbol != "ZECUSDT" {
+		t.Fatalf("request=%+v", request)
+	}
+	query := historyQuery("market_data", "crypto_bbo", 60, request.CompareVenue)
+	if !strings.Contains(query, "canonical_symbol = @venue_symbol") ||
+		!strings.Contains(query, "canonical_symbol = @compare_symbol") {
+		t.Fatalf("query does not address legs independently:\n%s", query)
 	}
 }
 

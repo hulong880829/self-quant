@@ -1,0 +1,106 @@
+{
+  "connected": {
+    "session_id": "fixture-session",
+    "type": "connected"
+  },
+  "pong": {
+    "type": "pong"
+  },
+  "perpetual": {
+    "ticker_snapshot": {
+      "channel": "ticker:1",
+      "last_updated_at": 1787921758778453,
+      "nonce": 20427231705,
+      "ticker": {
+        "s": "BTC",
+        "a": {"price": "79345.0", "size": "0.98512"},
+        "b": {"price": "79343.4", "size": "0.57643"},
+        "last_updated_at": 1787921758778453
+      },
+      "timestamp": 1787921758781,
+      "type": "subscribed/ticker"
+    },
+    "book_snapshot": {
+      "channel": "order_book:1",
+      "last_updated_at": 1787921770785150,
+      "offset": 25045069,
+      "order_book": {
+        "code": 0,
+        "asks": [
+          {"price": "79359.7", "size": "0.06205"},
+          {"price": "79359.8", "size": "0.06549"}
+        ],
+        "bids": [
+          {"price": "79359.6", "size": "0.00126"},
+          {"price": "79359.5", "size": "0.00020"}
+        ],
+        "offset": 25045069,
+        "nonce": 20427244574,
+        "last_updated_at": 1787921770785150,
+        "begin_nonce": 0
+      },
+      "timestamp": 1787921770807,
+      "type": "subscribed/order_book"
+    },
+    "book_delta": {
+      "channel": "order_book:1",
+      "last_updated_at": 1787921770809241,
+      "offset": 25045072,
+      "order_book": {
+        "code": 0,
+        "asks": [
+          {"price": "79361.5", "size": "0.04708"},
+          {"price": "79391.6", "size": "2.56600"}
+        ],
+        "bids": [{"price": "79353.4", "size": "0.74316"}],
+        "offset": 25045072,
+        "nonce": 20427244630,
+        "last_updated_at": 1787921770809241,
+        "begin_nonce": 20427244574
+      },
+      "timestamp": 1787921770847,
+      "type": "update/order_book"
+    }
+  },
+  "spot": {
+    "ticker_snapshot": {
+      "channel": "ticker:2048",
+      "last_updated_at": 1787921758923606,
+      "nonce": 20427231949,
+      "ticker": {
+        "s": "ETH/USDC",
+        "a": {"price": "2498.43", "size": "0.0400"},
+        "b": {"price": "2497.85", "size": "0.0398"},
+        "last_updated_at": 1787921758923606
+      },
+      "timestamp": 1787921758977,
+      "type": "subscribed/ticker"
+    },
+    "book_snapshot": {
+      "channel": "order_book:2048",
+      "last_updated_at": 1787921758923606,
+      "offset": 1030067,
+      "order_book": {
+        "code": 0,
+        "asks": [
+          {"price": "2498.43", "size": "0.0400"},
+          {"price": "2498.65", "size": "0.5297"}
+        ],
+        "bids": [
+          {"price": "2497.85", "size": "0.0398"},
+          {"price": "2497.80", "size": "0.1000"}
+        ],
+        "offset": 1030067,
+        "nonce": 20427231949,
+        "last_updated_at": 1787921758923606,
+        "begin_nonce": 0
+      },
+      "timestamp": 1787921758977,
+      "type": "subscribed/order_book"
+    }
+  },
+  "unsubscribed": {
+    "type": "unsubscribed",
+    "channel": "ticker:1"
+  }
+}

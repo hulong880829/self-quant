@@ -1,4 +1,5 @@
 #include "mds/exchange/gate/gate_adapter.h"
+#include "mds/exchange/symbol_policy.h"
 
 #include <algorithm>
 #include <charconv>
@@ -35,6 +36,7 @@ enum class LevelParseError : std::uint8_t {
   None,
   Capacity,
   Shape,
+  Scale,
   Price,
   Quantity,
 };
@@ -47,6 +49,8 @@ std::string_view level_error_name(LevelParseError value) noexcept {
     return "capacity";
   case LevelParseError::Shape:
     return "shape";
+  case LevelParseError::Scale:
+    return "scale";
   case LevelParseError::Price:
     return "price";
   case LevelParseError::Quantity:
@@ -82,28 +86,18 @@ void append_capacity_details(std::string &error, std::size_t configured,
   error.append(action);
 }
 
-bool valid_gate_symbol(std::string_view symbol) noexcept {
-  if (symbol.empty() || symbol.size() > 32) {
-    return false;
-  }
-  for (const char character : symbol) {
-    if (!((character >= 'A' && character <= 'Z') ||
-          (character >= '0' && character <= '9') || character == '_')) {
-      return false;
-    }
-  }
-  return true;
-}
-
 std::string gate_subscription(std::string_view channel,
                               std::string_view symbol,
                               bool orderbook,
                               std::uint32_t update_interval_ms = 20,
                               bool futures = false) {
-  std::string result =
-      "{\"channel\":\"" + std::string(channel) +
-      "\",\"event\":\"subscribe\",\"payload\":[\"" +
-      std::string(symbol) + "\"";
+  std::string result;
+  result.reserve(channel.size() + symbol.size() + 96U);
+  result += "{\"channel\":\"";
+  append_json_escaped(result, channel);
+  result += "\",\"event\":\"subscribe\",\"payload\":[\"";
+  append_json_escaped(result, symbol);
+  result.push_back('"');
   if (orderbook) {
     result += ",\"" + std::to_string(update_interval_ms) + "ms\"";
     if (futures) {
@@ -208,6 +202,11 @@ bool scale_for_decimal(std::string_view value, std::uint8_t &scale) noexcept {
 std::string_view decimal_text(simdjson::dom::element value) {
   auto string = value.get_string();
   return string.error() ? std::string_view{} : string.value();
+}
+
+bool empty_string_value(simdjson::dom::element value) {
+  auto string = value.get_string();
+  return !string.error() && string.value().empty();
 }
 
 std::string_view optional_string(simdjson::dom::object object,
@@ -325,9 +324,11 @@ LevelParseError parse_gate_level(simdjson::dom::element raw,
     quantity = quantity_result.value();
   }
 
-  if (!unsigned_decimal_to_fixed(decimal_text(price), scales.price,
-                                 level.price)) {
-    return LevelParseError::Price;
+  const auto price_text = decimal_text(price);
+  if (!unsigned_decimal_to_fixed(price_text, scales.price, level.price)) {
+    return decimal_scale_mismatch(price_text, scales.price)
+               ? LevelParseError::Scale
+               : LevelParseError::Price;
   }
   if (!parse_quantity(quantity, scales, level.quantity) ||
       level.quantity == std::numeric_limits<std::int64_t>::min()) {
@@ -367,11 +368,12 @@ class GateAdapter final : public VenueAdapter {
       std::span<const StreamRequest> requests,
       std::vector<std::string> &batches, std::string &error) const override {
     batches.clear();
+    std::size_t accepted = 0;
     for (const auto &request : requests) {
-      if (!valid_gate_symbol(request.venue_symbol)) {
-        error = "invalid Gate venue symbol";
-        return false;
+      if (!valid_utf8_symbol(request.venue_symbol)) {
+        continue;
       }
+      ++accepted;
       const std::string prefix =
           product_ == utils::md::ProductType::Spot ? "spot." : "futures.";
       if (request.ticker) {
@@ -403,6 +405,10 @@ class GateAdapter final : public VenueAdapter {
                 product_ == utils::md::ProductType::Perpetual));
       }
     }
+    if (!requests.empty() && accepted == 0) {
+      error = "no valid Gate venue symbols";
+      return false;
+    }
     error.clear();
     return true;
   }
@@ -426,6 +432,11 @@ class GateAdapter final : public VenueAdapter {
         if (!result.error() &&
             optional_string(result.value(), "status") != "success") {
           event.type = AdapterEventType::SubscribeError;
+          const auto symbol = optional_string(result.value(), "s");
+          if (!symbol.empty() && !copy_symbol(symbol, event)) {
+            error = "Gate rejection symbol exceeds fixed capacity";
+            return false;
+          }
         } else {
           event.type = AdapterEventType::SubscribeAck;
         }
@@ -464,32 +475,53 @@ class GateAdapter final : public VenueAdapter {
         event.first_sequence = event.final_sequence;
       }
       if (channel.ends_with(".book_ticker")) {
-        event.type = AdapterEventType::Bbo;
+        const auto bid_raw = result["b"].value();
+        const auto bid_quantity_raw = result["B"].value();
+        const auto ask_raw = result["a"].value();
+        const auto ask_quantity_raw = result["A"].value();
+        const auto bid_text = decimal_text(bid_raw);
+        const auto ask_text = decimal_text(ask_raw);
+        if (bid_text.empty() || ask_text.empty() ||
+            empty_string_value(bid_quantity_raw) ||
+            empty_string_value(ask_quantity_raw)) {
+          event.reset();
+          error.clear();
+          return true;
+        }
         if (!unsigned_decimal_to_fixed(
-                decimal_text(result["b"].value()), scales.price,
-                event.bid.price) ||
+                bid_text, scales.price, event.bid.price) ||
             !unsigned_decimal_to_fixed(
-                decimal_text(result["a"].value()), scales.price,
-                event.ask.price)) {
-          error = "invalid Gate BBO price";
+                ask_text, scales.price, event.ask.price)) {
+          error =
+              decimal_scale_mismatch(bid_text, scales.price) ||
+                      decimal_scale_mismatch(ask_text, scales.price)
+                  ? "invalid Gate BBO reason=scale field=price"
+                  : "invalid Gate BBO price";
           return false;
         }
         utils::md::Level bid_quantity;
         utils::md::Level ask_quantity;
         const auto bid_result = parse_gate_level_pair(
-            result["b"].value(), result["B"].value(), scales, bid_quantity);
+            bid_raw, bid_quantity_raw, scales, bid_quantity);
         if (bid_result != LevelParseError::None) {
           set_level_error(error, "BBO", symbol, "bid", bid_result);
           return false;
         }
         const auto ask_result = parse_gate_level_pair(
-            result["a"].value(), result["A"].value(), scales, ask_quantity);
+            ask_raw, ask_quantity_raw, scales, ask_quantity);
         if (ask_result != LevelParseError::None) {
           set_level_error(error, "BBO", symbol, "ask", ask_result);
           return false;
         }
         event.bid.quantity = bid_quantity.quantity;
         event.ask.quantity = ask_quantity.quantity;
+        if (event.bid.price <= 0 || event.bid.quantity <= 0 ||
+            event.ask.price <= 0 || event.ask.quantity <= 0) {
+          event.reset();
+          error.clear();
+          return true;
+        }
+        event.type = AdapterEventType::Bbo;
         error.clear();
         return true;
       }
@@ -772,10 +804,7 @@ class GateAdapter final : public VenueAdapter {
           break;
         }
         if (!found) {
-          error = "requested Gate symbol was not found in metadata";
-          metadata.clear();
-          scales_.clear();
-          return false;
+          continue;
         }
       }
       error.clear();
@@ -787,6 +816,26 @@ class GateAdapter final : public VenueAdapter {
       return false;
     }
 #endif
+  }
+
+  bool upsert_metadata(
+      std::string_view json, std::span<const StreamRequest> requests,
+      std::vector<InstrumentMetadata> &metadata,
+      std::string &error) override {
+    auto existing = std::move(scales_);
+    std::vector<InstrumentMetadata> parsed;
+    const bool ok = parse_metadata(json, requests, parsed, error);
+    auto refreshed = std::move(scales_);
+    scales_ = std::move(existing);
+    if (!ok) {
+      return false;
+    }
+    for (auto &[symbol, scales] : refreshed) {
+      scales_.insert_or_assign(std::move(symbol), scales);
+    }
+    metadata = std::move(parsed);
+    error.clear();
+    return true;
   }
 
   [[nodiscard]] bool needs_rest_snapshot() const noexcept override {
@@ -885,6 +934,9 @@ class GateAdapter final : public VenueAdapter {
   void classify_parse_failure(std::string_view,
                               const NormalizedEvent &event,
                               ParseFailure &failure) const noexcept override {
+    if (classify_scale_mismatch(event, failure)) {
+      return;
+    }
     const auto diagnostic = failure.diagnostic_view();
     if (event.symbol_view().empty()) {
       return;
@@ -958,9 +1010,11 @@ class GateAdapter final : public VenueAdapter {
   static LevelParseError parse_gate_level_pair(
       simdjson::dom::element price, simdjson::dom::element quantity,
       const GateScales &scales, utils::md::Level &level) {
-    if (!unsigned_decimal_to_fixed(decimal_text(price), scales.price,
-                                   level.price)) {
-      return LevelParseError::Price;
+    const auto price_text = decimal_text(price);
+    if (!unsigned_decimal_to_fixed(price_text, scales.price, level.price)) {
+      return decimal_scale_mismatch(price_text, scales.price)
+                 ? LevelParseError::Scale
+                 : LevelParseError::Price;
     }
     if (!parse_quantity(quantity, scales, level.quantity)) {
       return LevelParseError::Quantity;

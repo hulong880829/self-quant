@@ -1,7 +1,9 @@
 #include "mds/exchange/bitget/bitget_adapter.h"
+#include "mds/exchange/symbol_policy.h"
 
 #include <algorithm>
 #include <charconv>
+#include <cctype>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -40,42 +42,7 @@ bool scale_positive_integer(std::int64_t value, std::uint8_t exponent,
 
 bool append_json_string(std::string_view value, std::string &output) {
   output.push_back('"');
-  constexpr char hex[] = "0123456789abcdef";
-  for (const char raw_character : value) {
-    const auto character =
-        static_cast<unsigned char>(raw_character);
-    switch (character) {
-    case '"':
-      output += "\\\"";
-      break;
-    case '\\':
-      output += "\\\\";
-      break;
-    case '\b':
-      output += "\\b";
-      break;
-    case '\f':
-      output += "\\f";
-      break;
-    case '\n':
-      output += "\\n";
-      break;
-    case '\r':
-      output += "\\r";
-      break;
-    case '\t':
-      output += "\\t";
-      break;
-    default:
-      if (character < 0x20U) {
-        output += "\\u00";
-        output.push_back(hex[character >> 4U]);
-        output.push_back(hex[character & 0x0fU]);
-      } else {
-        output.push_back(static_cast<char>(character));
-      }
-    }
-  }
+  append_json_escaped(output, value);
   output.push_back('"');
   return true;
 }
@@ -242,7 +209,9 @@ bool read_level(simdjson::dom::element raw, std::uint8_t price_scale,
   }
   if (!decimal_to_fixed_local(price.value(), price_scale, level.price)) {
     if (error != nullptr) {
-      *error = "invalid Bitget order book price value=";
+      *error = decimal_scale_mismatch(price.value(), price_scale)
+                   ? "invalid Bitget order book reason=scale field=price value="
+                   : "invalid Bitget order book price value=";
       error->append(price.value());
       error->append(" scale=");
       error->append(std::to_string(price_scale));
@@ -252,7 +221,10 @@ bool read_level(simdjson::dom::element raw, std::uint8_t price_scale,
   if (!decimal_to_fixed_local(quantity.value(), quantity_scale,
                               level.quantity)) {
     if (error != nullptr) {
-      *error = "invalid Bitget order book quantity value=";
+      *error =
+          decimal_scale_mismatch(quantity.value(), quantity_scale)
+              ? "invalid Bitget order book reason=scale field=quantity value="
+              : "invalid Bitget order book quantity value=";
       error->append(quantity.value());
       error->append(" scale=");
       error->append(std::to_string(quantity_scale));
@@ -304,9 +276,8 @@ class BitgetAdapter final : public VenueAdapter {
         product_ == utils::md::ProductType::Spot ? "SPOT" : "USDT-FUTURES";
 
     for (const auto &request : requests) {
-      if (request.venue_symbol.empty()) {
-        error = "Bitget subscription symbol is empty";
-        return false;
+      if (!valid_utf8_symbol(request.venue_symbol)) {
+        continue;
       }
       auto add_argument = [&](std::string_view channel) {
         std::string argument =
@@ -395,16 +366,67 @@ class BitgetAdapter final : public VenueAdapter {
         }
         if (event_name.value() == "error") {
           event.type = AdapterEventType::SubscribeError;
-          std::string message = "Bitget subscription error";
-          auto code = object["code"].get_string();
-          auto text = object["msg"].get_string();
-          if (!code.error()) {
-            message += " ";
-            message.append(code.value());
+          auto argument = object["arg"].get_object();
+          if (!argument.error()) {
+            auto inst = argument.value()["instId"].get_string();
+            if (!inst.error() && !copy_symbol(inst.value(), event)) {
+              error = "Bitget rejection symbol exceeds fixed capacity";
+              return false;
+            }
+            auto channel = argument.value()["channel"].get_string();
+            if (!channel.error()) {
+              if (channel.value() == "books1") {
+                event.subscription_stream = SubscriptionStream::Ticker;
+              } else if (channel.value() == "books" ||
+                         channel.value() == "books15") {
+                event.subscription_stream = SubscriptionStream::Orderbook;
+              }
+            }
           }
+          std::string message = "Bitget subscription error";
+          std::string code_value;
+          auto code_element = object["code"];
+          auto code = code_element.get_string();
+          if (!code.error()) {
+            code_value.assign(code.value());
+          } else {
+            auto numeric_code = code_element.get_int64();
+            if (!numeric_code.error()) {
+              code_value = std::to_string(numeric_code.value());
+            }
+          }
+          auto text = object["msg"].get_string();
+          std::string text_value;
           if (!text.error()) {
+            text_value.assign(text.value());
+          }
+          std::string lower_text = text_value;
+          std::transform(
+              lower_text.begin(), lower_text.end(), lower_text.begin(),
+              [](unsigned char character) {
+                return static_cast<char>(std::tolower(character));
+              });
+          if (code_value == "30006" || code_value == "30007" ||
+              code_value == "429" ||
+              lower_text.find("request too many") != std::string::npos ||
+              lower_text.find("too many requests") != std::string::npos ||
+              lower_text.find("request over limit") != std::string::npos) {
+            event.subscribe_error_kind =
+                SubscribeErrorKind::TransientRateLimit;
+          } else if (
+              code_value == "30001" ||
+              lower_text.find("doesn't exist") != std::string::npos ||
+              lower_text.find("does not exist") != std::string::npos) {
+            event.subscribe_error_kind =
+                SubscribeErrorKind::SymbolUnavailable;
+          }
+          if (!code_value.empty()) {
+            message += " ";
+            message.append(code_value);
+          }
+          if (!text_value.empty()) {
             message += ": ";
-            message.append(text.value());
+            message.append(text_value);
           }
           error = std::move(message);
           return true;
@@ -479,8 +501,13 @@ class BitgetAdapter final : public VenueAdapter {
         auto asks = update["asks"].get_array().value();
         auto bid = bids.begin();
         auto ask = asks.begin();
-        if (bid == bids.end() || ask == asks.end() ||
-            !read_level(*bid, scales->price, scales->quantity, event.bid,
+        if (bid == bids.end() || ask == asks.end()) {
+          event.type = AdapterEventType::Ignored;
+          event.ignore_reason = IgnoreReason::OneSidedBook;
+          error.clear();
+          return true;
+        }
+        if (!read_level(*bid, scales->price, scales->quantity, event.bid,
                         &error) ||
             !read_level(*ask, scales->price, scales->quantity, event.ask,
                         &error)) {
@@ -729,9 +756,7 @@ class BitgetAdapter final : public VenueAdapter {
           break;
         }
         if (!found) {
-          error = "Bitget symbol was not found in metadata response: " +
-                  std::string(request.venue_symbol);
-          return false;
+          continue;
         }
       }
       metadata = std::move(parsed);
@@ -743,6 +768,42 @@ class BitgetAdapter final : public VenueAdapter {
       return false;
     }
 #endif
+  }
+
+  bool upsert_metadata(
+      std::string_view json, std::span<const StreamRequest> requests,
+      std::vector<InstrumentMetadata> &metadata,
+      std::string &error) override {
+    auto existing = std::move(symbol_scales_);
+    std::vector<InstrumentMetadata> parsed;
+    const bool ok = parse_metadata(json, requests, parsed, error);
+    auto refreshed = std::move(symbol_scales_);
+    symbol_scales_ = std::move(existing);
+    if (!ok) {
+      return false;
+    }
+    for (auto &entry : refreshed) {
+      const auto found = std::find_if(
+          symbol_scales_.begin(), symbol_scales_.end(),
+          [&entry](const SymbolScale &current) {
+            return current.venue_symbol == entry.venue_symbol;
+          });
+      if (found == symbol_scales_.end()) {
+        symbol_scales_.push_back(std::move(entry));
+      } else {
+        *found = std::move(entry);
+      }
+    }
+    metadata = std::move(parsed);
+    error.clear();
+    return true;
+  }
+
+ protected:
+  void classify_parse_failure(std::string_view,
+                              const NormalizedEvent &event,
+                              ParseFailure &failure) const noexcept override {
+    (void)classify_scale_mismatch(event, failure);
   }
 
  private:

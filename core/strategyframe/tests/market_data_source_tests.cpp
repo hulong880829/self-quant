@@ -92,14 +92,105 @@ std::vector<std::byte> Encode(std::size_t capacity, Encoder encoder) {
 utils::md::wire::HeaderFields Header(utils::md::MessageType,
                                     std::uint64_t sequence,
                                     std::uint32_t generation = 1,
-                                    std::uint64_t instrument_id = 42) {
+                                    std::uint64_t instrument_id = 42,
+                                    utils::md::BboOrigin origin =
+                                        utils::md::BboOrigin::Unknown,
+                                    std::uint64_t exchange_ts_ns = 0) {
   utils::md::wire::HeaderFields result;
   result.instrument_id = instrument_id;
   result.bus_seq = sequence;
   result.source_seq = sequence;
+  result.exchange_ts_ns = exchange_ts_ns;
   result.book_generation = generation;
   result.state = utils::md::BookState::Live;
+  result.flags = static_cast<std::uint16_t>(origin);
   return result;
+}
+
+void EnqueueInstrument(strategyframe::MarketDataSource& source,
+                       std::uint64_t id = 42) {
+  utils::md::Instrument instrument{};
+  instrument.instrument_id = id;
+  instrument.venue = utils::md::Venue::Binance;
+  instrument.product_type = utils::md::ProductType::Spot;
+  instrument.price_scale = 2;
+  instrument.quantity_scale = 3;
+  auto bytes = Encode(
+      sizeof(utils::md::wire::InstrumentUpdateRecord),
+      [&](std::span<std::byte> output) {
+        return utils::md::wire::EncodeInstrument(
+            output,
+            Header(utils::md::MessageType::InstrumentUpdate, 1, 1, id),
+            instrument);
+      });
+  Require(source.enqueue_replay(bytes) == strategyframe::Error::Ok);
+}
+
+void EnqueueBbo(strategyframe::MarketDataSource& source,
+                utils::md::BboOrigin origin, std::uint64_t source_seq,
+                std::uint64_t exchange_ts_ns, std::int64_t bid_price = 10000,
+                std::int64_t bid_quantity = 5,
+                std::int64_t ask_price = 10001,
+                std::int64_t ask_quantity = 7,
+                std::uint32_t generation = 1) {
+  auto bytes = Encode(
+      sizeof(utils::md::wire::BboRecord),
+      [&](std::span<std::byte> output) {
+        return utils::md::wire::EncodeBbo(
+            output,
+            Header(utils::md::MessageType::Bbo, source_seq, generation, 42,
+                   origin, exchange_ts_ns),
+            {bid_price, bid_quantity}, {ask_price, ask_quantity});
+      });
+  Require(source.enqueue_replay(bytes) == strategyframe::Error::Ok);
+}
+
+void EnqueueBook(strategyframe::MarketDataSource& source,
+                 std::uint32_t generation = 1,
+                 std::int64_t bid_price = 10000,
+                 std::int64_t bid_quantity = 5,
+                 std::int64_t ask_price = 10001,
+                 std::int64_t ask_quantity = 7) {
+  const std::array<utils::md::Level, 1> bids{{
+      {bid_price, bid_quantity},
+  }};
+  const std::array<utils::md::Level, 1> asks{{
+      {ask_price, ask_quantity},
+  }};
+  auto begin = Encode(
+      sizeof(utils::md::wire::SnapshotBeginRecord),
+      [&](std::span<std::byte> output) {
+        return utils::md::wire::EncodeSnapshotBegin(
+            output,
+            Header(utils::md::MessageType::SnapshotBegin, 2, generation), 2,
+            2);
+      });
+  auto bid = Encode(
+      sizeof(utils::md::wire::SnapshotChunkRecord),
+      [&](std::span<std::byte> output) {
+        return utils::md::wire::EncodeSnapshotChunk(
+            output,
+            Header(utils::md::MessageType::SnapshotChunk, 3, generation), 0,
+            utils::md::Side::Bid, bids);
+      });
+  auto ask = Encode(
+      sizeof(utils::md::wire::SnapshotChunkRecord),
+      [&](std::span<std::byte> output) {
+        return utils::md::wire::EncodeSnapshotChunk(
+            output,
+            Header(utils::md::MessageType::SnapshotChunk, 4, generation), 0,
+            utils::md::Side::Ask, asks);
+      });
+  auto end = Encode(
+      sizeof(utils::md::wire::SnapshotEndRecord),
+      [&](std::span<std::byte> output) {
+        return utils::md::wire::EncodeSnapshotEnd(
+            output,
+            Header(utils::md::MessageType::SnapshotEnd, 5, generation), 2, 0);
+      });
+  for (const auto* bytes : {&begin, &bid, &ask, &end}) {
+    Require(source.enqueue_replay(*bytes) == strategyframe::Error::Ok);
+  }
 }
 
 void ReplayMapping() {
@@ -412,6 +503,209 @@ void RetirementReusesProbeSlots() {
   Require(captured.bbo == 34);
 }
 
+void SamePriceSequenceAdvancesEmitCallbacks() {
+  Captured captured;
+  strategyframe::MdsConfig config;
+  config.source = strategyframe::MdsSourceMode::Replay;
+  config.bbo_policy = strategyframe::BboPolicy::TickerOnly;
+  config.bbo_policy_starvation_ns = 0;
+  strategyframe::MarketDataSource source(config, Sink(captured));
+  EnqueueInstrument(source);
+  for (std::uint64_t sequence = 1; sequence <= 8; ++sequence) {
+    EnqueueBbo(source, utils::md::BboOrigin::TickerStream, sequence,
+               1'000 + sequence);
+  }
+  Require(source.start() == strategyframe::Error::Ok);
+  std::size_t dispatched{};
+  Require(source.poll(16, dispatched) == strategyframe::Error::Ok);
+  Require(captured.bbo == 8);
+  Require(source.metrics().bbo_callbacks_emitted == 8);
+  Require(source.metrics().bbo_replay_dropped == 0);
+}
+
+void SamePriceZeroSequenceTimestampAdvancesEmitCallbacks() {
+  Captured captured;
+  strategyframe::MdsConfig config;
+  config.source = strategyframe::MdsSourceMode::Replay;
+  config.bbo_policy = strategyframe::BboPolicy::TickerOnly;
+  config.bbo_policy_starvation_ns = 0;
+  strategyframe::MarketDataSource source(config, Sink(captured));
+  EnqueueInstrument(source);
+  for (std::uint64_t stamp = 1; stamp <= 8; ++stamp) {
+    EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 0, stamp);
+  }
+  Require(source.start() == strategyframe::Error::Ok);
+  std::size_t dispatched{};
+  Require(source.poll(16, dispatched) == strategyframe::Error::Ok);
+  Require(captured.bbo == 8);
+  Require(source.metrics().bbo_callbacks_emitted == 8);
+  Require(source.metrics().bbo_replay_dropped == 0);
+}
+
+void OverlayTaggedTickerStillEmitsUnderTickerOnly() {
+  Captured captured;
+  strategyframe::MdsConfig config;
+  config.source = strategyframe::MdsSourceMode::Replay;
+  config.bbo_policy = strategyframe::BboPolicy::TickerOnly;
+  config.bbo_policy_starvation_ns = 0;
+  strategyframe::MarketDataSource source(config, Sink(captured));
+  EnqueueInstrument(source);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 1, 50);
+  Require(source.start() == strategyframe::Error::Ok);
+  std::size_t dispatched{};
+  Require(source.poll(8, dispatched) == strategyframe::Error::Ok);
+  Require(captured.bbo == 1);
+  Require(source.metrics().bbo_policy_excluded == 0);
+}
+
+void TickerFreshnessAndReplay() {
+  Captured captured;
+  strategyframe::MdsConfig config;
+  config.source = strategyframe::MdsSourceMode::Replay;
+  config.bbo_policy = strategyframe::BboPolicy::TickerOnly;
+  config.bbo_policy_starvation_ns = 0;
+  strategyframe::MarketDataSource source(config, Sink(captured));
+  EnqueueInstrument(source);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 10, 100);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 11, 100);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 11, 101);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 11, 101);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 9, 102);
+  EnqueueBbo(source, utils::md::BboOrigin::OrderBookStream, 99, 1000);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 12, 102);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 0, 200);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 0, 201);
+  EnqueueBbo(source, utils::md::BboOrigin::Unknown, 13, 103);
+  Require(source.start() == strategyframe::Error::Ok);
+  std::size_t dispatched{};
+  Require(source.poll(32, dispatched) == strategyframe::Error::Ok);
+  Require(dispatched == 11);
+  Require(captured.bbo == 6);
+  const auto& metrics = source.metrics();
+  Require(metrics.bbo_callbacks_emitted == 6);
+  Require(metrics.bbo_callbacks_suppressed == 4);
+  Require(metrics.bbo_replay_dropped == 1);
+  Require(metrics.bbo_stale_sequence_dropped == 1);
+  Require(metrics.bbo_policy_excluded == 2);
+  Require(metrics.bbo_origin_unknown == 1);
+}
+
+void PolicyIsolation() {
+  Captured captured;
+  strategyframe::MdsConfig config;
+  config.source = strategyframe::MdsSourceMode::Replay;
+  config.bbo_policy = strategyframe::BboPolicy::TickerOnly;
+  config.bbo_policy_starvation_ns = 0;
+  strategyframe::MarketDataSource source(config, Sink(captured));
+  EnqueueInstrument(source);
+  EnqueueBbo(source, utils::md::BboOrigin::OrderBookStream, 1, 1000);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 2, 100);
+  Require(source.start() == strategyframe::Error::Ok);
+  std::size_t dispatched{};
+  Require(source.poll(8, dispatched) == strategyframe::Error::Ok);
+  Require(captured.bbo == 1);
+  Require(source.metrics().bbo_policy_excluded == 1);
+  Require(source.metrics().bbo_policy_starved == 1);
+  Require(source.metrics().bbo_stale_time_dropped == 0);
+}
+
+void CrossSourceDedupAndBookValidation() {
+  Captured captured;
+  strategyframe::MdsConfig config;
+  config.source = strategyframe::MdsSourceMode::Replay;
+  config.bbo_policy = strategyframe::BboPolicy::NewestExchangeTime;
+  strategyframe::MarketDataSource source(config, Sink(captured));
+  EnqueueInstrument(source);
+  EnqueueBook(source);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 10, 100);
+  EnqueueBbo(source, utils::md::BboOrigin::OrderBookStream, 20, 100);
+  EnqueueBbo(source, utils::md::BboOrigin::OrderBookStream, 21, 101,
+             9999, 5, 10001, 7);
+  Require(source.start() == strategyframe::Error::Ok);
+  std::size_t dispatched{};
+  Require(source.poll(32, dispatched) == strategyframe::Error::Ok);
+  Require(captured.books == 1);
+  Require(captured.bbo == 1);
+  Require(source.metrics().bbo_cross_source_dropped == 1);
+  Require(source.metrics().book_top_mismatch == 1);
+  Require(source.metrics().bbo_callbacks_suppressed == 2);
+}
+
+void GenerationAndNewestTieBreak() {
+  Captured captured;
+  strategyframe::MdsConfig config;
+  config.source = strategyframe::MdsSourceMode::Replay;
+  config.bbo_policy = strategyframe::BboPolicy::NewestExchangeTime;
+  strategyframe::MarketDataSource source(config, Sink(captured));
+  EnqueueInstrument(source);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 1, 100,
+             10000, 5, 10001, 7, 2);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 2, 101,
+             10000, 5, 10001, 7, 1);
+  EnqueueBook(source, 2);
+  EnqueueBbo(source, utils::md::BboOrigin::OrderBookStream, 3, 100,
+             10000, 5, 10001, 7, 2);
+  Require(source.start() == strategyframe::Error::Ok);
+  std::size_t dispatched{};
+  Require(source.poll(32, dispatched) == strategyframe::Error::Ok);
+  Require(captured.bbo == 1);
+  Require(source.metrics().bbo_generation_dropped == 1);
+  Require(source.metrics().bbo_cross_source_dropped == 1);
+}
+
+void OrderBookOnlyAndLegacyPolicies() {
+  {
+    Captured captured;
+    strategyframe::MdsConfig config;
+    config.source = strategyframe::MdsSourceMode::Replay;
+    config.bbo_policy = strategyframe::BboPolicy::OrderBookOnly;
+    strategyframe::MarketDataSource source(config, Sink(captured));
+    EnqueueInstrument(source);
+    EnqueueBook(source);
+    EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 10, 100);
+    EnqueueBbo(source, utils::md::BboOrigin::OrderBookStream, 20, 100);
+    Require(source.start() == strategyframe::Error::Ok);
+    std::size_t dispatched{};
+    Require(source.poll(16, dispatched) == strategyframe::Error::Ok);
+    Require(captured.bbo == 1);
+    Require(source.metrics().bbo_policy_excluded == 1);
+  }
+  {
+    Captured captured;
+    strategyframe::MdsConfig config;
+    config.source = strategyframe::MdsSourceMode::Replay;
+    config.bbo_policy = strategyframe::BboPolicy::LegacyPassthrough;
+    strategyframe::MarketDataSource source(config, Sink(captured));
+    EnqueueInstrument(source);
+    EnqueueBbo(source, utils::md::BboOrigin::Unknown, 10, 100);
+    EnqueueBbo(source, utils::md::BboOrigin::Unknown, 10, 100);
+    Require(source.start() == strategyframe::Error::Ok);
+    std::size_t dispatched{};
+    Require(source.poll(8, dispatched) == strategyframe::Error::Ok);
+    Require(captured.bbo == 2);
+    Require(source.metrics().bbo_origin_unknown == 2);
+    Require(source.metrics().bbo_replay_dropped == 0);
+  }
+}
+
+void ZeroTimeDoesNotEraseFreshnessHighWater() {
+  Captured captured;
+  strategyframe::MdsConfig config;
+  config.source = strategyframe::MdsSourceMode::Replay;
+  config.bbo_policy = strategyframe::BboPolicy::NewestExchangeTime;
+  strategyframe::MarketDataSource source(config, Sink(captured));
+  EnqueueInstrument(source);
+  EnqueueBook(source);
+  EnqueueBbo(source, utils::md::BboOrigin::OrderBookStream, 10, 100);
+  EnqueueBbo(source, utils::md::BboOrigin::TickerStream, 20, 0);
+  EnqueueBbo(source, utils::md::BboOrigin::OrderBookStream, 11, 99);
+  Require(source.start() == strategyframe::Error::Ok);
+  std::size_t dispatched{};
+  Require(source.poll(16, dispatched) == strategyframe::Error::Ok);
+  Require(captured.bbo == 2);
+  Require(source.metrics().bbo_stale_time_dropped == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -419,5 +713,14 @@ int main() {
   ReaderBudgetAndUnregister();
   ExternalSharedMemoryLoopback();
   RetirementReusesProbeSlots();
+  SamePriceSequenceAdvancesEmitCallbacks();
+  SamePriceZeroSequenceTimestampAdvancesEmitCallbacks();
+  OverlayTaggedTickerStillEmitsUnderTickerOnly();
+  TickerFreshnessAndReplay();
+  PolicyIsolation();
+  CrossSourceDedupAndBookValidation();
+  GenerationAndNewestTieBreak();
+  OrderBookOnlyAndLegacyPolicies();
+  ZeroTimeDoesNotEraseFreshnessHighWater();
   return 0;
 }

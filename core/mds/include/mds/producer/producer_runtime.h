@@ -2,6 +2,7 @@
 
 #include "mds/api/mds_api.h"
 
+#include <chrono>
 #include <cstddef>
 #include <memory>
 #include <ostream>
@@ -24,6 +25,10 @@ struct ResolvedSegment {
   std::size_t ring_bytes{};
   std::size_t max_record_bytes{};
 };
+
+[[nodiscard]] std::chrono::system_clock::time_point
+next_daily_discovery_utc(
+    std::chrono::system_clock::time_point now) noexcept;
 
 class ProducerRuntime {
  public:

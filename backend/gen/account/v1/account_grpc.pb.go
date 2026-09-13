@@ -27,6 +27,7 @@ const (
 	AccountService_GetPolymarketCredentials_FullMethodName           = "/account.v1.AccountService/GetPolymarketCredentials"
 	AccountService_RefreshPolymarketCredentials_FullMethodName       = "/account.v1.AccountService/RefreshPolymarketCredentials"
 	AccountService_InvalidatePolymarketCredentials_FullMethodName    = "/account.v1.AccountService/InvalidatePolymarketCredentials"
+	AccountService_ActivatePolymarketCredentials_FullMethodName      = "/account.v1.AccountService/ActivatePolymarketCredentials"
 	AccountService_DeleteTradingAccount_FullMethodName               = "/account.v1.AccountService/DeleteTradingAccount"
 	AccountService_GetTradingAccountSnapshot_FullMethodName          = "/account.v1.AccountService/GetTradingAccountSnapshot"
 	AccountService_GetProductGroupSnapshot_FullMethodName            = "/account.v1.AccountService/GetProductGroupSnapshot"
@@ -34,11 +35,15 @@ const (
 	AccountService_SyncProductTradeFillsInternal_FullMethodName      = "/account.v1.AccountService/SyncProductTradeFillsInternal"
 	AccountService_GetTradingCredentials_FullMethodName              = "/account.v1.AccountService/GetTradingCredentials"
 	AccountService_GetTradingCredentialsInternal_FullMethodName      = "/account.v1.AccountService/GetTradingCredentialsInternal"
+	AccountService_GetTradingAccountMeta_FullMethodName              = "/account.v1.AccountService/GetTradingAccountMeta"
+	AccountService_InspectTradingReadiness_FullMethodName            = "/account.v1.AccountService/InspectTradingReadiness"
 	AccountService_GetAICredential_FullMethodName                    = "/account.v1.AccountService/GetAICredential"
 	AccountService_UpsertAICredential_FullMethodName                 = "/account.v1.AccountService/UpsertAICredential"
 	AccountService_DeleteAICredential_FullMethodName                 = "/account.v1.AccountService/DeleteAICredential"
 	AccountService_GetAICredentialSecret_FullMethodName              = "/account.v1.AccountService/GetAICredentialSecret"
 	AccountService_UpdateAICredentialStatus_FullMethodName           = "/account.v1.AccountService/UpdateAICredentialStatus"
+	AccountService_GetTradingAccountFeeRates_FullMethodName          = "/account.v1.AccountService/GetTradingAccountFeeRates"
+	AccountService_SyncTradingAccountFeeRates_FullMethodName         = "/account.v1.AccountService/SyncTradingAccountFeeRates"
 )
 
 // AccountServiceClient is the client API for AccountService service.
@@ -53,6 +58,7 @@ type AccountServiceClient interface {
 	GetPolymarketCredentials(ctx context.Context, in *GetPolymarketCredentialsRequest, opts ...grpc.CallOption) (*GetPolymarketCredentialsResponse, error)
 	RefreshPolymarketCredentials(ctx context.Context, in *GetPolymarketCredentialsRequest, opts ...grpc.CallOption) (*GetPolymarketCredentialsResponse, error)
 	InvalidatePolymarketCredentials(ctx context.Context, in *GetPolymarketCredentialsRequest, opts ...grpc.CallOption) (*DeleteTradingAccountResponse, error)
+	ActivatePolymarketCredentials(ctx context.Context, in *GetPolymarketCredentialsRequest, opts ...grpc.CallOption) (*DeleteTradingAccountResponse, error)
 	DeleteTradingAccount(ctx context.Context, in *DeleteTradingAccountRequest, opts ...grpc.CallOption) (*DeleteTradingAccountResponse, error)
 	GetTradingAccountSnapshot(ctx context.Context, in *GetTradingAccountSnapshotRequest, opts ...grpc.CallOption) (*GetTradingAccountSnapshotResponse, error)
 	GetProductGroupSnapshot(ctx context.Context, in *GetProductGroupSnapshotRequest, opts ...grpc.CallOption) (*GetProductGroupSnapshotResponse, error)
@@ -60,11 +66,15 @@ type AccountServiceClient interface {
 	SyncProductTradeFillsInternal(ctx context.Context, in *SyncProductTradeFillsInternalRequest, opts ...grpc.CallOption) (*SyncProductTradeFillsInternalResponse, error)
 	GetTradingCredentials(ctx context.Context, in *GetTradingCredentialsRequest, opts ...grpc.CallOption) (*GetTradingCredentialsResponse, error)
 	GetTradingCredentialsInternal(ctx context.Context, in *GetTradingCredentialsInternalRequest, opts ...grpc.CallOption) (*GetTradingCredentialsResponse, error)
+	GetTradingAccountMeta(ctx context.Context, in *GetTradingAccountMetaRequest, opts ...grpc.CallOption) (*GetTradingAccountMetaResponse, error)
+	InspectTradingReadiness(ctx context.Context, in *InspectTradingReadinessRequest, opts ...grpc.CallOption) (*InspectTradingReadinessResponse, error)
 	GetAICredential(ctx context.Context, in *GetAICredentialRequest, opts ...grpc.CallOption) (*AICredentialResponse, error)
 	UpsertAICredential(ctx context.Context, in *UpsertAICredentialRequest, opts ...grpc.CallOption) (*AICredentialResponse, error)
 	DeleteAICredential(ctx context.Context, in *DeleteAICredentialRequest, opts ...grpc.CallOption) (*DeleteAICredentialResponse, error)
 	GetAICredentialSecret(ctx context.Context, in *GetAICredentialRequest, opts ...grpc.CallOption) (*AICredentialSecretResponse, error)
 	UpdateAICredentialStatus(ctx context.Context, in *UpdateAICredentialStatusRequest, opts ...grpc.CallOption) (*AICredentialResponse, error)
+	GetTradingAccountFeeRates(ctx context.Context, in *GetTradingAccountFeeRatesRequest, opts ...grpc.CallOption) (*GetTradingAccountFeeRatesResponse, error)
+	SyncTradingAccountFeeRates(ctx context.Context, in *SyncTradingAccountFeeRatesRequest, opts ...grpc.CallOption) (*GetTradingAccountFeeRatesResponse, error)
 }
 
 type accountServiceClient struct {
@@ -155,6 +165,16 @@ func (c *accountServiceClient) InvalidatePolymarketCredentials(ctx context.Conte
 	return out, nil
 }
 
+func (c *accountServiceClient) ActivatePolymarketCredentials(ctx context.Context, in *GetPolymarketCredentialsRequest, opts ...grpc.CallOption) (*DeleteTradingAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteTradingAccountResponse)
+	err := c.cc.Invoke(ctx, AccountService_ActivatePolymarketCredentials_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *accountServiceClient) DeleteTradingAccount(ctx context.Context, in *DeleteTradingAccountRequest, opts ...grpc.CallOption) (*DeleteTradingAccountResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteTradingAccountResponse)
@@ -225,6 +245,26 @@ func (c *accountServiceClient) GetTradingCredentialsInternal(ctx context.Context
 	return out, nil
 }
 
+func (c *accountServiceClient) GetTradingAccountMeta(ctx context.Context, in *GetTradingAccountMetaRequest, opts ...grpc.CallOption) (*GetTradingAccountMetaResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTradingAccountMetaResponse)
+	err := c.cc.Invoke(ctx, AccountService_GetTradingAccountMeta_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountServiceClient) InspectTradingReadiness(ctx context.Context, in *InspectTradingReadinessRequest, opts ...grpc.CallOption) (*InspectTradingReadinessResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InspectTradingReadinessResponse)
+	err := c.cc.Invoke(ctx, AccountService_InspectTradingReadiness_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *accountServiceClient) GetAICredential(ctx context.Context, in *GetAICredentialRequest, opts ...grpc.CallOption) (*AICredentialResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AICredentialResponse)
@@ -275,6 +315,26 @@ func (c *accountServiceClient) UpdateAICredentialStatus(ctx context.Context, in 
 	return out, nil
 }
 
+func (c *accountServiceClient) GetTradingAccountFeeRates(ctx context.Context, in *GetTradingAccountFeeRatesRequest, opts ...grpc.CallOption) (*GetTradingAccountFeeRatesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTradingAccountFeeRatesResponse)
+	err := c.cc.Invoke(ctx, AccountService_GetTradingAccountFeeRates_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountServiceClient) SyncTradingAccountFeeRates(ctx context.Context, in *SyncTradingAccountFeeRatesRequest, opts ...grpc.CallOption) (*GetTradingAccountFeeRatesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTradingAccountFeeRatesResponse)
+	err := c.cc.Invoke(ctx, AccountService_SyncTradingAccountFeeRates_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AccountServiceServer is the server API for AccountService service.
 // All implementations must embed UnimplementedAccountServiceServer
 // for forward compatibility.
@@ -287,6 +347,7 @@ type AccountServiceServer interface {
 	GetPolymarketCredentials(context.Context, *GetPolymarketCredentialsRequest) (*GetPolymarketCredentialsResponse, error)
 	RefreshPolymarketCredentials(context.Context, *GetPolymarketCredentialsRequest) (*GetPolymarketCredentialsResponse, error)
 	InvalidatePolymarketCredentials(context.Context, *GetPolymarketCredentialsRequest) (*DeleteTradingAccountResponse, error)
+	ActivatePolymarketCredentials(context.Context, *GetPolymarketCredentialsRequest) (*DeleteTradingAccountResponse, error)
 	DeleteTradingAccount(context.Context, *DeleteTradingAccountRequest) (*DeleteTradingAccountResponse, error)
 	GetTradingAccountSnapshot(context.Context, *GetTradingAccountSnapshotRequest) (*GetTradingAccountSnapshotResponse, error)
 	GetProductGroupSnapshot(context.Context, *GetProductGroupSnapshotRequest) (*GetProductGroupSnapshotResponse, error)
@@ -294,11 +355,15 @@ type AccountServiceServer interface {
 	SyncProductTradeFillsInternal(context.Context, *SyncProductTradeFillsInternalRequest) (*SyncProductTradeFillsInternalResponse, error)
 	GetTradingCredentials(context.Context, *GetTradingCredentialsRequest) (*GetTradingCredentialsResponse, error)
 	GetTradingCredentialsInternal(context.Context, *GetTradingCredentialsInternalRequest) (*GetTradingCredentialsResponse, error)
+	GetTradingAccountMeta(context.Context, *GetTradingAccountMetaRequest) (*GetTradingAccountMetaResponse, error)
+	InspectTradingReadiness(context.Context, *InspectTradingReadinessRequest) (*InspectTradingReadinessResponse, error)
 	GetAICredential(context.Context, *GetAICredentialRequest) (*AICredentialResponse, error)
 	UpsertAICredential(context.Context, *UpsertAICredentialRequest) (*AICredentialResponse, error)
 	DeleteAICredential(context.Context, *DeleteAICredentialRequest) (*DeleteAICredentialResponse, error)
 	GetAICredentialSecret(context.Context, *GetAICredentialRequest) (*AICredentialSecretResponse, error)
 	UpdateAICredentialStatus(context.Context, *UpdateAICredentialStatusRequest) (*AICredentialResponse, error)
+	GetTradingAccountFeeRates(context.Context, *GetTradingAccountFeeRatesRequest) (*GetTradingAccountFeeRatesResponse, error)
+	SyncTradingAccountFeeRates(context.Context, *SyncTradingAccountFeeRatesRequest) (*GetTradingAccountFeeRatesResponse, error)
 	mustEmbedUnimplementedAccountServiceServer()
 }
 
@@ -333,6 +398,9 @@ func (UnimplementedAccountServiceServer) RefreshPolymarketCredentials(context.Co
 func (UnimplementedAccountServiceServer) InvalidatePolymarketCredentials(context.Context, *GetPolymarketCredentialsRequest) (*DeleteTradingAccountResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method InvalidatePolymarketCredentials not implemented")
 }
+func (UnimplementedAccountServiceServer) ActivatePolymarketCredentials(context.Context, *GetPolymarketCredentialsRequest) (*DeleteTradingAccountResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ActivatePolymarketCredentials not implemented")
+}
 func (UnimplementedAccountServiceServer) DeleteTradingAccount(context.Context, *DeleteTradingAccountRequest) (*DeleteTradingAccountResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteTradingAccount not implemented")
 }
@@ -354,6 +422,12 @@ func (UnimplementedAccountServiceServer) GetTradingCredentials(context.Context, 
 func (UnimplementedAccountServiceServer) GetTradingCredentialsInternal(context.Context, *GetTradingCredentialsInternalRequest) (*GetTradingCredentialsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTradingCredentialsInternal not implemented")
 }
+func (UnimplementedAccountServiceServer) GetTradingAccountMeta(context.Context, *GetTradingAccountMetaRequest) (*GetTradingAccountMetaResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetTradingAccountMeta not implemented")
+}
+func (UnimplementedAccountServiceServer) InspectTradingReadiness(context.Context, *InspectTradingReadinessRequest) (*InspectTradingReadinessResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InspectTradingReadiness not implemented")
+}
 func (UnimplementedAccountServiceServer) GetAICredential(context.Context, *GetAICredentialRequest) (*AICredentialResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetAICredential not implemented")
 }
@@ -368,6 +442,12 @@ func (UnimplementedAccountServiceServer) GetAICredentialSecret(context.Context, 
 }
 func (UnimplementedAccountServiceServer) UpdateAICredentialStatus(context.Context, *UpdateAICredentialStatusRequest) (*AICredentialResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method UpdateAICredentialStatus not implemented")
+}
+func (UnimplementedAccountServiceServer) GetTradingAccountFeeRates(context.Context, *GetTradingAccountFeeRatesRequest) (*GetTradingAccountFeeRatesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetTradingAccountFeeRates not implemented")
+}
+func (UnimplementedAccountServiceServer) SyncTradingAccountFeeRates(context.Context, *SyncTradingAccountFeeRatesRequest) (*GetTradingAccountFeeRatesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SyncTradingAccountFeeRates not implemented")
 }
 func (UnimplementedAccountServiceServer) mustEmbedUnimplementedAccountServiceServer() {}
 func (UnimplementedAccountServiceServer) testEmbeddedByValue()                        {}
@@ -534,6 +614,24 @@ func _AccountService_InvalidatePolymarketCredentials_Handler(srv interface{}, ct
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AccountService_ActivatePolymarketCredentials_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPolymarketCredentialsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).ActivatePolymarketCredentials(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_ActivatePolymarketCredentials_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).ActivatePolymarketCredentials(ctx, req.(*GetPolymarketCredentialsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AccountService_DeleteTradingAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeleteTradingAccountRequest)
 	if err := dec(in); err != nil {
@@ -660,6 +758,42 @@ func _AccountService_GetTradingCredentialsInternal_Handler(srv interface{}, ctx 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AccountService_GetTradingAccountMeta_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTradingAccountMetaRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).GetTradingAccountMeta(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_GetTradingAccountMeta_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).GetTradingAccountMeta(ctx, req.(*GetTradingAccountMetaRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountService_InspectTradingReadiness_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InspectTradingReadinessRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).InspectTradingReadiness(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_InspectTradingReadiness_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).InspectTradingReadiness(ctx, req.(*InspectTradingReadinessRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AccountService_GetAICredential_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetAICredentialRequest)
 	if err := dec(in); err != nil {
@@ -750,6 +884,42 @@ func _AccountService_UpdateAICredentialStatus_Handler(srv interface{}, ctx conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AccountService_GetTradingAccountFeeRates_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTradingAccountFeeRatesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).GetTradingAccountFeeRates(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_GetTradingAccountFeeRates_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).GetTradingAccountFeeRates(ctx, req.(*GetTradingAccountFeeRatesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountService_SyncTradingAccountFeeRates_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SyncTradingAccountFeeRatesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).SyncTradingAccountFeeRates(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_SyncTradingAccountFeeRates_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).SyncTradingAccountFeeRates(ctx, req.(*SyncTradingAccountFeeRatesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AccountService_ServiceDesc is the grpc.ServiceDesc for AccountService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -790,6 +960,10 @@ var AccountService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _AccountService_InvalidatePolymarketCredentials_Handler,
 		},
 		{
+			MethodName: "ActivatePolymarketCredentials",
+			Handler:    _AccountService_ActivatePolymarketCredentials_Handler,
+		},
+		{
 			MethodName: "DeleteTradingAccount",
 			Handler:    _AccountService_DeleteTradingAccount_Handler,
 		},
@@ -818,6 +992,14 @@ var AccountService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _AccountService_GetTradingCredentialsInternal_Handler,
 		},
 		{
+			MethodName: "GetTradingAccountMeta",
+			Handler:    _AccountService_GetTradingAccountMeta_Handler,
+		},
+		{
+			MethodName: "InspectTradingReadiness",
+			Handler:    _AccountService_InspectTradingReadiness_Handler,
+		},
+		{
 			MethodName: "GetAICredential",
 			Handler:    _AccountService_GetAICredential_Handler,
 		},
@@ -836,6 +1018,14 @@ var AccountService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UpdateAICredentialStatus",
 			Handler:    _AccountService_UpdateAICredentialStatus_Handler,
+		},
+		{
+			MethodName: "GetTradingAccountFeeRates",
+			Handler:    _AccountService_GetTradingAccountFeeRates_Handler,
+		},
+		{
+			MethodName: "SyncTradingAccountFeeRates",
+			Handler:    _AccountService_SyncTradingAccountFeeRates_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

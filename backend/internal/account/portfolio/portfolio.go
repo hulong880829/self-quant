@@ -13,6 +13,9 @@ var ErrUnsupported = errors.New("unified account snapshots are not supported for
 
 type Credentials struct {
 	APIKey, APISecret, Passphrase string
+	CredentialKind, SigningAddress string
+	AccountIndex                  *int64
+	APIKeyIndex                   *int32
 }
 
 type Position struct {
@@ -64,11 +67,14 @@ func NewRegistry(client *http.Client, urls map[string]string) *Registry {
 		client = &http.Client{Timeout: 8 * time.Second}
 	}
 	return &Registry{adapters: map[string]Adapter{
-		"binance": limit(newBinance(client, urls["binance"])),
-		"okx":     limit(newOKX(client, urls["okx"])),
-		"bitget":  limit(newBitget(client, urls["bitget"])),
-		"bybit":   limit(newBybit(client, urls["bybit"])),
-		"gate":    limit(newGate(client, urls["gate"])),
+		"binance":     limit(newBinance(client, urls["binance"])),
+		"okx":         limit(newOKX(client, urls["okx"])),
+		"bitget":      limit(newBitget(client, urls["bitget"])),
+		"bybit":       limit(newBybit(client, urls["bybit"])),
+		"gate":        limit(newGate(client, urls["gate"])),
+		"hyperliquid": limit(newHyperliquid(client, urls["hyperliquid"])),
+		"aster":       limit(newAster(client, urls["aster"])),
+		"lighter":     limit(newLighter(client, urls["lighter"])),
 	}}
 }
 

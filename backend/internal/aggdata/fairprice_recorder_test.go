@@ -23,6 +23,42 @@ func TestEnqueueLatestReplacesPendingBatch(t *testing.T) {
 	}
 }
 
+func TestFairPriceRecorderFiltersPersistedSequence(t *testing.T) {
+	recorder, err := NewFairPriceRecorder(
+		NewStore(),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		FairPriceRecorderConfig{
+			DatabaseURL:      "postgres://unused",
+			SampleInterval:   time.Second,
+			Retention:        time.Hour,
+			CleanupInterval:  time.Minute,
+			DeleteBatch:      10,
+			DeleteMaxBatches: 2,
+			OperationTimeout: time.Second,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := &FairPriceSnapshot{
+		Profile: "agg_spot", Symbol: "BTCUSDT", ModelID: "fair-v1",
+		RingEpoch: 3, RingSequence: 9, Ready: true,
+	}
+	if got := recorder.unpersisted([]*FairPriceSnapshot{snapshot}); len(got) != 1 {
+		t.Fatalf("new snapshot was filtered: %+v", got)
+	}
+	recorder.lastPersisted[fairPriceSnapshotKey(snapshot)] = fairPriceSequence{
+		epoch: snapshot.RingEpoch, sequence: snapshot.RingSequence,
+	}
+	if got := recorder.unpersisted([]*FairPriceSnapshot{snapshot}); len(got) != 0 {
+		t.Fatalf("duplicate snapshot was retained: %+v", got)
+	}
+	snapshot.RingSequence++
+	if got := recorder.unpersisted([]*FairPriceSnapshot{snapshot}); len(got) != 1 {
+		t.Fatalf("advanced snapshot was filtered: %+v", got)
+	}
+}
+
 func TestFairPriceRecorderStopsWhileDatabaseUnavailable(t *testing.T) {
 	recorder, err := NewFairPriceRecorder(
 		NewStore(),

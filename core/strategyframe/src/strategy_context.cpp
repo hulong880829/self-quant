@@ -1,5 +1,7 @@
 #include "strategyframe/strategy_context.h"
 
+#include <string>
+
 namespace strategyframe {
 
 Result<OrderToken> StrategyContext::place_order(
@@ -22,11 +24,25 @@ Result<QueryToken> StrategyContext::query_open_orders(
   return ops_->query_open_orders(state_, account_id);
 }
 
+Result<QueryToken> StrategyContext::query_open_orders(
+    AccountId account_id, InstrumentId instrument_id) noexcept {
+  if (!state_ || !ops_ || !ops_->query_open_orders_for)
+    return {{}, Error::NotReady};
+  return ops_->query_open_orders_for(state_, account_id, instrument_id);
+}
+
 Result<QueryToken> StrategyContext::query_positions(
     AccountId account_id) noexcept {
   if (!state_ || !ops_ || !ops_->query_positions)
     return {{}, Error::NotReady};
   return ops_->query_positions(state_, account_id);
+}
+
+Result<QueryToken> StrategyContext::query_positions(
+    AccountId account_id, InstrumentId instrument_id) noexcept {
+  if (!state_ || !ops_ || !ops_->query_positions_for)
+    return {{}, Error::NotReady};
+  return ops_->query_positions_for(state_, account_id, instrument_id);
 }
 
 Result<TimerHandle> StrategyContext::schedule_timer(
@@ -80,11 +96,32 @@ Result<InstrumentCatalogInfo> StrategyContext::find_instrument(
   return ops_->find_instrument_selector(state_, selector);
 }
 
+Result<InstrumentCatalogInfo> StrategyContext::find_instrument(
+    Venue venue, ProductType product,
+    std::string_view canonical_symbol) const noexcept {
+  try {
+    InstrumentSelector selector;
+    selector.venue = venue;
+    selector.product = product;
+    selector.canonical_symbol.assign(canonical_symbol.begin(),
+                                     canonical_symbol.end());
+    return find_instrument(selector);
+  } catch (...) {
+    return {{}, Error::Internal};
+  }
+}
+
 Result<InstrumentCatalogInfo> StrategyContext::find_instrument_catalog(
     InstrumentId instrument_id) const noexcept {
   if (!state_ || !ops_ || !ops_->find_instrument_catalog)
     return {{}, Error::InvalidState};
   return ops_->find_instrument_catalog(state_, instrument_id);
+}
+
+bool StrategyContext::execution_ready(
+    InstrumentId instrument_id) const noexcept {
+  return state_ && ops_ && ops_->execution_ready &&
+         ops_->execution_ready(state_, instrument_id);
 }
 
 Result<OmsStatusUpdate> StrategyContext::oms_status(

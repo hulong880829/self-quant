@@ -5,8 +5,11 @@
 #include <memory>
 
 #include "polymm/fairprice_client.h"
+#include "polymm/halt_policy.h"
+#include "polymm/order_lifecycle.h"
 #include "polymm/pnl_ledger.h"
 #include "polymm/signal.h"
+#include "polymm/startup_reconcile.h"
 #include "polymm/types.h"
 #include "strategyframe/strategyframe.h"
 
@@ -14,7 +17,7 @@ namespace polymm {
 
 class PolyMm {
  public:
-  PolyMm() = default;
+  explicit PolyMm(int* exit_code = nullptr) noexcept;
   ~PolyMm();
   PolyMm(const PolyMm&) = delete;
   PolyMm& operator=(const PolyMm&) = delete;
@@ -36,17 +39,12 @@ class PolyMm {
  private:
   enum class Phase : std::uint8_t {
     WaitingCatalog,
+    WaitingReconcile,
     Trading,
     RolloverDraining,
     WaitingMarket,
+    SettlementManual,
     Halted,
-  };
-  enum class OrderState : std::uint8_t {
-    Idle,
-    PendingOpen,
-    PendingClose,
-    PendingForce,
-    PendingCancel,
   };
   struct Leg {
     Outcome outcome{Outcome::Up};
@@ -61,11 +59,7 @@ class PolyMm {
     double ask_value{};
     std::uint32_t book_generation{};
     std::uint64_t last_bbo_ns{};
-    OrderState order_state{OrderState::Idle};
-    OrderPurpose order_purpose{OrderPurpose::Open};
-    strategyframe::OrderToken order_token{};
-    strategyframe::FixedPoint order_price{};
-    std::uint64_t order_started_ns{};
+    LegOrder order{};
   };
 
   bool load_parameters();
@@ -75,14 +69,28 @@ class PolyMm {
   void drive();
   void drive_rollover();
   void drive_leg(Leg& leg);
+  void drive_flattening();
   void evaluate_signal();
   void submit_open(Leg& leg);
   void submit_close(Leg& leg, bool force);
   void cancel_leg(Leg& leg);
   void cancel_all();
   void begin_rollover();
+  void begin_stop_opening() noexcept;
+  void begin_flattening() noexcept;
+  void maybe_complete_halt() noexcept;
+  void fatal_startup() noexcept;
+  void enter_settlement_manual() noexcept;
+  void inspect_startup_account();
+  void finish_reconcile();
   bool position_reconciled() const;
   bool risk_allows_open(const Leg& leg) const noexcept;
+  bool books_ready(std::uint64_t now_ns) const noexcept;
+  bool pending_window_ready(std::uint64_t now_ns) const noexcept;
+  bool has_active_orders() const noexcept;
+  bool position_safe() const noexcept;
+  void poll_uncertain(Leg& leg, std::uint64_t now_ns);
+  void apply_lifecycle(Leg& leg, const LifecycleResult& result);
   [[nodiscard]] strategyframe::OrderRequest make_order(
       const Leg& leg, strategyframe::Side side,
       strategyframe::TimeInForce tif,
@@ -96,18 +104,21 @@ class PolyMm {
       strategyframe::InstrumentId instrument_id) noexcept;
   [[nodiscard]] const Leg* leg(
       strategyframe::InstrumentId instrument_id) const noexcept;
-  void halt() noexcept;
 
   strategyframe::StrategyContext* context_{};
+  int* exit_code_{};
   Parameters parameters_{};
   SidecarConfig sidecar_config_{};
   std::unique_ptr<FairPriceClient> sidecar_;
   std::unique_ptr<SignalEngine> signal_;
   std::unique_ptr<PnlLedger> pnl_;
   std::array<Leg, 2> legs_{};
+  std::array<Leg, 2> pending_legs_{};
   std::array<strategyframe::InstrumentCatalogInfo, 2> catalogs_{};
   std::array<strategyframe::InstrumentCatalogInfo, 2> pending_catalogs_{};
   Phase phase_{Phase::WaitingCatalog};
+  HaltPhase halt_phase_{HaltPhase::Running};
+  StartupReconcile reconcile_{};
   bool fairprice_live_{};
   std::uint32_t window_generation_{};
   std::uint64_t latest_fair_wall_ns_{};

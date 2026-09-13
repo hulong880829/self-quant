@@ -8,21 +8,29 @@ import (
 )
 
 const (
-	VenueBinance = "binance"
-	VenueOKX     = "okx"
-	VenueBybit   = "bybit"
-	VenueBitget  = "bitget"
-	VenueGate    = "gate"
+	VenueBinance     = "binance"
+	VenueOKX         = "okx"
+	VenueBybit       = "bybit"
+	VenueBitget      = "bitget"
+	VenueGate        = "gate"
+	VenueHyperliquid = "hyperliquid"
+	VenueAster       = "aster"
+	VenueLighter     = "lighter"
 
 	ProductSpot      = "spot"
 	ProductPerpetual = "perpetual"
 )
 
 var (
-	ErrClosed         = errors.New("market data subscription closed")
-	ErrNoValue        = errors.New("market data value unavailable")
-	ErrStale          = errors.New("market data value stale")
-	ErrUnsupportedKey = errors.New("unsupported market data key")
+	ErrClosed                 = errors.New("market data subscription closed")
+	ErrNoValue                = errors.New("market data value unavailable")
+	ErrStale                  = errors.New("market data value stale")
+	ErrUnsupportedKey         = errors.New("unsupported market data key")
+	ErrSubscriptionRejected   = errors.New("market data subscription rejected")
+	ErrSubscriptionAckTimeout = errors.New("market data subscription acknowledgement timeout")
+	ErrSequenceGap            = errors.New("market data sequence gap")
+	ErrBookUnavailable        = errors.New("market data order book unavailable")
+	ErrConnectionRotation     = errors.New("market data connection rotation")
 )
 
 // Key uniquely identifies a venue instrument. Symbol is the venue-native symbol.
@@ -46,7 +54,8 @@ func NewKey(venue, product, symbol string) (Key, error) {
 
 func (k Key) Validate() error {
 	switch k.Venue {
-	case VenueBinance, VenueOKX, VenueBybit, VenueBitget, VenueGate:
+	case VenueBinance, VenueOKX, VenueBybit, VenueBitget, VenueGate,
+		VenueHyperliquid, VenueAster, VenueLighter:
 	default:
 		return fmt.Errorf("%w: venue %q", ErrUnsupportedKey, k.Venue)
 	}
@@ -54,6 +63,14 @@ func (k Key) Validate() error {
 	case ProductSpot, ProductPerpetual:
 	default:
 		return fmt.Errorf("%w: product %q", ErrUnsupportedKey, k.Product)
+	}
+	switch k.Venue {
+	case VenueHyperliquid, VenueAster, VenueLighter:
+		if k.Product != ProductPerpetual {
+			return fmt.Errorf(
+				"%w: venue %q only supports perpetual BBO", ErrUnsupportedKey, k.Venue,
+			)
+		}
 	}
 	if strings.TrimSpace(k.Symbol) == "" {
 		return fmt.Errorf("%w: empty symbol", ErrUnsupportedKey)
@@ -66,6 +83,8 @@ type BBO struct {
 	Key              Key
 	BidPrice         string
 	AskPrice         string
+	BidQuantity      string
+	AskQuantity      string
 	VenueTimestamp   time.Time
 	ReceiveTimestamp time.Time
 }

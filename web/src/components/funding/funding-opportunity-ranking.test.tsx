@@ -6,6 +6,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { FundingFilters, RankedFundingOpportunity } from "@/types/market";
 
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn() }),
+}));
+
+vi.mock("@/components/auth/auth-provider", () => ({
+  useAuth: () => ({
+    status: "authenticated",
+    requireAuth: () => true,
+  }),
+}));
+
 vi.mock("@/hooks/use-element-width", () => ({
   useElementWidth: () => [{ current: null }, 1400],
 }));
@@ -21,6 +32,7 @@ vi.mock("@tanstack/react-virtual", () => ({
         size: 64,
       })),
     getTotalSize: () => count * 64,
+    measure: vi.fn(),
   }),
 }));
 
@@ -30,14 +42,18 @@ vi.mock("@/components/funding/basis-spread-chart", () => ({
     compareVenue,
     baseAsset,
     quoteAsset,
+    venueSymbol,
+    compareVenueSymbol,
   }: {
     venue: string;
     compareVenue?: string;
     baseAsset: string;
     quoteAsset: string;
+    venueSymbol?: string;
+    compareVenueSymbol?: string;
   }) => (
     <section aria-label="跨所 Best Ask 价差">
-      <span>{`${venue}/${compareVenue}-${baseAsset}-${quoteAsset}`}</span>
+      <span>{`${venue}/${compareVenue}-${baseAsset}-${quoteAsset}-${venueSymbol}/${compareVenueSymbol}`}</span>
     </section>
   ),
 }));
@@ -58,10 +74,13 @@ const item: RankedFundingOpportunity = {
   symbol: "BTCUSDT",
   baseAsset: "BTC",
   quoteAsset: "USDT",
-  period: "1h",
+  period: "8h",
   longLeg: {
     exchange: "Binance",
     exchangeSymbol: "BTCUSDT",
+    globalSymbol: "BTCUSDT",
+    baseAsset: "BTC",
+    quoteAsset: "USDT",
     fundingRate: 0.01,
     settlementIntervalHours: 8,
     nextSettlementAt: "2026-08-23T00:00:00Z",
@@ -74,6 +93,9 @@ const item: RankedFundingOpportunity = {
   shortLeg: {
     exchange: "OKX",
     exchangeSymbol: "BTC-USDT-SWAP",
+    globalSymbol: "BTCUSDT",
+    baseAsset: "BTC",
+    quoteAsset: "USDT",
     fundingRate: 0.02,
     settlementIntervalHours: 4,
     nextSettlementAt: "2026-08-23T00:00:00Z",
@@ -98,7 +120,10 @@ const item: RankedFundingOpportunity = {
   minDailyVolume: 20_000_000,
   coverage: 98,
   confidence: 85,
-  modelState: "ready",
+  modelState: "replay_7d",
+  sampleCount: 160,
+  expectedPaybackMinutes: 75,
+  paybackStatus: "ready",
   updatedAt: "2026-08-22T14:00:00Z",
   stale: false,
 };
@@ -109,6 +134,7 @@ const filters: FundingFilters = {
   minDailyVolume: 1_000_000,
   intervalHours: "all",
   exchanges: [],
+  contractKinds: [],
   direction: "all",
 };
 
@@ -142,18 +168,32 @@ describe("FundingOpportunityRanking", () => {
     render(<FundingOpportunityRanking filters={filters} />);
 
     await waitFor(() => expect(fetchFundingOpportunities).toHaveBeenCalled());
-    expect(screen.getByRole("button", { name: "1h" })).not.toBeNull();
+    expect(fetchFundingOpportunities).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ period: "8h" }),
+      null,
+      expect.any(AbortSignal),
+    );
+    expect(screen.getByRole("button", { name: "8h" })).not.toBeNull();
     expect(screen.getByRole("button", { name: "24h" })).not.toBeNull();
     expect(screen.getByText("明确做多")).not.toBeNull();
     expect(screen.getByText("明确做空")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "开启交易" })).not.toBeNull();
     expect(screen.getByText("收益拆解（年化）")).not.toBeNull();
     expect(screen.getAllByText("盈利概率").length).toBeGreaterThan(0);
-    expect(screen.getByText("机会排名 #1 · 1h")).not.toBeNull();
+    expect(screen.getByText("有效样本")).not.toBeNull();
+    expect(screen.getAllByText("预计回本周期").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1 小时 15 分钟").length).toBeGreaterThan(0);
+    expect(screen.getByText("价差（已扣 12bps）")).not.toBeNull();
+    expect(screen.getByText("机会排名 #1 · 8h")).not.toBeNull();
+    expect(screen.queryByText("replay_7d")).toBeNull();
+    expect(screen.queryByText("数据延迟")).toBeNull();
+    expect(screen.queryByText(/排名快照已过期/)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "4h" }));
+    fireEvent.click(screen.getByRole("button", { name: "24h" }));
     await waitFor(() => {
       expect(fetchFundingOpportunities).toHaveBeenLastCalledWith(
-        expect.objectContaining({ period: "4h" }),
+        expect.objectContaining({ period: "24h" }),
         null,
         expect.any(AbortSignal),
       );
@@ -173,11 +213,50 @@ describe("FundingOpportunityRanking", () => {
     expect(row).not.toBeNull();
     fireEvent.click(row!);
     expect(screen.getByLabelText("跨所 Best Ask 价差")).not.toBeNull();
-    expect(screen.getByText("OKX/Binance-BTC-USDT")).not.toBeNull();
+    expect(screen.getByText("OKX/Binance-BTC-USDT-BTCUSDT/BTCUSDT")).not.toBeNull();
     expect(screen.getByText("明确做多")).not.toBeNull();
     expect(screen.getByText("明确做空")).not.toBeNull();
 
     fireEvent.click(row!);
     expect(screen.queryByLabelText("跨所 Best Ask 价差")).toBeNull();
+  });
+
+  it("queries Hyperliquid HIP-3 basis spreads with the xyz ClickHouse symbol", async () => {
+    const hip3Item: RankedFundingOpportunity = {
+      ...item,
+      id: "ZHIPU-binance-hyperliquid-8h",
+      symbol: "ZHIPUUSDC",
+      baseAsset: "ZHIPU",
+      quoteAsset: "USDC",
+      longLeg: {
+        ...item.longLeg,
+        exchange: "Binance",
+        exchangeSymbol: "ZHIPUUSDT",
+        globalSymbol: "ZHIPUUSDT",
+        baseAsset: "ZHIPU",
+        quoteAsset: "USDT",
+        venueContractType: "TRADIFI_PERPETUAL",
+      },
+      shortLeg: {
+        ...item.shortLeg,
+        exchange: "Hyperliquid",
+        exchangeSymbol: "xyz:ZHIPU",
+        globalSymbol: "ZHIPUUSDC",
+        baseAsset: "ZHIPU",
+        quoteAsset: "USDC",
+        venueContractType: "HIP3",
+      },
+    };
+    fetchFundingOpportunities.mockResolvedValue({
+      ...snapshot,
+      snapshot: { ...snapshot.snapshot, data: [hip3Item] },
+    });
+    render(<FundingOpportunityRanking filters={filters} />);
+
+    await waitFor(() => expect(screen.getByText("ZHIPU/USDC")).not.toBeNull());
+    fireEvent.click(screen.getByText("ZHIPU/USDC").closest("tr")!);
+    expect(
+      screen.getByText("Hyperliquid/Binance-ZHIPU-USDC-XYZZHIPUUSDC/ZHIPUUSDT"),
+    ).not.toBeNull();
   });
 });

@@ -1,0 +1,81 @@
+# Isolated production BBO producer for Aster and Lighter.
+# Spot endpoints are registered for explicit opt-in, while the default
+# subscriptions below record only perpetual markets.
+shared_memory:
+  prefix: /selfquant.mds.bbo
+  backend: POSIX_SHM
+  mode: OVERWRITE_OLDEST
+  ring_bytes: 8388608
+  max_record_bytes: 65536
+  max_readers: 32
+  reader_lease_timeout_ns: 5000000000
+  unlink_on_shutdown: true
+  ring_layout: multiplex
+  shard_count: 4
+  multiplex_ring_bytes: 16777216
+
+capacity:
+  max_instruments: 2048
+  max_rings: 16
+  max_total_ring_bytes: 268435456
+
+venue_limits:
+  lighter:
+    # Public hard limit is 200 client messages per rolling minute.
+    client_message_limit_per_minute: 150
+
+venues:
+  - venue: aster
+    product: SPOT
+    websocket_endpoint: wss://sstream.asterdex.com/ws
+    rest_endpoint: https://sapi.asterdex.com
+    protocol: JSON
+    max_symbols_per_connection: 1024
+    max_symbols_per_ws: 180
+    snapshot_pacing_ms: 200
+
+  - venue: aster
+    product: PERPETUAL
+    websocket_endpoint: wss://fstream.asterdex.com/ws
+    rest_endpoint: https://fapi.asterdex.com
+    protocol: JSON
+    max_symbols_per_connection: 1024
+    max_symbols_per_ws: 180
+    snapshot_pacing_ms: 200
+
+  - venue: lighter
+    product: SPOT
+    websocket_endpoint: wss://mainnet.zklighter.elliot.ai/stream
+    rest_endpoint: https://mainnet.zklighter.elliot.ai
+    protocol: JSON
+    max_symbols_per_connection: 256
+    max_symbols_per_ws: 450
+    recovery_deadline_ms: 180000
+    max_continuous_recovery_ms: 600000
+
+  - venue: lighter
+    product: PERPETUAL
+    websocket_endpoint: wss://mainnet.zklighter.elliot.ai/stream
+    rest_endpoint: https://mainnet.zklighter.elliot.ai
+    protocol: JSON
+    max_symbols_per_connection: 256
+    max_symbols_per_ws: 450
+    recovery_deadline_ms: 180000
+    max_continuous_recovery_ms: 600000
+
+subscriptions:
+  - venue: aster
+    product: PERPETUAL
+    stream: ticker
+    discovery:
+      quote_assets: [USDT]
+      minimum_turnover: 1000000
+      max_symbols: 512
+
+  - venue: lighter
+    product: PERPETUAL
+    stream: ticker
+    discovery:
+      quote_assets: [USDC]
+      minimum_turnover: 1000000
+      max_symbols: 256

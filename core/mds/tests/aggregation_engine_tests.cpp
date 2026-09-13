@@ -339,6 +339,68 @@ void test_fx_and_orderbook_merge() {
   assert(book.record.bids[0].venue_quantity[1] == 3);
 }
 
+void test_orderbook_publishability_and_recovery() {
+  const std::array<utils::md::Level, 1> bids{{{10'000, 3}}};
+  const std::array<utils::md::Level, 1> asks{{{10'100, 4}}};
+
+  AggregationEngine engine(config());
+  assert(engine.add_member({Venue::Binance, 10'000, 2, 2, false}));
+  assert(engine.update_book(
+      0, {bids, asks, 1'000, 1'000'000, 1}));
+  const auto live = engine.build_orderbook(2'000'000);
+  assert(live.changed);
+  assert(live.publishable);
+  assert(live.record.active_mask == 1);
+
+  const auto expired = engine.build_orderbook(12'000'000);
+  assert(expired.changed);
+  assert(!expired.publishable);
+  assert(expired.record.active_mask == 0);
+  assert(expired.record.bid_count == 0);
+  assert(expired.record.ask_count == 0);
+  const auto expired_again = engine.build_orderbook(13'000'000);
+  assert(!expired_again.changed);
+  assert(!expired_again.publishable);
+
+  assert(engine.update_book(
+      0, {bids, asks, 2'000, 14'000'000, 1}));
+  const auto recovered = engine.build_orderbook(15'000'000);
+  assert(recovered.changed);
+  assert(recovered.publishable);
+  assert(recovered.record.active_mask == 1);
+  const auto deduplicated = engine.build_orderbook(16'000'000);
+  assert(!deduplicated.changed);
+  assert(deduplicated.publishable);
+
+  AggregationEngine partial(config());
+  assert(partial.add_member({Venue::Binance, 10'000, 2, 2, false}));
+  assert(partial.add_member({Venue::Okx, 100'000, 2, 2, false}));
+  assert(partial.update_book(
+      0, {bids, asks, 1'000, 1'000'000, 1}));
+  assert(partial.update_book(
+      1, {bids, asks, 1'000, 1'000'000, 1}));
+  assert(partial.build_orderbook(2'000'000).publishable);
+  const auto degraded = partial.build_orderbook(12'000'000);
+  assert(degraded.changed);
+  assert(degraded.publishable);
+  assert(degraded.record.active_mask == 2);
+
+  auto single_side_config = config();
+  single_side_config.price_scale = 18;
+  AggregationEngine single_side(single_side_config);
+  assert(single_side.add_member(
+      {Venue::Binance, 1'000'000, 0, 2, false}));
+  const std::array<utils::md::Level, 1> near_limit_bids{{{9, 3}}};
+  const std::array<utils::md::Level, 1> overflowing_asks{{{10, 4}}};
+  assert(single_side.update_book(
+      0, {near_limit_bids, overflowing_asks, 1'000, 1'000'000, 1}));
+  const auto single_side_book = single_side.build_orderbook(2'000'000);
+  assert(single_side_book.record.active_mask == 1);
+  assert(single_side_book.record.bid_count == 1);
+  assert(single_side_book.record.ask_count == 0);
+  assert(!single_side_book.publishable);
+}
+
 void test_fixed_capacity_exact_price_k_way_merge() {
   AggregationEngine engine(config());
   assert(engine.add_member({Venue::Binance, 1'000'000, 2, 2, false}));
@@ -661,6 +723,7 @@ void test_agg_bbo_abi_and_codec_flags() {
   utils::md::wire::AggBboRecord decoded{};
   assert(utils::md::wire::DecodeAggBbo(bytes, decoded) ==
          utils::md::wire::CodecError::Ok);
+  assert((decoded.header.flags & utils::md::wire::kBboOriginMask) == 0);
   header.flags = utils::md::wire::kAggSkewEnforced;
   assert(utils::md::wire::EncodeAggBbo(bytes, header, built.record));
   header.flags = utils::md::wire::kAggMemberDataError;
@@ -669,7 +732,12 @@ void test_agg_bbo_abi_and_codec_flags() {
       utils::md::wire::kAggSkewEnforced |
       utils::md::wire::kAggMemberDataError;
   assert(utils::md::wire::EncodeAggBbo(bytes, header, built.record));
+  assert(utils::md::wire::DecodeAggBbo(bytes, decoded) ==
+         utils::md::wire::CodecError::Ok);
+  assert((decoded.header.flags & utils::md::wire::kBboOriginMask) == 0);
   header.flags = 1U << 2U;
+  assert(!utils::md::wire::EncodeAggBbo(bytes, header, built.record));
+  header.flags = utils::md::wire::kBboOriginTickerStream;
   assert(!utils::md::wire::EncodeAggBbo(bytes, header, built.record));
 }
 
@@ -736,6 +804,7 @@ void test_venue_ingest_bbo_and_sequence_gap() {
 
   fields.bus_seq = 3;
   fields.source_seq = 1;
+  fields.flags = utils::md::wire::kBboOriginTickerStream;
   std::array<std::byte, sizeof(BboRecord)> bbo_bytes{};
   const auto encoded_bbo = utils::md::wire::EncodeBbo(
       bbo_bytes, fields, {10'000, 10}, {10'100, 20});
@@ -744,6 +813,8 @@ void test_venue_ingest_bbo_and_sequence_gap() {
              3, static_cast<std::uint32_t>(utils::md::MessageType::Bbo),
              bbo_bytes, 2'000) == mds::agg::IngestResult::Bbo);
   assert(ingest.bbo() != nullptr);
+  assert(ingest.bbo()->header.flags ==
+         utils::md::wire::kBboOriginTickerStream);
   assert(ingest.consume(
              5, static_cast<std::uint32_t>(utils::md::MessageType::Bbo),
              bbo_bytes, 3'000) == mds::agg::IngestResult::NeedResync);
@@ -1139,6 +1210,7 @@ int main() {
   test_timestamp_venue_differs_from_best_venue();
   test_same_member_cross_is_reported();
   test_fx_and_orderbook_merge();
+  test_orderbook_publishability_and_recovery();
   test_fixed_capacity_exact_price_k_way_merge();
   test_mixed_scale_exact_price_identity();
   test_eight_members_fill_eighty_levels();

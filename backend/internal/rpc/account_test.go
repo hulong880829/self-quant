@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"google.golang.org/grpc/status"
 	accountv1 "selfquant/backend/gen/account/v1"
 	"selfquant/backend/internal/account"
+	"selfquant/backend/internal/polymarketauth"
 )
 
 type fakeAccountService struct {
@@ -71,11 +73,23 @@ func (f fakeAccountService) InvalidatePolymarketCredentials(
 	return f.err
 }
 
+func (f fakeAccountService) ActivatePolymarketCredentials(
+	context.Context,
+	string,
+	int64,
+) error {
+	return f.err
+}
+
 func (f fakeAccountService) DeleteTradingAccount(context.Context, string, int64) error {
 	return f.err
 }
 
 func (f fakeAccountService) GetTradingAccountSnapshot(context.Context, string, int64) (account.TradingAccountSnapshot, error) {
+	return account.TradingAccountSnapshot{}, f.err
+}
+
+func (f fakeAccountService) GetCachedTradingAccountSnapshot(context.Context, string, int64) (account.TradingAccountSnapshot, error) {
 	return account.TradingAccountSnapshot{}, f.err
 }
 
@@ -105,6 +119,30 @@ func (f fakeAccountService) GetTradingCredentialsInternal(
 	context.Context, string, string, int64,
 ) (account.TradingCredentials, error) {
 	return account.TradingCredentials{}, f.err
+}
+
+func (f fakeAccountService) GetTradingAccountMeta(
+	context.Context, string, int64,
+) (account.TradingAccountMeta, error) {
+	return account.TradingAccountMeta{}, f.err
+}
+
+func (f fakeAccountService) InspectTradingReadiness(
+	context.Context, string, int64,
+) (account.TradingReadiness, error) {
+	return account.TradingReadiness{}, f.err
+}
+
+func (f fakeAccountService) GetTradingAccountFeeRates(
+	context.Context, string, int64,
+) (account.TradingAccountFees, error) {
+	return account.TradingAccountFees{}, f.err
+}
+
+func (f fakeAccountService) SyncTradingAccountFeeRates(
+	context.Context, string, int64,
+) (account.TradingAccountFees, error) {
+	return account.TradingAccountFees{}, f.err
 }
 
 func (f fakeAccountService) GetAICredential(
@@ -209,6 +247,67 @@ func TestAccountServerDeleteTradingAccountMapsNotFound(t *testing.T) {
 	server := NewAccountServer(fakeAccountService{err: account.ErrTradingAccountNotFound})
 	_, err := server.DeleteTradingAccount(context.Background(), &accountv1.DeleteTradingAccountRequest{
 		Token: "tok", Id: 9,
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestAccountServerDeleteTradingAccountMapsActiveJobs(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "arbitrage", err: account.ErrTradingAccountHasActiveArbitrage},
+		{name: "twap", err: account.ErrTradingAccountHasActiveTWAP},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewAccountServer(fakeAccountService{err: tc.err})
+			_, err := server.DeleteTradingAccount(context.Background(), &accountv1.DeleteTradingAccountRequest{
+				Token: "tok", Id: 9,
+			})
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("err=%v", err)
+			}
+			if status.Convert(err).Message() != tc.err.Error() {
+				t.Fatalf("message=%q", status.Convert(err).Message())
+			}
+		})
+	}
+}
+
+func TestAccountServerRefreshMapsAuthUnavailable(t *testing.T) {
+	server := NewAccountServer(fakeAccountService{err: fmt.Errorf(
+		"refresh polymarket credentials: %w",
+		&polymarketauth.AuthError{StatusCode: 503, Message: "maintenance"},
+	)})
+	_, err := server.RefreshPolymarketCredentials(
+		context.Background(),
+		&accountv1.GetPolymarketCredentialsRequest{Token: "tok", TradingAccountId: 7},
+	)
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestAccountServerCacheOnlyMissIsNotNotFound(t *testing.T) {
+	server := NewAccountServer(fakeAccountService{err: account.ErrSnapshotCacheMiss})
+	_, err := server.GetTradingAccountSnapshot(context.Background(), &accountv1.GetTradingAccountSnapshotRequest{
+		Token: "tok", TradingAccountId: 7, CacheOnly: true,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("err=%v", err)
+	}
+	if status.Convert(err).Message() != "snapshot_cache_miss" {
+		t.Fatalf("message=%q", status.Convert(err).Message())
+	}
+}
+
+func TestAccountServerLiveSnapshotNotFoundUnchanged(t *testing.T) {
+	server := NewAccountServer(fakeAccountService{err: account.ErrTradingAccountNotFound})
+	_, err := server.GetTradingAccountSnapshot(context.Background(), &accountv1.GetTradingAccountSnapshotRequest{
+		Token: "tok", TradingAccountId: 7,
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("err=%v", err)

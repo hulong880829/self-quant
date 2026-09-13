@@ -418,11 +418,24 @@ struct EventLog {
 
 std::uint64_t Now(void*) noexcept { return 1786186200000ULL; }
 
-AdapterConfig Config(InstrumentRegistry& registry,
+struct TestDirectory {
+  api::InstrumentId instrument_id{7};
+  std::array<std::uint8_t, 32> token_id{};
+};
+
+api::InstrumentId ResolveToken(
+    void* context,
+    const std::array<std::uint8_t, 32>& token_id) noexcept {
+  const auto& directory = *static_cast<TestDirectory*>(context);
+  return directory.token_id == token_id ? directory.instrument_id : 0;
+}
+
+AdapterConfig Config(TestDirectory& registry,
                      MockTransport& transport,
                      std::string_view funder = kSigner) {
   AdapterConfig config{};
-  config.instruments = &registry;
+  config.instrument_context = &registry;
+  config.resolve_polymarket_token = &ResolveToken;
   config.transport = &transport;
   REQUIRE(config.credentials.signer_address.assign(kSigner));
   REQUIRE(config.credentials.funder_address.assign(funder));
@@ -434,42 +447,32 @@ AdapterConfig Config(InstrumentRegistry& registry,
   return config;
 }
 
-InstrumentRegistry Registry(std::uint8_t signature_type = 0) {
-  InstrumentRegistry registry;
-  utils::md::Instrument instrument{};
-  instrument.instrument_id = 7;
-  instrument.venue = utils::md::Venue::Polymarket;
-  instrument.product_type = utils::md::ProductType::BinaryOption;
-  instrument.price_scale = 2;
-  instrument.quantity_scale = 1;
-  instrument.tick_size = 1;
-  instrument.lot_size = 1;
-  constexpr std::string_view instrument_key = "6:4:YES";
-  std::copy(instrument_key.begin(), instrument_key.end(),
-            instrument.instrument_key.begin());
-  TradingMetadata trading{};
-  trading.instrument_id = 7;
-  trading.kind = MetadataKind::Polymarket;
-  trading.polymarket.condition_id[0] = 1;
-  REQUIRE(TokenIdFromDecimal(kToken, trading.polymarket.token_id) ==
+TestDirectory Registry(std::uint8_t signature_type = 0) {
+  (void)signature_type;
+  TestDirectory registry;
+  REQUIRE(TokenIdFromDecimal(kToken, registry.token_id) ==
           CryptoResult::Ok);
-  trading.polymarket.outcome = PolymarketOutcome::Yes;
-  trading.polymarket.signature_type = signature_type;
-  trading.polymarket.minimum_order_size = 1;
-  REQUIRE(registry.Add(instrument, &trading) == api::Error::Ok);
-  REQUIRE(registry.Freeze() == api::Error::Ok);
   return registry;
 }
 
-api::RebindPolymarketInstrumentRequest RebindRequest() {
-  api::RebindPolymarketInstrumentRequest request{};
-  request.instrument_id = 7;
-  request.condition_id[0] = 9;
-  REQUIRE(TokenIdFromDecimal("42", request.token_id) == CryptoResult::Ok);
-  request.outcome = api::PolymarketOutcome::No;
-  request.signature_type = 3;
-  request.minimum_order_size = 1;
-  return request;
+api::ResolvedInstrument Route(std::uint8_t signature_type = 0) {
+  api::ResolvedInstrument routing{};
+  routing.kind = api::ExecutionRouteKind::Polymarket;
+  routing.venue = static_cast<std::uint8_t>(utils::md::Venue::Polymarket);
+  routing.product_type =
+      static_cast<std::uint8_t>(utils::md::ProductType::BinaryOption);
+  routing.price_scale = 2;
+  routing.quantity_scale = 1;
+  routing.catalog_revision = 1;
+  routing.tick_size = 1;
+  routing.lot_size = 1;
+  routing.minimum_order_size = 1;
+  routing.signature_type = signature_type;
+  routing.outcome = api::PolymarketOutcome::Yes;
+  routing.polymarket.condition_id[0] = 1;
+  REQUIRE(TokenIdFromDecimal(kToken, routing.polymarket.token_id) ==
+          CryptoResult::Ok);
+  return routing;
 }
 
 void Drain(PolymarketTradeAdapter& adapter, EventLog& log) {
@@ -484,7 +487,7 @@ void Drain(PolymarketTradeAdapter& adapter, EventLog& log) {
 }
 
 void TestAdapterSessionAndReconcile() {
-  InstrumentRegistry registry = Registry();
+  TestDirectory registry = Registry();
   MockTransport transport;
   PolymarketTradeAdapter adapter(Config(registry, transport));
   EventLog log;
@@ -510,6 +513,7 @@ void TestAdapterSessionAndReconcile() {
   REQUIRE(adapter.reserve_command(AdapterCommandKind::Place, reservation) ==
           AdapterResult::Ok);
   AdapterPlaceCommand place{};
+  place.routing = Route();
   place.command_id = 91;
   place.handle = {2, 0, 3};
   place.request.token = {4, 5, 6};
@@ -571,8 +575,6 @@ void TestAdapterSessionAndReconcile() {
   REQUIRE(adapter.begin_reconcile(44, 1786186200000000000ULL,
                                   {&log, &EventLog::OnEvent}) ==
           AdapterResult::Ok);
-  REQUIRE(adapter.validate_rebind(RebindRequest()) ==
-          AdapterResult::InvalidArgument);
   const TransportRequest first_page =
       transport.submitted[transport.submitted_count - 1];
   transport.push({TransportEventKind::HttpResponse, first_page.id, 200,
@@ -633,7 +635,7 @@ void TestAdapterSessionAndReconcile() {
 void TestDepositWalletSignerAndValidation() {
   constexpr std::string_view funder =
       "0x1111111111111111111111111111111111111111";
-  InstrumentRegistry registry = Registry(3);
+  TestDirectory registry = Registry(3);
   MockTransport transport;
   PolymarketTradeAdapter adapter(Config(registry, transport, funder));
   EventLog log;
@@ -641,6 +643,7 @@ void TestDepositWalletSignerAndValidation() {
   Drain(adapter, log);
 
   AdapterPlaceCommand place{};
+  place.routing = Route(3);
   place.command_id = 101;
   place.handle = {3, 0, 4};
   place.request.token = {5, 6, 7};
@@ -655,8 +658,6 @@ void TestDepositWalletSignerAndValidation() {
           AdapterResult::Ok);
   REQUIRE(adapter.commit_place(reservation, place) == AdapterResult::Ok);
   REQUIRE(transport.submitted_count == 1);
-  REQUIRE(adapter.validate_rebind(RebindRequest()) ==
-          AdapterResult::WouldBlock);
   const std::string_view body(transport.submitted[0].wire.body.data(),
                               transport.submitted[0].wire.body_size);
   REQUIRE(body.find("\"maker\":\"0x1111111111111111111111111111111111111111\"") !=
@@ -693,20 +694,20 @@ void TestDepositWalletSignerAndValidation() {
   REQUIRE(adapter.commit_place(reservation, place) ==
           AdapterResult::InvalidArgument);
 
-  auto rebind = RebindRequest();
-  REQUIRE(adapter.validate_rebind(rebind) == AdapterResult::Ok);
-  REQUIRE(adapter.apply_rebind(rebind) == AdapterResult::Ok);
   place.request.time_in_force = api::TimeInForce::GTC;
   place.request.flags = 0;
+  place.routing.signature_type = 3;
+  REQUIRE(TokenIdFromDecimal("42", place.routing.polymarket.token_id) ==
+          CryptoResult::Ok);
   REQUIRE(adapter.reserve_command(AdapterCommandKind::Place, reservation) ==
           AdapterResult::Ok);
   REQUIRE(adapter.commit_place(reservation, place) == AdapterResult::Ok);
-  const std::string_view rebound_body(
+  const std::string_view frozen_route_body(
       transport.submitted[transport.submitted_count - 1].wire.body.data(),
       transport.submitted[transport.submitted_count - 1].wire.body_size);
-  REQUIRE(rebound_body.find("\"tokenId\":\"42\"") !=
+  REQUIRE(frozen_route_body.find("\"tokenId\":\"42\"") !=
           std::string_view::npos);
-  REQUIRE(rebound_body.find("\"signatureType\":3") !=
+  REQUIRE(frozen_route_body.find("\"signatureType\":3") !=
           std::string_view::npos);
 
   PolymarketTradeAdapter invalid_key([&] {
@@ -729,7 +730,7 @@ void TestInvalidAdapterIsSafe() {
 }
 
 void TestRequestDeadline() {
-  InstrumentRegistry registry = Registry();
+  TestDirectory registry = Registry();
   MockTransport transport;
   AdapterConfig config = Config(registry, transport);
   config.request_timeout_ns = 100;
@@ -739,6 +740,7 @@ void TestRequestDeadline() {
   Drain(adapter, log);
 
   AdapterPlaceCommand place{};
+  place.routing = Route();
   place.command_id = 501;
   place.handle = {7, 0, 8};
   place.request.token = {9, 10, 11};
@@ -768,7 +770,7 @@ void TestRequestDeadline() {
 }
 
 void TestReconcileMissingLocalIsAuditable() {
-  InstrumentRegistry registry = Registry();
+  TestDirectory registry = Registry();
   MockTransport transport;
   PolymarketTradeAdapter adapter(Config(registry, transport));
   EventLog log;
@@ -776,6 +778,7 @@ void TestReconcileMissingLocalIsAuditable() {
   Drain(adapter, log);
 
   AdapterPlaceCommand place{};
+  place.routing = Route();
   place.command_id = 601;
   place.handle = {8, 0, 9};
   place.request.token = {10, 11, 12};
@@ -830,7 +833,7 @@ void TestReconcileMissingLocalIsAuditable() {
 }
 
 void TestSessionDeadlineActions() {
-  InstrumentRegistry registry = Registry();
+  TestDirectory registry = Registry();
   MockTransport transport;
   AdapterConfig config = Config(registry, transport);
   config.reconnect_initial_ns = 100;
@@ -880,7 +883,7 @@ void TestSessionDeadlineActions() {
 }
 
 void TestReconcileRequestDeadline() {
-  InstrumentRegistry registry = Registry();
+  TestDirectory registry = Registry();
   MockTransport transport;
   AdapterConfig config = Config(registry, transport);
   config.request_timeout_ns = 100;
@@ -907,7 +910,7 @@ void TestReconcileRequestDeadline() {
 }
 
 void TestSessionLivenessTimeout() {
-  InstrumentRegistry registry = Registry();
+  TestDirectory registry = Registry();
   MockTransport transport;
   AdapterConfig config = Config(registry, transport);
   config.heartbeat_interval_ns = 100;
@@ -928,7 +931,7 @@ void TestSessionLivenessTimeout() {
 }
 
 void TestAuthoritativeQueriesStaySeparateFromReconcile() {
-  InstrumentRegistry registry = Registry();
+  TestDirectory registry = Registry();
   MockTransport clob;
   MockTransport data;
   AdapterConfig config = Config(registry, clob);
@@ -936,7 +939,9 @@ void TestAuthoritativeQueriesStaySeparateFromReconcile() {
   PolymarketTradeAdapter adapter(config);
   EventLog log;
 
-  const AdapterQueryRequest open_request{{4, 9, 1}, 17, 0};
+  AdapterQueryRequest open_request{};
+  open_request.token = {4, 9, 1};
+  open_request.request.account_id = 17;
   REQUIRE(adapter.query_open_orders(
               open_request, {&log, &EventLog::OnEvent}) ==
           AdapterResult::Ok);
@@ -961,7 +966,9 @@ void TestAuthoritativeQueriesStaySeparateFromReconcile() {
   REQUIRE(log.events[log.size - 1].query_complete.error == api::Error::Ok);
   REQUIRE(adapter.status() == AdapterStatus::Connecting);
 
-  const AdapterQueryRequest positions_request{{4, 9, 2}, 17, 0};
+  AdapterQueryRequest positions_request{};
+  positions_request.token = {4, 9, 2};
+  positions_request.request.account_id = 17;
   REQUIRE(adapter.query_positions(
               positions_request, {&log, &EventLog::OnEvent}) ==
           AdapterResult::Ok);
@@ -987,6 +994,76 @@ void TestAuthoritativeQueriesStaySeparateFromReconcile() {
   REQUIRE(log.events[log.size - 1].kind == AdapterEventKind::QueryComplete);
 }
 
+void TestUnknownQueryIdentityIsQuarantinable() {
+  TestDirectory directory{};
+  MockTransport transport;
+  PolymarketTradeAdapter adapter(Config(directory, transport));
+  EventLog log;
+  AdapterQueryRequest request{};
+  request.token = {4, 9, 3};
+  request.request.account_id = 17;
+  REQUIRE(adapter.query_open_orders(
+              request, {&log, &EventLog::OnEvent}) ==
+          AdapterResult::Ok);
+  const std::string json =
+      std::string(R"({"next_cursor":"LTE=","data":[{"id":"unknown",)") +
+      R"("asset_id":")" + std::string(kToken) +
+      R"(","side":"BUY","status":"LIVE","original_size":"1.0",)"
+      R"("size_matched":"0","price":"0.50"}]})";
+  transport.push({TransportEventKind::HttpResponse,
+                  transport.submitted[0].id, 200, json});
+  Drain(adapter, log);
+  REQUIRE(log.events[log.size - 2].kind ==
+          AdapterEventKind::OpenOrderSnapshot);
+  REQUIRE(log.events[log.size - 2].open_order.instrument_id == 0);
+  REQUIRE((log.events[log.size - 2].open_order.reserved &
+           api::SnapshotUnmapped) != 0);
+  REQUIRE(log.events[log.size - 1].kind ==
+          AdapterEventKind::QueryComplete);
+  REQUIRE(log.events[log.size - 1].query_complete.error == api::Error::Ok);
+}
+
+void TestScopedQueriesCarryNativeReference() {
+  TestDirectory directory = Registry();
+  MockTransport clob;
+  MockTransport data;
+  AdapterConfig config = Config(directory, clob);
+  config.data_transport = &data;
+  PolymarketTradeAdapter adapter(config);
+  EventLog log;
+  const auto route = Route();
+  AdapterQueryRequest request{};
+  request.token = {4, 9, 4};
+  request.request.account_id = 17;
+  request.request.scope = api::QueryScope::SingleInstrument;
+  request.request.instrument.kind = route.kind;
+  request.request.instrument.venue = route.venue;
+  request.request.instrument.product_type = route.product_type;
+  request.request.instrument.outcome = route.outcome;
+  request.request.instrument.polymarket.condition_id =
+      route.polymarket.condition_id;
+  request.request.instrument.polymarket.token_id =
+      route.polymarket.token_id;
+  REQUIRE(adapter.query_open_orders(
+              request, {&log, &EventLog::OnEvent}) ==
+          AdapterResult::Ok);
+  const std::string_view open_path(clob.submitted[0].wire.path.data(),
+                                  clob.submitted[0].wire.path_size);
+  REQUIRE(open_path ==
+          std::string("/data/orders?asset_id=") + std::string(kToken));
+  clob.push({TransportEventKind::HttpResponse, clob.submitted[0].id, 200,
+             R"({"next_cursor":"LTE=","data":[]})"});
+  Drain(adapter, log);
+
+  request.token.sequence = 5;
+  REQUIRE(adapter.query_positions(
+              request, {&log, &EventLog::OnEvent}) ==
+          AdapterResult::Ok);
+  const std::string_view position_path(data.submitted[0].wire.path.data(),
+                                      data.submitted[0].wire.path_size);
+  REQUIRE(position_path.find("&market=0x01") != std::string_view::npos);
+}
+
 }  // namespace
 
 int main() {
@@ -1001,5 +1078,7 @@ int main() {
   TestReconcileRequestDeadline();
   TestSessionLivenessTimeout();
   TestAuthoritativeQueriesStaySeparateFromReconcile();
+  TestUnknownQueryIdentityIsQuarantinable();
+  TestScopedQueriesCarryNativeReference();
   return 0;
 }

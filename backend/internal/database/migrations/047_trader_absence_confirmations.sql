@@ -1,0 +1,2 @@
+ALTER TABLE trader_orders
+  ADD COLUMN IF NOT EXISTS absence_confirmations INTEGER NOT NULL DEFAULT 0;

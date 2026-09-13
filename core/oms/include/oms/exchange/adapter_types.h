@@ -186,7 +186,7 @@ struct AdapterPlaceCommand {
   std::uint64_t command_id{};
   api::OrderHandle handle{};
   api::NewOrderRequest request{};
-  api::ExecutionRoutingSnapshot routing{};
+  api::ResolvedInstrument routing{};
 };
 
 struct AdapterCancelCommand {
@@ -226,8 +226,7 @@ struct AdapterReconcileEvent {
 
 struct AdapterQueryRequest {
   api::QueryToken token{};
-  api::AccountId account_id{};
-  std::uint32_t reserved{};
+  api::QueryRequest request{};
 };
 
 struct AdapterEvent {
@@ -266,7 +265,9 @@ struct AdapterServiceResult {
 static_assert(std::is_trivially_copyable_v<AdapterCapabilities>);
 static_assert(std::is_trivially_copyable_v<AdapterIdentity>);
 static_assert(std::is_trivially_copyable_v<AdapterReservation>);
+static_assert(std::is_trivially_copyable_v<AdapterPlaceCommand>);
 static_assert(std::is_trivially_copyable_v<AdapterCommand>);
+static_assert(std::is_trivially_copyable_v<AdapterQueryRequest>);
 static_assert(std::is_trivially_copyable_v<AdapterEvent>);
 static_assert(std::is_trivially_copyable_v<AdapterEventSink>);
 static_assert(std::is_trivially_copyable_v<AdapterDeadline>);
@@ -274,7 +275,9 @@ static_assert(std::is_trivially_copyable_v<AdapterServiceResult>);
 static_assert(std::is_standard_layout_v<AdapterCapabilities>);
 static_assert(std::is_standard_layout_v<AdapterIdentity>);
 static_assert(std::is_standard_layout_v<AdapterReservation>);
+static_assert(std::is_standard_layout_v<AdapterPlaceCommand>);
 static_assert(std::is_standard_layout_v<AdapterCommand>);
+static_assert(std::is_standard_layout_v<AdapterQueryRequest>);
 static_assert(std::is_standard_layout_v<AdapterEvent>);
 static_assert(std::is_standard_layout_v<AdapterEventSink>);
 static_assert(std::is_standard_layout_v<AdapterDeadline>);
@@ -291,9 +294,11 @@ static_assert(sizeof(AdapterCapabilities) == 8);
 static_assert(sizeof(AdapterIdentity) == 8);
 static_assert(sizeof(AdapterReservation) == 16);
 static_assert(sizeof(AdapterPlaceCommand) == 280);
+static_assert(alignof(AdapterPlaceCommand) == 8);
 static_assert(sizeof(AdapterCancelCommand) == 56);
 static_assert(sizeof(AdapterCommand) == 344);
 static_assert(sizeof(AdapterCommandResult) == 32);
+static_assert(sizeof(AdapterQueryRequest) == 96);
 static_assert(sizeof(AdapterStatusEvent) == 24);
 static_assert(sizeof(AdapterReconcileEvent) == 16);
 static_assert(sizeof(AdapterEventSink) == 16);

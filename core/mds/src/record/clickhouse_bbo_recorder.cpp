@@ -114,6 +114,7 @@ struct ClickHouseBboRecorder::Impl {
   std::atomic<std::uint64_t> rows_requeued{};
   std::atomic<std::uint64_t> shutdown_drops{};
   std::atomic<std::uint64_t> stale_skips{};
+  std::atomic<std::uint64_t> decode_failed{};
   mutable std::mutex error_mutex;
   std::string error_message;
   std::uint64_t last_sample_mono_ns{};
@@ -324,6 +325,7 @@ void ClickHouseBboRecorder::consume(std::span<const std::byte> payload,
   utils::md::wire::RecordHeader header{};
   if (utils::md::wire::ValidateHeader(payload, &header) !=
       utils::md::wire::CodecError::Ok) {
+    impl_->decode_failed.fetch_add(1, std::memory_order_relaxed);
     return;
   }
   const auto type = static_cast<utils::md::MessageType>(header.message_type);
@@ -380,13 +382,17 @@ void ClickHouseBboRecorder::consume(std::span<const std::byte> payload,
   utils::md::wire::BboRecord bbo{};
   if (type == utils::md::MessageType::Bbo) {
     if (utils::md::wire::DecodeBbo(payload, bbo) !=
-        utils::md::wire::CodecError::Ok)
+        utils::md::wire::CodecError::Ok) {
+      impl_->decode_failed.fetch_add(1, std::memory_order_relaxed);
       return;
+    }
   } else {
     utils::md::wire::TickerRecord ticker{};
     if (utils::md::wire::DecodeTicker(payload, ticker) !=
-        utils::md::wire::CodecError::Ok)
+        utils::md::wire::CodecError::Ok) {
+      impl_->decode_failed.fetch_add(1, std::memory_order_relaxed);
       return;
+    }
     bbo.header = ticker.header;
     bbo.bid_price = ticker.bid_price;
     bbo.bid_quantity = ticker.bid_quantity;
@@ -447,7 +453,8 @@ ClickHouseBboMetrics ClickHouseBboRecorder::metrics() const noexcept {
           impl_->http_failures.load(std::memory_order_relaxed),
           impl_->rows_requeued.load(std::memory_order_relaxed),
           impl_->shutdown_drops.load(std::memory_order_relaxed),
-          impl_->stale_skips.load(std::memory_order_relaxed)};
+          impl_->stale_skips.load(std::memory_order_relaxed),
+          impl_->decode_failed.load(std::memory_order_relaxed)};
 }
 
 std::string ClickHouseBboRecorder::error() const {

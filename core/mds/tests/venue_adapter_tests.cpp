@@ -1,3 +1,5 @@
+#include "mds/exchange/binance/binance_streams.h"
+#include "mds/exchange/symbol_policy.h"
 #include "mds/exchange/venue_adapter.h"
 #include "net/http_client.h"
 
@@ -59,6 +61,7 @@ namespace {
 using mds::exchange::AdapterEventType;
 using mds::exchange::InstrumentMetadata;
 using mds::exchange::MetadataRequestBatch;
+using mds::exchange::MetadataResponseKind;
 using mds::exchange::NormalizedEvent;
 using mds::exchange::ParseFailure;
 using mds::exchange::ParseFailureCategory;
@@ -188,6 +191,15 @@ std::string binance_depth_message(std::size_t bid_count,
   return json;
 }
 
+void test_decimal_scale_mismatch() {
+  assert(mds::exchange::decimal_scale_mismatch("1.234", 2));
+  assert(mds::exchange::decimal_scale_mismatch("-1.234", 2));
+  assert(!mds::exchange::decimal_scale_mismatch("1.2300", 2));
+  assert(!mds::exchange::decimal_scale_mismatch("bad", 2));
+  assert(!mds::exchange::decimal_scale_mismatch(
+      "9223372036854775807.1", 0));
+}
+
 void test_binance() {
   auto adapter = mds::exchange::make_venue_adapter(
       Venue::Binance, ProductType::Perpetual, 5000);
@@ -216,6 +228,15 @@ void test_binance() {
       R"({"u":10,"s":"BTCUSDT","b":"100.0","B":"1.000","a":"100.1","A":"2.000","T":10,"E":10})";
   assert(adapter->parse_ws(bbo, event, error));
   assert(event.type == AdapterEventType::Bbo);
+  ParseFailure failure;
+  assert(!adapter->parse_ws(
+      R"({"u":11,"s":"BTCUSDT","b":"100.01","B":"1.000","a":"100.1","A":"2.000","T":11,"E":11})",
+      event, failure));
+  assert(failure.category ==
+         ParseFailureCategory::ConfigurationMetadata);
+  assert(failure.scope == ParseFailureScope::Symbol);
+  assert(failure.code == ParseFailureCode::ScaleMismatch);
+  assert(failure.symbol_view() == "BTCUSDT");
   expect_no_allocation(*adapter, bbo, event, error);
   constexpr std::string_view depth =
       R"({"e":"depthUpdate","E":11,"T":11,"s":"BTCUSDT","U":157,"u":160,"pu":156,"b":[["100.0","1.000"]],"a":[["100.1","2.000"]]})";
@@ -327,6 +348,22 @@ void test_binance_shared_parser_scales() {
       event, error));
   assert(event.bids[0].price == 26'413 &&
          event.bids[0].quantity == 1'025);
+
+  constexpr std::string_view refreshed_metadata =
+      R"({"serverTime":2,"symbols":[{"symbol":"BEATUSDT","pair":"BEATUSDT","contractType":"PERPETUAL","status":"TRADING","baseAsset":"BEAT","quoteAsset":"USDT","marginAsset":"USDT","pricePrecision":5,"quantityPrecision":2,"filters":[{"filterType":"PRICE_FILTER","maxPrice":"1000","minPrice":"0.00001","tickSize":"0.00001"},{"filterType":"LOT_SIZE","maxQty":"100000","minQty":"0.01","stepSize":"0.01"}]}]})";
+  metadata.clear();
+  assert(adapter->upsert_metadata(
+      refreshed_metadata, {&requests[1], 1}, metadata, error));
+  assert(metadata.size() == 1);
+  assert(metadata[0].price_scale == 5);
+  assert(adapter->parse_ws(
+      R"({"u":5,"s":"BTCUSDT","b":"100.1","B":"1.001","a":"100.2","A":"2.002","E":5})",
+      event, error));
+  assert(event.bid.price == 1'001);
+  assert(adapter->parse_ws(
+      R"({"u":6,"s":"BEATUSDT","b":"2.64131","B":"10.25","a":"2.64201","A":"11.50","E":6})",
+      event, error));
+  assert(event.bid.price == 264'131);
 }
 
 void test_binance_metadata_request_capacity() {
@@ -380,17 +417,20 @@ void test_binance_metadata_request_capacity() {
   const auto perpetual_json =
       std::string(R"({"symbols":[)") +
       usdm_entry("BTCUSDT", "PERPETUAL") + "," +
+      usdm_entry("XAUUSDT", "TRADIFI_PERPETUAL") + "," +
       usdm_entry("BTCUSDT_260925", "CURRENT_QUARTER") + "]}";
-  const std::array<StreamRequest, 2> perpetual_requests{{
+  const std::array<StreamRequest, 3> perpetual_requests{{
       {"BTCUSDT", "BTCUSDT", "bookTicker", "", true, false, 0},
+      {"XAUUSDT", "XAUUSDT", "bookTicker", "", true, false, 0},
       {"BTCUSDT260925", "BTCUSDT_260925", "bookTicker", "", true, false, 0},
   }};
   std::vector<InstrumentMetadata> metadata;
   std::string error;
   assert(perpetual->parse_discovery_metadata(
       perpetual_json, perpetual_requests, metadata, error));
-  assert(metadata.size() == 1);
+  assert(metadata.size() == 2);
   assert(metadata[0].canonical_symbol == "BTCUSDT");
+  assert(metadata[1].canonical_symbol == "XAUUSDT");
 }
 
 void test_binance_large_metadata() {
@@ -480,7 +520,19 @@ void test_okx() {
   assert(metadata[0].quantity_scale == 8);
   assert(metadata[0].lot_size == 1);
 
+  constexpr std::string_view eth_refresh =
+      R"({"code":"0","data":[{"instId":"ETH-USDT","baseCcy":"ETH","quoteCcy":"USDT","settleCcy":"","tickSz":"0.001","lotSz":"0.000001"}]})";
+  metadata.clear();
+  assert(adapter->upsert_metadata(
+      eth_refresh, {&eth, 1}, metadata, error));
+  assert(metadata.size() == 1);
+  assert(metadata[0].price_scale == 3);
+
   NormalizedEvent event(1024);
+  assert(adapter->parse_ws(
+      R"({"arg":{"channel":"bbo-tbt","instId":"ETH-USDT"},"data":[{"asks":[["100.002","2.0","0","1"]],"bids":[["100.001","1.0","0","1"]],"ts":"9","seqId":6}]})",
+      event, error));
+  assert(event.bid.price == 100'001);
   assert(adapter->parse_ws(
       R"({"event":"login","code":"0","msg":"","connId":"x"})", event,
       error));
@@ -513,6 +565,15 @@ void test_okx() {
   assert(event.bid.price == 1000);
   assert(event.ask.price == 1001);
   assert(event.final_sequence == 7);
+  ParseFailure failure;
+  assert(!adapter->parse_ws(
+      R"({"arg":{"channel":"bbo-tbt","instId":"BTC-USDT"},"data":[{"asks":[["100.11","2.0","0","1"]],"bids":[["100.0","1.0","0","1"]],"ts":"10","seqId":8}]})",
+      event, failure));
+  assert(failure.category ==
+         ParseFailureCategory::ConfigurationMetadata);
+  assert(failure.scope == ParseFailureScope::Symbol);
+  assert(failure.code == ParseFailureCode::ScaleMismatch);
+  assert(failure.symbol_view() == "BTC-USDT");
   expect_no_allocation(
       *adapter,
       R"({"arg":{"channel":"bbo-tbt","instId":"BTC-USDT"},"data":[{"asks":[["100.2","2.0","0","1"]],"bids":[["100.1","1.0","0","1"]],"ts":"11","seqId":8}]})",
@@ -682,10 +743,63 @@ void test_bybit() {
   for (std::size_t index = 0; index < metadata_requests.size(); ++index) {
     assert(metadata_batches[index].request_offset == index);
     assert(metadata_batches[index].request_count == 1);
+    assert(!metadata_batches[index].cursor_paginated);
     assert(metadata_batches[index].http.target ==
            "/v5/market/instruments-info?category=linear&symbol=" +
                std::string(metadata_requests[index].venue_symbol));
   }
+  std::vector<MetadataRequestBatch> bootstrap_batches;
+  assert(adapter->build_bootstrap_metadata_request_batches(
+      metadata_requests, bootstrap_batches, error));
+  assert(bootstrap_batches.size() == 1);
+  assert(bootstrap_batches[0].request_offset == 0);
+  assert(bootstrap_batches[0].request_count == metadata_requests.size());
+  assert(bootstrap_batches[0].cursor_paginated);
+  assert(bootstrap_batches[0].page_cursor.empty());
+  assert(bootstrap_batches[0].http.target ==
+         "/v5/market/instruments-info?category=linear&status=Trading&limit=1000");
+  std::vector<std::string> many_symbols;
+  many_symbols.reserve(235);
+  std::vector<StreamRequest> many_requests;
+  many_requests.reserve(235);
+  for (int index = 0; index < 235; ++index) {
+    many_symbols.push_back("S" + std::to_string(index) + "USDT");
+    const auto& symbol = many_symbols.back();
+    many_requests.push_back(
+        {symbol, symbol, "orderbook.1", "orderbook.50", true, true});
+  }
+  bootstrap_batches.clear();
+  assert(adapter->build_bootstrap_metadata_request_batches(
+      many_requests, bootstrap_batches, error));
+  assert(bootstrap_batches.size() == 1);
+  assert(bootstrap_batches[0].cursor_paginated);
+  assert(bootstrap_batches[0].request_count == 235);
+  assert(bootstrap_batches[0].http.target.find("status=Trading") !=
+         std::string::npos);
+  assert(bootstrap_batches[0].http.target.find("limit=1000") !=
+         std::string::npos);
+  assert(bootstrap_batches[0].http.target.find("symbol=") ==
+         std::string::npos);
+  metadata_batches.clear();
+  assert(adapter->build_metadata_request_batches(
+      many_requests, metadata_batches, error));
+  assert(metadata_batches.size() == 235);
+  assert(!metadata_batches.front().cursor_paginated);
+  bool list_empty = true;
+  assert(adapter->metadata_page_list_empty(
+      R"({"retCode":0,"result":{"category":"linear","nextPageCursor":"","list":[{"symbol":"BTCUSDT"}]}})",
+      list_empty, error));
+  assert(!list_empty);
+  assert(adapter->metadata_page_list_empty(
+      R"({"retCode":0,"result":{"category":"linear","nextPageCursor":"page2","list":[]}})",
+      list_empty, error));
+  assert(list_empty);
+  assert(adapter->apply_metadata_page_cursor(
+      bootstrap_batches[0], "page2", error));
+  assert(bootstrap_batches[0].page_cursor == "page2");
+  assert(bootstrap_batches[0].http.target ==
+         "/v5/market/instruments-info?category=linear&status=Trading&"
+         "limit=1000&cursor=page2");
   const StreamRequest encoded_request{
       "TESTUSDT", "TEST/USDT", "orderbook.1",
       "orderbook.50", true, true};
@@ -693,11 +807,19 @@ void test_bybit() {
   assert(adapter->build_metadata_request_batches(
       {&encoded_request, 1}, metadata_batches, error));
   assert(metadata_batches.size() == 1);
+  assert(!metadata_batches[0].cursor_paginated);
   assert(metadata_batches[0].http.target ==
          "/v5/market/instruments-info?category=linear&symbol=TEST%2FUSDT");
+  bootstrap_batches.clear();
+  assert(adapter->build_bootstrap_metadata_request_batches(
+      {&encoded_request, 1}, bootstrap_batches, error));
+  assert(bootstrap_batches.size() == 1);
+  assert(!bootstrap_batches[0].cursor_paginated);
+  assert(bootstrap_batches[0].http.target ==
+         metadata_batches[0].http.target);
 
   constexpr std::string_view metadata_json =
-      R"({"retCode":0,"result":{"category":"linear","list":[{"symbol":"BTCUSDT","baseCoin":"BTC","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.1"},"lotSizeFilter":{"qtyStep":"0.001"}}]}})";
+      R"({"retCode":0,"result":{"category":"linear","list":[{"symbol":"BTCUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"BTC","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.1"},"lotSizeFilter":{"qtyStep":"0.001"}}]}})";
   std::vector<InstrumentMetadata> metadata;
   assert(adapter->parse_metadata(metadata_json, {&request, 1}, metadata,
                                  error));
@@ -706,12 +828,36 @@ void test_bybit() {
   assert(metadata[0].lot_size == 1);
   assert(metadata[0].contract_multiplier == 1);
   assert(metadata[0].contract_multiplier_scale == 0);
+  metadata.clear();
+  auto metadata_response = adapter->parse_metadata_response(
+      metadata_json, {&request, 1}, metadata);
+  assert(metadata_response.kind == MetadataResponseKind::Success);
+  assert(metadata.size() == 1);
+  constexpr std::string_view metadata_refresh =
+      R"({"retCode":0,"result":{"category":"linear","list":[{"symbol":"BTCUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"BTC","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.01"},"lotSizeFilter":{"qtyStep":"0.001"}}]}})";
+  metadata.clear();
+  assert(adapter->upsert_metadata(
+      metadata_refresh, {&request, 1}, metadata, error));
+  assert(metadata.size() == 1);
+  assert(metadata[0].price_scale == 2);
+  const StreamRequest rollback_request{
+      "ETHUSDT", "ETHUSDT", "orderbook.1",
+      "orderbook.50", true, true};
+  const std::array rollback_requests{request, rollback_request};
+  assert(!adapter->upsert_metadata(
+      R"({"retCode":0,"result":{"category":"linear","list":[{"symbol":"BTCUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"BTC","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.001"},"lotSizeFilter":{"qtyStep":"0.001"}},{"symbol":"ETHUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"ETH","quoteCoin":"USDT","settleCoin":"USDT"}]}})",
+      rollback_requests, metadata, error));
+  std::vector<InstrumentMetadata> upserted_metadata;
+  assert(adapter->upsert_metadata(
+      R"({"retCode":0,"result":{"category":"linear","list":[{"symbol":"ETHUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"ETH","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.01"},"lotSizeFilter":{"qtyStep":"0.001"}}]}})",
+      {&rollback_request, 1}, upserted_metadata, error));
+  assert(upserted_metadata.size() == 1);
 
   const StreamRequest second_page_request{
       "ONGUSDT", "ONGUSDT", "orderbook.1",
       "orderbook.50", true, true};
   constexpr std::string_view second_page_json =
-      R"({"retCode":0,"result":{"category":"linear","nextPageCursor":"","list":[{"symbol":"ONGUSDT","baseCoin":"ONG","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.00001"},"lotSizeFilter":{"qtyStep":"1"}}]}})";
+      R"({"retCode":0,"result":{"category":"linear","nextPageCursor":"","list":[{"symbol":"ONGUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"ONG","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.00001"},"lotSizeFilter":{"qtyStep":"1"}}]}})";
   std::vector<InstrumentMetadata> second_page_metadata;
   assert(adapter->parse_discovery_metadata(
       second_page_json, {&second_page_request, 1},
@@ -727,7 +873,9 @@ void test_bybit() {
     const std::string response =
         "{\"retCode\":0,\"result\":{\"category\":\"linear\",\"list\":[{"
         "\"symbol\":\"" +
-        symbol + "\",\"baseCoin\":\"" + base +
+        symbol +
+        "\",\"contractType\":\"LinearPerpetual\",\"status\":\"Trading\","
+        "\"baseCoin\":\"" + base +
         "\",\"quoteCoin\":\"USDT\",\"settleCoin\":\"USDT\","
         "\"priceFilter\":{\"tickSize\":\"0.01\"},"
         "\"lotSizeFilter\":{\"qtyStep\":\"0.001\"}}]}}";
@@ -744,26 +892,113 @@ void test_bybit() {
   assert(combined_metadata.size() == metadata_requests.size());
 
   metadata.clear();
-  assert(!adapter->parse_metadata(
+  metadata_response = adapter->parse_metadata_response(
       R"({"retCode":0,"result":{"category":"linear","list":[]}})",
-      {&metadata_requests[5], 1}, metadata, error));
-  assert(error.find("BEATUSDT") != std::string::npos);
+      {&metadata_requests[5], 1}, metadata);
+  assert(metadata_response.kind ==
+         MetadataResponseKind::SymbolUnavailable);
+  assert(metadata.empty());
   metadata.clear();
-  assert(!adapter->parse_metadata(
-      R"({"retCode":0,"result":{"category":"linear","list":[{"symbol":"OTHERUSDT","baseCoin":"OTHER","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.01"},"lotSizeFilter":{"qtyStep":"0.001"}}]}})",
-      {&metadata_requests[5], 1}, metadata, error));
-  assert(error.find("BEATUSDT") != std::string::npos);
+  metadata_response = adapter->parse_metadata_response(
+      R"({"retCode":0,"result":{"category":"linear","list":[{"symbol":"OTHERUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"OTHER","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.01"},"lotSizeFilter":{"qtyStep":"0.001"}}]}})",
+      {&metadata_requests[5], 1}, metadata);
+  assert(metadata_response.kind ==
+         MetadataResponseKind::SymbolUnavailable);
+  assert(metadata.empty());
   metadata.clear();
-  assert(!adapter->parse_metadata(
+  metadata_response = adapter->parse_metadata_response(
       R"({"retCode":10001,"retMsg":"invalid symbol","result":{}})",
-      {&metadata_requests[5], 1}, metadata, error));
-  assert(error.find("BEATUSDT") != std::string::npos);
+      {&metadata_requests[5], 1}, metadata);
+  assert(metadata_response.kind ==
+         MetadataResponseKind::SymbolUnavailable);
+  metadata_response = adapter->parse_metadata_response(
+      R"({"retCode":10001,"retMsg":"Request parameter error","result":{}})",
+      {&metadata_requests[5], 1}, metadata);
+  assert(metadata_response.kind ==
+         MetadataResponseKind::ConnectionFailure);
+  metadata_response = adapter->parse_metadata_response(
+      R"({"retCode":30000,"retMsg":"unknown API error","result":{}})",
+      {&metadata_requests[5], 1}, metadata);
+  assert(metadata_response.kind ==
+         MetadataResponseKind::ConnectionFailure);
+  metadata_response = adapter->parse_metadata_response(
+      R"({"retCode":0,"result":)",
+      {&metadata_requests[5], 1}, metadata);
+  assert(metadata_response.kind ==
+         MetadataResponseKind::ConnectionFailure);
+
+  auto bulk_adapter = mds::exchange::make_venue_adapter(
+      Venue::Bybit, ProductType::Perpetual, 50);
+  assert(bulk_adapter);
+  metadata.clear();
+  assert(bulk_adapter->parse_metadata(
+      R"({"retCode":0,"result":{"category":"linear","nextPageCursor":"","list":[{"symbol":"BTCUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"BTC","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.1"},"lotSizeFilter":{"qtyStep":"0.001"}},{"symbol":"OTHERUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"OTHER","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.01"},"lotSizeFilter":{"qtyStep":"0.001"}},{"symbol":"ETHUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"ETH","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.01"},"lotSizeFilter":{"qtyStep":"0.001"}}]}})",
+      metadata_requests, metadata, error));
+  assert(metadata.size() == 2);
+  assert(metadata[0].venue_symbol == "BTCUSDT");
+  assert(metadata[1].venue_symbol == "ETHUSDT");
+  std::string repeated_symbol;
+  assert(bulk_adapter->metadata_page_repeated_venue_symbol(
+      R"({"retCode":0,"result":{"category":"linear","list":[{"symbol":"BTCUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"BTC","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.1"},"lotSizeFilter":{"qtyStep":"0.001"}},{"symbol":"BTCUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"BTC","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.01"},"lotSizeFilter":{"qtyStep":"0.001"}}]}})",
+      repeated_symbol, error));
+  assert(repeated_symbol == "BTCUSDT");
+  repeated_symbol = "stale";
+  assert(bulk_adapter->metadata_page_repeated_venue_symbol(
+      R"({"retCode":0,"result":{"category":"linear","list":[{"symbol":"BTCUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"BTC","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.1"},"lotSizeFilter":{"qtyStep":"0.001"}},{"symbol":"ETHUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"ETH","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.01"},"lotSizeFilter":{"qtyStep":"0.001"}}]}})",
+      repeated_symbol, error));
+  assert(repeated_symbol.empty());
+
+  const std::array discovery_requests{
+      request,
+      StreamRequest{"BTCUSDT260925", "BTCUSDT260925", "orderbook.1",
+                    "orderbook.50", true, true},
+      StreamRequest{"ETHUSDT", "ETHUSDT", "orderbook.1",
+                    "orderbook.50", true, true},
+      StreamRequest{"SOLUSDT", "SOLUSDT", "orderbook.1",
+                    "orderbook.50", true, true}};
+  auto discovery_adapter = mds::exchange::make_venue_adapter(
+      Venue::Bybit, ProductType::Perpetual, 50);
+  assert(discovery_adapter);
+  metadata.clear();
+  assert(discovery_adapter->parse_discovery_metadata(
+      R"({"retCode":0,"result":{"category":"linear","list":[{"symbol":"BTCUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"BTC","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.1"},"lotSizeFilter":{"qtyStep":"0.001"}},{"symbol":"BTCUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"BTC","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.1"},"lotSizeFilter":{"qtyStep":"0.001"}},{"symbol":"BTCUSDT260925","contractType":"LinearFutures","status":"Trading","baseCoin":"BTC","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.1"},"lotSizeFilter":{"qtyStep":"0.001"}},{"symbol":"ETHUSDT","contractType":"LinearPerpetual","status":"PreLaunch","baseCoin":"ETH","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.1"},"lotSizeFilter":{"qtyStep":"0.001"}},{"symbol":"SOLUSDT","contractType":"LinearPerpetual","status":"Closed","baseCoin":"SOL","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.1"},"lotSizeFilter":{"qtyStep":"0.001"}}]}})",
+      discovery_requests, metadata, error));
+  assert(metadata.size() == 1);
+  assert(metadata.front().venue_symbol == "BTCUSDT");
+
+  metadata.clear();
+  metadata_response = adapter->parse_metadata_response(
+      R"({"retCode":0,"result":{"category":"linear","list":[{"symbol":"BEATUSDT","contractType":"LinearFutures","status":"Trading","baseCoin":"BEAT","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.01"},"lotSizeFilter":{"qtyStep":"0.001"}}]}})",
+      {&metadata_requests[5], 1}, metadata);
+  assert(metadata_response.kind ==
+         MetadataResponseKind::SymbolUnavailable);
+  assert(metadata_response.reason.find("Trading LinearPerpetual") !=
+         std::string::npos);
+  metadata.clear();
+  metadata_response = adapter->parse_metadata_response(
+      R"({"retCode":0,"result":{"category":"linear","list":[{"symbol":"BEATUSDT","contractType":"LinearPerpetual","status":"PreLaunch","baseCoin":"BEAT","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.01"},"lotSizeFilter":{"qtyStep":"0.001"}}]}})",
+      {&metadata_requests[5], 1}, metadata);
+  assert(metadata_response.kind ==
+         MetadataResponseKind::SymbolUnavailable);
 
   constexpr std::string_view bbo =
       R"({"topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":10,"data":{"s":"BTCUSDT","b":[["100.0","1.000"]],"a":[["100.1","2.000"]],"u":5,"seq":9}})";
+  assert(adapter->parse_ws(
+      R"({"topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":9,"data":{"s":"BTCUSDT","b":[["100.01","1.000"]],"a":[["100.02","2.000"]],"u":4,"seq":8}})",
+      event, error));
+  assert(event.bid.price == 10'001);
   assert(adapter->parse_ws(bbo, event, error));
   assert(event.type == AdapterEventType::Bbo);
   assert(event.final_sequence == 5);
+  ParseFailure failure;
+  assert(!adapter->parse_ws(
+      R"({"topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":11,"data":{"s":"BTCUSDT","b":[["100.001","1.000"]],"a":[["100.10","2.000"]],"u":6,"seq":10}})",
+      event, failure));
+  assert(failure.category ==
+         ParseFailureCategory::ConfigurationMetadata);
+  assert(failure.scope == ParseFailureScope::Symbol);
+  assert(failure.code == ParseFailureCode::ScaleMismatch);
+  assert(failure.symbol_view() == "BTCUSDT");
   assert(adapter->parse_ws(bbo, event, error));
   assert(event.type == AdapterEventType::Ignored);
   adapter->reset_connection_state();
@@ -860,6 +1095,24 @@ void test_bybit() {
   assert(spot_event.type == AdapterEventType::Bbo);
   assert(spot_event.bid.quantity == 1000);
   expect_no_allocation(*spot, spot_bbo, spot_event, error);
+
+  const StreamRequest spot_eth{
+      "ETHUSDT", "ETHUSDT", "orderbook.1", "orderbook.50", true, true};
+  const std::array spot_requests{spot_request, spot_eth};
+  metadata_batches.clear();
+  assert(spot->build_metadata_request_batches(spot_requests, metadata_batches,
+                                              error));
+  assert(metadata_batches.size() == 2);
+  assert(!metadata_batches[0].cursor_paginated);
+  assert(metadata_batches[0].http.target.find("symbol=BICOUSDT") !=
+         std::string::npos);
+  bootstrap_batches.clear();
+  assert(spot->build_bootstrap_metadata_request_batches(
+      spot_requests, bootstrap_batches, error));
+  assert(bootstrap_batches.size() == 2);
+  assert(!bootstrap_batches[0].cursor_paginated);
+  assert(bootstrap_batches[0].http.target ==
+         metadata_batches[0].http.target);
 }
 
 void test_bitget() {
@@ -891,6 +1144,13 @@ void test_bitget() {
   assert(metadata_batches.size() == 1);
   assert(metadata_batches[0].request_offset == 0);
   assert(metadata_batches[0].request_count == 1);
+  assert(!metadata_batches[0].cursor_paginated);
+  std::vector<MetadataRequestBatch> bootstrap_batches;
+  assert(adapter->build_bootstrap_metadata_request_batches(
+      {&request, 1}, bootstrap_batches, error));
+  assert(bootstrap_batches.size() == 1);
+  assert(!bootstrap_batches[0].cursor_paginated);
+  assert(bootstrap_batches[0].http.target == metadata_batches[0].http.target);
 
   constexpr std::string_view metadata_json =
       R"({"code":"00000","data":[{"symbol":"BTCUSDT","baseCoin":"BTC","quoteCoin":"USDT","pricePlace":"1","volumePlace":"3","priceEndStep":"1","sizeMultiplier":"0.001"}]})";
@@ -901,6 +1161,18 @@ void test_bitget() {
   assert(metadata[0].price_scale == 10);
   assert(metadata[0].tick_size == 1'000'000'000);
   assert(metadata[0].refine_book_tick);
+  const StreamRequest eth_request{
+      "ETHUSDT", "ETHUSDT", "books1", "books", true, true};
+  constexpr std::string_view eth_metadata =
+      R"({"code":"00000","data":[{"symbol":"ETHUSDT","baseCoin":"ETH","quoteCoin":"USDT","pricePlace":"2","volumePlace":"4","priceEndStep":"1","sizeMultiplier":"0.0001"}]})";
+  metadata.clear();
+  assert(adapter->upsert_metadata(
+      eth_metadata, {&eth_request, 1}, metadata, error));
+  assert(metadata.size() == 1);
+  assert(adapter->parse_ws(
+      R"({"arg":{"channel":"books1","instId":"ETHUSDT"},"action":"snapshot","data":[{"bids":[["100.01","1.0000"]],"asks":[["100.02","2.0000"]],"ts":"9","seq":1}]})",
+      event, error));
+  assert(event.type == AdapterEventType::Bbo);
 
   assert(!adapter->parse_ws(R"({"arg":)", event, error));
   assert(!error.empty());
@@ -922,6 +1194,57 @@ void test_bitget() {
   assert(event.ask.price == 1'001'000'000'000);
   assert(event.bid.quantity == 1000);
   assert(event.ask.quantity == 2000);
+  const std::array<std::string_view, 3> one_sided_books1{
+      R"({"arg":{"channel":"books1","instId":"BTCUSDT"},"action":"snapshot","data":[{"bids":[],"asks":[["100.1","2.000"]],"ts":"10","seq":2}]})",
+      R"({"arg":{"channel":"books1","instId":"BTCUSDT"},"action":"snapshot","data":[{"bids":[["100.0","1.000"]],"asks":[],"ts":"10","seq":3}]})",
+      R"({"arg":{"channel":"books1","instId":"BTCUSDT"},"action":"snapshot","data":[{"bids":[],"asks":[],"ts":"10","seq":4}]})",
+  };
+  for (const auto payload : one_sided_books1) {
+    assert(adapter->parse_ws(payload, event, error));
+    assert(event.type == AdapterEventType::Ignored);
+    assert(event.ignore_reason ==
+           mds::exchange::IgnoreReason::OneSidedBook);
+    assert(error.empty());
+  }
+  assert(!adapter->parse_ws(
+      R"({"arg":{"channel":"books1","instId":"BTCUSDT"},"action":"snapshot","data":[{"bids":[["bad","1.000"]],"asks":[["100.1","2.000"]],"ts":"10","seq":5}]})",
+      event, error));
+  assert(error.find("invalid Bitget order book price") !=
+         std::string::npos);
+
+  assert(adapter->parse_ws(
+      R"({"event":"error","arg":{"instType":"USDT-FUTURES","channel":"books1","instId":"BTCUSDT"},"code":"30006","msg":"request too many"})",
+      event, error));
+  assert(event.type == AdapterEventType::SubscribeError);
+  assert(event.subscribe_error_kind ==
+         mds::exchange::SubscribeErrorKind::TransientRateLimit);
+  assert(event.subscription_stream ==
+         mds::exchange::SubscriptionStream::Ticker);
+  assert(event.symbol_view() == "BTCUSDT");
+  assert(adapter->parse_ws(
+      R"({"event":"error","arg":{"instType":"USDT-FUTURES","channel":"books","instId":"BTCUSDT"},"code":30001,"msg":"BTCUSDT doesn't exist"})",
+      event, error));
+  assert(event.subscribe_error_kind ==
+         mds::exchange::SubscribeErrorKind::SymbolUnavailable);
+  assert(event.subscription_stream ==
+         mds::exchange::SubscriptionStream::Orderbook);
+  assert(adapter->parse_ws(
+      R"({"event":"error","code":"30002","msg":"Unrecognized request"})",
+      event, error));
+  assert(event.subscribe_error_kind ==
+         mds::exchange::SubscribeErrorKind::Unknown);
+  assert(event.subscription_stream ==
+         mds::exchange::SubscriptionStream::Unknown);
+
+  ParseFailure failure;
+  assert(!adapter->parse_ws(
+      R"({"arg":{"channel":"books1","instId":"BTCUSDT"},"action":"snapshot","data":[{"bids":[["100.0","1.0001"]],"asks":[["100.1","2.000"]],"ts":"11","seq":2}]})",
+      event, failure));
+  assert(failure.category ==
+         ParseFailureCategory::ConfigurationMetadata);
+  assert(failure.scope == ParseFailureScope::Symbol);
+  assert(failure.code == ParseFailureCode::ScaleMismatch);
+  assert(failure.symbol_view() == "BTCUSDT");
   expect_no_allocation(
       *adapter,
       R"({"arg":{"channel":"books1","instId":"BTCUSDT"},"action":"snapshot","data":[{"bids":[["100.1","1.000"]],"asks":[["100.2","2.000"]],"ts":"11","seq":2}]})",
@@ -1058,6 +1381,15 @@ void test_gate() {
                                  error));
   assert(metadata[0].quantity_scale == 6);
   assert(metadata[0].lot_size == 1000);
+  const StreamRequest eth_request{
+      "ETHUSDT", "ETH_USDT", "spot.book_ticker",
+      "spot.order_book_update", true, true};
+  constexpr std::string_view eth_metadata =
+      R"([{"id":"ETH_USDT","base":"ETH","quote":"USDT","precision":2,"amount_precision":4}])";
+  metadata.clear();
+  assert(adapter->upsert_metadata(
+      eth_metadata, {&eth_request, 1}, metadata, error));
+  assert(metadata.size() == 1);
   auto spot_discovery = mds::exchange::make_venue_adapter(
       Venue::Gate, ProductType::Spot, 1);
   metadata.clear();
@@ -1099,17 +1431,23 @@ void test_gate() {
   assert(sol_spot->parse_ws(valid_sol_spot, event, error));
   assert(event.bid.quantity == 12'345'678);
   expect_no_allocation(*sol_spot, valid_sol_spot, event, error);
+  assert(sol_spot->parse_ws(
+      R"({"channel":"spot.book_ticker","event":"update","time_ms":12,"result":{"s":"SOL_USDT","b":"150.000","B":"0","a":"150.001","A":"2.00000000","u":10,"t":12}})",
+      event, error));
+  assert(event.type == AdapterEventType::Ignored);
+  assert(error.empty());
 
   ParseFailure failure;
   expect_no_allocation(*sol_spot, valid_sol_spot, event, failure);
   assert(!sol_spot->parse_ws(
-      R"({"channel":"spot.book_ticker","event":"update","time_ms":13,"result":{"s":"SOL_USDT","b":"150.000","B":"0.123456789","a":"150.001","A":"2.00000000","u":10,"t":13}})",
+      R"({"channel":"spot.book_ticker","event":"update","time_ms":13,"result":{"s":"SOL_USDT","b":"150.0001","B":"0.12345678","a":"150.001","A":"2.00000000","u":10,"t":13}})",
       event, failure));
-  assert(failure.category == ParseFailureCategory::DirtyData);
+  assert(failure.category ==
+         ParseFailureCategory::ConfigurationMetadata);
   assert(failure.scope == ParseFailureScope::Symbol);
-  assert(failure.code == ParseFailureCode::InvalidQuantity);
+  assert(failure.code == ParseFailureCode::ScaleMismatch);
   assert(failure.symbol_view() == "SOL_USDT");
-  assert(failure.diagnostic_view().find("reason=quantity") !=
+  assert(failure.diagnostic_view().find("reason=scale") !=
          std::string_view::npos);
   assert(!sol_spot->parse_ws(
       R"({"channel":"spot.book_ticker","event":"update","time_ms":14,"result":{"s":"SOL_USDT","b":"bad","B":"1.00000000","a":"150.001","A":"2.00000000","u":11,"t":14}})",
@@ -1190,15 +1528,32 @@ void test_gate() {
   assert(event.bid.quantity == 1);
   assert(event.ask.quantity == 20);
   expect_no_allocation(*sol_perpetual, valid_sol_perpetual, event, error);
+  assert(sol_perpetual->parse_ws(
+      R"({"channel":"futures.book_ticker","event":"update","time_ms":12,"result":{"s":"SOL_USDT","b":"150.000","B":"0.5","a":"150.001","A":"1.7","u":10,"t":12}})",
+      event, error));
+  assert(event.type == AdapterEventType::Bbo);
+  assert(event.bid.quantity == 5);
+  assert(event.ask.quantity == 17);
+  assert(sol_perpetual->parse_ws(
+      R"({"channel":"futures.book_ticker","event":"update","time_ms":12,"result":{"s":"SOL_USDT","b":"150.000","B":"0","a":"150.001","A":"1.7","u":11,"t":12}})",
+      event, error));
+  assert(event.type == AdapterEventType::Ignored);
+  assert(error.empty());
+  assert(sol_perpetual->parse_ws(
+      R"({"channel":"futures.book_ticker","event":"update","time_ms":12,"result":{"s":"SOL_USDT","b":"","B":"","a":"150.001","A":"1.7","u":12,"t":12}})",
+      event, error));
+  assert(event.type == AdapterEventType::Ignored);
+  assert(error.empty());
 
   failure.clear();
   expect_no_allocation(*sol_perpetual, valid_sol_perpetual, event, failure);
   assert(!sol_perpetual->parse_ws(
-      R"({"channel":"futures.book_ticker","event":"update","time_ms":13,"result":{"s":"SOL_USDT","b":"150.000","B":"0.01","a":"150.001","A":"2","u":10,"t":13}})",
+      R"({"channel":"futures.book_ticker","event":"update","time_ms":13,"result":{"s":"SOL_USDT","b":"150.0001","B":"0.1","a":"150.001","A":"2","u":10,"t":13}})",
       event, failure));
-  assert(failure.category == ParseFailureCategory::DirtyData);
+  assert(failure.category ==
+         ParseFailureCategory::ConfigurationMetadata);
   assert(failure.scope == ParseFailureScope::Symbol);
-  assert(failure.code == ParseFailureCode::InvalidQuantity);
+  assert(failure.code == ParseFailureCode::ScaleMismatch);
   assert(failure.symbol_view() == "SOL_USDT");
 
   metadata.clear();
@@ -1337,52 +1692,231 @@ void test_hyperliquid() {
   auto adapter = mds::exchange::make_venue_adapter(
       Venue::Hyperliquid, ProductType::Perpetual, 20);
   assert(adapter);
-  const StreamRequest request{"BTCUSDT", "BTC", "bbo", "l2Book", true,
+  const StreamRequest request{"BTCUSDC", "BTC", "bbo", "l2Book", true,
                               true};
   std::vector<std::string> batches;
   std::string error;
   assert(adapter->build_subscription_batches({&request, 1}, batches, error));
   assert(batches.size() == 2);
+  assert(adapter->subscription_send_window() == 16);
   const auto metadata_request = adapter->metadata_request();
   assert(metadata_request.method ==
          mds::exchange::HttpRequestSpec::Method::Post);
+  assert(adapter->discovery_metadata_request({}).body ==
+         R"({"type":"metaAndAssetCtxs"})");
+  assert(adapter->discovery_metadata_request("xyz").body ==
+         R"({"type":"metaAndAssetCtxs","dex":"xyz"})");
+  std::string cursor;
+  assert(adapter->discovery_metadata_next_cursor(
+      {}, "{}", cursor, error));
+  assert(cursor == "xyz");
+  assert(adapter->discovery_metadata_next_cursor(
+      "xyz", "{}", cursor, error));
+  assert(cursor.empty());
+  assert(adapter->discovery_page_is_optional("xyz"));
+  assert(!adapter->discovery_page_is_optional({}));
+  assert(adapter->discovery_metadata_includes_turnover());
+  const auto turnover_request = adapter->discovery_turnover_request();
+  assert(turnover_request.method ==
+         mds::exchange::HttpRequestSpec::Method::Post);
+  assert(turnover_request.body == R"({"type":"metaAndAssetCtxs"})");
 
   constexpr std::string_view metadata_json =
-      R"({"universe":[{"name":"BTC","szDecimals":5}]})";
+      R"({"universe":[{"name":"BTC","szDecimals":5},{"name":"DEAD","szDecimals":4,"isDelisted":true}]})";
+  const StreamRequest delisted_request{
+      "DEADUSDC", "DEAD", "bbo", "l2Book", true, true};
+  const StreamRequest hip3_request{
+      "XYZZHIPUUSDC", "xyz:ZHIPU", "bbo", "l2Book", true, true};
+  const std::array perpetual_requests{request, delisted_request};
+  std::vector<mds::exchange::MetadataRequestBatch> metadata_batches;
+  const std::array metadata_batch_requests{request, hip3_request};
+  assert(adapter->build_metadata_request_batches(
+      metadata_batch_requests, metadata_batches, error));
+  assert(metadata_batches.size() == 2);
+  assert(metadata_batches[0].request_offset == 0);
+  assert(metadata_batches[0].request_count == 1);
+  assert(!metadata_batches[0].cursor_paginated);
+  assert(metadata_batches[0].http.body == R"({"type":"meta"})");
+  assert(metadata_batches[1].request_offset == 1);
+  assert(metadata_batches[1].request_count == 1);
+  assert(!metadata_batches[1].cursor_paginated);
+  assert(metadata_batches[1].http.body ==
+         R"({"type":"meta","dex":"xyz"})");
+  std::vector<mds::exchange::MetadataRequestBatch> bootstrap_batches;
+  assert(adapter->build_bootstrap_metadata_request_batches(
+      metadata_batch_requests, bootstrap_batches, error));
+  assert(bootstrap_batches.size() == metadata_batches.size());
+  assert(!bootstrap_batches[0].cursor_paginated);
+  assert(bootstrap_batches[0].http.body == metadata_batches[0].http.body);
+  assert(bootstrap_batches[1].http.body == metadata_batches[1].http.body);
   std::vector<InstrumentMetadata> metadata;
-  assert(adapter->parse_metadata(metadata_json, {&request, 1}, metadata,
-                                 error));
+  assert(adapter->parse_metadata(metadata_json, perpetual_requests,
+                                 metadata, error));
   assert(metadata.size() == 1);
+  assert(metadata[0].canonical_symbol == "BTCUSDC");
+  assert(metadata[0].venue_symbol == "BTC");
   assert(metadata[0].tick_size == 1);
+  assert(adapter->enrich_discovery_turnover(
+      R"([{"universe":[{"name":"BTC","szDecimals":5},{"name":"DEAD","szDecimals":4,"isDelisted":true}]},[{"dayNtlVlm":"1234567.89"},{"dayNtlVlm":"9999999"}]])",
+      metadata, error));
+  assert(metadata[0].turnover_24h == 1'234'567);
+  std::vector<InstrumentMetadata> combined_metadata;
+  assert(adapter->parse_discovery_metadata(
+      R"([{"universe":[{"name":"BTC","szDecimals":5},{"name":"DEAD","szDecimals":4,"isDelisted":true}]},[{"dayNtlVlm":"1234567.89"},{"dayNtlVlm":"9999999"}]])",
+      perpetual_requests, combined_metadata, error));
+  assert(combined_metadata.size() == 1);
+  assert(combined_metadata[0].canonical_symbol ==
+         metadata[0].canonical_symbol);
+  assert(combined_metadata[0].venue_symbol ==
+         metadata[0].venue_symbol);
+  assert(combined_metadata[0].turnover_24h ==
+         metadata[0].turnover_24h);
+  std::vector<InstrumentMetadata> hip3_metadata;
+  assert(adapter->parse_discovery_metadata(
+      R"([{"universe":[{"name":"ZHIPU","szDecimals":2}]},[{"dayNtlVlm":"7654321.99"}]])",
+      {&hip3_request, 1}, hip3_metadata, error));
+  assert(hip3_metadata.size() == 1);
+  assert(hip3_metadata[0].canonical_symbol == "XYZZHIPUUSDC");
+  assert(hip3_metadata[0].venue_symbol == "xyz:ZHIPU");
+  assert(hip3_metadata[0].base_asset == "ZHIPU");
+  assert(hip3_metadata[0].turnover_24h == 7'654'321);
+  batches.clear();
+  assert(adapter->build_subscription_batches(
+      {&hip3_request, 1}, batches, error));
+  assert(batches.size() == 2);
+  assert(batches[0].find(R"("coin":"xyz:ZHIPU")") !=
+         std::string::npos);
+  const StreamRequest eth_request{
+      "ETHUSDC", "ETH", "bbo", "l2Book", true, true};
+  metadata.clear();
+  assert(adapter->upsert_metadata(
+      R"({"universe":[{"name":"ETH","szDecimals":4}]})",
+      {&eth_request, 1}, metadata, error));
+  assert(metadata.size() == 1);
 
   NormalizedEvent event(20);
   assert(adapter->parse_ws(
       R"({"channel":"subscriptionResponse","data":{"method":"unsubscribe","subscription":{"type":"l2Book","coin":"BTC"}}})",
       event, error));
   assert(event.type == AdapterEventType::SubscribeAck);
+  assert(event.symbol_view() == "BTC");
   assert(error.empty());
+  assert(adapter->parse_ws(
+      R"({"channel":"bbo","data":{"coin":"BTC","time":6,"bbo":[{"px":"100.0","sz":"1.00000"},{"px":"100.1","sz":"2.00000"}]}})",
+      event, error));
+  assert(event.type == AdapterEventType::Bbo);
+  assert(event.bid.price == 1'000);
+  assert(event.ask.price == 1'001);
+  assert(event.bid.quantity == 100'000);
+  assert(event.ask.quantity == 200'000);
+  assert(event.normalized_tail_fields == 0);
+  assert(adapter->parse_ws(
+      R"({"channel":"bbo","data":{"coin":"xyz:ZHIPU","time":6,"bbo":[{"px":"12.3456","sz":"1.20"},{"px":"12.3457","sz":"2.30"}]}})",
+      event, error));
+  assert(event.type == AdapterEventType::Bbo);
+  assert(event.bid.price == 123'456);
+  assert(event.bid.quantity == 120);
+  const auto sequence_before_book = event.final_sequence;
+  assert(adapter->parse_ws(
+      R"({"channel":"bbo","data":{"coin":"BTC","time":7,"bbo":[null,{"px":"100.1","sz":"2.00000"}]}})",
+      event, error));
+  assert(event.type == AdapterEventType::Ignored);
+  assert(event.final_sequence == 0);
+  assert(adapter->parse_ws(
+      R"({"channel":"bbo","data":{"coin":"BTC","time":8,"bbo":[{"px":"100.0","sz":"1.00000"},null]}})",
+      event, error));
+  assert(event.type == AdapterEventType::Ignored);
+  assert(event.final_sequence == 0);
+  assert(adapter->parse_ws(
+      R"({"channel":"bbo","data":{"coin":"BTC","time":9,"bbo":[{"px":"0","sz":"1.00000"},{"px":"100.1","sz":"2.00000"}]}})",
+      event, error));
+  assert(event.type == AdapterEventType::Ignored);
+  assert(event.final_sequence == 0);
+  assert(adapter->parse_ws(
+      R"({"channel":"bbo","data":{"coin":"BTC","time":9,"bbo":[{"px":"100.0","sz":"-1.00000"},{"px":"100.1","sz":"2.00000"}]}})",
+      event, error));
+  assert(event.type == AdapterEventType::Ignored);
+  assert(event.final_sequence == 0);
   assert(adapter->parse_ws(
       R"({"channel":"l2Book","data":{"coin":"BTC","time":10,"levels":[[{"px":"100.0","sz":"1.00000","n":1}],[{"px":"100.1","sz":"2.00000","n":1}]]}})",
       event, error));
   assert(event.type == AdapterEventType::BookSnapshot);
-  assert(event.final_sequence == 1);
+  assert(event.final_sequence == sequence_before_book + 1);
+  ParseFailure failure;
+  assert(!adapter->parse_ws(
+      R"({"channel":"bbo","data":{"coin":"BTC","time":11,"bbo":[{"px":"100.01","sz":"1.00000"},{"px":"100.1","sz":"2.00000"}]}})",
+      event, failure));
+  assert(failure.category ==
+         ParseFailureCategory::ConfigurationMetadata);
+  assert(failure.scope == ParseFailureScope::Symbol);
+  assert(failure.code == ParseFailureCode::ScaleMismatch);
+  assert(failure.symbol_view() == "BTC");
   expect_no_allocation(
       *adapter,
       R"({"channel":"l2Book","data":{"coin":"BTC","time":11,"levels":[[{"px":"100.1","sz":"1.00000","n":1}],[{"px":"100.2","sz":"2.00000","n":1}]]}})",
       event, error);
 
+  const StreamRequest wld_request{
+      "WLDUSDC", "WLD", "bbo", "l2Book", true, true};
+  metadata.clear();
+  assert(adapter->upsert_metadata(
+      R"({"universe":[{"name":"WLD","szDecimals":1}]})",
+      {&wld_request, 1}, metadata, error));
+  assert(metadata.size() == 1);
+  assert(adapter->parse_ws(
+      R"({"channel":"bbo","data":{"coin":"WLD","time":12,"bbo":[{"px":"1.00000","sz":"1516055.1000000001"},{"px":"1.00001","sz":"1519517.8999999999"}]}})",
+      event, error));
+  assert(event.type == AdapterEventType::Bbo);
+  assert(event.bid.quantity == 15'160'551);
+  assert(event.ask.quantity == 15'195'179);
+  assert(event.normalized_tail_fields == 2);
+  assert(adapter->parse_ws(
+      R"({"channel":"bbo","data":{"coin":"WLD","time":13,"bbo":[{"px":"1.00000","sz":"1.200000000"},{"px":"1.00001","sz":"2.000000000"}]}})",
+      event, error));
+  assert(event.type == AdapterEventType::Bbo);
+  assert(event.normalized_tail_fields == 0);
+  assert(!adapter->parse_ws(
+      R"({"channel":"bbo","data":{"coin":"WLD","time":14,"bbo":[{"px":"1.00000","sz":"1.21"},{"px":"1.00001","sz":"2.0"}]}})",
+      event, failure));
+  assert(failure.code == ParseFailureCode::ScaleMismatch);
+  assert(!adapter->parse_ws(
+      R"({"channel":"bbo","data":{"coin":"WLD","time":15,"bbo":[{"px":"1.00000","sz":"1.212345678"},{"px":"1.00001","sz":"2.0"}]}})",
+      event, failure));
+  assert(failure.code == ParseFailureCode::ScaleMismatch);
+  assert(adapter->parse_ws(
+      R"({"channel":"l2Book","data":{"coin":"WLD","time":16,"levels":[[{"px":"1.00000","sz":"-1.8999999999","n":1}],[{"px":"1.00001","sz":"2.0000000001","n":1}]]}})",
+      event, error));
+  assert(event.type == AdapterEventType::BookSnapshot);
+  assert(event.bids[0].quantity == -19);
+  assert(event.asks[0].quantity == 20);
+  assert(event.normalized_tail_fields == 2);
+  assert(!adapter->parse_ws(
+      R"({"channel":"bbo","data":{"coin":"WLD","time":17,"bbo":[{"px":"1.00000","sz":"922337203685477580.7999999999"},{"px":"1.00001","sz":"2.0"}]}})",
+      event, error));
+  assert(!adapter->parse_ws(
+      R"({"channel":"bbo","data":{"coin":"WLD","time":18,"bbo":[{"px":"1.00000","sz":"-922337203685477580.7999999999"},{"px":"1.00001","sz":"2.0"}]}})",
+      event, error));
+
   auto spot = mds::exchange::make_venue_adapter(
       Venue::Hyperliquid, ProductType::Spot, 20);
   assert(spot);
-  const StreamRequest spot_request{"BTCUSDC", "BTC_USDC", "bbo",
+  const StreamRequest spot_request{"HYPEUSDC", "HYPE_USDC", "bbo",
                                    "l2Book", true, true};
   constexpr std::string_view spot_metadata =
-      R"({"tokens":[{"name":"BTC","szDecimals":5,"index":0},{"name":"USDC","szDecimals":8,"index":1}],"universe":[{"name":"@1","tokens":[0,1],"index":1}]})";
+      R"({"tokens":[{"name":"HYPE","szDecimals":5,"index":0},{"name":"USDC","szDecimals":8,"index":1}],"universe":[{"name":"@107","tokens":[0,1],"index":107}]})";
   metadata.clear();
   assert(spot->parse_metadata(spot_metadata, {&spot_request, 1}, metadata,
                               error));
   assert(metadata.size() == 1);
-  assert(metadata[0].venue_symbol == "@1");
+  assert(metadata[0].canonical_symbol == "HYPEUSDC");
+  assert(metadata[0].venue_symbol == "@107");
+  assert(metadata[0].base_asset == "HYPE");
+  assert(spot->discovery_turnover_request().body ==
+         R"({"type":"spotMetaAndAssetCtxs"})");
+  assert(spot->enrich_discovery_turnover(
+      R"([{"tokens":[{"name":"HYPE","szDecimals":5,"index":0},{"name":"USDC","szDecimals":8,"index":1}],"universe":[{"name":"@107","tokens":[0,1],"index":107}]},[{"coin":"@50","dayNtlVlm":"9999999"},{"coin":"@107","dayNtlVlm":"1000000.99"}]])",
+      metadata, error));
+  assert(metadata[0].turnover_24h == 1'000'000);
 }
 
 void test_unsubscription_regression() {
@@ -1430,9 +1964,126 @@ void test_unsubscription_regression() {
                               "depth", false, true, 100};
   std::vector<std::string> batches;
   std::string error;
-  assert(!binance->build_unsubscription_batches(
+  assert(binance->build_unsubscription_batches(
       {&request, 1}, batches, error));
-  assert(error == "venue subscription cannot be converted to unsubscribe");
+  assert(batches.size() == 1);
+  assert(batches[0].find("\"UNSUBSCRIBE\"") !=
+         std::string::npos);
+  assert(batches[0].find("\"SUBSCRIBE\"") == std::string::npos);
+}
+
+void test_utf8_symbol_isolation() {
+  using mds::exchange::valid_utf8_symbol;
+  assert(valid_utf8_symbol("BTCUSDT"));
+  assert(valid_utf8_symbol("龙虾USDT"));
+  assert(valid_utf8_symbol("龙虾_USDT"));
+  assert(!valid_utf8_symbol(""));
+  assert(!valid_utf8_symbol("BTC\"USDT"));
+  assert(!valid_utf8_symbol("BTC\\USDT"));
+  assert(!valid_utf8_symbol(std::string(32, 'A')));
+
+  auto gate = mds::exchange::make_venue_adapter(
+      Venue::Gate, ProductType::Spot, 100);
+  assert(gate);
+  const StreamRequest good{"BTCUSDT", "BTC_USDT", "spot.book_ticker",
+                           {}, true, false};
+  const StreamRequest chinese{"龙虾USDT", "龙虾_USDT", "spot.book_ticker",
+                              {}, true, false};
+  const StreamRequest bad{"BADUSDT", "BAD\"USDT", "spot.book_ticker",
+                          {}, true, false};
+  const StreamRequest mixed[]{good, chinese, bad};
+  std::vector<std::string> batches;
+  std::string error;
+  assert(gate->build_subscription_batches(mixed, batches, error));
+  assert(batches.size() == 2);
+  assert(batches[0].find("BTC_USDT") != std::string::npos);
+  assert(batches[1].find("龙虾_USDT") != std::string::npos);
+  assert(batches[0].find("BAD") == std::string::npos);
+
+  constexpr std::string_view gate_metadata =
+      R"([{"id":"BTC_USDT","base":"BTC","quote":"USDT","precision":1,"amount_precision":3},{"id":"龙虾_USDT","base":"龙虾","quote":"USDT","precision":1,"amount_precision":3}])";
+  std::vector<InstrumentMetadata> metadata;
+  assert(gate->parse_metadata(gate_metadata, mixed, metadata, error));
+  assert(metadata.size() == 2);
+  NormalizedEvent event(100);
+  assert(gate->parse_ws(
+      R"({"channel":"spot.book_ticker","event":"update","time_ms":11,"result":{"s":"龙虾_USDT","b":"100.1","B":"1.000","a":"100.2","A":"2.000","u":8,"t":11}})",
+      event, error));
+  assert(event.type == AdapterEventType::Bbo);
+  assert(event.symbol_view() == "龙虾_USDT");
+
+  auto okx = mds::exchange::make_venue_adapter(
+      Venue::Okx, ProductType::Spot, 16);
+  const StreamRequest okx_requests[]{
+      {"BTCUSDT", "BTC-USDT", "bbo-tbt", {}, true, false},
+      {"坏USDT", "坏\"USDT", "bbo-tbt", {}, true, false}};
+  batches.clear();
+  assert(okx->build_subscription_batches(okx_requests, batches, error));
+  assert(batches.size() == 1);
+  assert(batches[0].find("BTC-USDT") != std::string::npos);
+  assert(okx->parse_ws(
+      R"({"event":"error","arg":{"channel":"bbo-tbt","instId":"BTC-USDT"},"code":"60012","msg":"Invalid request"})",
+      event, error));
+  assert(event.type == AdapterEventType::SubscribeError);
+  assert(event.symbol_view() == "BTC-USDT");
+
+  auto bybit = mds::exchange::make_venue_adapter(
+      Venue::Bybit, ProductType::Spot, 50);
+  const StreamRequest bybit_requests[]{
+      {"BTCUSDT", "BTCUSDT", "orderbook.1", {}, true, false},
+      {"龙虾USDT", "龙虾USDT", "orderbook.1", {}, true, false}};
+  batches.clear();
+  assert(bybit->build_subscription_batches(bybit_requests, batches, error));
+  assert(!batches.empty());
+  bool found_chinese = false;
+  for (const auto &batch : batches) {
+    found_chinese =
+        found_chinese || batch.find("orderbook.1.龙虾USDT") != std::string::npos;
+  }
+  assert(found_chinese);
+
+  auto bitget = mds::exchange::make_venue_adapter(
+      Venue::Bitget, ProductType::Spot, 16);
+  const StreamRequest bitget_requests[]{
+      {"BTCUSDT", "BTCUSDT", "books1", {}, true, false},
+      {"坏USDT", "坏\"USDT", "books1", {}, true, false}};
+  batches.clear();
+  assert(bitget->build_subscription_batches(bitget_requests, batches, error));
+  assert(batches.size() == 1);
+  assert(batches[0].find("BTCUSDT") != std::string::npos);
+
+  auto hyperliquid = mds::exchange::make_venue_adapter(
+      Venue::Hyperliquid, ProductType::Perpetual, 20);
+  const StreamRequest hl_requests[]{
+      {"BTCUSDT", "BTC", "bbo", {}, true, false},
+      {"坏USDT", "坏\"COIN", "bbo", {}, true, false}};
+  batches.clear();
+  assert(hyperliquid->build_subscription_batches(hl_requests, batches, error));
+  assert(batches.size() == 1);
+  assert(batches[0].find("\"coin\":\"BTC\"") != std::string::npos);
+
+  auto binance = mds::exchange::make_venue_adapter(
+      Venue::Binance, ProductType::Spot, 16);
+  const StreamRequest binance_requests[]{
+      {"BTCUSDT", "BTCUSDT", "bookTicker", {}, true, false},
+      {"龙虾USDT", "龙虾USDT", "bookTicker", {}, true, false},
+      {"坏USDT", "坏\"USDT", "bookTicker", {}, true, false}};
+  batches.clear();
+  assert(binance->build_subscription_batches(binance_requests, batches,
+                                             error));
+  assert(batches.size() == 1);
+  assert(batches[0].find("btcusdt@bookTicker") != std::string::npos);
+  assert(batches[0].find("龙虾usdt@bookTicker") != std::string::npos);
+
+  std::string path;
+  assert(mds::exchange::binance::build_combined_stream_path(
+      mds::exchange::binance::Profile::Spot, "龙虾USDT", true, false, path,
+      error));
+  assert(path.find("%E9%BE%99%E8%99%BEusdt@bookTicker") != std::string::npos);
+  mds::exchange::binance::CombinedStreamParser parser;
+  mds::exchange::binance::StreamRoute route;
+  assert(parser.route("龙虾usdt@bookTicker", route, error));
+  assert(route.symbol == "龙虾usdt");
 }
 
 void test_discovery_turnover() {
@@ -1473,6 +2124,12 @@ void test_discovery_turnover() {
   verify(Venue::Binance, ProductType::Perpetual,
          "/fapi/v1/ticker/24hr", "BTCUSDT",
          R"([{"symbol":"BTCUSDT","quoteVolume":"2345"}])", 2345);
+  verify(Venue::Aster, ProductType::Spot, "/api/v3/ticker/24hr",
+         "BTCUSDT",
+         R"([{"symbol":"BTCUSDT","quoteVolume":"3456.7"}])", 3456);
+  verify(Venue::Aster, ProductType::Perpetual,
+         "/fapi/v3/ticker/24hr", "BTCUSDT",
+         R"([{"symbol":"BTCUSDT","quoteVolume":"4567"}])", 4567);
   verify(Venue::Okx, ProductType::Spot,
          "/api/v5/market/tickers?instType=SPOT", "BTC-USDT",
          R"({"code":"0","data":[{"instId":"BTC-USDT","volCcy24h":"3456.7","last":"2"}]})",
@@ -1521,9 +2178,210 @@ void test_discovery_turnover() {
       metadata, error));
 }
 
+void test_aster() {
+  const StreamRequest request{"BTCUSDT", "BTCUSDT", "bookTicker",
+                              "depth", true, true, 100};
+  for (const auto product :
+       {ProductType::Spot, ProductType::Perpetual}) {
+    auto adapter =
+        mds::exchange::make_venue_adapter(Venue::Aster, product, 5000);
+    assert(adapter);
+    assert(adapter->venue() == Venue::Aster);
+    assert(adapter->heartbeat().kind ==
+           mds::exchange::HeartbeatKind::Rfc6455Ping);
+
+    std::vector<std::string> batches;
+    std::string error;
+    assert(adapter->build_subscription_batches(
+        {&request, 1}, batches, error));
+    assert(batches.size() == 1);
+    assert(batches.front().find("btcusdt@bookTicker") !=
+           std::string::npos);
+    assert(batches.front().find("btcusdt@depth@100ms") !=
+           std::string::npos);
+
+    const std::string_view metadata_json =
+        product == ProductType::Spot
+            ? R"({"symbols":[{"symbol":"BTCUSDT","status":"TRADING","baseAsset":"BTC","quoteAsset":"USDT","baseAssetPrecision":8,"quotePrecision":8,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.01","minPrice":"0.01","maxPrice":"1000000"},{"filterType":"LOT_SIZE","stepSize":"0.00001","minQty":"0.00001","maxQty":"9000"}]}]})"
+            : R"({"symbols":[{"symbol":"BTCUSDT","status":"TRADING","contractType":"PERPETUAL","baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT","pricePrecision":1,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.1","minPrice":"1","maxPrice":"1000000"},{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001","maxQty":"1000"}]}]})";
+    std::vector<InstrumentMetadata> metadata;
+    assert(adapter->parse_metadata(
+        metadata_json, {&request, 1}, metadata, error));
+    assert(metadata.size() == 1);
+    assert(metadata.front().canonical_symbol == "BTCUSDT");
+
+    NormalizedEvent event(5000);
+    assert(adapter->parse_ws(
+        R"({"code":400,"msg":"subscription rejected"})", event, error));
+    assert(event.type == AdapterEventType::SubscribeError);
+    assert(event.subscribe_error_kind ==
+           mds::exchange::SubscribeErrorKind::Unknown);
+    assert(adapter->parse_ws(R"({"id":1,"result":null})", event,
+                             error));
+    assert(event.type == AdapterEventType::SubscribeAck);
+    assert(adapter->parse_ws(
+        product == ProductType::Spot
+            ? R"({"u":6161236809,"e":"bookTicker","s":"BTCUSDT","b":"79408.69","B":"0.13905","a":"79409.50","A":"0.51446","T":1787921741922,"E":1787921741924})"
+            : R"({"e":"bookTicker","u":520723843873,"s":"BTCUSDT","b":"79329.6","B":"3.237","a":"79329.7","A":"0.096","T":1787921758550,"E":1787921758578})",
+        event, error));
+    assert(event.type == AdapterEventType::Bbo);
+    assert(event.bid.price > 0 && event.ask.price >= event.bid.price);
+    assert(adapter->parse_ws(
+        product == ProductType::Spot
+            ? R"({"e":"depthUpdate","E":1787921741525,"T":1787921741421,"s":"BTCUSDT","U":6161236754,"u":6161236754,"pu":6161236706,"b":[],"a":[["79409.80","0.00001"]]})"
+            : R"({"e":"depthUpdate","E":1787921758578,"T":1787921758500,"s":"BTCUSDT","U":520723843006,"u":520723843494,"pu":520723842674,"b":[["79329.6","3.409"]],"a":[["79339.3","7.294"]]})",
+        event, error));
+    assert(event.type == AdapterEventType::BookDelta);
+    assert(event.strict_previous_sequence);
+
+    const auto snapshot = adapter->snapshot_request("BTCUSDT", 10);
+    assert(snapshot.target.find(
+               product == ProductType::Spot ? "/api/v3/depth"
+                                            : "/fapi/v3/depth") == 0);
+    assert(adapter->parse_snapshot(
+        product == ProductType::Spot
+            ? R"({"lastUpdateId":6161245231,"bids":[["79379.70","0.01275"]],"asks":[["79380.41","0.08661"]]})"
+            : R"({"lastUpdateId":520724472250,"E":1787921815983,"T":1787921815950,"bids":[["79345.4","0.646"]],"asks":[["79345.5","1.697"]]})",
+        "BTCUSDT", event, error));
+    assert(event.type == AdapterEventType::BookSnapshot);
+    assert(event.sequence_reset);
+  }
+}
+
+void test_lighter() {
+  const StreamRequest request{"BTCUSDC", "BTC", "ticker", "order_book",
+                              true, true, 0};
+  auto adapter = mds::exchange::make_venue_adapter(
+      Venue::Lighter, ProductType::Perpetual, 5000);
+  assert(adapter);
+  assert(adapter->heartbeat().kind ==
+         mds::exchange::HeartbeatKind::JsonPing);
+  assert(adapter->heartbeat().payload == "{\"type\":\"ping\"}");
+  assert(adapter->subscription_send_window() == 50);
+
+  constexpr std::string_view metadata_json =
+      R"({"code":200,"order_book_details":[{"symbol":"BTC","market_id":1,"market_type":"perp","status":"active","multiplier":"1.000000000000000000","supported_price_decimals":1,"supported_size_decimals":5,"daily_quote_token_volume":665711673.36889}]})";
+  std::vector<InstrumentMetadata> metadata;
+  std::string error;
+  assert(adapter->parse_metadata(metadata_json, {&request, 1}, metadata,
+                                 error));
+  assert(metadata.size() == 1);
+  assert(metadata.front().canonical_symbol == "BTCUSDC");
+  assert(metadata.front().venue_symbol == "BTC");
+  assert(metadata.front().turnover_24h == 665711673);
+
+  std::vector<std::string> batches;
+  assert(adapter->build_subscription_batches(
+      {&request, 1}, batches, error));
+  assert(batches.size() == 2);
+  assert(batches[0] ==
+         R"({"type":"subscribe","channel":"ticker/1"})");
+  assert(batches[1] ==
+         R"({"type":"subscribe","channel":"order_book/1"})");
+  assert(adapter->expected_subscription_acks(batches[0]) == 0);
+  std::vector<std::string> unsubscribe_batches;
+  assert(adapter->build_unsubscription_batches(
+      {&request, 1}, unsubscribe_batches, error));
+  assert(unsubscribe_batches[0] ==
+         R"({"type":"unsubscribe","channel":"ticker/1"})");
+  assert(unsubscribe_batches[1] ==
+         R"({"type":"unsubscribe","channel":"order_book/1"})");
+
+  NormalizedEvent event(5000);
+  assert(adapter->parse_ws(
+      R"({"session_id":"fixture","type":"connected"})", event,
+      error));
+  assert(event.type == AdapterEventType::Ignored);
+  assert(adapter->parse_ws(R"({"type":"pong"})", event, error));
+  assert(event.type == AdapterEventType::Pong);
+  assert(adapter->parse_ws(
+      R"({"channel":"ticker:1","last_updated_at":1787921758778453,"nonce":20427231705,"ticker":{"s":"BTC","a":{"price":"79345.0","size":"0.98512"},"b":{"price":"79343.4","size":"0.57643"},"last_updated_at":1787921758778453},"timestamp":1787921758781,"type":"subscribed/ticker"})",
+      event, error));
+  assert(event.type == AdapterEventType::Bbo);
+  assert(event.final_sequence == 20427231705ULL);
+
+  assert(adapter->parse_ws(
+      R"({"channel":"order_book:1","last_updated_at":1787921770785150,"offset":25045069,"order_book":{"code":0,"asks":[{"price":"79359.7","size":"0.06205"}],"bids":[{"price":"79359.6","size":"0.00126"}],"offset":25045069,"nonce":20427244574,"last_updated_at":1787921770785150,"begin_nonce":0},"timestamp":1787921770807,"type":"subscribed/order_book"})",
+      event, error));
+  assert(event.type == AdapterEventType::BookSnapshot);
+  assert(event.sequence_reset);
+  assert(event.final_sequence == 20427244574ULL);
+
+  assert(adapter->parse_ws(
+      R"({"channel":"order_book:1","last_updated_at":1787921770809241,"offset":25045072,"order_book":{"code":0,"asks":[{"price":"79361.5","size":"0.04708"}],"bids":[{"price":"79353.4","size":"0.74316"}],"offset":25045072,"nonce":20427244630,"last_updated_at":1787921770809241,"begin_nonce":20427244574},"timestamp":1787921770847,"type":"update/order_book"})",
+      event, error));
+  assert(event.type == AdapterEventType::BookDelta);
+  assert(event.strict_previous_sequence);
+  assert(event.previous_sequence == 20427244574ULL);
+  assert(adapter->parse_ws(
+      R"({"channel":"order_book:1","offset":1,"order_book":{"asks":[],"bids":[],"offset":1,"nonce":20427244631,"begin_nonce":20427244630},"timestamp":1787921770848,"type":"update/order_book"})",
+      event, error));
+  assert(event.type == AdapterEventType::BookDelta);
+  assert(event.previous_sequence == 20427244630ULL);
+  assert(adapter->parse_ws(
+      R"({"type":"error","message":"rate limited"})", event, error));
+  assert(event.type == AdapterEventType::SubscribeError);
+  assert(event.subscribe_error_kind ==
+         mds::exchange::SubscribeErrorKind::Unknown);
+  assert(error.find("rate limited") != std::string::npos);
+
+  std::vector<InstrumentMetadata> rejected_metadata;
+  auto invalid = mds::exchange::make_venue_adapter(
+      Venue::Lighter, ProductType::Perpetual, 5000);
+  assert(invalid);
+  assert(!invalid->parse_metadata(
+      R"({"code":200,"order_book_details":[{"symbol":"BTC","market_id":1,"market_type":"perp","status":"active","multiplier":"1","supported_size_decimals":5,"daily_quote_token_volume":1}]})",
+      {&request, 1}, rejected_metadata, error));
+  assert(!invalid->parse_metadata(
+      R"({"code":200,"order_book_details":[{"symbol":"BTC","market_id":1,"market_type":"perp","status":"active","multiplier":"1","supported_price_decimals":1,"supported_size_decimals":5,"daily_quote_token_volume":1},{"symbol":"ETH","market_id":1,"market_type":"perp","status":"active","multiplier":"1","supported_price_decimals":1,"supported_size_decimals":5,"daily_quote_token_volume":1}]})",
+      {&request, 1}, rejected_metadata, error));
+  const StreamRequest conflicting_request{
+      "ETHUSDC", "BTC", "ticker", "order_book", true, false, 0};
+  batches.clear();
+  assert(!adapter->build_subscription_batches(
+      {&conflicting_request, 1}, batches, error));
+
+  const StreamRequest spot_request{
+      "ETHUSDC", "ETH/USDC", "ticker", "order_book", true, true, 0};
+  auto spot = mds::exchange::make_venue_adapter(
+      Venue::Lighter, ProductType::Spot, 5000);
+  assert(spot);
+  constexpr std::string_view spot_metadata =
+      R"({"code":200,"spot_order_book_details":[{"symbol":"ETH/USDC","market_id":2048,"market_type":"spot","status":"active","supported_price_decimals":2,"supported_size_decimals":4,"daily_quote_token_volume":524062.914484}]})";
+  metadata.clear();
+  assert(spot->parse_metadata(spot_metadata, {&spot_request, 1},
+                              metadata, error));
+  assert(metadata.size() == 1);
+  assert(metadata.front().base_asset == "ETH");
+  assert(metadata.front().quote_asset == "USDC");
+  assert(metadata.front().canonical_symbol == "ETHUSDC");
+  batches.clear();
+  assert(spot->build_subscription_batches(
+      {&spot_request, 1}, batches, error));
+  assert(batches.front().find("ticker/2048") != std::string::npos);
+
+  const StreamRequest shared_id_spot_request{
+      "BTCUSDC", "BTC/USDC", "ticker", "order_book", true, false, 0};
+  auto shared_id_spot = mds::exchange::make_venue_adapter(
+      Venue::Lighter, ProductType::Spot, 5000);
+  assert(shared_id_spot);
+  constexpr std::string_view shared_id_spot_metadata =
+      R"({"code":200,"spot_order_book_details":[{"symbol":"BTC/USDC","market_id":1,"market_type":"spot","status":"active","supported_price_decimals":2,"supported_size_decimals":4,"daily_quote_token_volume":10}]})";
+  metadata.clear();
+  assert(shared_id_spot->parse_metadata(
+      shared_id_spot_metadata, {&shared_id_spot_request, 1}, metadata,
+      error));
+  batches.clear();
+  assert(shared_id_spot->build_subscription_batches(
+      {&shared_id_spot_request, 1}, batches, error));
+  assert(batches.front() ==
+         R"({"type":"subscribe","channel":"ticker/1"})");
+}
+
 }  // namespace
 
 int main() {
+  test_decimal_scale_mismatch();
   test_binance();
   test_binance_shared_parser_scales();
   test_binance_metadata_request_capacity();
@@ -1534,6 +2392,9 @@ int main() {
   test_gate();
   test_hyperliquid();
   test_unsubscription_regression();
+  test_utf8_symbol_isolation();
   test_discovery_turnover();
+  test_aster();
+  test_lighter();
   return 0;
 }

@@ -51,6 +51,12 @@ message DailySnapshot {
   string max_drawdown = 16;
   string sharpe = 17;
   string volume_24h_usd = 18;
+  string subscription_usd = 19;
+  string redemption_usd = 20;
+  int32 cash_flow_count = 21;
+  int32 period_rule_version = 22;
+  google.protobuf.Timestamp period_start = 23;
+  google.protobuf.Timestamp period_end = 24;
 }
 
 message CashFlow {
@@ -125,6 +131,7 @@ message CreateCashFlowRequest {
 
 message CreateCashFlowResponse {
   CashFlow cash_flow = 1;
+  string recompute_status = 2;
 }
 
 message RecomputeProductRequest {

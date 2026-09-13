@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  computeChartXDomain,
   computeChartMinSpan,
   computeYDomain,
+  fairPriceChartTimeMs,
+  filterFairPricePointsToWindow,
   formatYTick,
 } from "./polymarket-chart";
 
@@ -57,5 +60,47 @@ describe("Polymarket chart Y domain", () => {
     expect(formatYTick(1.041412, 0.005)).toBe("1.041412");
     expect(formatYTick(1.03791, 0.5)).toBe("1.0379");
     expect(formatYTick(64929.123, 5)).toBe("64,929.12");
+  });
+});
+
+describe("Polymarket chart market window", () => {
+  const start = "2026-08-24T10:35:00Z";
+  const end = "2026-08-24T10:40:00Z";
+
+  it("anchors the x domain to the active market window", () => {
+    const domain = computeChartXDomain(
+      start,
+      end,
+      new Date("2026-08-24T10:37:00Z").getTime(),
+    );
+    expect(domain).toEqual({
+      startMs: new Date(start).getTime(),
+      endMs: new Date("2026-08-24T10:37:00Z").getTime(),
+      spanMs: 120_000,
+    });
+  });
+
+  it("uses source wall time and rejects a stale fair point", () => {
+    const staleSource = BigInt(new Date("2026-08-24T09:59:59Z").getTime()) *
+      1_000_000n;
+    const point = {
+      timestamp: "2026-08-24T10:36:00Z",
+      sourceWallNS: staleSource.toString(),
+      ringEpoch: "1",
+      sequence: "1",
+      modelId: "fp-v1",
+      price: 77_554,
+      degraded: false,
+      degradedReasons: [],
+    };
+    expect(fairPriceChartTimeMs(point)).toBe(
+      new Date("2026-08-24T09:59:59Z").getTime(),
+    );
+    expect(filterFairPricePointsToWindow(
+      [point],
+      start,
+      end,
+      new Date(end).getTime(),
+    )).toEqual([]);
   });
 });

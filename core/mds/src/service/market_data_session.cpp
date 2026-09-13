@@ -42,6 +42,8 @@ std::string_view to_string(ResyncReason reason) noexcept {
     return "input_capacity";
   case ResyncReason::DirtyData:
     return "dirty_data";
+  case ResyncReason::ScaleMismatch:
+    return "scale_mismatch";
   }
   return "unknown";
 }

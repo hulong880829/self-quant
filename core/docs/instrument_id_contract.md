@@ -21,15 +21,19 @@ MDS-normalized canonical symbol. FNV-1a 64 is applied to the UTF-8 bytes;
 `std::hash`, locale transformations, display aliases, and abbreviations are
 forbidden.
 
-Polymarket rolling MDS aliases are stable canonical identities.
-`polymarket|binary_option|btc5mup` is the required spelling; `poly` and other
-abbreviations are invalid. `btc5mup` and `btc5mdown` are stable MDS identities
-with `Venue::Polymarket` and `ProductType::BinaryOption`. Their
-`canonical_symbol`/`instrument_key` and `instrument_id` stay alias-bound while
-`venue_symbol` carries the current token ID. A rollover is valid only with an
-incremented `book_generation` and the ordered publication
-`InstrumentCatalog -> InstrumentUpdate -> BBO/OrderBook` in
-`BookState::Building`; it is not an identity remap.
+Polymarket rolling aliases are logical selectors, not stable physical
+instruments. `polymarket|binary_option|btc5mup` is the required logical
+spelling; `poly` and other abbreviations are invalid. Every resolved market
+window and outcome is assigned a distinct physical `instrument_id` by
+`resolve_instance(venue, product, logical_symbol, slug, outcome)`. A rollover
+therefore creates a new ID instead of rebinding the old ID.
+
+The `InstrumentCatalog` for that physical ID separates the logical and venue
+identities: `canonical_symbol` is the logical alias, `market_slug` is the Gamma
+market slug, and the 80-byte `venue_symbol` contains the current outcome's
+decimal token ID losslessly. The 32-byte `Instrument::venue_symbol` is not a
+token carrier. Publication remains ordered as
+`InstrumentCatalog -> InstrumentUpdate -> BBO/OrderBook`.
 
 `instrument_id == 0` is invalid. A zero hash is deterministically retried with
 domain suffixes `|1`, `|2`, and so on. InstrumentManager keeps a startup
@@ -57,8 +61,9 @@ the payload's `instrument_id` matches the enclosing event header.
 
 ## OMS venue metadata
 
-OMS owns an immutable side table keyed by `instrument_id`. It is populated and
-validated before network sessions or strategy submissions start. Common
+OMS owns an execution directory keyed by `instrument_id`. Startup instruments
+are registered before submissions begin and rolling physical instruments are
+registered asynchronously from catalog updates. Common
 price/quantity constraints remain in `utils::md::Instrument`; venue-specific
 routing and authentication metadata belongs in the side table.
 
@@ -73,10 +78,11 @@ The Polymarket entry contains at least:
   lot size;
 - taker-delay policy.
 
-For rolling MDS aliases, exact token IDs discovered through Gamma REST remain
-adapter-private and do not make the alias tradeable. `BTC5MUP` and
-`BTC5MDOWN` must be rejected as direct OMS routing symbols; OMS trading still
-requires an exact immutable side-table entry for the current venue instrument.
+For rolling markets, exact token IDs discovered through Gamma REST are
+published in `InstrumentCatalog::venue_symbol`, parsed into the binary
+256-bit routing snapshot, and registered under the new physical ID.
+`BTC5MUP` and `BTC5MDOWN` remain logical selectors and must not be sent to the
+venue as routing symbols.
 
 The entry is immutable while orders for the instrument may exist. Market status,
 allowance, balances, and other changing risk inputs are separate runtime state,

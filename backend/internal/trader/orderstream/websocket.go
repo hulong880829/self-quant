@@ -10,15 +10,23 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	lighterclient "github.com/elliottech/lighter-go/client"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gorilla/websocket"
+	corex "selfquant/backend/internal/exchange"
 )
+
+const websocketWriteTimeout = 5 * time.Second
 
 // Connection is an authenticated, subscribed account stream. Close unblocks Read.
 type Connection interface {
@@ -48,6 +56,7 @@ type WebSocketConnector struct {
 	staleAfter       time.Duration
 	listenKeyRefresh time.Duration
 	now              func() time.Time
+	asterNonce       atomic.Int64
 }
 
 func NewWebSocketConnector(options ConnectorOptions) *WebSocketConnector {
@@ -85,8 +94,14 @@ func (c *WebSocketConnector) Connect(
 ) (Connection, error) {
 	var listenKey string
 	var err error
-	if key.Venue == VenueBinance {
+	if key.Venue == VenueBinance || key.Venue == VenueAster {
 		listenKey, err = c.createListenKey(ctx, key, credentials)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if key.Venue == VenueLighter {
+		credentials.AuthToken, err = lighterAuthToken(credentials, c.now())
 		if err != nil {
 			return nil, err
 		}
@@ -105,43 +120,136 @@ func (c *WebSocketConnector) Connect(
 	streamCtx, cancel := context.WithCancel(context.Background())
 	stream := &websocketConnection{
 		conn: connection, cancel: cancel, done: make(chan struct{}),
-		heartbeat: c.heartbeat, staleAfter: c.staleAfter,
+		heartbeat: c.heartbeat, staleAfter: c.staleAfter, connectedAt: time.Now(),
 	}
 	if err := c.authenticateAndSubscribe(key, credentials, stream); err != nil {
 		_ = stream.Close()
-		return nil, err
+		return nil, newDisconnectError(classifyConnectError(err), err)
 	}
+	stream.configureControlHandlers()
 	go stream.heartbeatLoop(streamCtx, key.Venue)
 	if listenKey != "" {
 		stream.onClose = func() {
-			c.closeListenKey(key, credentials)
+			c.closeListenKey(key, credentials, listenKey)
 		}
 		go c.refreshListenKeyLoop(streamCtx, stream, key, credentials, listenKey)
+	}
+	switch key.Venue {
+	case VenueAster:
+		go rotateConnection(streamCtx, stream, 23*time.Hour)
+	case VenueLighter:
+		go rotateConnection(streamCtx, stream, 9*time.Minute)
 	}
 	return stream, nil
 }
 
 type websocketConnection struct {
-	conn       *websocket.Conn
-	cancel     context.CancelFunc
-	done       chan struct{}
-	closeOnce  sync.Once
-	writeMu    sync.Mutex
-	heartbeat  time.Duration
-	staleAfter time.Duration
-	onClose    func()
+	conn              *websocket.Conn
+	cancel            context.CancelFunc
+	done              chan struct{}
+	closeOnce         sync.Once
+	writeMu           sync.Mutex
+	reasonMu          sync.Mutex
+	heartbeat         time.Duration
+	staleAfter        time.Duration
+	connectedAt       time.Time
+	lastWriteDeadline time.Time
+	closeReason       disconnectReason
+	heartbeatType     string
+	heartbeatDeadline time.Time
+	heartbeatErr      error
+	onClose           func()
+	pending           [][]byte
+}
+
+func (c *websocketConnection) configureControlHandlers() {
+	c.conn.SetPongHandler(func(string) error {
+		return c.refreshReadDeadline()
+	})
+	c.conn.SetPingHandler(func(appData string) error {
+		if err := c.refreshReadDeadline(); err != nil {
+			return err
+		}
+		err := c.writeControl(websocket.PongMessage, []byte(appData))
+		if err == websocket.ErrCloseSent {
+			return nil
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return nil
+		}
+		return err
+	})
+}
+
+func (c *websocketConnection) refreshReadDeadline() error {
+	if c.staleAfter <= 0 {
+		return nil
+	}
+	return c.conn.SetReadDeadline(time.Now().Add(c.staleAfter))
+}
+
+func (c *websocketConnection) setCloseReason(reason disconnectReason) {
+	if reason == "" {
+		return
+	}
+	c.reasonMu.Lock()
+	defer c.reasonMu.Unlock()
+	if c.closeReason == "" {
+		c.closeReason = reason
+	}
+}
+
+func (c *websocketConnection) firstCloseReason() disconnectReason {
+	c.reasonMu.Lock()
+	defer c.reasonMu.Unlock()
+	return c.closeReason
+}
+
+func (c *websocketConnection) closeWithReason(reason disconnectReason) error {
+	c.setCloseReason(reason)
+	return c.Close()
+}
+
+func (c *websocketConnection) wrapReadError(err error) error {
+	if err == nil {
+		return nil
+	}
+	reason := c.firstCloseReason()
+	if reason == "" {
+		reason = classifyIOError(err)
+	}
+	c.reasonMu.Lock()
+	heartbeatType := c.heartbeatType
+	heartbeatDeadline := c.heartbeatDeadline
+	heartbeatErr := c.heartbeatErr
+	c.reasonMu.Unlock()
+	cause := err
+	if heartbeatErr != nil {
+		cause = heartbeatErr
+	}
+	wrapped := newDisconnectError(reason, cause)
+	var de *disconnectError
+	if errors.As(wrapped, &de) {
+		de.HeartbeatType = heartbeatType
+		de.WriteDeadline = heartbeatDeadline
+	}
+	return wrapped
 }
 
 func (c *websocketConnection) Read() ([]byte, error) {
 	for {
-		if c.staleAfter > 0 {
-			if err := c.conn.SetReadDeadline(time.Now().Add(c.staleAfter)); err != nil {
-				return nil, err
-			}
+		if len(c.pending) > 0 {
+			payload := c.pending[0]
+			c.pending = c.pending[1:]
+			return payload, nil
+		}
+		if err := c.refreshReadDeadline(); err != nil {
+			return nil, c.wrapReadError(err)
 		}
 		messageType, payload, err := c.conn.ReadMessage()
 		if err != nil {
-			return nil, err
+			return nil, c.wrapReadError(err)
 		}
 		if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
 			continue
@@ -166,16 +274,17 @@ func (c *websocketConnection) Close() error {
 	return err
 }
 
-func (c *WebSocketConnector) closeListenKey(key Key, credentials Credentials) {
+func (c *WebSocketConnector) closeListenKey(
+	key Key,
+	credentials Credentials,
+	listenKey string,
+) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(
-		ctx, http.MethodDelete, c.restURL(key)+"/papi/v1/listenKey", nil,
-	)
+	request, err := c.listenKeyRequest(ctx, http.MethodDelete, key, credentials, listenKey)
 	if err != nil {
 		return
 	}
-	request.Header.Set("X-MBX-APIKEY", credentials.APIKey)
 	response, err := c.httpClient.Do(request)
 	if err == nil && response != nil {
 		_, _ = io.Copy(io.Discard, response.Body)
@@ -183,16 +292,79 @@ func (c *WebSocketConnector) closeListenKey(key Key, credentials Credentials) {
 	}
 }
 
-func (c *websocketConnection) writeJSON(value any) error {
+func (c *websocketConnection) seedExpiredWriteDeadlineForTest() error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	if err := c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	return c.setWriteDeadlineLocked(time.Now().Add(-time.Second))
+}
+
+func (c *websocketConnection) closeUnderlyingForTest() error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.conn.Close()
+}
+
+func (c *websocketConnection) setWriteDeadlineLocked(deadline time.Time) error {
+	if err := c.conn.SetWriteDeadline(deadline); err != nil {
 		return err
 	}
-	return c.conn.WriteJSON(value)
+	if netConn := c.conn.NetConn(); netConn != nil {
+		return netConn.SetWriteDeadline(deadline)
+	}
+	return nil
+}
+
+func (c *websocketConnection) writeLocked(write func() error) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	deadline := time.Now().Add(websocketWriteTimeout)
+	c.lastWriteDeadline = deadline
+	if err := c.setWriteDeadlineLocked(deadline); err != nil {
+		return err
+	}
+	writeErr := write()
+	if clearErr := c.setWriteDeadlineLocked(time.Time{}); clearErr != nil && writeErr == nil {
+		return clearErr
+	}
+	return writeErr
+}
+
+func (c *websocketConnection) writeJSON(value any) error {
+	return c.writeLocked(func() error {
+		return c.conn.WriteJSON(value)
+	})
+}
+
+func (c *websocketConnection) writeText(payload []byte) error {
+	return c.writeLocked(func() error {
+		return c.conn.WriteMessage(websocket.TextMessage, payload)
+	})
+}
+
+func (c *websocketConnection) writeControl(messageType int, data []byte) error {
+	return c.writeLocked(func() error {
+		return c.conn.WriteControl(messageType, data, time.Now().Add(websocketWriteTimeout))
+	})
+}
+
+func (c *websocketConnection) failHeartbeat(heartbeatType string, err error) {
+	c.writeMu.Lock()
+	deadline := c.lastWriteDeadline
+	c.writeMu.Unlock()
+	c.reasonMu.Lock()
+	if c.heartbeatErr == nil {
+		c.heartbeatType = heartbeatType
+		c.heartbeatDeadline = deadline
+		c.heartbeatErr = err
+	}
+	c.reasonMu.Unlock()
+	_ = c.closeWithReason(reasonHeartbeatWriteFailed)
 }
 
 func (c *websocketConnection) heartbeatLoop(ctx context.Context, venue string) {
+	if err := c.sendHeartbeat(venue); err != nil {
+		return
+	}
 	ticker := time.NewTicker(c.heartbeat)
 	defer ticker.Stop()
 	for {
@@ -200,25 +372,36 @@ func (c *websocketConnection) heartbeatLoop(ctx context.Context, venue string) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			var err error
-			switch venue {
-			case VenueOKX, VenueBitget:
-				c.writeMu.Lock()
-				err = c.conn.WriteMessage(websocket.TextMessage, []byte("ping"))
-				c.writeMu.Unlock()
-			case VenueBybit:
-				err = c.writeJSON(map[string]string{"op": "ping"})
-			default:
-				c.writeMu.Lock()
-				err = c.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
-				c.writeMu.Unlock()
-			}
-			if err != nil {
-				_ = c.Close()
+			if err := c.sendHeartbeat(venue); err != nil {
 				return
 			}
 		}
 	}
+}
+
+func (c *websocketConnection) sendHeartbeat(venue string) error {
+	heartbeatType := "control_ping"
+	var err error
+	switch venue {
+	case VenueOKX, VenueBitget:
+		heartbeatType = "text_ping"
+		err = c.writeText([]byte("ping"))
+	case VenueBybit:
+		heartbeatType = "json_ping"
+		err = c.writeJSON(map[string]string{"op": "ping"})
+	case VenueHyperliquid:
+		heartbeatType = "json_ping"
+		err = c.writeJSON(map[string]string{"method": "ping"})
+	case VenueLighter:
+		heartbeatType = "json_ping"
+		err = c.writeJSON(map[string]string{"type": "ping"})
+	default:
+		err = c.writeControl(websocket.PingMessage, []byte{})
+	}
+	if err != nil {
+		c.failHeartbeat(heartbeatType, err)
+	}
+	return err
 }
 
 func (c *WebSocketConnector) authenticateAndSubscribe(
@@ -226,7 +409,7 @@ func (c *WebSocketConnector) authenticateAndSubscribe(
 	credentials Credentials,
 	connection *websocketConnection,
 ) error {
-	if key.Venue != VenueGate && key.Venue != VenueBinance {
+	if key.Venue == VenueOKX || key.Venue == VenueBybit || key.Venue == VenueBitget {
 		login := loginRequest(key.Venue, credentials, c.now())
 		if err := connection.writeJSON(login); err != nil {
 			return fmt.Errorf("authenticate %s websocket: %w", key.Venue, err)
@@ -235,10 +418,38 @@ func (c *WebSocketConnector) authenticateAndSubscribe(
 			return err
 		}
 	}
-	for _, request := range subscriptionRequests(key, credentials, c.now()) {
+	requests := subscriptionRequests(key, credentials, c.now())
+	for _, request := range requests {
 		if err := connection.writeJSON(request); err != nil {
 			return fmt.Errorf("subscribe %s private websocket: %w", key.Venue, err)
 		}
+	}
+	if key.Venue == VenueHyperliquid || key.Venue == VenueLighter {
+		if err := awaitSubscriptionMessages(connection, key.Venue, len(requests)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func awaitSubscriptionMessages(
+	connection *websocketConnection,
+	venue string,
+	count int,
+) error {
+	if count == 0 {
+		return nil
+	}
+	if err := connection.conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+	defer connection.conn.SetReadDeadline(time.Time{})
+	for range count {
+		_, payload, err := connection.conn.ReadMessage()
+		if err != nil {
+			return fmt.Errorf("read %s subscription response: %w", venue, err)
+		}
+		connection.pending = append(connection.pending, payload)
 	}
 	return nil
 }
@@ -324,6 +535,28 @@ func subscriptionRequests(key Key, credentials Credentials, now time.Time) []any
 			gateSubscription(prefix+".orders", credentials, now),
 			gateSubscription(prefix+".usertrades", credentials, now),
 		}
+	case VenueHyperliquid:
+		user := firstNonEmpty(credentials.VaultAddress, credentials.SigningAddress, credentials.APIKey)
+		return []any{
+			map[string]any{"method": "subscribe", "subscription": map[string]string{
+				"type": "orderUpdates", "user": user,
+			}},
+			map[string]any{"method": "subscribe", "subscription": map[string]string{
+				"type": "userFills", "user": user,
+			}},
+		}
+	case VenueLighter:
+		accountIndex := int64(0)
+		if credentials.AccountIndex != nil {
+			accountIndex = *credentials.AccountIndex
+		}
+		return []any{map[string]any{
+			"type":    "subscribe",
+			"channel": "account_all_orders/" + strconv.FormatInt(accountIndex, 10),
+			"auth":    credentials.AuthToken,
+		}}
+	case VenueAster:
+		return nil
 	default:
 		return nil
 	}
@@ -347,29 +580,27 @@ func (c *WebSocketConnector) createListenKey(
 	key Key,
 	credentials Credentials,
 ) (string, error) {
-	path := "/papi/v1/listenKey"
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.restURL(key)+path, nil)
+	request, err := c.listenKeyRequest(ctx, http.MethodPost, key, credentials, "")
 	if err != nil {
-		return "", fmt.Errorf("create Binance listen-key request: %w", err)
+		return "", fmt.Errorf("create %s listen-key request: %w", key.Venue, err)
 	}
-	request.Header.Set("X-MBX-APIKEY", credentials.APIKey)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("create Binance listen key: %w", err)
+		return "", fmt.Errorf("create %s listen key: %w", key.Venue, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode/100 != 2 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return "", fmt.Errorf("create Binance listen key: HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("create %s listen key: HTTP %d: %s", key.Venue, response.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var result struct {
 		ListenKey string `json:"listenKey"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode Binance listen key: %w", err)
+		return "", fmt.Errorf("decode %s listen key: %w", key.Venue, err)
 	}
 	if result.ListenKey == "" {
-		return "", errors.New("Binance returned an empty listen key")
+		return "", fmt.Errorf("%s returned an empty listen key", key.Venue)
 	}
 	return result.ListenKey, nil
 }
@@ -381,18 +612,25 @@ func (c *WebSocketConnector) refreshListenKeyLoop(
 	credentials Credentials,
 	listenKey string,
 ) {
-	ticker := time.NewTicker(c.listenKeyRefresh)
-	defer ticker.Stop()
+	cycle := int64(0)
 	for {
+		delay := c.listenKeyRefresh
+		if key.Venue == VenueAster && delay >= 25*time.Minute {
+			const spread = 5 * time.Minute
+			jitter := time.Duration((c.now().UnixNano()+cycle)%int64(spread)) - spread/2
+			delay += jitter
+		}
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
-			path := "/papi/v1/listenKey"
-			endpoint := c.restURL(key) + path + "?listenKey=" + url.QueryEscape(listenKey)
-			request, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, nil)
+		case <-timer.C:
+			cycle++
+			request, err := c.listenKeyRequest(
+				ctx, http.MethodPut, key, credentials, listenKey,
+			)
 			if err == nil {
-				request.Header.Set("X-MBX-APIKEY", credentials.APIKey)
 				var response *http.Response
 				response, err = c.httpClient.Do(request)
 				if response != nil {
@@ -404,7 +642,7 @@ func (c *WebSocketConnector) refreshListenKeyLoop(
 				}
 			}
 			if err != nil {
-				_ = connection.Close()
+				_ = connection.closeWithReason(reasonListenKeyRefreshFailed)
 				return
 			}
 		}
@@ -446,6 +684,12 @@ func (c *WebSocketConnector) venueURLs(venue string) VenueURLs {
 		return c.urls.Bitget
 	case VenueGate:
 		return c.urls.Gate
+	case VenueHyperliquid:
+		return c.urls.Hyperliquid
+	case VenueLighter:
+		return c.urls.Lighter
+	case VenueAster:
+		return c.urls.Aster
 	default:
 		return VenueURLs{}
 	}
@@ -457,6 +701,9 @@ func mergeURLs(target *URLs, defaults URLs) {
 	mergeVenueURLs(&target.Bybit, defaults.Bybit)
 	mergeVenueURLs(&target.Bitget, defaults.Bitget)
 	mergeVenueURLs(&target.Gate, defaults.Gate)
+	mergeVenueURLs(&target.Hyperliquid, defaults.Hyperliquid)
+	mergeVenueURLs(&target.Lighter, defaults.Lighter)
+	mergeVenueURLs(&target.Aster, defaults.Aster)
 }
 
 func mergeVenueURLs(target *VenueURLs, defaults VenueURLs) {
@@ -484,6 +731,153 @@ func base64HMAC(secret, value string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(value))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func (c *WebSocketConnector) listenKeyRequest(
+	ctx context.Context,
+	method string,
+	key Key,
+	credentials Credentials,
+	listenKey string,
+) (*http.Request, error) {
+	path := listenKeyPath(key.Venue, credentials)
+	values := url.Values{}
+	if listenKey != "" {
+		values.Set("listenKey", listenKey)
+	}
+	if key.Venue == VenueAster && asterUsesAPIWallet(credentials) {
+		return c.asterV3Request(ctx, method, c.restURL(key)+path, credentials, values)
+	}
+	endpoint := c.restURL(key) + path
+	if len(values) > 0 {
+		endpoint += "?" + values.Encode()
+	}
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("X-MBX-APIKEY", credentials.APIKey)
+	return request, nil
+}
+
+func (c *WebSocketConnector) asterV3Request(
+	ctx context.Context,
+	method string,
+	endpoint string,
+	credentials Credentials,
+	values url.Values,
+) (*http.Request, error) {
+	user := strings.TrimSpace(credentials.APIKey)
+	if !common.IsHexAddress(user) {
+		return nil, errors.New("Aster API wallet address is required")
+	}
+	privateKey, err := crypto.HexToECDSA(
+		strings.TrimPrefix(strings.TrimSpace(credentials.Secret), "0x"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Aster API wallet key: %w", err)
+	}
+	params := make(map[string]string, len(values)+5)
+	for name, items := range values {
+		if len(items) > 0 && name != "signature" {
+			params[name] = items[0]
+		}
+	}
+	now := c.now()
+	params["user"] = common.HexToAddress(user).Hex()
+	params["signer"] = crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
+	params["nonce"] = strconv.FormatInt(c.nextAsterNonce(now), 10)
+	params["timestamp"] = strconv.FormatInt(now.UnixMilli(), 10)
+	params["recvWindow"] = "5000"
+	message := corex.AsterParamString(params)
+	signature, err := corex.SignAsterV3(privateKey, message)
+	if err != nil {
+		return nil, err
+	}
+	encoded := message + "&signature=" + url.QueryEscape(signature)
+	var body io.Reader
+	if method == http.MethodGet {
+		endpoint += "?" + encoded
+	} else {
+		body = strings.NewReader(encoded)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	if body != nil {
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	return request, nil
+}
+
+func (c *WebSocketConnector) nextAsterNonce(now time.Time) int64 {
+	candidate := now.UnixMicro()
+	for {
+		previous := c.asterNonce.Load()
+		if candidate <= previous {
+			candidate = previous + 1
+		}
+		if c.asterNonce.CompareAndSwap(previous, candidate) {
+			return candidate
+		}
+	}
+}
+
+func asterUsesAPIWallet(credentials Credentials) bool {
+	switch strings.TrimSpace(credentials.CredentialKind) {
+	case "aster_hmac":
+		return false
+	case "aster_api_wallet", "":
+		return common.IsHexAddress(strings.TrimSpace(credentials.APIKey))
+	default:
+		return false
+	}
+}
+
+func listenKeyPath(venue string, credentials Credentials) string {
+	if venue == VenueAster && asterUsesAPIWallet(credentials) {
+		return "/fapi/v3/listenKey"
+	}
+	if venue == VenueAster {
+		return "/fapi/v1/listenKey"
+	}
+	return "/papi/v1/listenKey"
+}
+
+func lighterAuthToken(credentials Credentials, now time.Time) (string, error) {
+	if credentials.APIKeyIndex == nil || credentials.AccountIndex == nil ||
+		*credentials.APIKeyIndex < 0 || *credentials.APIKeyIndex > 255 ||
+		*credentials.AccountIndex < 0 {
+		return "", errors.New("invalid Lighter order stream account indexes")
+	}
+	privateKey, err := corex.LighterTxPrivateKey(credentials.Secret)
+	if err != nil {
+		return "", fmt.Errorf("normalize Lighter order stream key: %w", err)
+	}
+	signer, err := lighterclient.NewTxClient(
+		nil, privateKey, *credentials.AccountIndex,
+		uint8(*credentials.APIKeyIndex), 304,
+	)
+	if err != nil {
+		return "", fmt.Errorf("initialize Lighter order stream signer: %w", err)
+	}
+	token, err := signer.GetAuthToken(now.Add(10 * time.Minute))
+	if err != nil {
+		return "", fmt.Errorf("sign Lighter order stream token: %w", err)
+	}
+	return token, nil
+}
+
+func rotateConnection(ctx context.Context, connection *websocketConnection, after time.Duration) {
+	timer := time.NewTimer(after)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+		_ = connection.closeWithReason(reasonPlannedRotation)
+	}
 }
 
 var _ Connector = (*WebSocketConnector)(nil)

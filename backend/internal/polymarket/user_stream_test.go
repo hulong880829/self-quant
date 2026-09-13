@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestUserStreamRecognizesCredentialRejection(t *testing.T) {
@@ -112,5 +114,48 @@ func TestUserStreamCancellationIsNotLive(t *testing.T) {
 	})
 	if live || order.ID != "order-1" {
 		t.Fatalf("order=%+v live=%v", order, live)
+	}
+}
+
+func TestUserStreamUnauthorizedRefreshUnavailableDoesNotInvalidate(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	wsServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connection, err := upgrader.Upgrade(writer, request, nil)
+		if err != nil {
+			return
+		}
+		defer connection.Close()
+		_ = connection.WriteMessage(
+			websocket.TextMessage,
+			[]byte(`{"error":"Unauthorized/Invalid api key"}`),
+		)
+		time.Sleep(50 * time.Millisecond)
+	}))
+	defer wsServer.Close()
+
+	provider := &recoveryCredentials{
+		current:    testAPICredentials(),
+		refreshErr: status.Error(codes.Unavailable, "polymarket auth unavailable"),
+	}
+	service := NewService(
+		nil, nil, NewCLOBClient("http://127.0.0.1:1", 20*time.Millisecond),
+		NewDataClient("http://127.0.0.1:1", 20*time.Millisecond),
+		nil, provider, NewSnapshotStore(), time.Second, time.Second,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	manager := &UserStreamManager{
+		url:     strings.Replace(wsServer.URL, "http://", "ws://", 1),
+		service: service,
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	session := &userStreamSession{
+		accountID: 7, token: "token", credentials: provider.current,
+		manager: manager, ctx: ctx, subscribers: make(map[uint64]chan AccountEvent),
+	}
+	session.run()
+	if provider.invalidates.Load() != 0 {
+		t.Fatalf("invalidates=%d refreshes=%d", provider.invalidates.Load(), provider.refreshes.Load())
 	}
 }

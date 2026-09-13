@@ -16,6 +16,15 @@ inline constexpr std::size_t kAggVenueSlots = 8;
 inline constexpr std::size_t kAggMaxLevelsPerSide = 80;
 inline constexpr std::uint16_t kAggSkewEnforced = 1U << 0U;
 inline constexpr std::uint16_t kAggMemberDataError = 1U << 1U;
+inline constexpr std::uint16_t kBboOriginTickerStream =
+    static_cast<std::uint16_t>(BboOrigin::TickerStream);
+inline constexpr std::uint16_t kBboOriginOrderBookStream =
+    static_cast<std::uint16_t>(BboOrigin::OrderBookStream);
+inline constexpr std::uint16_t kBboOriginMask =
+    kBboOriginTickerStream | kBboOriginOrderBookStream;
+
+static_assert((kBboOriginMask &
+               (kAggSkewEnforced | kAggMemberDataError)) == 0);
 
 // The wire ABI is intentionally rejected on big-endian targets. Multi-byte
 // fields are stored in native little-endian representation.
@@ -187,6 +196,9 @@ constexpr RecordHeader MakeHeader(MessageType type,
 }
 
 static_assert(sizeof(RecordHeader) == 72);
+static_assert(alignof(RecordHeader) == 8);
+static_assert(std::is_standard_layout_v<RecordHeader>);
+static_assert(std::is_trivially_copyable_v<RecordHeader>);
 static_assert(offsetof(RecordHeader, magic) == 0x00);
 static_assert(offsetof(RecordHeader, schema_major) == 0x04);
 static_assert(offsetof(RecordHeader, message_type) == 0x08);
@@ -200,6 +212,9 @@ static_assert(offsetof(RecordHeader, publish_tsc) == 0x38);
 static_assert(offsetof(RecordHeader, book_generation) == 0x40);
 static_assert(offsetof(RecordHeader, state) == 0x44);
 static_assert(sizeof(BboRecord) == 104);
+static_assert(alignof(BboRecord) == 8);
+static_assert(std::is_standard_layout_v<BboRecord>);
+static_assert(std::is_trivially_copyable_v<BboRecord>);
 static_assert(offsetof(BboRecord, bid_price) == 72);
 static_assert(sizeof(TickerRecord) == 176);
 static_assert(offsetof(TickerRecord, funding_rate) == 136);

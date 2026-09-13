@@ -137,6 +137,11 @@ func (c *GatewayClient) subscriptionWriter(ctx context.Context, connection *webs
 					return err
 				}
 				delete(subscribed, segment)
+				continue
+			}
+			if !c.store.SegmentMapped(segment) {
+				delete(subscribed, segment)
+				c.store.RecordTopicRelearn()
 			}
 		}
 		pending := make([]string, 0, len(desired))

@@ -21,6 +21,7 @@ type AccountSummary struct {
 	TotalAssets      string
 	SourceUpdatedAt  time.Time
 	Stale            bool
+	BindingStatus    string
 }
 
 type Position struct {

@@ -15,11 +15,14 @@ type Parser func(Key, []byte, time.Time) ([]Update, bool, error)
 
 func DefaultParsers() map[string]Parser {
 	return map[string]Parser{
-		VenueBinance: parseBinance,
-		VenueOKX:     parseOKX,
-		VenueBybit:   parseBybit,
-		VenueBitget:  parseBitget,
-		VenueGate:    parseGate,
+		VenueBinance:     parseBinance,
+		VenueOKX:         parseOKX,
+		VenueBybit:       parseBybit,
+		VenueBitget:      parseBitget,
+		VenueGate:        parseGate,
+		VenueHyperliquid: parseHyperliquid,
+		VenueLighter:     parseLighter,
+		VenueAster:       parseAster,
 	}
 }
 
@@ -53,6 +56,28 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstPositive(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func decimalDifference(total, remaining string) string {
+	totalValue, totalErr := decimal.NewFromString(strings.TrimSpace(total))
+	remainingValue, remainingErr := decimal.NewFromString(strings.TrimSpace(remaining))
+	if totalErr != nil || remainingErr != nil {
+		return ""
+	}
+	result := totalValue.Sub(remainingValue)
+	if result.IsNegative() {
+		return ""
+	}
+	return result.String()
 }
 
 func parseBinance(key Key, payload []byte, received time.Time) ([]Update, bool, error) {
@@ -91,6 +116,147 @@ func parseBinance(key Key, payload []byte, received time.Time) ([]Update, bool, 
 	return []Update{update}, true, nil
 }
 
+func parseAster(key Key, payload []byte, received time.Time) ([]Update, bool, error) {
+	updates, matched, err := parseBinance(key, payload, received)
+	if err != nil || !matched || len(updates) == 0 {
+		return updates, matched, err
+	}
+	var root map[string]json.RawMessage
+	if err := decode(payload, &root); err != nil {
+		return nil, false, err
+	}
+	order := root
+	if rawString(root["e"]) == "ORDER_TRADE_UPDATE" {
+		if err := json.Unmarshal(root["o"], &order); err != nil {
+			return nil, false, fmt.Errorf("decode Aster order: %w", err)
+		}
+	}
+	rawStatus := rawString(order["X"])
+	updates[0].Status = asterStatus(rawStatus)
+	reason := rawString(first(order["r"], order["R"]))
+	if reason != "" && !strings.EqualFold(reason, "NONE") {
+		updates[0].ErrorCode = reason
+		updates[0].ErrorMessage = rawString(first(order["m"], root["msg"]))
+	}
+	return updates, true, nil
+}
+
+func parseHyperliquid(key Key, payload []byte, received time.Time) ([]Update, bool, error) {
+	var message struct {
+		Channel string          `json:"channel"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := decode(payload, &message); err != nil {
+		return nil, false, err
+	}
+	switch message.Channel {
+	case "orderUpdates":
+		var rows []struct {
+			Order struct {
+				OID       json.RawMessage `json:"oid"`
+				Cloid     string          `json:"cloid"`
+				Size      string          `json:"sz"`
+				Original  string          `json:"origSz"`
+				Filled    string          `json:"filledSz"`
+				Timestamp int64           `json:"timestamp"`
+			} `json:"order"`
+			Status          string `json:"status"`
+			StatusTimestamp int64  `json:"statusTimestamp"`
+		}
+		if err := json.Unmarshal(message.Data, &rows); err != nil {
+			return nil, false, fmt.Errorf("decode Hyperliquid order updates: %w", err)
+		}
+		updates := make([]Update, 0, len(rows))
+		for _, row := range rows {
+			update := baseUpdate(key, received)
+			update.Type, update.ClientOrderID = UpdateOrder, row.Order.Cloid
+			update.VenueOrderID, update.Status = rawString(row.Order.OID), hyperliquidStatus(row.Status)
+			update.CumulativeFilled = firstNonEmpty(
+				row.Order.Filled,
+				decimalDifference(row.Order.Original, row.Order.Size),
+			)
+			if update.Status == StatusCanceled || update.Status == StatusRejected {
+				update.ErrorCode = row.Status
+			}
+			update.EventTime = rawTime(json.RawMessage(strconv.FormatInt(firstPositive(row.StatusTimestamp, row.Order.Timestamp), 10)), received)
+			update.Sequence = firstPositive(row.StatusTimestamp, row.Order.Timestamp)
+			updates = append(updates, update)
+		}
+		return updates, len(updates) > 0, nil
+	case "userFills":
+		var data struct {
+			Fills []struct {
+				Price string          `json:"px"`
+				Size  string          `json:"sz"`
+				OID   json.RawMessage `json:"oid"`
+				TID   json.RawMessage `json:"tid"`
+				Cloid string          `json:"cloid"`
+				Time  int64           `json:"time"`
+			} `json:"fills"`
+		}
+		if err := json.Unmarshal(message.Data, &data); err != nil {
+			return nil, false, fmt.Errorf("decode Hyperliquid fills: %w", err)
+		}
+		updates := make([]Update, 0, len(data.Fills))
+		for _, fill := range data.Fills {
+			oid, tid := rawString(fill.OID), rawString(fill.TID)
+			if !hyperliquidFillFieldsValid(fill.Price, fill.Size, oid, tid) {
+				continue
+			}
+			update := baseUpdate(key, received)
+			update.Type, update.ClientOrderID = UpdateTrade, fill.Cloid
+			update.VenueOrderID, update.TradeID = oid, tid
+			update.LastFilled, update.LastPrice = fill.Size, fill.Price
+			update.EventTime, update.Sequence = time.UnixMilli(fill.Time), fill.Time
+			updates = append(updates, update)
+		}
+		return updates, len(updates) > 0, nil
+	default:
+		return nil, false, nil
+	}
+}
+
+func parseLighter(key Key, payload []byte, received time.Time) ([]Update, bool, error) {
+	var message struct {
+		Type   string                                  `json:"type"`
+		Orders map[string][]map[string]json.RawMessage `json:"orders"`
+		Nonce  json.RawMessage                         `json:"nonce"`
+	}
+	if err := decode(payload, &message); err != nil {
+		return nil, false, err
+	}
+	if !strings.Contains(message.Type, "account_all_orders") &&
+		!strings.Contains(message.Type, "account_orders") {
+		return nil, false, nil
+	}
+	updates := make([]Update, 0)
+	for _, rows := range message.Orders {
+		for _, row := range rows {
+			update := baseUpdate(key, received)
+			update.Type = UpdateOrder
+			update.ClientOrderID = rawString(first(row["client_order_id"], row["client_order_index"]))
+			update.VenueOrderID = rawString(first(row["order_id"], row["order_index"]))
+			rawStatus := rawString(row["status"])
+			update.Status = lighterStatus(rawStatus)
+			update.CumulativeFilled = rawString(first(
+				row["filled_base_amount"], row["filled_amount"], row["executed_base_amount"],
+			))
+			update.AveragePrice = quotient(rawString(row["filled_quote_amount"]), update.CumulativeFilled)
+			reason := rawString(first(
+				row["cancel_reason"], row["reject_reason"], row["failure_reason"],
+			))
+			if update.Status == StatusCanceled || update.Status == StatusRejected {
+				update.ErrorCode = firstNonEmpty(reason, rawStatus)
+				update.ErrorMessage = reason
+			}
+			update.EventTime = rawTime(first(row["updated_at"], row["timestamp"]), received)
+			update.Sequence = rawInt64(first(message.Nonce, row["nonce"], row["updated_at"]))
+			updates = append(updates, update)
+		}
+	}
+	return updates, len(updates) > 0, nil
+}
+
 func parseOKX(key Key, payload []byte, received time.Time) ([]Update, bool, error) {
 	var message struct {
 		Argument struct {
@@ -116,6 +282,8 @@ func parseOKX(key Key, payload []byte, received time.Time) ([]Update, bool, erro
 		update.LastFilled = rawString(item["fillSz"])
 		update.LastPrice = rawString(item["fillPx"])
 		update.TradeID = rawString(item["tradeId"])
+		update.ErrorCode = rawString(item["cancelSource"])
+		update.ErrorMessage = rawString(first(item["cancelSourceReason"], item["failReason"]))
 		update.EventTime = rawTime(first(item["uTime"], item["fillTime"]), received)
 		update.Sequence = rawInt64(item["seqId"])
 		if update.TradeID != "" {
@@ -146,12 +314,18 @@ func parseBybit(key Key, payload []byte, received time.Time) ([]Update, bool, er
 		update.Type = UpdateOrder
 		update.ClientOrderID = rawString(item["orderLinkId"])
 		update.VenueOrderID = rawString(item["orderId"])
-		update.Status = normalizeStatus(rawString(item["orderStatus"]))
+		orderStatus := rawString(item["orderStatus"])
+		update.Status = normalizeStatus(orderStatus)
+		if strings.EqualFold(orderStatus, "PartiallyFilledCanceled") {
+			update.Status = StatusCanceled
+		}
 		update.CumulativeFilled = rawString(item["cumExecQty"])
 		update.AveragePrice = rawString(item["avgPrice"])
 		update.LastFilled = rawString(item["execQty"])
 		update.LastPrice = rawString(item["execPrice"])
 		update.TradeID = rawString(item["execId"])
+		update.ErrorCode = rawString(item["rejectReason"])
+		update.ErrorMessage = rawString(item["cancelType"])
 		update.EventTime = rawTime(first(item["execTime"], message.CreationTime), received)
 		update.Sequence = rawInt64(first(item["seq"], message.ID))
 		if message.Topic == "execution" || message.Topic == "execution.fast" {
@@ -203,6 +377,8 @@ func parseBitget(key Key, payload []byte, received time.Time) ([]Update, bool, e
 		update.LastFilled = rawString(item["execQty"])
 		update.LastPrice = rawString(item["execPrice"])
 		update.TradeID = rawString(item["execId"])
+		update.ErrorCode = rawString(item["cancelReason"])
+		update.ErrorMessage = rawString(item["rejectReason"])
 		update.EventTime = rawTime(first(item["updatedTime"], item["execTime"]), received)
 		update.Sequence = rawInt64(first(item["updatedTime"], item["execTime"]))
 		if message.Argument.Topic == "fill" || message.Argument.Topic == "fast-fill" {
@@ -248,24 +424,37 @@ func parseGate(key Key, payload []byte, received time.Time) ([]Update, bool, err
 			rawString(first(item["text"], item["client_order_id"])), "t-",
 		)
 		update.VenueOrderID = rawString(first(item["order_id"], item["id"]))
-		update.Status = normalizeStatus(rawString(first(item["finish_as"], item["status"])))
-		update.CumulativeFilled = rawString(item["filled_total"])
+		finishAs := rawString(item["finish_as"])
+		rawStatus := rawString(item["status"])
+		update.Status = normalizeStatus(firstNonEmpty(finishAs, rawStatus))
+		if finishStatus, ok := gateStreamFinishStatus(finishAs); ok {
+			update.Status = finishStatus
+		}
+		if key.Product == ProductSpot {
+			// Gate spot filled_total is quote notional. Position accounting
+			// requires the cumulative base amount.
+			update.CumulativeFilled = rawString(item["filled_amount"])
+		} else {
+			update.CumulativeFilled = rawString(item["filled_total"])
+		}
 		update.AveragePrice = rawString(first(item["avg_deal_price"], item["fill_price"], item["price"]))
 		update.LastFilled = rawString(first(item["amount"], item["size"], item["filled_amount"]))
 		update.LastPrice = rawString(item["price"])
 		update.EventTime = rawTime(first(item["create_time_ms"], item["time_ms"], message.TimeMS), received)
 		update.Sequence = rawInt64(first(item["sequence"], item["id"]))
-		if key.Product == ProductPerpetual && update.CumulativeFilled == "" {
+		if key.Product == ProductPerpetual {
 			size := parseDecimal(rawString(item["size"]))
 			left := parseDecimal(rawString(item["left"]))
 			total := size.Abs()
 			filled := size.Sub(left).Abs()
-			update.CumulativeFilled = filled.String()
-			if update.Status == StatusUnknown {
+			if update.CumulativeFilled == "" {
+				update.CumulativeFilled = filled.String()
+			}
+			if total.IsPositive() && filled.GreaterThanOrEqual(total) {
+				update.Status = StatusFilled
+			} else if update.Status == StatusUnknown {
 				switch {
-				case total.IsPositive() && filled.GreaterThanOrEqual(total):
-					update.Status = StatusFilled
-				case strings.EqualFold(rawString(item["status"]), "finished"):
+				case strings.EqualFold(rawStatus, "finished"):
 					update.Status = StatusCanceled
 				case filled.IsPositive():
 					update.Status = StatusPartiallyFilled
@@ -283,6 +472,107 @@ func parseGate(key Key, payload []byte, received time.Time) ([]Update, bool, err
 	return updates, len(updates) > 0, nil
 }
 
+func gateStreamFinishStatus(finishAs string) (Status, bool) {
+	switch strings.ToLower(strings.TrimSpace(finishAs)) {
+	case "filled":
+		return StatusFilled, true
+	case "ioc", "fok", "cancelled", "cancelled_by_user", "reduce_only",
+		"position_close", "stp", "liquidated", "auto_deleveraged":
+		return StatusCanceled, true
+	default:
+		return StatusUnknown, false
+	}
+}
+
+func asterStatus(value string) Status {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	switch normalized {
+	case "NEW":
+		return StatusNew
+	case "PARTIALLY_FILLED":
+		return StatusPartiallyFilled
+	case "FILLED":
+		return StatusFilled
+	case "CANCELED", "CANCELLED":
+		return StatusCanceled
+	case "REJECTED":
+		return StatusRejected
+	case "EXPIRED", "EXPIRED_IN_MATCH":
+		return StatusExpired
+	case "PENDING_NEW", "PENDING_CANCEL":
+		return StatusPending
+	default:
+		return StatusUnknown
+	}
+}
+
+func hyperliquidStatus(value string) Status {
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(value))
+	switch normalized {
+	case "open":
+		return StatusNew
+	case "filled":
+		return StatusFilled
+	case "canceled", "cancelled", "scheduledcancel":
+		return StatusCanceled
+	case "rejected":
+		return StatusRejected
+	case "triggered", "pending":
+		return StatusPending
+	default:
+		if strings.HasSuffix(normalized, "canceled") ||
+			strings.HasSuffix(normalized, "cancelled") {
+			return StatusCanceled
+		}
+		if strings.HasSuffix(normalized, "rejected") {
+			return StatusRejected
+		}
+		return StatusUnknown
+	}
+}
+
+func lighterStatus(value string) Status {
+	normalized := strings.ToLower(strings.NewReplacer("-", "_", " ", "_").Replace(value))
+	switch normalized {
+	case "pending", "pending_new", "pending_cancel":
+		return StatusPending
+	case "open", "active", "new":
+		return StatusNew
+	case "partial", "partially_filled":
+		return StatusPartiallyFilled
+	case "filled", "fully_filled":
+		return StatusFilled
+	case "canceled", "cancelled", "expired":
+		if normalized == "expired" {
+			return StatusExpired
+		}
+		return StatusCanceled
+	case "rejected", "failed":
+		return StatusRejected
+	default:
+		if strings.HasPrefix(normalized, "canceled_") ||
+			strings.HasPrefix(normalized, "cancelled_") {
+			return StatusCanceled
+		}
+		return StatusUnknown
+	}
+}
+
+func hyperliquidFillFieldsValid(px, sz, oid, tid string) bool {
+	if strings.TrimSpace(oid) == "" || strings.TrimSpace(tid) == "" {
+		return false
+	}
+	price, err := decimal.NewFromString(strings.TrimSpace(px))
+	if err != nil || !price.IsPositive() {
+		return false
+	}
+	size, err := decimal.NewFromString(strings.TrimSpace(sz))
+	if err != nil || !size.IsPositive() {
+		return false
+	}
+	return true
+}
+
 func parseDecimal(value string) decimal.Decimal {
 	result, _ := decimal.NewFromString(strings.TrimSpace(value))
 	return result
@@ -296,7 +586,10 @@ func baseUpdate(key Key, received time.Time) Update {
 }
 
 func normalizeStatus(value string) Status {
-	switch strings.ToLower(strings.ReplaceAll(value, "-", "_")) {
+	normalized := strings.ToLower(strings.ReplaceAll(value, "-", "_"))
+	switch normalized {
+	case "pending", "in_progress":
+		return StatusPending
 	case "new", "live", "open", "created":
 		return StatusNew
 	case "partially_filled", "partial_fill", "partiallyfilled":
@@ -310,6 +603,9 @@ func normalizeStatus(value string) Status {
 	case "expired", "deactivated":
 		return StatusExpired
 	default:
+		if strings.HasPrefix(normalized, "canceled_") || strings.HasPrefix(normalized, "cancelled_") {
+			return StatusCanceled
+		}
 		return StatusUnknown
 	}
 }

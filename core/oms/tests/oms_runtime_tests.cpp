@@ -107,10 +107,11 @@ oms::api::ExecutionChannelConfig LiveConfig() {
   return config;
 }
 
-oms::api::NewOrderRequest Order(std::uint64_t id,
-                                oms::api::TimeInForce tif =
-                                    oms::api::TimeInForce::GTC) {
-  oms::api::NewOrderRequest request{};
+oms::api::SubmitOrderRequest Order(
+    std::uint64_t id, oms::api::TimeInForce tif =
+                          oms::api::TimeInForce::GTC) {
+  oms::api::SubmitOrderRequest submitted{};
+  auto& request = submitted.order;
   const std::string client = "runtime-" + std::to_string(id);
   std::memcpy(request.client_order_id.value.data(), client.data(), client.size());
   request.client_order_id.length =
@@ -123,7 +124,21 @@ oms::api::NewOrderRequest Order(std::uint64_t id,
   request.price = {50, 2, {}};
   if (tif == oms::api::TimeInForce::GTD)
     request.expire_time_ns = NowNs() + 2'000'000ULL;
-  return request;
+  submitted.routing.kind = oms::api::ExecutionRouteKind::Crypto;
+  submitted.routing.venue =
+      static_cast<std::uint8_t>(utils::md::Venue::Binance);
+  submitted.routing.product_type =
+      static_cast<std::uint8_t>(utils::md::ProductType::Spot);
+  submitted.routing.price_scale = 2;
+  submitted.routing.quantity_scale = 2;
+  submitted.routing.catalog_revision = 1;
+  submitted.routing.tick_size = 1;
+  submitted.routing.lot_size = 1;
+  constexpr char symbol[] = "TEST";
+  std::memcpy(submitted.routing.crypto.venue_symbol.value.data(), symbol,
+              sizeof(symbol) - 1);
+  submitted.routing.crypto.venue_symbol.length = sizeof(symbol) - 1;
+  return submitted;
 }
 
 struct Capture {
@@ -754,7 +769,7 @@ void TestIntegratedAdapter(oms::api::ExecutionMode mode) {
   REQUIRE(!adapter.pending());
 
   auto invalid = Order(41);
-  invalid.quantity.value = 0;
+  invalid.order.quantity.value = 0;
   REQUIRE(api.submit_order(1, invalid));
   Pump(api, mode, 1, capture, 3);
   REQUIRE(capture.values.back().kind ==
@@ -767,8 +782,8 @@ void TestIntegratedAdapter(oms::api::ExecutionMode mode) {
   // only the command error is published, never a Submitted/Rejected pair.
   const std::size_t before_unsupported = capture.values.size();
   auto unsupported = Order(42);
-  unsupported.type = oms::api::OrderType::Market;
-  unsupported.price.value = 0;
+  unsupported.order.type = oms::api::OrderType::Market;
+  unsupported.order.price.value = 0;
   REQUIRE(api.submit_order(1, unsupported));
   Pump(api, mode, 1, capture, before_unsupported + 1);
   REQUIRE(capture.values.size() == before_unsupported + 1);

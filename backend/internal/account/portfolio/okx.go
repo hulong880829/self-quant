@@ -146,3 +146,53 @@ func (a *okxAdapter) Snapshot(ctx context.Context, credentials Credentials) (Sna
 	attachQuantities(&result)
 	return result, nil
 }
+
+func (a *okxAdapter) AccountFeeRates(
+	ctx context.Context,
+	credentials Credentials,
+) (AccountFeeRates, error) {
+	spot, spotErr := a.tradeFee(ctx, credentials, "SPOT", false)
+	contract, contractErr := a.tradeFee(ctx, credentials, "SWAP", true)
+	result := AccountFeeRates{Source: "venue", Spot: spot, Contract: contract}
+	if spotErr != nil && contractErr != nil {
+		return AccountFeeRates{}, fmt.Errorf("okx fee rates: spot %v; contract %v", spotErr, contractErr)
+	}
+	if spotErr != nil {
+		result.Spot = unknownMarket()
+		return result, fmt.Errorf("okx spot trade fee: %w", spotErr)
+	}
+	if contractErr != nil {
+		result.Contract = unknownMarket()
+		return result, fmt.Errorf("okx contract trade fee: %w", contractErr)
+	}
+	return result, nil
+}
+
+func (a *okxAdapter) tradeFee(
+	ctx context.Context,
+	credentials Credentials,
+	instType string,
+	usdtMargined bool,
+) (MarketFee, error) {
+	var payload struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data []struct {
+			Maker, Taker, MakerU, TakerU string
+		} `json:"data"`
+	}
+	path := "/api/v5/account/trade-fee?instType=" + instType
+	if err := a.get(ctx, path, credentials, &payload); err != nil {
+		return MarketFee{}, err
+	}
+	if payload.Code != "0" || len(payload.Data) == 0 {
+		return MarketFee{}, fmt.Errorf("okx trade-fee rejected: %s", payload.Msg)
+	}
+	item := payload.Data[0]
+	maker, taker := item.Maker, item.Taker
+	if usdtMargined {
+		maker = firstNonEmptyFee(item.MakerU, item.Maker)
+		taker = firstNonEmptyFee(item.TakerU, item.Taker)
+	}
+	return parseMarketFee(maker, taker)
+}

@@ -63,13 +63,20 @@ void AggregateLatestState::publish(
   (void)bbo_.publish(bbo_writer_);
 }
 
-void AggregateLatestState::publish(
+bool AggregateLatestState::publish(
     const utils::md::wire::AggOrderBookRecord &record,
     AggregateReceiveInfo receive) noexcept {
+  if (record.header.state !=
+          static_cast<std::uint8_t>(utils::md::BookState::Live) ||
+      record.active_mask == 0 || record.bid_count == 0 ||
+      record.ask_count == 0) {
+    return false;
+  }
   book_writer_.record = record;
   book_writer_.status.receive = receive;
   book_writer_.status.ready = true;
   (void)book_.publish(book_writer_);
+  return true;
 }
 
 void AggregateLatestState::reset(AggregateTopic topic,

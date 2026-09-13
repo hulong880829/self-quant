@@ -114,6 +114,7 @@ export interface PolymarketAccountSummary {
   totalAssets: number;
   sourceUpdatedAt: string;
   stale: boolean;
+  bindingStatus: string;
 }
 
 export interface PolymarketOrder {

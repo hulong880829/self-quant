@@ -23,7 +23,8 @@ enum class SnapshotHttpAction : std::uint8_t {
   if (status >= 200 && status < 300) return SnapshotHttpAction::Parse;
   if (status == 418) return SnapshotHttpAction::BanCooldownVenue;
   if (status == 429) return SnapshotHttpAction::CooldownVenue;
-  if (venue == utils::md::Venue::Binance &&
+  if ((venue == utils::md::Venue::Binance ||
+       venue == utils::md::Venue::Aster) &&
       (body.find("-1121") != std::string_view::npos ||
        body.find("Invalid symbol") != std::string_view::npos))
     return SnapshotHttpAction::QuarantineSymbol;

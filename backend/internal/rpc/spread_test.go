@@ -62,19 +62,23 @@ func TestSpreadServerMapsHistory(t *testing.T) {
 
 func TestSpreadServerForwardsCompareVenue(t *testing.T) {
 	stub := &stubSpreadService{history: spread.History{
-		Venue: "binance", CompareVenue: "okx", BaseAsset: "BTC", QuoteAsset: "USDT",
+		Venue: "hyperliquid", CompareVenue: "binance", BaseAsset: "BTC", QuoteAsset: "USDT",
 		CanonicalSymbol: "BTCUSDT", Range: spread.Range24h, ResolutionSeconds: 60,
 		Availability: spread.AvailabilityAvailable, AsOf: time.Date(2026, 8, 22, 7, 0, 0, 0, time.UTC),
 	}}
 	server := NewSpreadServer(stub)
 	response, err := server.GetBasisSpreadHistory(context.Background(), &spreadv1.GetBasisSpreadHistoryRequest{
-		Venue: "binance", CompareVenue: "okx", BaseAsset: "BTC", QuoteAsset: "USDT",
+		Venue: "hyperliquid", CompareVenue: "binance", BaseAsset: "BTC", QuoteAsset: "USDT",
+		VenueCanonicalSymbol: "BTCUSDC", CompareVenueCanonicalSymbol: "BTCUSDT",
 		Range: spreadv1.BasisSpreadRange_BASIS_SPREAD_RANGE_24H,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stub.last.CompareVenue != "okx" || response.GetCompareVenue() != "okx" {
+	if stub.last.CompareVenue != "binance" ||
+		stub.last.VenueCanonicalSymbol != "BTCUSDC" ||
+		stub.last.CompareVenueCanonicalSymbol != "BTCUSDT" ||
+		response.GetCompareVenue() != "binance" {
 		t.Fatalf("last=%+v response=%v", stub.last, response)
 	}
 }

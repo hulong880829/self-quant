@@ -168,7 +168,7 @@ class AggregateLatestState {
   // publish, reset, and service_bbo_window_rollover are single-writer methods.
   void publish(const utils::md::wire::AggBboRecord &record,
                AggregateReceiveInfo receive) noexcept;
-  void publish(const utils::md::wire::AggOrderBookRecord &record,
+  bool publish(const utils::md::wire::AggOrderBookRecord &record,
                AggregateReceiveInfo receive) noexcept;
 
   // Resets are publications: readers observe ready=false and reset_generation.

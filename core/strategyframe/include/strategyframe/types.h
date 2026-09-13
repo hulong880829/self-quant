@@ -8,9 +8,11 @@
 #include <string_view>
 #include <type_traits>
 
+#include "utils/md/types.h"
+
 namespace strategyframe {
 
-using InstrumentId = std::uint64_t;
+using InstrumentId = utils::md::InstrumentId;
 using AccountId = std::uint32_t;
 
 template <std::size_t Capacity, typename Tag>
@@ -52,26 +54,8 @@ struct FixedPoint {
       default;
 };
 
-enum class Venue : std::uint16_t {
-  Unknown = 0,
-  Binance = 1,
-  Okx = 2,
-  Bybit = 3,
-  Gate = 4,
-  Bitget = 5,
-  Polymarket = 6,
-  Sse = 7,
-  Hyperliquid = 8,
-};
-
-enum class ProductType : std::uint8_t {
-  Unknown = 0,
-  Spot = 1,
-  Perpetual = 2,
-  Future = 3,
-  BinaryOption = 4,
-  Equity = 5,
-};
+using Venue = utils::md::Venue;
+using ProductType = utils::md::ProductType;
 
 enum class Side : std::uint8_t { Buy = 1, Sell = 2 };
 enum class OrderType : std::uint8_t { Limit = 1, Market = 2 };
@@ -90,7 +74,8 @@ enum OrderFlag : std::uint16_t {
 enum class CommandType : std::uint8_t {
   Place = 1,
   Cancel = 2,
-  RebindInstrument = 3,
+  RegisterInstrument = 3,
+  RetireInstrument = 4,
 };
 enum class OrderStatus : std::uint8_t {
   PendingSubmit = 1,

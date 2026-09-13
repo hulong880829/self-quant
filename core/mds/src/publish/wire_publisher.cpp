@@ -1,4 +1,5 @@
 #include "mds/publish/wire_publisher.h"
+#include "mds/exchange/symbol_policy.h"
 
 #include "utils/md/wire.h"
 
@@ -111,6 +112,7 @@ WirePublisher &WirePublisher::operator=(WirePublisher &&other) noexcept {
   owned_ring_ = std::move(other.owned_ring_);
   ring_ = owns_ring ? &*owned_ring_ : borrowed_ring;
   current_bus_seq_ = other.current_bus_seq_;
+  bbo_origin_missing_ = other.bbo_origin_missing_;
   bus_seq_exhausted_ = other.bus_seq_exhausted_;
   observed_registry_generation_ = other.observed_registry_generation_;
   reader_change_context_ = other.reader_change_context_;
@@ -273,6 +275,11 @@ WirePublisher::publish_bbo(const utils::md::BboEvent &event) noexcept {
     return {.error = api::ErrorCode::QuotaExceeded,
             .message = "wire bus sequence is exhausted"};
   }
+  fields.flags = static_cast<std::uint16_t>(event.header.bbo_origin) &
+                 utils::md::wire::kBboOriginMask;
+  if (fields.flags == 0) {
+    ++bbo_origin_missing_;
+  }
   const auto encoded = utils::md::wire::EncodeBbo(
       bytes, fields, event.bid, event.ask);
   auto result = publish_encoded(MessageType::Bbo, encoded, bytes);
@@ -290,6 +297,11 @@ WirePublisher::publish_ticker(const utils::md::TickerEvent &event) noexcept {
   if (!assign_bus_seq(event.header, fields)) {
     return {.error = api::ErrorCode::QuotaExceeded,
             .message = "wire bus sequence is exhausted"};
+  }
+  fields.flags = static_cast<std::uint16_t>(event.header.bbo_origin) &
+                 utils::md::wire::kBboOriginMask;
+  if (fields.flags == 0) {
+    ++bbo_origin_missing_;
   }
   const auto encoded =
       utils::md::wire::EncodeTicker(bytes, fields, event);
@@ -636,8 +648,12 @@ std::string make_publisher_segment_name(std::string_view prefix,
       canonical_stream != "aggorderbook") {
     return {};
   }
+  auto symbol_component = sanitize_name_part(symbol);
+  if (exchange::has_non_ascii(symbol)) {
+    exchange::append_symbol_hash_suffix(symbol_component, symbol);
+  }
   auto name = std::string(prefix) + "." + sanitize_name_part(profile) + "." +
-              sanitize_name_part(symbol) + "." + canonical_stream + "." +
+              symbol_component + "." + canonical_stream + "." +
               std::to_string(utils::md::wire::kSchemaMajor);
   return name.size() <= 240 ? name : std::string{};
 }

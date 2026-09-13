@@ -668,6 +668,7 @@ type AccountSummary struct {
 	TotalAssets      string                 `protobuf:"bytes,6,opt,name=total_assets,json=totalAssets,proto3" json:"total_assets,omitempty"`
 	SourceUpdatedAt  *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=source_updated_at,json=sourceUpdatedAt,proto3" json:"source_updated_at,omitempty"`
 	Stale            bool                   `protobuf:"varint,8,opt,name=stale,proto3" json:"stale,omitempty"`
+	BindingStatus    string                 `protobuf:"bytes,9,opt,name=binding_status,json=bindingStatus,proto3" json:"binding_status,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -756,6 +757,13 @@ func (x *AccountSummary) GetStale() bool {
 		return x.Stale
 	}
 	return false
+}
+
+func (x *AccountSummary) GetBindingStatus() string {
+	if x != nil {
+		return x.BindingStatus
+	}
+	return ""
 }
 
 type GetAccountSummaryRequest struct {
@@ -1067,6 +1075,7 @@ type ListPositionsResponse struct {
 	Items         []*Position            `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
 	ServerTime    *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=server_time,json=serverTime,proto3" json:"server_time,omitempty"`
 	Stale         bool                   `protobuf:"varint,3,opt,name=stale,proto3" json:"stale,omitempty"`
+	BindingStatus string                 `protobuf:"bytes,4,opt,name=binding_status,json=bindingStatus,proto3" json:"binding_status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1120,6 +1129,13 @@ func (x *ListPositionsResponse) GetStale() bool {
 		return x.Stale
 	}
 	return false
+}
+
+func (x *ListPositionsResponse) GetBindingStatus() string {
+	if x != nil {
+		return x.BindingStatus
+	}
+	return ""
 }
 
 type OpenOrder struct {
@@ -1319,6 +1335,7 @@ type ListOpenOrdersResponse struct {
 	Items         []*OpenOrder           `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
 	ServerTime    *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=server_time,json=serverTime,proto3" json:"server_time,omitempty"`
 	Stale         bool                   `protobuf:"varint,3,opt,name=stale,proto3" json:"stale,omitempty"`
+	BindingStatus string                 `protobuf:"bytes,4,opt,name=binding_status,json=bindingStatus,proto3" json:"binding_status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1372,6 +1389,13 @@ func (x *ListOpenOrdersResponse) GetStale() bool {
 		return x.Stale
 	}
 	return false
+}
+
+func (x *ListOpenOrdersResponse) GetBindingStatus() string {
+	if x != nil {
+		return x.BindingStatus
+	}
+	return ""
 }
 
 type PlaceOrderRequest struct {
@@ -2128,7 +2152,7 @@ const file_polymarket_v1_polymarket_proto_rawDesc = "" +
 	"\x1dStreamMarketSnapshotsResponse\x129\n" +
 	"\bsnapshot\x18\x01 \x01(\v2\x1d.polymarket.v1.MarketSnapshotR\bsnapshot\x12;\n" +
 	"\vserver_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"serverTime\"\xdd\x02\n" +
+	"serverTime\"\x84\x03\n" +
 	"\x0eAccountSummary\x12,\n" +
 	"\x12trading_account_id\x18\x01 \x01(\x03R\x10tradingAccountId\x12!\n" +
 	"\faccount_name\x18\x02 \x01(\tR\vaccountName\x12%\n" +
@@ -2137,7 +2161,8 @@ const file_polymarket_v1_polymarket_proto_rawDesc = "" +
 	"\x0eposition_value\x18\x05 \x01(\tR\rpositionValue\x12!\n" +
 	"\ftotal_assets\x18\x06 \x01(\tR\vtotalAssets\x12F\n" +
 	"\x11source_updated_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\x0fsourceUpdatedAt\x12\x14\n" +
-	"\x05stale\x18\b \x01(\bR\x05stale\"^\n" +
+	"\x05stale\x18\b \x01(\bR\x05stale\x12%\n" +
+	"\x0ebinding_status\x18\t \x01(\tR\rbindingStatus\"^\n" +
 	"\x18GetAccountSummaryRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12,\n" +
 	"\x12trading_account_id\x18\x02 \x01(\x03R\x10tradingAccountId\"T\n" +
@@ -2165,12 +2190,13 @@ const file_polymarket_v1_polymarket_proto_rawDesc = "" +
 	"\x11source_updated_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\x0fsourceUpdatedAt\"Z\n" +
 	"\x14ListPositionsRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12,\n" +
-	"\x12trading_account_id\x18\x02 \x01(\x03R\x10tradingAccountId\"\x99\x01\n" +
+	"\x12trading_account_id\x18\x02 \x01(\x03R\x10tradingAccountId\"\xc0\x01\n" +
 	"\x15ListPositionsResponse\x12-\n" +
 	"\x05items\x18\x01 \x03(\v2\x17.polymarket.v1.PositionR\x05items\x12;\n" +
 	"\vserver_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"serverTime\x12\x14\n" +
-	"\x05stale\x18\x03 \x01(\bR\x05stale\"\xa1\x03\n" +
+	"\x05stale\x18\x03 \x01(\bR\x05stale\x12%\n" +
+	"\x0ebinding_status\x18\x04 \x01(\tR\rbindingStatus\"\xa1\x03\n" +
 	"\tOpenOrder\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fcondition_id\x18\x02 \x01(\tR\vconditionId\x12\x19\n" +
@@ -2190,12 +2216,13 @@ const file_polymarket_v1_polymarket_proto_rawDesc = "" +
 	"created_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"[\n" +
 	"\x15ListOpenOrdersRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12,\n" +
-	"\x12trading_account_id\x18\x02 \x01(\x03R\x10tradingAccountId\"\x9b\x01\n" +
+	"\x12trading_account_id\x18\x02 \x01(\x03R\x10tradingAccountId\"\xc2\x01\n" +
 	"\x16ListOpenOrdersResponse\x12.\n" +
 	"\x05items\x18\x01 \x03(\v2\x18.polymarket.v1.OpenOrderR\x05items\x12;\n" +
 	"\vserver_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"serverTime\x12\x14\n" +
-	"\x05stale\x18\x03 \x01(\bR\x05stale\"\xcc\x02\n" +
+	"\x05stale\x18\x03 \x01(\bR\x05stale\x12%\n" +
+	"\x0ebinding_status\x18\x04 \x01(\tR\rbindingStatus\"\xcc\x02\n" +
 	"\x11PlaceOrderRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12,\n" +
 	"\x12trading_account_id\x18\x02 \x01(\x03R\x10tradingAccountId\x12\x1b\n" +

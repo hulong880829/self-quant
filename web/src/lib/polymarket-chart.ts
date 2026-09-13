@@ -1,3 +1,62 @@
+import type {
+  PolymarketFairPricePoint,
+  PolymarketPricePoint,
+} from "@/types/polymarket";
+
+export function fairPriceChartTimeMs(point: PolymarketFairPricePoint): number {
+  try {
+    const wallMs = Number(BigInt(point.sourceWallNS) / 1_000_000n);
+    if (Number.isFinite(wallMs) && wallMs > 0) return wallMs;
+  } catch {
+    // Fall back to the presentation timestamp for legacy history rows.
+  }
+  return new Date(point.timestamp).getTime();
+}
+
+export function computeChartXDomain(
+  windowStart: string | null,
+  windowEnd: string | null,
+  nowMs = Date.now(),
+): { startMs: number; endMs: number; spanMs: number } | null {
+  if (!windowStart || !windowEnd) return null;
+  const startMs = new Date(windowStart).getTime();
+  const configuredEnd = new Date(windowEnd).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(configuredEnd) ||
+      configuredEnd <= startMs) {
+    return null;
+  }
+  const endMs = Math.max(startMs + 1, Math.min(configuredEnd, nowMs));
+  return { startMs, endMs, spanMs: endMs - startMs };
+}
+
+export function filterPricePointsToWindow(
+  points: PolymarketPricePoint[],
+  windowStart: string | null,
+  windowEnd: string | null,
+  nowMs = Date.now(),
+) {
+  const domain = computeChartXDomain(windowStart, windowEnd, nowMs);
+  if (!domain) return [];
+  return points.filter((point) => {
+    const timestamp = new Date(point.timestamp).getTime();
+    return timestamp >= domain.startMs && timestamp <= domain.endMs;
+  });
+}
+
+export function filterFairPricePointsToWindow(
+  points: PolymarketFairPricePoint[],
+  windowStart: string | null,
+  windowEnd: string | null,
+  nowMs = Date.now(),
+) {
+  const domain = computeChartXDomain(windowStart, windowEnd, nowMs);
+  if (!domain) return [];
+  return points.filter((point) => {
+    const timestamp = fairPriceChartTimeMs(point);
+    return timestamp >= domain.startMs && timestamp <= domain.endMs;
+  });
+}
+
 export function computeYDomain(
   values: number[],
   options: { minSpan?: number } = {},

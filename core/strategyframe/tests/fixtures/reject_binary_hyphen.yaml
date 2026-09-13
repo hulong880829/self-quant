@@ -1,0 +1,8 @@
+mds:
+  source: replay
+  required_instruments:
+    - {venue: polymarket, product: binary-option, symbol: btc5mup}
+
+oms: {}
+
+strategy: {}

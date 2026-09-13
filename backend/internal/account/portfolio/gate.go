@@ -148,3 +148,35 @@ func isGateMissingFuturesAccount(err error) bool {
 	return payload.Label == "USER_NOT_FOUND" &&
 		strings.Contains(strings.ToLower(payload.Message), "create futures account")
 }
+
+func (a *gateAdapter) AccountFeeRates(
+	ctx context.Context,
+	credentials Credentials,
+) (AccountFeeRates, error) {
+	var payload struct {
+		MakerFee        string `json:"maker_fee"`
+		TakerFee        string `json:"taker_fee"`
+		GTDiscount      bool   `json:"gt_discount"`
+		GTMakerFee      string `json:"gt_maker_fee"`
+		GTTakerFee      string `json:"gt_taker_fee"`
+		FuturesMakerFee string `json:"futures_maker_fee"`
+		FuturesTakerFee string `json:"futures_taker_fee"`
+	}
+	if err := a.get(ctx, "/api/v4/wallet/fee?currency_pair=BTC_USDT&settle=usdt", credentials, &payload); err != nil {
+		return AccountFeeRates{}, fmt.Errorf("gate wallet fee: %w", err)
+	}
+	maker, taker := payload.MakerFee, payload.TakerFee
+	if payload.GTDiscount {
+		maker = firstNonEmptyFee(payload.GTMakerFee, payload.MakerFee)
+		taker = firstNonEmptyFee(payload.GTTakerFee, payload.TakerFee)
+	}
+	spot, err := parseMarketFee(maker, taker)
+	if err != nil {
+		return AccountFeeRates{}, fmt.Errorf("gate spot fee: %w", err)
+	}
+	contract, err := parseMarketFee(payload.FuturesMakerFee, payload.FuturesTakerFee)
+	if err != nil {
+		return AccountFeeRates{}, fmt.Errorf("gate contract fee: %w", err)
+	}
+	return AccountFeeRates{Source: "venue", Spot: spot, Contract: contract}, nil
+}

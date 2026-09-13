@@ -12,6 +12,7 @@ add_library(poly_mm_lib
   src/catalog_rollover.cpp
   src/fairprice_client.cpp
   src/market_window.cpp
+  src/order_lifecycle.cpp
   src/pnl_ledger.cpp
   src/signal.cpp
   src/strategy.cpp

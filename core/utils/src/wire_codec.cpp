@@ -37,6 +37,11 @@ constexpr std::size_t expected_size(std::uint16_t type) noexcept {
 }
 
 constexpr bool valid_flags(MessageType type, std::uint16_t flags) noexcept {
+  if (type == MessageType::Bbo || type == MessageType::Ticker) {
+    const auto origin = flags & kBboOriginMask;
+    return (flags & static_cast<std::uint16_t>(~kBboOriginMask)) == 0 &&
+           origin != kBboOriginMask;
+  }
   if (type == MessageType::AggBbo) {
     constexpr std::uint16_t allowed =
         kAggSkewEnforced | kAggMemberDataError;

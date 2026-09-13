@@ -1,10 +1,13 @@
 #include "mds/exchange/bybit/bybit_adapter.h"
+#include "mds/exchange/symbol_policy.h"
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
 #include <cstring>
 #include <limits>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -80,14 +83,7 @@ bool valid_encoded_cursor(std::string_view value) noexcept {
 }
 
 bool valid_topic_component(std::string_view value) noexcept {
-  if (value.empty()) {
-    return false;
-  }
-  return std::all_of(value.begin(), value.end(), [](char raw) {
-    const auto character = static_cast<unsigned char>(raw);
-    return character > 0x20U && character < 0x7fU && raw != '"' &&
-           raw != '\\';
-  });
+  return mds::exchange::valid_utf8_symbol(value);
 }
 
 bool valid_orderbook_channel(std::string_view channel) noexcept {
@@ -182,7 +178,25 @@ std::string_view required_string(simdjson::dom::object object,
 
 bool response_code_ok(simdjson::dom::element document) {
   auto code = document["retCode"].get_int64();
-  return code.error() || code.value() == 0;
+  return !code.error() && code.value() == 0;
+}
+
+bool explicit_symbol_unavailable_message(std::string_view message) {
+  std::string normalized;
+  normalized.reserve(message.size());
+  for (const char value : message) {
+    normalized.push_back(static_cast<char>(
+        std::tolower(static_cast<unsigned char>(value))));
+  }
+  constexpr std::array<std::string_view, 8> phrases{
+      "invalid symbol", "symbol invalid", "symbol is invalid",
+      "unknown symbol", "symbol not found", "symbol is not found",
+      "symbol does not exist", "symbol doesn't exist"};
+  return std::any_of(
+      phrases.begin(), phrases.end(),
+      [&normalized](std::string_view phrase) {
+        return normalized.find(phrase) != std::string::npos;
+      });
 }
 
 bool parse_level_scales(simdjson::dom::array levels,
@@ -239,10 +253,18 @@ bool parse_levels(simdjson::dom::array levels, std::uint8_t price_scale,
       return false;
     }
     utils::md::Level parsed;
-    if (!mds::exchange::decimal_to_fixed(price, price_scale, parsed.price) ||
-        !mds::exchange::decimal_to_fixed(quantity, quantity_scale,
-                                         parsed.quantity)) {
-      error = "invalid or imprecise Bybit order book level";
+    if (!mds::exchange::decimal_to_fixed(
+            price, price_scale, parsed.price)) {
+      error = decimal_scale_mismatch(price, price_scale)
+                  ? "invalid Bybit order book reason=scale field=price"
+                  : "invalid or imprecise Bybit order book level";
+      return false;
+    }
+    if (!mds::exchange::decimal_to_fixed(
+            quantity, quantity_scale, parsed.quantity)) {
+      error = decimal_scale_mismatch(quantity, quantity_scale)
+                  ? "invalid Bybit order book reason=scale field=quantity"
+                  : "invalid or imprecise Bybit order book level";
       return false;
     }
     output.push_back(parsed);
@@ -299,11 +321,11 @@ class BybitAdapter final : public VenueAdapter {
     std::vector<std::string> topics;
     topics.reserve(requests.size() * 2U);
     for (const auto &request : requests) {
-      if (!remember(request.venue_symbol, request.canonical_symbol, error)) {
-        return false;
+      if (!valid_topic_component(request.venue_symbol) ||
+          !mds::exchange::valid_utf8_symbol(request.canonical_symbol)) {
+        continue;
       }
-      if (!valid_topic_component(request.venue_symbol)) {
-        error = "invalid Bybit subscription symbol";
+      if (!remember(request.venue_symbol, request.canonical_symbol, error)) {
         return false;
       }
       auto append_topic = [&](std::string_view configured,
@@ -332,6 +354,10 @@ class BybitAdapter final : public VenueAdapter {
         return false;
       }
     }
+    if (topics.empty()) {
+      error = "no valid Bybit subscription topics";
+      return false;
+    }
 
     std::vector<std::string> built;
     for (std::size_t offset = 0; offset < topics.size();) {
@@ -353,7 +379,7 @@ class BybitAdapter final : public VenueAdapter {
           batch.push_back(',');
         }
         batch.push_back('"');
-        batch.append(topics[offset]);
+        mds::exchange::append_json_escaped(batch, topics[offset]);
         batch.push_back('"');
         ++offset;
         ++count;
@@ -422,6 +448,9 @@ class BybitAdapter final : public VenueAdapter {
       const auto data_symbol = required_string(data, "s");
       if (data_symbol != venue_symbol) {
         error = "Bybit topic and payload symbols do not match";
+        return false;
+      }
+      if (!set_symbol(*state, event, error)) {
         return false;
       }
       const auto update_id = data["u"].get_uint64().value();
@@ -668,11 +697,146 @@ class BybitAdapter final : public VenueAdapter {
         error = "invalid Bybit metadata symbol";
         return false;
       }
-      built.push_back({std::move(request), index, 1});
+      built.push_back({std::move(request), index, 1, false, {}});
     }
     batches = std::move(built);
     error.clear();
     return true;
+  }
+
+  bool build_bootstrap_metadata_request_batches(
+      std::span<const StreamRequest> requests,
+      std::vector<MetadataRequestBatch> &batches,
+      std::string &error) const override {
+    if (product_ == utils::md::ProductType::Perpetual &&
+        requests.size() > 1) {
+      batches = {{bootstrap_instruments_info_request({}), 0, requests.size(),
+                  true, {}}};
+      error.clear();
+      return true;
+    }
+    return build_metadata_request_batches(requests, batches, error);
+  }
+
+  bool apply_metadata_page_cursor(MetadataRequestBatch &batch,
+                                  std::string_view cursor,
+                                  std::string &error) const override {
+    if (!batch.cursor_paginated) {
+      error = "Bybit metadata batch is not cursor paginated";
+      return false;
+    }
+    if (!cursor.empty() && !valid_encoded_cursor(cursor)) {
+      error = "Bybit instruments-info nextPageCursor is not URL encoded";
+      return false;
+    }
+    batch.page_cursor.assign(cursor);
+    batch.http = bootstrap_instruments_info_request(cursor);
+    error.clear();
+    return true;
+  }
+
+  bool metadata_page_list_empty(std::string_view json, bool &empty,
+                                std::string &error) override {
+    empty = false;
+#ifndef MDS_HAS_SIMDJSON
+    (void)json;
+    error = "simdjson support was not compiled";
+    return false;
+#else
+    try {
+      auto document = parse(json);
+      if (!response_code_ok(document)) {
+        error = "Bybit instruments-info returned an error";
+        return false;
+      }
+      auto result = document["result"].get_object();
+      if (result.error()) {
+        error = "Bybit instruments-info pagination result is missing";
+        return false;
+      }
+      auto returned_category = result.value()["category"].get_string();
+      if (returned_category.error() ||
+          std::string_view(returned_category.value()) != category(product_)) {
+        error = "Bybit instruments-info pagination category mismatch";
+        return false;
+      }
+      auto list = result.value()["list"].get_array();
+      if (list.error()) {
+        error = "Bybit instruments-info list is missing or invalid";
+        return false;
+      }
+      empty = true;
+      for (auto entry : list.value()) {
+        (void)entry;
+        empty = false;
+        break;
+      }
+      error.clear();
+      return true;
+    } catch (const simdjson::simdjson_error &exception) {
+      error = "malformed Bybit instruments-info pagination response: ";
+      error.append(exception.what());
+      return false;
+    }
+#endif
+  }
+
+  bool metadata_page_repeated_venue_symbol(std::string_view json,
+                                           std::string &symbol,
+                                           std::string &error) override {
+    symbol.clear();
+#ifndef MDS_HAS_SIMDJSON
+    (void)json;
+    error = "simdjson support was not compiled";
+    return false;
+#else
+    try {
+      auto document = parse(json);
+      if (!response_code_ok(document)) {
+        error = "Bybit instruments-info returned an error";
+        return false;
+      }
+      auto result = document["result"].get_object();
+      if (result.error()) {
+        error = "Bybit instruments-info pagination result is missing";
+        return false;
+      }
+      auto list = result.value()["list"].get_array();
+      if (list.error()) {
+        error = "Bybit instruments-info list is missing or invalid";
+        return false;
+      }
+      std::set<std::string> seen;
+      for (auto raw_instrument : list.value()) {
+        auto instrument = raw_instrument.get_object().value();
+        auto name = instrument["symbol"].get_string();
+        if (name.error()) {
+          continue;
+        }
+        if (product_ == utils::md::ProductType::Perpetual) {
+          auto contract_type = instrument["contractType"].get_string();
+          auto status = instrument["status"].get_string();
+          if (contract_type.error() || status.error() ||
+              std::string_view(contract_type.value()) != "LinearPerpetual" ||
+              std::string_view(status.value()) != "Trading") {
+            continue;
+          }
+        }
+        const std::string venue_symbol(name.value());
+        if (!seen.insert(venue_symbol).second) {
+          symbol = venue_symbol;
+          error.clear();
+          return true;
+        }
+      }
+      error.clear();
+      return true;
+    } catch (const simdjson::simdjson_error &exception) {
+      error = "malformed Bybit instruments-info pagination response: ";
+      error.append(exception.what());
+      return false;
+    }
+#endif
   }
 
   bool parse_metadata(std::string_view json,
@@ -712,6 +876,16 @@ class BybitAdapter final : public VenueAdapter {
           auto instrument = raw_instrument.get_object().value();
           if (required_string(instrument, "symbol") != request.venue_symbol) {
             continue;
+          }
+          if (product_ == utils::md::ProductType::Perpetual) {
+            auto contract_type = instrument["contractType"].get_string();
+            auto status = instrument["status"].get_string();
+            if (contract_type.error() || status.error() ||
+                std::string_view(contract_type.value()) !=
+                    "LinearPerpetual" ||
+                std::string_view(status.value()) != "Trading") {
+              continue;
+            }
           }
           InstrumentMetadata value;
           value.canonical_symbol = request.canonical_symbol;
@@ -777,10 +951,7 @@ class BybitAdapter final : public VenueAdapter {
           break;
         }
         if (!found) {
-          error =
-              "requested Bybit symbol was not found in instruments-info: ";
-          error.append(request.venue_symbol);
-          return false;
+          continue;
         }
       }
       metadata = std::move(parsed);
@@ -793,7 +964,121 @@ class BybitAdapter final : public VenueAdapter {
 #endif
   }
 
+  MetadataResponse parse_metadata_response(
+      std::string_view json, std::span<const StreamRequest> requests,
+      std::vector<InstrumentMetadata> &metadata) override {
+#ifndef MDS_HAS_SIMDJSON
+    (void)json;
+    (void)requests;
+    (void)metadata;
+    return {MetadataResponseKind::ConnectionFailure,
+            "simdjson support was not compiled"};
+#else
+    try {
+      auto document = parse(json);
+      auto code = document["retCode"].get_int64();
+      if (code.error()) {
+        return {MetadataResponseKind::ConnectionFailure,
+                "Bybit instruments-info retCode is missing or invalid"};
+      }
+      if (code.value() != 0) {
+        auto message = document["retMsg"].get_string();
+        const std::string_view text =
+            message.error() ? std::string_view{} :
+                              std::string_view(message.value());
+        if (requests.size() == 1 &&
+            explicit_symbol_unavailable_message(text)) {
+          std::string reason{"Bybit exact metadata lookup rejected symbol"};
+          if (!text.empty()) {
+            reason.append(": ");
+            reason.append(text);
+          }
+          return {MetadataResponseKind::SymbolUnavailable,
+                  std::move(reason)};
+        }
+        std::string reason{"Bybit instruments-info returned retCode="};
+        reason.append(std::to_string(code.value()));
+        if (!text.empty()) {
+          reason.append(" retMsg=");
+          reason.append(text);
+        }
+        return {MetadataResponseKind::ConnectionFailure,
+                std::move(reason)};
+      }
+    } catch (const simdjson::simdjson_error &exception) {
+      std::string reason{"malformed Bybit instruments-info response: "};
+      reason.append(exception.what());
+      return {MetadataResponseKind::ConnectionFailure,
+              std::move(reason)};
+    }
+
+    auto outcome = VenueAdapter::parse_metadata_response(
+        json, requests, metadata);
+    if (outcome.kind == MetadataResponseKind::SymbolUnavailable &&
+        product_ == utils::md::ProductType::Perpetual &&
+        requests.size() == 1) {
+      try {
+        auto document = parse(json);
+        auto instruments =
+            document["result"]["list"].get_array().value();
+        for (auto raw_instrument : instruments) {
+          auto instrument = raw_instrument.get_object().value();
+          auto symbol = instrument["symbol"].get_string();
+          if (!symbol.error() &&
+              std::string_view(symbol.value()) ==
+                  requests.front().venue_symbol) {
+            outcome.reason =
+                "Bybit instrument is not a Trading LinearPerpetual: ";
+            outcome.reason.append(requests.front().venue_symbol);
+            break;
+          }
+        }
+      } catch (const simdjson::simdjson_error &exception) {
+        std::string reason{"malformed Bybit instruments-info response: "};
+        reason.append(exception.what());
+        return {MetadataResponseKind::ConnectionFailure,
+                std::move(reason)};
+      }
+    }
+    return outcome;
+#endif
+  }
+
+  bool upsert_metadata(
+      std::string_view json, std::span<const StreamRequest> requests,
+      std::vector<InstrumentMetadata> &metadata,
+      std::string &error) override {
+    const auto existing_states = states_;
+    const auto existing_state_count = state_count_;
+    std::vector<InstrumentMetadata> parsed;
+    if (!parse_metadata(json, requests, parsed, error)) {
+      states_ = existing_states;
+      state_count_ = existing_state_count;
+      return false;
+    }
+    metadata = std::move(parsed);
+    return true;
+  }
+
+ protected:
+  void classify_parse_failure(std::string_view,
+                              const NormalizedEvent &event,
+                              ParseFailure &failure) const noexcept override {
+    (void)classify_scale_mismatch(event, failure);
+  }
+
  private:
+  [[nodiscard]] HttpRequestSpec bootstrap_instruments_info_request(
+      std::string_view cursor) const {
+    auto request = metadata_request();
+    request.target.append("&status=Trading&limit=1000");
+    if (!cursor.empty()) {
+      request.target.append("&cursor=");
+      request.target.append(cursor);
+    }
+    return request;
+  }
+
   bool remember(std::string_view venue_symbol, std::string_view canonical_symbol,
                 std::string &error) const {
     return find_or_add(venue_symbol, canonical_symbol, error) != nullptr;

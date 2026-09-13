@@ -12,7 +12,7 @@ import (
 func ToVenueQuantity(instrument Instrument, baseQuantity string) (string, error) {
 	quantity, err := decimal.NewFromString(strings.TrimSpace(baseQuantity))
 	if err != nil || !quantity.IsPositive() {
-		return "", fmt.Errorf("%w: invalid quantity", ErrRejected)
+		return "", fmt.Errorf("%w: invalid quantity", ErrInvalidQuantity)
 	}
 	factor, contracts, err := quantityFactor(instrument)
 	if err != nil {
@@ -22,8 +22,16 @@ func ToVenueQuantity(instrument Instrument, baseQuantity string) (string, error)
 		return quantity.String(), nil
 	}
 	wire := quantity.Div(factor)
-	if !wire.Equal(wire.Truncate(0)) {
-		return "", fmt.Errorf("%w: quantity is not a whole number of contracts", ErrRejected)
+	step := venueQuantityStep(instrument, factor)
+	if !step.IsPositive() {
+		step = decimal.NewFromInt(1)
+	}
+	if !wire.Div(step).Equal(wire.Div(step).Truncate(0)) {
+		return "", fmt.Errorf(
+			"%w: quantity is not an exact multiple of venue step %s",
+			ErrInvalidQuantity,
+			step.String(),
+		)
 	}
 	return wire.String(), nil
 }
@@ -70,7 +78,7 @@ func quantityFactor(instrument Instrument) (decimal.Decimal, bool, error) {
 	}
 	size, err := decimal.NewFromString(strings.TrimSpace(instrument.ContractSize))
 	if err != nil || !size.IsPositive() {
-		return decimal.Zero, true, fmt.Errorf("%w: contract size unavailable", ErrRejected)
+		return decimal.Zero, true, fmt.Errorf("%w: contract size unavailable", ErrInvalidQuantity)
 	}
 	if exchange == "okx" {
 		if multiplier := metadataDecimal(instrument, "ctMult"); multiplier.IsPositive() {
@@ -78,6 +86,14 @@ func quantityFactor(instrument Instrument) (decimal.Decimal, bool, error) {
 		}
 	}
 	return size, true, nil
+}
+
+func venueQuantityStep(instrument Instrument, factor decimal.Decimal) decimal.Decimal {
+	baseStep, err := decimal.NewFromString(strings.TrimSpace(instrument.QuantityStep))
+	if err != nil || !baseStep.IsPositive() || !factor.IsPositive() {
+		return decimal.Zero
+	}
+	return baseStep.Div(factor)
 }
 
 func metadataDecimal(instrument Instrument, name string) decimal.Decimal {

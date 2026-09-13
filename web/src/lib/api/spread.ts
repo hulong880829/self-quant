@@ -152,11 +152,17 @@ function historyUrl(
   quoteAsset: string,
   range: BasisSpreadRange,
   compareVenue?: string,
+  venueSymbol?: string,
+  compareVenueSymbol?: string,
 ) {
   const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(/\/+$/, "");
   const query = new URLSearchParams({ range });
   if (compareVenue) {
     query.set("compareVenue", compareVenue.toLowerCase());
+  }
+  if (venueSymbol) query.set("venueSymbol", venueSymbol.toUpperCase());
+  if (compareVenueSymbol) {
+    query.set("compareVenueSymbol", compareVenueSymbol.toUpperCase());
   }
   return `${baseUrl}/api/v1/basis-spreads/${encodeURIComponent(venue.toLowerCase())}/${encodeURIComponent(baseAsset.toUpperCase())}/${encodeURIComponent(quoteAsset.toUpperCase())}/history?${query.toString()}`;
 }
@@ -169,12 +175,22 @@ export async function fetchBasisSpreadHistory(
   etag?: string | null,
   signal?: AbortSignal,
   compareVenue?: string,
+  venueSymbol?: string,
+  compareVenueSymbol?: string,
 ): Promise<BasisSpreadFetchResult> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (etag) {
     headers["If-None-Match"] = etag;
   }
-  const response = await fetch(historyUrl(venue, baseAsset, quoteAsset, range, compareVenue), {
+  const response = await fetch(historyUrl(
+    venue,
+    baseAsset,
+    quoteAsset,
+    range,
+    compareVenue,
+    venueSymbol,
+    compareVenueSymbol,
+  ), {
     method: "GET",
     headers,
     cache: "no-store",

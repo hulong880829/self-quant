@@ -4,6 +4,7 @@
 #include <cassert>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unistd.h>
@@ -33,6 +34,12 @@ constexpr std::string_view kBbo =
     "  - /test.agg_perp_usdt_binance-okx.btcusdt.aggbbo.2\n";
 constexpr std::string_view kBook =
     "  - /test.agg_perp_usdt_binance-okx.btcusdt.aggorderbook.2\n";
+
+void verify(bool condition, std::string_view message) {
+  if (!condition) {
+    throw std::runtime_error(std::string(message));
+  }
+}
 
 }  // namespace
 
@@ -244,6 +251,23 @@ int main() {
          1000);
   assert(loaded_clickhouse.value.clickhouse_bbo.options.stale_cutoff_ms ==
          2500);
+
+  const auto aster_lighter = mds::consumer::load_config(
+      MDS_ASTER_LIGHTER_CONSUMER_CONFIG, false, false, true);
+  verify(static_cast<bool>(aster_lighter),
+         "Aster/Lighter ClickHouse config must load");
+  verify(aster_lighter.value.clickhouse_bbo.segments.size() == 8,
+         "Aster/Lighter consumer must select eight perpetual ticker shards");
+  for (const auto &segment :
+       aster_lighter.value.clickhouse_bbo.segments) {
+    verify(segment.starts_with("/selfquant.mds.bbo."),
+           "new consumer must use the isolated BBO prefix");
+    verify(segment.find(".perpetual.ticker.shard") != std::string::npos,
+           "new consumer must select only perpetual ticker rings");
+    verify(segment.find(".orderbook.") == std::string::npos &&
+               segment.find("/selfquant.mds.book.") == std::string::npos,
+           "ClickHouse consumer must never select order-book rings");
+  }
 
   const auto clickhouse_legacy = write_temp(
       "clickhouse_bbo:\n"

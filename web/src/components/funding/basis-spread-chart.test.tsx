@@ -15,6 +15,8 @@ const fetchBasisSpreadHistory = vi.fn<
     etag?: string | null,
     signal?: AbortSignal,
     compareVenue?: string,
+    venueSymbol?: string,
+    compareVenueSymbol?: string,
   ) => Promise<BasisSpreadFetchResult>
 >();
 
@@ -27,7 +29,12 @@ vi.mock("@/lib/api/spread", () => ({
     etag?: string | null,
     signal?: AbortSignal,
     compareVenue?: string,
-  ) => fetchBasisSpreadHistory(venue, baseAsset, quoteAsset, range, etag, signal, compareVenue),
+    venueSymbol?: string,
+    compareVenueSymbol?: string,
+  ) => fetchBasisSpreadHistory(
+    venue, baseAsset, quoteAsset, range, etag, signal,
+    compareVenue, venueSymbol, compareVenueSymbol,
+  ),
 }));
 
 import {
@@ -104,6 +111,8 @@ describe("BasisSpreadPanel", () => {
       null,
       expect.any(AbortSignal),
       undefined,
+      undefined,
+      undefined,
     );
   });
 
@@ -115,25 +124,29 @@ describe("BasisSpreadPanel", () => {
     });
     render(
       <BasisSpreadPanel
-        venue="OKX"
+        venue="Hyperliquid"
         compareVenue="Binance"
         baseAsset="BTC"
         quoteAsset="USDT"
+        venueSymbol="BTCUSDC"
+        compareVenueSymbol="BTCUSDT"
       />,
     );
     await waitFor(() => {
       expect(screen.getByText("+12.50 bps")).not.toBeNull();
     });
     expect(screen.getByLabelText("跨所 Best Ask 价差")).not.toBeNull();
-    expect(screen.getByText("OKX Ask / Binance Ask - 1 · BTC/USDT")).not.toBeNull();
+    expect(screen.getByText("Hyperliquid Ask / Binance Ask - 1 · BTC/USDT")).not.toBeNull();
     expect(fetchBasisSpreadHistory).toHaveBeenCalledWith(
-      "OKX",
+      "Hyperliquid",
       "BTC",
       "USDT",
       "24h",
       null,
       expect.any(AbortSignal),
       "Binance",
+      "BTCUSDC",
+      "BTCUSDT",
     );
   });
 
@@ -156,6 +169,8 @@ describe("BasisSpreadPanel", () => {
         "1h",
         null,
         expect.any(AbortSignal),
+        undefined,
+        undefined,
         undefined,
       );
     });

@@ -1,3 +1,5 @@
+import type { PaybackStatus } from "@/types/market";
+
 const compactNumberFormatters = new Map<number, Intl.NumberFormat>();
 const currencyFormatters = new Map<string, Intl.NumberFormat>();
 const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
@@ -88,4 +90,24 @@ export function formatSettlementCountdown(value: string, now: number) {
   const minutes = totalMinutes % 60;
 
   return days > 0 ? `${days}d ${hours}h ${minutes}m` : `${hours}h ${minutes}m`;
+}
+
+export function formatPaybackPeriod(
+  status: PaybackStatus,
+  minutes: number | null,
+) {
+  if (status === "never") return "无法回本";
+  if (status === "insufficient_sample") return "样本不足";
+  if (minutes === null || !Number.isFinite(minutes) || minutes <= 0) return "—";
+  const rounded = Math.max(1, Math.round(minutes));
+  if (rounded < 60) return `${rounded} 分钟`;
+  if (rounded < 1_440) {
+    const hours = Math.floor(rounded / 60);
+    const remainder = rounded % 60;
+    return remainder > 0 ? `${hours} 小时 ${remainder} 分钟` : `${hours} 小时`;
+  }
+  const days = Math.floor(rounded / 1_440);
+  if (days > 365) return ">365 天";
+  const hours = Math.floor((rounded % 1_440) / 60);
+  return hours > 0 ? `${days} 天 ${hours} 小时` : `${days} 天`;
 }

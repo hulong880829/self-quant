@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -134,6 +136,71 @@ func TestTwapRepositoryIntegration(t *testing.T) {
 	}
 	if got, err := repository.GetTwap(ctx, jobs[0].ID); err != nil || got.Status != "canceled" {
 		t.Fatalf("get canceled job: status=%s err=%v", got.Status, err)
+	}
+	due := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+	created := due.Add(-time.Hour)
+	for index := 1; index < len(jobs); index++ {
+		next := due.Add(time.Duration(index-1) * time.Second)
+		if index == 2 {
+			next = due
+		}
+		if _, err := pool.Exec(ctx, `
+			UPDATE trader_twap_jobs
+			SET next_action_at=$2,created_at=$3,scheduler_lease_until=NULL
+			WHERE id=$1::uuid`,
+			jobs[index].ID, next, created,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	leased, err := repository.LeaseDueTwaps(ctx, 4, time.Minute)
+	if err != nil || len(leased) != 4 {
+		t.Fatalf("lease ordered twaps=%d err=%v", len(leased), err)
+	}
+	tied := []string{jobs[1].ID, jobs[2].ID}
+	sort.Strings(tied)
+	wantOrder := []string{tied[0], tied[1], jobs[3].ID, jobs[4].ID}
+	for index := range wantOrder {
+		if leased[index].ID != wantOrder[index] {
+			t.Fatalf("leased order[%d]=%s want=%s", index, leased[index].ID, wantOrder[index])
+		}
+	}
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE trader_twap_jobs SET scheduler_lease_until=NULL
+		WHERE id=ANY($1::uuid[])`, wantOrder,
+	); err != nil {
+		t.Fatal(err)
+	}
+	concurrent := []*Repository{NewRepository(pool), NewRepository(pool)}
+	results := make([][]TwapJob, len(concurrent))
+	errs := make([]error, len(concurrent))
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	for index := range concurrent {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			<-start
+			results[index], errs[index] = concurrent[index].LeaseDueTwaps(ctx, 2, time.Minute)
+		}(index)
+	}
+	close(start)
+	wait.Wait()
+	seen := make(map[string]bool, 4)
+	for index := range results {
+		if errs[index] != nil {
+			t.Fatal(errs[index])
+		}
+		for _, job := range results[index] {
+			if seen[job.ID] {
+				t.Fatalf("TWAP %s leased by both workers", job.ID)
+			}
+			seen[job.ID] = true
+		}
+	}
+	if len(seen) != 4 {
+		t.Fatalf("concurrent workers leased %d TWAPs, want 4", len(seen))
 	}
 	running, _, err := repository.ListTwaps(ctx, "admin", accountID, "running", "", 50, "")
 	if err != nil || len(running) != 4 {

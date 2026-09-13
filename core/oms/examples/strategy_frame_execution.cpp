@@ -51,7 +51,8 @@ class StrategyFrame {
   }
 
   bool PlaceOne() {
-    oms::api::NewOrderRequest request{};
+    oms::api::SubmitOrderRequest submitted{};
+    auto& request = submitted.order;
     constexpr char client_id[] = "strategy-frame-1";
     std::memcpy(request.client_order_id.value.data(), client_id,
                 sizeof(client_id) - 1);
@@ -62,8 +63,22 @@ class StrategyFrame {
     request.time_in_force = oms::api::TimeInForce::GTC;
     request.quantity = {10, 3, {}};
     request.price = {25'000, 2, {}};
+    submitted.routing.kind = oms::api::ExecutionRouteKind::Crypto;
+    submitted.routing.venue =
+        static_cast<std::uint8_t>(utils::md::Venue::Binance);
+    submitted.routing.product_type =
+        static_cast<std::uint8_t>(utils::md::ProductType::Spot);
+    submitted.routing.price_scale = 2;
+    submitted.routing.quantity_scale = 3;
+    submitted.routing.catalog_revision = 1;
+    submitted.routing.tick_size = 1;
+    submitted.routing.lot_size = 1;
+    constexpr char symbol[] = "STRATEGY_FRAME";
+    std::memcpy(submitted.routing.crypto.venue_symbol.value.data(), symbol,
+                sizeof(symbol) - 1);
+    submitted.routing.crypto.venue_symbol.length = sizeof(symbol) - 1;
 
-    const auto placed = execution_->place_order(kLaneId, request);
+    const auto placed = execution_->place_order(kLaneId, submitted);
     if (!placed) return false;
     expected_ = placed.value;
     return true;

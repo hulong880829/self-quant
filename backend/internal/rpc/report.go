@@ -111,7 +111,7 @@ func (s *ReportServer) CreateCashFlow(
 		occurredAt = request.GetOccurredAt().AsTime()
 	}
 	item, err := s.service.CreateCashFlow(
-		ctx, request.GetToken(), request.GetProductId(), request.GetFlowDate(),
+		ctx, request.GetToken(), request.GetProductId(), "",
 		occurredAt,
 		request.GetAmountUsd(), request.GetFlowType(), request.GetNote(),
 		request.GetConfirmed(),
@@ -119,7 +119,10 @@ func (s *ReportServer) CreateCashFlow(
 	if err != nil {
 		return nil, reportError(err)
 	}
-	return &reportv1.CreateCashFlowResponse{CashFlow: cashFlowProto(item)}, nil
+	return &reportv1.CreateCashFlowResponse{
+		CashFlow:        cashFlowProto(item),
+		RecomputeStatus: item.RecomputeStatus,
+	}, nil
 }
 
 func (s *ReportServer) RecomputeProduct(
@@ -148,7 +151,7 @@ func productProto(item report.Product) *reportv1.Product {
 }
 
 func dailyProto(item report.DailySnapshot) *reportv1.DailySnapshot {
-	return &reportv1.DailySnapshot{
+	value := &reportv1.DailySnapshot{
 		Id: item.ID, ProductId: item.ProductID, ReportDate: item.ReportDate,
 		OpeningEquityUsd: item.OpeningEquityUSD, ClosingEquityUsd: item.ClosingEquityUSD,
 		NetCashFlowUsd: item.NetCashFlowUSD, PnlUsd: item.PnLUSD,
@@ -157,8 +160,17 @@ func dailyProto(item report.DailySnapshot) *reportv1.DailySnapshot {
 		AbsoluteReturn: item.AbsoluteReturn, AnnualizedReturn: item.AnnualizedReturn,
 		Annualized_7D: item.Annualized7D, Annualized_30D: item.Annualized30D,
 		MaxDrawdown: item.MaxDrawdown, Sharpe: item.Sharpe,
-		Volume_24HUsd: item.Volume24hUSD,
+		Volume_24HUsd:   item.Volume24hUSD,
+		SubscriptionUsd: item.SubscriptionUSD, RedemptionUsd: item.RedemptionUSD,
+		CashFlowCount: int32(item.CashFlowCount), PeriodRuleVersion: int32(item.PeriodRuleVersion),
 	}
+	if !item.PeriodStart.IsZero() {
+		value.PeriodStart = timestamppb.New(item.PeriodStart)
+	}
+	if !item.PeriodEnd.IsZero() {
+		value.PeriodEnd = timestamppb.New(item.PeriodEnd)
+	}
+	return value
 }
 
 func cashFlowsProto(items []report.CashFlow) []*reportv1.CashFlow {
@@ -191,6 +203,8 @@ func reportError(err error) error {
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, report.ErrNotFound):
 		return status.Error(codes.NotFound, "product not found")
+	case errors.Is(err, report.ErrDuplicate):
+		return status.Error(codes.AlreadyExists, "duplicate cash flow")
 	default:
 		return status.Error(codes.Internal, "report operation failed")
 	}

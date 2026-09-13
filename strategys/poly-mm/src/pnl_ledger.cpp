@@ -60,7 +60,10 @@ bool PnlLedger::remember_order(strategyframe::OrderToken token,
 
 const PnlLedger::OrderRef* PnlLedger::order(
     strategyframe::OrderToken token) const noexcept {
+  if (token.sequence == 0) return nullptr;
   for (const OrderRef& value : orders_)
+    if (value.used && value.token == token) return &value;
+  for (const OrderRef& value : tombstones_)
     if (value.used && value.token == token) return &value;
   return nullptr;
 }
@@ -169,6 +172,8 @@ void PnlLedger::clear_terminal_order(
     strategyframe::OrderToken token) noexcept {
   for (OrderRef& value : orders_) {
     if (value.used && value.token == token) {
+      tombstones_[tombstone_cursor_] = value;
+      tombstone_cursor_ = (tombstone_cursor_ + 1) % tombstones_.size();
       value = {};
       return;
     }
@@ -187,7 +192,16 @@ bool PnlLedger::activate_window(
   rows_[0].instrument_id = up_instrument;
   rows_[1].instrument_id = down_instrument;
   for (OrderRef& value : orders_) value = {};
+  tombstones_ = {};
+  tombstone_cursor_ = 0;
   return true;
+}
+
+std::size_t PnlLedger::used_order_slots() const noexcept {
+  std::size_t count = 0;
+  for (const OrderRef& value : orders_)
+    if (value.used) ++count;
+  return count;
 }
 
 std::uint64_t PnlLedger::duplicate_fills() const noexcept {

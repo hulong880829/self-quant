@@ -93,7 +93,8 @@ PolymarketTradeAdapter::PolymarketTradeAdapter(
   std::array<char, 45> signature{};
   std::size_t signature_size = 0;
   const bool valid =
-      config_.instruments != nullptr && config_.transport != nullptr &&
+      config_.resolve_polymarket_token != nullptr &&
+      config_.transport != nullptr &&
       config_.now_ms != nullptr && config_.request_timeout_ns != 0 &&
       config_.reconnect_initial_ns != 0 && config_.reconnect_max_ns != 0 &&
       config_.reconnect_initial_ns <= config_.reconnect_max_ns &&
@@ -282,45 +283,22 @@ AdapterResult PolymarketTradeAdapter::commit_place(
   } else if (request.expire_time_ns != 0) {
     return finish(AdapterResult::InvalidArgument);
   }
-  const bool prepared =
-      command.routing.kind == api::ExecutionRouteKind::Polymarket;
-  const TradingMetadata* trading =
-      prepared ? nullptr
-               : config_.instruments->FindTradingMetadata(
-                     request.instrument_id);
-  const utils::md::Instrument* instrument =
-      prepared ? nullptr : config_.instruments->Find(request.instrument_id);
-  if ((!prepared &&
-       (trading == nullptr || instrument == nullptr ||
-        trading->kind != MetadataKind::Polymarket ||
-        instrument->venue != utils::md::Venue::Polymarket)) ||
-      (prepared &&
-       command.routing.venue !=
-           static_cast<std::uint8_t>(utils::md::Venue::Polymarket)))
+  if (command.routing.kind != api::ExecutionRouteKind::Polymarket ||
+      command.routing.venue !=
+          static_cast<std::uint8_t>(utils::md::Venue::Polymarket))
     return finish(AdapterResult::InvalidArgument);
-  const std::uint8_t signature_type =
-      prepared ? command.routing.signature_type
-               : trading->polymarket.signature_type;
-  const bool negative_risk =
-      prepared ? command.routing.negative_risk
-               : trading->polymarket.negative_risk;
+  const std::uint8_t signature_type = command.routing.signature_type;
+  const bool negative_risk = command.routing.negative_risk;
   const std::int64_t minimum_order_size =
-      prepared ? command.routing.minimum_order_size
-               : trading->polymarket.minimum_order_size;
-  const std::uint32_t taker_delay_ms =
-      prepared ? command.routing.taker_delay_ms
-               : trading->polymarket.taker_delay_ms;
-  const std::uint8_t price_scale =
-      prepared ? command.routing.price_scale : instrument->price_scale;
-  const std::uint8_t quantity_scale =
-      prepared ? command.routing.quantity_scale : instrument->quantity_scale;
-  const std::int64_t tick_size =
-      prepared ? command.routing.tick_size : instrument->tick_size;
-  const std::int64_t lot_size =
-      prepared ? command.routing.lot_size : instrument->lot_size;
+      command.routing.minimum_order_size;
+  const std::uint32_t taker_delay_ms = command.routing.taker_delay_ms;
+  const std::uint8_t price_scale = command.routing.price_scale;
+  const std::uint8_t quantity_scale = command.routing.quantity_scale;
+  const std::int64_t tick_size = command.routing.tick_size;
+  const std::int64_t lot_size = command.routing.lot_size;
   if (signature_type == 1)
     return finish(AdapterResult::Unsupported);
-  if (prepared && command.routing.instrument_expiry_ns != 0 &&
+  if (command.routing.instrument_expiry_ns != 0 &&
       now_ms >= command.routing.instrument_expiry_ns / 1'000'000ULL)
     return finish(AdapterResult::InvalidArgument);
   std::uint64_t quantity_units = 0;
@@ -357,8 +335,7 @@ AdapterResult PolymarketTradeAdapter::commit_place(
                            order.signer) != CryptoResult::Ok) {
     return finish(AdapterResult::InvalidArgument);
   }
-  order.token_id =
-      prepared ? command.routing.token_id : trading->polymarket.token_id;
+  order.token_id = command.routing.polymarket.token_id;
   order.side = request.side == api::Side::Buy ? 0 : 1;
   if (request.side != api::Side::Buy && request.side != api::Side::Sell)
     return finish(AdapterResult::InvalidArgument);
@@ -432,31 +409,6 @@ void PolymarketTradeAdapter::bind_order(
       return;
     }
   }
-}
-
-AdapterResult PolymarketTradeAdapter::validate_rebind(
-    const api::RebindPolymarketInstrumentRequest& request) const noexcept {
-  if (config_.instruments == nullptr ||
-      config_.instruments->ValidateRebind(request) != api::Error::Ok ||
-      status_ != AdapterStatus::Ready || reconcile_generation_ != 0 ||
-      reconcile_request_id_ != 0 || pending_size_ != 0) {
-    return AdapterResult::InvalidArgument;
-  }
-  for (const CommandSlot& slot : commands_)
-    if (slot.reserved || slot.inflight) return AdapterResult::WouldBlock;
-  return AdapterResult::Ok;
-}
-
-AdapterResult PolymarketTradeAdapter::apply_rebind(
-    const api::RebindPolymarketInstrumentRequest& request) noexcept {
-  const AdapterResult valid = validate_rebind(request);
-  if (valid != AdapterResult::Ok) return valid;
-  for (OrderBinding& binding : orders_)
-    if (binding.used && binding.instrument_id == request.instrument_id)
-      binding = {};
-  return config_.instruments->Rebind(request) == api::Error::Ok
-             ? AdapterResult::Ok
-             : AdapterResult::Failed;
 }
 
 AdapterResult PolymarketTradeAdapter::commit_cancel(
@@ -554,15 +506,46 @@ AdapterResult PolymarketTradeAdapter::submit_query_page() noexcept {
   if (request.id == 0) request.id = next_request_id_++;
   ProtocolResult built = ProtocolResult::InvalidArgument;
   Transport* transport = config_.transport;
+  const auto& query_request = query_.request.request;
+  std::array<char, 78> token_decimal{};
+  std::size_t token_decimal_size{};
+  std::array<char, 66> condition_hex{};
+  std::string_view asset_id;
+  std::string_view market;
+  if (query_request.scope == api::QueryScope::SingleInstrument) {
+    if (query_request.instrument.kind !=
+        api::ExecutionRouteKind::Polymarket) {
+      return AdapterResult::InvalidArgument;
+    }
+    if (TokenIdToDecimal(query_request.instrument.polymarket.token_id,
+                         token_decimal.data(), token_decimal.size(),
+                         token_decimal_size) != CryptoResult::Ok) {
+      return AdapterResult::InvalidArgument;
+    }
+    asset_id =
+        std::string_view(token_decimal.data(), token_decimal_size);
+    constexpr char digits[] = "0123456789abcdef";
+    condition_hex[0] = '0';
+    condition_hex[1] = 'x';
+    for (std::size_t index = 0;
+         index < query_request.instrument.polymarket.condition_id.size();
+         ++index) {
+      const std::uint8_t byte =
+          query_request.instrument.polymarket.condition_id[index];
+      condition_hex[2 + index * 2] = digits[byte >> 4U];
+      condition_hex[3 + index * 2] = digits[byte & 0x0fU];
+    }
+    market = std::string_view(condition_hex.data(), condition_hex.size());
+  }
   if (query_.kind == api::QueryKind::OpenOrders) {
-    built = BuildOpenOrdersPage(query_.pagination, request.wire);
+    built = BuildOpenOrdersPage(query_.pagination, request.wire, asset_id);
     if (built == ProtocolResult::Ok) {
       const AdapterResult authorized = authorize(request);
       if (authorized != AdapterResult::Ok) return authorized;
     }
   } else {
     built = BuildPositions(config_.credentials.funder_address.view(),
-                           request.wire);
+                           request.wire, market);
     transport = config_.data_transport;
   }
   if (built != ProtocolResult::Ok) return ProtocolAdapterResult(built);
@@ -579,7 +562,7 @@ AdapterResult PolymarketTradeAdapter::query_open_orders(
     const AdapterQueryRequest& request,
     const AdapterEventSink& sink) noexcept {
   (void)sink;
-  if (request.account_id == 0 || request.token.sequence == 0)
+  if (request.request.account_id == 0 || request.token.sequence == 0)
     return AdapterResult::InvalidArgument;
   if (query_.active) return AdapterResult::WouldBlock;
   query_ = {};
@@ -595,7 +578,7 @@ AdapterResult PolymarketTradeAdapter::query_positions(
     const AdapterQueryRequest& request,
     const AdapterEventSink& sink) noexcept {
   (void)sink;
-  if (request.account_id == 0 || request.token.sequence == 0)
+  if (request.request.account_id == 0 || request.token.sequence == 0)
     return AdapterResult::InvalidArgument;
   if (config_.data_transport == nullptr) return AdapterResult::Unsupported;
   if (query_.active) return AdapterResult::WouldBlock;
@@ -874,12 +857,23 @@ AdapterServiceResult PolymarketTradeAdapter::service_io(
         } else {
           for (std::size_t index = 0; index < parsed_count; ++index) {
             const auto& source = parsed_items[index];
+            const auto& requested = query_.request.request;
+            if (requested.scope == api::QueryScope::SingleInstrument &&
+                (requested.instrument.kind !=
+                     api::ExecutionRouteKind::Polymarket ||
+                 requested.instrument.polymarket.token_id !=
+                     source.token_id)) {
+              continue;
+            }
             AdapterEvent item =
                 Event(identity(), AdapterEventKind::OpenOrderSnapshot);
             item.open_order.query_token = query_.request.token;
-            item.open_order.account_id = query_.request.account_id;
+            item.open_order.account_id = query_.request.request.account_id;
             item.open_order.instrument_id =
-                config_.instruments->FindPolymarketToken(source.token_id);
+                config_.resolve_polymarket_token(
+                    config_.instrument_context, source.token_id);
+            if (item.open_order.instrument_id == 0)
+              item.open_order.reserved |= api::SnapshotUnmapped;
             item.open_order.venue_order_id = source.venue_order_id;
             item.open_order.side = source.side;
             item.open_order.status = source.status;
@@ -890,8 +884,7 @@ AdapterServiceResult PolymarketTradeAdapter::service_io(
                 std::max(source.quantity.scale,
                          source.matched_quantity.scale);
             std::uint64_t quantity = 0, matched = 0;
-            if (item.open_order.instrument_id == 0 ||
-                !AtScale(source.quantity, scale, quantity) ||
+            if (!AtScale(source.quantity, scale, quantity) ||
                 (source.matched_quantity.value != 0 &&
                  !AtScale(source.matched_quantity, scale, matched)) ||
                 matched > quantity) {
@@ -922,18 +915,24 @@ AdapterServiceResult PolymarketTradeAdapter::service_io(
           query_result = ProtocolAdapterResult(parsed);
         } else {
           for (std::size_t index = 0; index < parsed_count; ++index) {
+            const auto& requested = query_.request.request;
+            if (requested.scope == api::QueryScope::SingleInstrument &&
+                (requested.instrument.kind !=
+                     api::ExecutionRouteKind::Polymarket ||
+                 requested.instrument.polymarket.token_id !=
+                     parsed_items[index].token_id)) {
+              continue;
+            }
             AdapterEvent item =
                 Event(identity(), AdapterEventKind::PositionSnapshot);
             item.position.query_token = query_.request.token;
-            item.position.account_id = query_.request.account_id;
+            item.position.account_id = query_.request.request.account_id;
             item.position.instrument_id =
-                config_.instruments->FindPolymarketToken(
-                    parsed_items[index].token_id);
+                config_.resolve_polymarket_token(
+                    config_.instrument_context, parsed_items[index].token_id);
             item.position.quantity = parsed_items[index].quantity;
-            if (item.position.instrument_id == 0) {
-              query_result = AdapterResult::InvalidArgument;
-              break;
-            }
+            if (item.position.instrument_id == 0)
+              item.position.reserved |= api::SnapshotUnmapped;
             if (queue(item) != AdapterResult::Ok) {
               result.result = AdapterResult::WouldBlock;
               return result;
@@ -944,7 +943,8 @@ AdapterServiceResult PolymarketTradeAdapter::service_io(
       AdapterEvent complete =
           Event(identity(), AdapterEventKind::QueryComplete);
       complete.query_complete.query_token = query_.request.token;
-      complete.query_complete.account_id = query_.request.account_id;
+      complete.query_complete.account_id =
+          query_.request.request.account_id;
       complete.query_complete.kind = query_.kind;
       complete.query_complete.error =
           query_result == AdapterResult::Ok
@@ -1140,7 +1140,8 @@ AdapterResult PolymarketTradeAdapter::on_deadline(
   if (query_due) {
     AdapterEvent complete = Event(identity(), AdapterEventKind::QueryComplete);
     complete.query_complete.query_token = query_.request.token;
-    complete.query_complete.account_id = query_.request.account_id;
+    complete.query_complete.account_id =
+        query_.request.request.account_id;
     complete.query_complete.kind = query_.kind;
     complete.query_complete.error = api::Error::NotReady;
     query_ = {};

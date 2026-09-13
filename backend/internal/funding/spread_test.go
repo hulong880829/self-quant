@@ -45,6 +45,9 @@ func TestBuildSpreadsDirectionAndMetrics(t *testing.T) {
 	if !got.UpdatedAt.Equal(now.Add(-2 * time.Minute)) {
 		t.Fatalf("updated_at=%v", got.UpdatedAt)
 	}
+	if got.History24hComplete != nil || got.History7dComplete != nil {
+		t.Fatal("coverage fields must stay unset")
+	}
 }
 
 func TestBuildSpreadsCreatesUniqueDistinctExchangePairs(t *testing.T) {
@@ -81,6 +84,42 @@ func TestBuildSpreadsSkipsInvalidIntervalsAndDoesNotMergeSymbols(t *testing.T) {
 	})
 	if len(spreads) != 0 {
 		t.Fatalf("spreads=%+v want none", spreads)
+	}
+}
+
+func TestBuildSpreadsPairsOnlyHyperliquidUSDCWithOtherVenueUSDT(t *testing.T) {
+	rates := []Rate{
+		{
+			Exchange: "hyperliquid", ExchangeSymbol: "BTC", GlobalSymbol: "BTCUSDC",
+			BaseAsset: "BTC", QuoteAsset: "USDC", IntervalHours: 1, Rate: -0.0001,
+		},
+		{
+			Exchange: "binance", ExchangeSymbol: "BTCUSDT", GlobalSymbol: "BTCUSDT",
+			BaseAsset: "BTC", QuoteAsset: "USDT", IntervalHours: 8, Rate: 0.0002,
+		},
+		{
+			Exchange: "bybit", ExchangeSymbol: "BTCUSDC", GlobalSymbol: "BTCUSDC",
+			BaseAsset: "BTC", QuoteAsset: "USDC", IntervalHours: 8, Rate: 0.0003,
+		},
+	}
+
+	spreads := BuildSpreads(rates)
+	if len(spreads) != 1 {
+		t.Fatalf("spreads=%+v want one Hyperliquid/USDT pair", spreads)
+	}
+	got := spreads[0]
+	if got.GlobalSymbol != "BTCUSDT" || got.QuoteAsset != "USDT" {
+		t.Fatalf("display identity=%s/%s", got.GlobalSymbol, got.QuoteAsset)
+	}
+	legs := map[string]SpreadLeg{got.Long.Exchange: got.Long, got.Short.Exchange: got.Short}
+	if legs["hyperliquid"].GlobalSymbol != "BTCUSDC" ||
+		legs["hyperliquid"].QuoteAsset != "USDC" ||
+		legs["binance"].GlobalSymbol != "BTCUSDT" ||
+		legs["binance"].QuoteAsset != "USDT" {
+		t.Fatalf("native leg identities not preserved: %+v", legs)
+	}
+	if _, pairedWithUSDC := legs["bybit"]; pairedWithUSDC {
+		t.Fatalf("Hyperliquid must not pair with another USDC contract: %+v", got)
 	}
 }
 

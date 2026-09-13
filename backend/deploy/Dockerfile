@@ -5,6 +5,7 @@ WORKDIR /src
 ENV CGO_ENABLED=0 GOOS=linux GOBIN=/out
 
 COPY go.mod go.sum ./
+COPY third_party/hyperliquid-go ./third_party/hyperliquid-go
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
@@ -13,6 +14,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     mkdir -p /out && \
     go build -trimpath -ldflags="-s -w" -o /out/funding-service ./cmd/funding-service && \
+    go build -trimpath -ldflags="-s -w" -o /out/funding-history-backfill ./cmd/funding-history-backfill && \
     go build -trimpath -ldflags="-s -w" -o /out/account-service ./cmd/account-service && \
     go build -trimpath -ldflags="-s -w" -o /out/polymarket-service ./cmd/polymarket-service && \
     go build -trimpath -ldflags="-s -w" -o /out/report-service ./cmd/report-service && \

@@ -3,15 +3,21 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <stdexcept>
 
 namespace utils::md {
 namespace {
-std::string UpperAlnum(std::string_view value) {
+std::optional<std::string> UpperAlnum(std::string_view value) {
   std::string out;
   out.reserve(value.size());
   for (const char raw : value) {
     const auto c = static_cast<unsigned char>(raw);
-    if (std::isalnum(c)) out.push_back(static_cast<char>(std::toupper(c)));
+    if (c >= 0x80U) return std::nullopt;
+    if (c >= 'a' && c <= 'z') {
+      out.push_back(static_cast<char>(c - ('a' - 'A')));
+    } else if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+      out.push_back(static_cast<char>(c));
+    }
   }
   return out;
 }
@@ -26,12 +32,21 @@ SymbolNormalizer::SymbolNormalizer()
     : aliases_{{"XBT", "BTC"}}, known_quotes_{"USDT", "USDC", "FDUSD", "BUSD", "USD", "BTC", "ETH", "EUR"} {}
 
 void SymbolNormalizer::AddAssetAlias(std::string alias, std::string canonical) {
-  aliases_[UpperAlnum(alias)] = UpperAlnum(canonical);
+  auto normalized_alias = UpperAlnum(alias);
+  auto normalized_canonical = UpperAlnum(canonical);
+  if (!normalized_alias || normalized_alias->empty() ||
+      !normalized_canonical || normalized_canonical->empty()) {
+    throw std::invalid_argument("asset aliases must be non-empty ASCII");
+  }
+  aliases_[std::move(*normalized_alias)] = std::move(*normalized_canonical);
 }
 
-std::string SymbolNormalizer::NormalizeAsset(std::string_view asset) const {
-  std::string normalized = UpperAlnum(asset);
-  if (auto it = aliases_.find(normalized); it != aliases_.end()) return it->second;
+std::optional<std::string>
+SymbolNormalizer::NormalizeAsset(std::string_view asset) const {
+  auto normalized = UpperAlnum(asset);
+  if (!normalized || normalized->empty()) return std::nullopt;
+  if (auto it = aliases_.find(*normalized); it != aliases_.end())
+    return it->second;
   return normalized;
 }
 
@@ -41,20 +56,33 @@ std::optional<SymbolParts> SymbolNormalizer::Normalize(
   std::string base;
   std::string quote;
   if (delimiter != std::string_view::npos) {
-    base = NormalizeAsset(venue_symbol.substr(0, delimiter));
-    quote = NormalizeAsset(venue_symbol.substr(delimiter + 1));
+    auto parsed_base = NormalizeAsset(venue_symbol.substr(0, delimiter));
+    auto parsed_quote = NormalizeAsset(venue_symbol.substr(delimiter + 1));
+    if (!parsed_base || !parsed_quote) return std::nullopt;
+    base = std::move(*parsed_base);
+    quote = std::move(*parsed_quote);
   } else {
-    const std::string joined = UpperAlnum(venue_symbol);
+    auto parsed_joined = UpperAlnum(venue_symbol);
+    if (!parsed_joined || parsed_joined->empty()) return std::nullopt;
+    const std::string &joined = *parsed_joined;
     if (!quote_hint.empty()) {
-      quote = NormalizeAsset(quote_hint);
+      auto parsed_quote = NormalizeAsset(quote_hint);
+      if (!parsed_quote) return std::nullopt;
+      quote = std::move(*parsed_quote);
       if (joined.size() <= quote.size() ||
           joined.compare(joined.size() - quote.size(), quote.size(), quote) != 0) return std::nullopt;
-      base = NormalizeAsset(std::string_view(joined).substr(0, joined.size() - quote.size()));
+      auto parsed_base = NormalizeAsset(
+          std::string_view(joined).substr(0, joined.size() - quote.size()));
+      if (!parsed_base) return std::nullopt;
+      base = std::move(*parsed_base);
     } else {
       for (const auto& candidate : known_quotes_) {
         if (joined.size() > candidate.size() &&
             joined.compare(joined.size() - candidate.size(), candidate.size(), candidate) == 0) {
-          base = NormalizeAsset(std::string_view(joined).substr(0, joined.size() - candidate.size()));
+          auto parsed_base = NormalizeAsset(std::string_view(joined).substr(
+              0, joined.size() - candidate.size()));
+          if (!parsed_base) return std::nullopt;
+          base = std::move(*parsed_base);
           quote = candidate;
           break;
         }
@@ -70,7 +98,13 @@ std::string SymbolNormalizer::InstrumentKey(Venue venue, ProductType product,
                                              std::string_view contract_spec) const {
   std::string key = std::to_string(static_cast<std::uint16_t>(venue)) + ":" +
                     std::to_string(static_cast<std::uint8_t>(product)) + ":" + parts.canonical;
-  if (!contract_spec.empty()) key += ":" + UpperAlnum(contract_spec);
+  if (!contract_spec.empty()) {
+    auto normalized = UpperAlnum(contract_spec);
+    if (!normalized || normalized->empty()) {
+      throw std::invalid_argument("contract spec must be non-empty ASCII");
+    }
+    key += ":" + *normalized;
+  }
   return key;
 }
 

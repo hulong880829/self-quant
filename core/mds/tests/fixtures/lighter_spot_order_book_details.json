@@ -1,0 +1,19 @@
+{
+  "code": 200,
+  "spot_order_book_details": [
+    {
+      "symbol": "ETH/USDC",
+      "market_id": 2048,
+      "market_type": "spot",
+      "status": "active",
+      "base_asset_id": 1,
+      "quote_asset_id": 3,
+      "supported_price_decimals": 2,
+      "supported_size_decimals": 4,
+      "min_base_amount": "0.0040",
+      "min_quote_amount": "10.000000",
+      "daily_base_token_volume": 209.9374,
+      "daily_quote_token_volume": 524062.914484
+    }
+  ]
+}

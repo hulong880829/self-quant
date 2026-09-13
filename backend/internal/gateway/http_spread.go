@@ -7,13 +7,13 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	spreadv1 "selfquant/backend/gen/spread/v1"
+	"selfquant/backend/internal/spread"
 )
 
 func (h *Handler) getBasisSpreadHistory(writer http.ResponseWriter, request *http.Request) {
@@ -25,9 +25,13 @@ func (h *Handler) getBasisSpreadHistory(writer http.ResponseWriter, request *htt
 		rangeValue = "24h"
 	}
 	compareVenue := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("compareVenue")))
+	venueSymbol := strings.ToUpper(strings.TrimSpace(request.URL.Query().Get("venueSymbol")))
+	compareSymbol := strings.ToUpper(strings.TrimSpace(request.URL.Query().Get("compareVenueSymbol")))
 	protoRange, ok := basisSpreadRange(rangeValue)
-	if !ok || !validSpreadVenue(venue) || !validSpreadAsset(baseAsset) || !validSpreadAsset(quoteAsset) ||
-		(compareVenue != "" && (!validSpreadVenue(compareVenue) || compareVenue == venue)) {
+	if !ok || !spread.ValidVenue(venue) || !spread.ValidAsset(baseAsset) || !spread.ValidAsset(quoteAsset) ||
+		(compareVenue != "" && (!spread.ValidVenue(compareVenue) || compareVenue == venue)) ||
+		(venueSymbol != "" && !spread.ValidCanonicalSymbol(venueSymbol)) ||
+		(compareSymbol != "" && !spread.ValidCanonicalSymbol(compareSymbol)) {
 		writeJSON(writer, http.StatusBadRequest, map[string]string{
 			"error": "venue, assets and range are invalid",
 		})
@@ -38,13 +42,17 @@ func (h *Handler) getBasisSpreadHistory(writer http.ResponseWriter, request *htt
 	response, err := h.spread.GetBasisSpreadHistory(ctx, &spreadv1.GetBasisSpreadHistoryRequest{
 		Venue: venue, CompareVenue: compareVenue, BaseAsset: baseAsset,
 		QuoteAsset: quoteAsset, Range: protoRange,
+		VenueCanonicalSymbol: venueSymbol, CompareVenueCanonicalSymbol: compareSymbol,
 	})
 	if err != nil {
 		h.writeSpreadError(writer, request, err)
 		return
 	}
 	payload := basisSpreadHistoryJSON(response, rangeValue)
-	etag := basisSpreadETag(venue, compareVenue, baseAsset, quoteAsset, rangeValue, response.GetAsOf().AsTime())
+	etag := basisSpreadETag(
+		venue, compareVenue, baseAsset, quoteAsset, venueSymbol, compareSymbol,
+		rangeValue, response.GetAsOf().AsTime(),
+	)
 	writer.Header().Set("ETag", etag)
 	writer.Header().Set("Cache-Control", "public, max-age=15")
 	if request.Header.Get("If-None-Match") == etag {
@@ -131,33 +139,13 @@ func basisSpreadAvailabilityJSON(value spreadv1.BasisSpreadAvailability) string 
 	return "unavailable"
 }
 
-func basisSpreadETag(venue, compareVenue, baseAsset, quoteAsset, rangeValue string, asOf time.Time) string {
+func basisSpreadETag(
+	venue, compareVenue, baseAsset, quoteAsset, venueSymbol, compareSymbol, rangeValue string,
+	asOf time.Time,
+) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
-		venue, compareVenue, baseAsset, quoteAsset, rangeValue, asOf.UTC().Format(time.RFC3339Nano),
+		venue, compareVenue, baseAsset, quoteAsset, venueSymbol, compareSymbol,
+		rangeValue, asOf.UTC().Format(time.RFC3339Nano),
 	}, "|")))
 	return `"` + hex.EncodeToString(sum[:8]) + `"`
-}
-
-func validSpreadVenue(value string) bool {
-	if len(value) < 2 || len(value) > 32 {
-		return false
-	}
-	for _, r := range value {
-		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
-			return false
-		}
-	}
-	return true
-}
-
-func validSpreadAsset(value string) bool {
-	if len(value) < 2 || len(value) > 16 {
-		return false
-	}
-	for _, r := range value {
-		if !unicode.IsUpper(r) && (r < '0' || r > '9') {
-			return false
-		}
-	}
-	return true
 }

@@ -1292,7 +1292,7 @@ bool PolymarketAdapter::build_metadata_request_batches(
     error = "Polymarket resolver has no Gamma request ready";
     return false;
   }
-  batches = {{metadata_request(requests), 0, requests.size()}};
+  batches = {{metadata_request(requests), 0, requests.size(), false, {}}};
   error.clear();
   return true;
 }

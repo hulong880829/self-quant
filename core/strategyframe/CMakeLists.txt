@@ -25,10 +25,13 @@ target_include_directories(self_quant_strategyframe_config
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 if(TARGET yaml-cpp::yaml-cpp)
-  target_link_libraries(self_quant_strategyframe_config PRIVATE
-    yaml-cpp::yaml-cpp)
+  target_link_libraries(self_quant_strategyframe_config
+    PUBLIC self_quant::utils
+    PRIVATE yaml-cpp::yaml-cpp)
 else()
-  target_link_libraries(self_quant_strategyframe_config PRIVATE yaml-cpp)
+  target_link_libraries(self_quant_strategyframe_config
+    PUBLIC self_quant::utils
+    PRIVATE yaml-cpp)
 endif()
 
 add_library(self_quant_strategyframe STATIC
@@ -148,6 +151,15 @@ if(STRATEGYFRAME_BUILD_TESTS)
   add_test(NAME strategyframe_runtime_tests
     COMMAND strategyframe_runtime_tests)
 
+  add_executable(strategyframe_catalog_instrument_tests
+    tests/catalog_instrument_tests.cpp)
+  target_include_directories(strategyframe_catalog_instrument_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/internal)
+  target_link_libraries(strategyframe_catalog_instrument_tests PRIVATE
+    self_quant_strategyframe self_quant_oms)
+  add_test(NAME strategyframe_catalog_instrument_tests
+    COMMAND strategyframe_catalog_instrument_tests)
+
   add_executable(strategyframe_mds_tests
     tests/market_data_source_tests.cpp)
   target_include_directories(strategyframe_mds_tests PRIVATE
@@ -161,7 +173,9 @@ if(STRATEGYFRAME_BUILD_TESTS)
   target_link_libraries(strategyframe_config_tests PRIVATE
     self_quant_strategyframe_config)
   target_compile_definitions(strategyframe_config_tests PRIVATE
-    STRATEGYFRAME_CONFIG_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/config/strategyframe.example.yaml")
+    STRATEGYFRAME_CONFIG_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/config/strategyframe.example.yaml"
+    STRATEGYFRAME_VENUE_EXTENSIONS_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/venue_extensions.yaml"
+    STRATEGYFRAME_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   add_test(NAME strategyframe_config_tests
     COMMAND strategyframe_config_tests)
 

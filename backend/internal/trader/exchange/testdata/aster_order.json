@@ -1,0 +1,17 @@
+{
+  "clientOrderId": "sq_order_fixture",
+  "cumQty": "0.001",
+  "cumQuote": "60.000",
+  "executedQty": "0.001",
+  "orderId": 22542179,
+  "avgPrice": "60000",
+  "origQty": "0.001",
+  "price": "60000",
+  "reduceOnly": false,
+  "side": "BUY",
+  "status": "FILLED",
+  "symbol": "BTCUSDT",
+  "timeInForce": "GTC",
+  "type": "LIMIT",
+  "updateTime": 1720000000000
+}

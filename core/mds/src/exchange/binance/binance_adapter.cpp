@@ -1,4 +1,5 @@
 #include "mds/exchange/binance/binance_adapter.h"
+#include "mds/exchange/venue_adapter.h"
 
 #include <bit>
 #include <charconv>
@@ -57,6 +58,21 @@ bool decimal_to_fixed(std::string_view text, std::int8_t scale,
   }
   out = negative ? -value : value;
   return true;
+}
+
+bool parse_decimal_field(std::string_view text, std::int8_t scale,
+                         std::int64_t &out, std::string_view field,
+                         std::string &error) {
+  if (decimal_to_fixed(text, scale, out)) {
+    return true;
+  }
+  if (scale >= 0 &&
+      mds::exchange::decimal_scale_mismatch(
+          text, static_cast<std::uint8_t>(scale))) {
+    error = "invalid Binance market data reason=scale field=";
+    error.append(field);
+  }
+  return false;
 }
 
 template <std::size_t Capacity>
@@ -202,16 +218,21 @@ bool JsonParser::parse_book_ticker(std::string_view json,
     auto document = impl_->parse(json);
     out.update_id = std::uint64_t(document["u"]);
     const auto bid = std::string_view(document["b"].get_string().value());
-    if (!decimal_to_fixed(bid, price_scale, out.bid_price)) {
-      throw simdjson::simdjson_error(simdjson::NUMBER_ERROR);
-    }
     const auto bid_qty = std::string_view(document["B"].get_string().value());
     const auto ask = std::string_view(document["a"].get_string().value());
     const auto ask_qty = std::string_view(document["A"].get_string().value());
-    if (!decimal_to_fixed(bid_qty, quantity_scale, out.bid_quantity) ||
-        !decimal_to_fixed(ask, price_scale, out.ask_price) ||
-        !decimal_to_fixed(ask_qty, quantity_scale, out.ask_quantity)) {
-      throw simdjson::simdjson_error(simdjson::NUMBER_ERROR);
+    if (!parse_decimal_field(bid, price_scale, out.bid_price,
+                             "price", error) ||
+        !parse_decimal_field(bid_qty, quantity_scale,
+                             out.bid_quantity, "quantity", error) ||
+        !parse_decimal_field(ask, price_scale, out.ask_price,
+                             "price", error) ||
+        !parse_decimal_field(ask_qty, quantity_scale,
+                             out.ask_quantity, "quantity", error)) {
+      if (error.empty()) {
+        error = "invalid Binance book ticker number";
+      }
+      return false;
     }
     auto event_time = document["E"].get_uint64();
     out.event_time_ms = event_time.error() ? 0 : event_time.value();
@@ -291,9 +312,14 @@ DepthParseResult JsonParser::parse_depth_classified(
       const auto quantity =
           std::string_view((*iterator).get_string().value());
       PriceLevel parsed{};
-      if (!decimal_to_fixed(price, price_scale, parsed.price) ||
-          !decimal_to_fixed(quantity, quantity_scale, parsed.quantity)) {
-        throw simdjson::simdjson_error(simdjson::NUMBER_ERROR);
+      if (!parse_decimal_field(price, price_scale, parsed.price,
+                               "price", error) ||
+          !parse_decimal_field(quantity, quantity_scale,
+                               parsed.quantity, "quantity", error)) {
+        if (error.empty()) {
+          error = "invalid Binance bid depth number";
+        }
+        return DepthParseResult::Invalid;
       }
       out.bids.push_back(parsed);
     }
@@ -317,9 +343,14 @@ DepthParseResult JsonParser::parse_depth_classified(
       const auto quantity =
           std::string_view((*iterator).get_string().value());
       PriceLevel parsed{};
-      if (!decimal_to_fixed(price, price_scale, parsed.price) ||
-          !decimal_to_fixed(quantity, quantity_scale, parsed.quantity)) {
-        throw simdjson::simdjson_error(simdjson::NUMBER_ERROR);
+      if (!parse_decimal_field(price, price_scale, parsed.price,
+                               "price", error) ||
+          !parse_decimal_field(quantity, quantity_scale,
+                               parsed.quantity, "quantity", error)) {
+        if (error.empty()) {
+          error = "invalid Binance ask depth number";
+        }
+        return DepthParseResult::Invalid;
       }
       out.asks.push_back(parsed);
     }

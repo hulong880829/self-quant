@@ -11,50 +11,59 @@ import (
 )
 
 type Funding struct {
-	DatabaseURL            string
-	GRPCAddress            string
-	SyncInterval           time.Duration
-	HTTPTimeout            time.Duration
-	InstrumentSyncInterval time.Duration
-	ClickHouseAddr         string
-	ClickHouseDatabase     string
-	ClickHouseTable        string
-	ClickHouseUser         string
-	ClickHousePassword     string
-	ClickHouseTLS          bool
-	ClickHouseTLSSkip      bool
-	RankingQueryTimeout    time.Duration
-	RankingPoolSize        int
-	Ranking1hInterval      time.Duration
-	RankingSlowInterval    time.Duration
-	RankingEnabled         bool
-	RankingCacheEnabled    bool
-	RankingMinuteEnabled   bool
-	RankingHistoryMaxRows  int
-	LogLevel               string
-	Development            bool
-	EnabledExchanges       map[string]bool
+	DatabaseURL             string
+	GRPCAddress             string
+	SyncInterval            time.Duration
+	HTTPTimeout             time.Duration
+	InstrumentSyncInterval  time.Duration
+	ClickHouseAddr          string
+	ClickHouseDatabase      string
+	ClickHouseTable         string
+	ClickHouseUser          string
+	ClickHousePassword      string
+	ClickHouseTLS           bool
+	ClickHouseTLSSkip       bool
+	RankingQueryTimeout     time.Duration
+	RankingPoolSize         int
+	RankingInterval         time.Duration
+	RankingTimeout          time.Duration
+	RankingHistoryIncrement time.Duration
+	RankingRateMaxAge       time.Duration
+	RankingEnabled          bool
+	RankingMinuteEnabled    bool
+	RankingHistoryMaxRows   int
+	LogLevel                string
+	Development             bool
+	EnabledExchanges        map[string]bool
+	PublishedExchanges      map[string]bool
+	SpreadEnabledExchanges  map[string]bool
+	RankingEnabledExchanges map[string]bool
+	AsterFundingAPIURL      string
+	LighterFundingAPIURL    string
 }
 
 type Account struct {
-	DatabaseURL         string
-	GRPCAddress         string
-	TokenSecret         string
-	ReportInternalToken string
-	TraderInternalToken string
-	TokenTTL            time.Duration
-	CredentialsKey      string
-	PolymarketCLOBURL   string
-	PolymarketDataURL   string
-	BinancePortfolioURL string
-	OKXAccountURL       string
-	BitgetAccountURL    string
-	BybitAccountURL     string
-	GateAccountURL      string
-	AccountSnapshotTTL  time.Duration
-	HTTPTimeout         time.Duration
-	LogLevel            string
-	Development         bool
+	DatabaseURL           string
+	GRPCAddress           string
+	TokenSecret           string
+	ReportInternalToken   string
+	TraderInternalToken   string
+	TokenTTL              time.Duration
+	CredentialsKey        string
+	PolymarketCLOBURL     string
+	PolymarketDataURL     string
+	BinancePortfolioURL   string
+	OKXAccountURL         string
+	BitgetAccountURL      string
+	BybitAccountURL       string
+	GateAccountURL        string
+	HyperliquidInfoAPIURL string
+	AsterFuturesAPIURL    string
+	LighterAPIURL         string
+	AccountSnapshotTTL    time.Duration
+	HTTPTimeout           time.Duration
+	LogLevel              string
+	Development           bool
 }
 
 type Polymarket struct {
@@ -145,58 +154,74 @@ type AI struct {
 }
 
 type Trader struct {
-	DatabaseURL                 string
-	GRPCAddress                 string
-	AccountGRPCAddress          string
-	BinanceURL                  string
-	OKXURL                      string
-	BybitURL                    string
-	BitgetURL                   string
-	GateURL                     string
-	HTTPTimeout                 time.Duration
-	InternalToken               string
-	ReconcileInterval           time.Duration
-	ReconcileBatchSize          int
-	ReconcileWorkers            int
-	TwapScheduleInterval        time.Duration
-	TwapScheduleLease           time.Duration
-	TwapScheduleBatch           int
-	TwapScheduleWorkers         int
-	TwapRetention               time.Duration
-	TwapCleanupInterval         time.Duration
-	TwapCleanupBatch            int
-	TwapCleanupMaxBatches       int
-	ArbitrageScheduleInterval   time.Duration
-	ArbitrageScheduleLease      time.Duration
-	ArbitrageScheduleBatch      int
-	ArbitrageScheduleWorkers    int
-	ArbitrageBBOStale           time.Duration
-	ArbitrageRepriceTicks       int
-	ArbitrageObserverInterval   time.Duration
-	ArbitrageIOCProtectionTicks int
-	ArbitrageIOCRetries         int
-	ArbitrageOrderStreamEnabled bool
-	BinanceOrderWSURL           string
-	OKXOrderWSURL               string
-	BybitOrderWSURL             string
-	BitgetOrderWSURL            string
-	GateOrderWSURL              string
-	OrderStreamReconnectInitial time.Duration
-	OrderStreamReconnectMax     time.Duration
-	OrderStreamHeartbeat        time.Duration
-	OrderStreamStale            time.Duration
-	OrderStreamListenKeyRefresh time.Duration
-	OrderStreamRESTAudit        time.Duration
-	OrderStreamSessionIdle      time.Duration
-	ArbitrageMaxActiveAccount   int
-	ArbitrageMaxActiveVenue     int
-	ArbitrageRetention          time.Duration
-	ArbitrageCleanupInterval    time.Duration
-	ArbitrageCleanupBatch       int
-	ArbitrageCleanupMaxBatches  int
-	ArbitrageDryRun             bool
-	LogLevel                    string
-	Development                 bool
+	DatabaseURL                  string
+	GRPCAddress                  string
+	AccountGRPCAddress           string
+	BinanceURL                   string
+	OKXURL                       string
+	BybitURL                     string
+	BitgetURL                    string
+	GateURL                      string
+	HyperliquidURL               string
+	AsterURL                     string
+	LighterURL                   string
+	HTTPTimeout                  time.Duration
+	InternalToken                string
+	ReconcileInterval            time.Duration
+	ReconcileBatchSize           int
+	ReconcileWorkers             int
+	TwapScheduleInterval         time.Duration
+	TwapScheduleLease            time.Duration
+	TwapScheduleBatch            int
+	TwapScheduleWorkers          int
+	TwapRetention                time.Duration
+	TwapCleanupInterval          time.Duration
+	TwapCleanupBatch             int
+	TwapCleanupMaxBatches        int
+	ArbitrageControlInterval     time.Duration
+	ArbitrageCoalesceWindow      time.Duration
+	ArbitrageScheduleLease       time.Duration
+	ArbitrageScheduleBatch       int
+	ArbitrageScheduleWorkers     int
+	ArbitrageBBOStale            time.Duration
+	ArbitrageSignalBBOStale      time.Duration
+	ArbitrageBBOReconnectInitial time.Duration
+	ArbitrageBBOReconnectMax     time.Duration
+	ArbitrageBBOHeartbeat        time.Duration
+	ArbitrageBBOReadWait         time.Duration
+	ArbitrageBBOWriteWait        time.Duration
+	ArbitrageBBOAckWait          time.Duration
+	ArbitrageRepriceTicks        int
+	ArbitrageObserverInterval    time.Duration
+	ArbitrageIOCProtectionBps    int
+	ArbitrageIOCRetries          int
+	ArbitrageHedgeEmergencyAfter time.Duration
+	ArbitrageOrderStreamEnabled  bool
+	BinanceOrderWSURL            string
+	OKXOrderWSURL                string
+	BybitOrderWSURL              string
+	BitgetOrderWSURL             string
+	GateOrderWSURL               string
+	HyperliquidOrderWSURL        string
+	AsterOrderWSURL              string
+	LighterOrderWSURL            string
+	OrderStreamReconnectInitial  time.Duration
+	OrderStreamReconnectMax      time.Duration
+	OrderStreamHeartbeat         time.Duration
+	OrderStreamStale             time.Duration
+	OrderStreamListenKeyRefresh  time.Duration
+	OrderStreamRESTAudit         time.Duration
+	OrderStreamSessionIdle       time.Duration
+	ArbitrageMaxActiveAccount    int
+	ArbitrageMaxActiveVenue      int
+	ArbitrageRetention           time.Duration
+	ArbitrageCleanupInterval     time.Duration
+	ArbitrageCleanupBatch        int
+	ArbitrageCleanupMaxBatches   int
+	ArbitrageDryRun              bool
+	ArbitrageEnabledExchanges    map[string]bool
+	LogLevel                     string
+	Development                  bool
 }
 
 type Report struct {
@@ -220,6 +245,7 @@ type AggData struct {
 	MaxSubscriptions          int
 	ManifestRefresh           time.Duration
 	StreamInterval            time.Duration
+	SnapshotStaleAfter        time.Duration
 	HistoryWorkers            int
 	HistoryResolution         time.Duration
 	DatabaseURL               string
@@ -259,28 +285,82 @@ func FundingFromEnv() (Funding, error) {
 		ClickHouseTLSSkip:      boolean("CLICKHOUSE_TLS_SKIP_VERIFY", false),
 		RankingQueryTimeout:    duration("FUNDING_RANKING_QUERY_TIMEOUT", 30*time.Second),
 		RankingPoolSize:        positiveInteger("FUNDING_RANKING_POOL_SIZE", 4),
-		Ranking1hInterval:      duration("FUNDING_RANKING_1H_INTERVAL", time.Minute),
-		RankingSlowInterval:    duration("FUNDING_RANKING_SLOW_INTERVAL", 10*time.Minute),
-		RankingEnabled:         boolean("FUNDING_RANKING_ENABLED", true),
-		RankingCacheEnabled:    boolean("FUNDING_RANKING_HISTORY_CACHE_ENABLED", true),
-		RankingMinuteEnabled:   boolean("FUNDING_RANKING_MINUTE_TABLE_ENABLED", true),
-		RankingHistoryMaxRows:  positiveInteger("FUNDING_RANKING_HISTORY_MAX_ROWS", 12_000_000),
-		LogLevel:               env("LOG_LEVEL", "info"),
-		Development:            boolean("DEVELOPMENT", false),
+		RankingInterval:        duration("FUNDING_RANKING_INTERVAL", 10*time.Minute),
+		RankingTimeout:         duration("FUNDING_RANKING_TIMEOUT", 5*time.Minute),
+		RankingHistoryIncrement: duration(
+			"FUNDING_RANKING_HISTORY_INCREMENT_INTERVAL", 5*time.Minute,
+		),
+		RankingRateMaxAge:     duration("FUNDING_RANKING_RATE_MAX_AGE", 15*time.Minute),
+		RankingEnabled:        boolean("FUNDING_RANKING_ENABLED", true),
+		RankingMinuteEnabled:  boolean("FUNDING_RANKING_MINUTE_TABLE_ENABLED", true),
+		RankingHistoryMaxRows: positiveInteger("FUNDING_RANKING_HISTORY_MAX_ROWS", 12_000_000),
+		LogLevel:              env("LOG_LEVEL", "info"),
+		Development:           boolean("DEVELOPMENT", false),
 		EnabledExchanges: enabledExchanges(env(
 			"ENABLED_EXCHANGES",
-			"binance,okx,bybit,bitget,gate,hyperliquid",
+			defaultFundingCollectionExchanges,
 		)),
+		PublishedExchanges: enabledExchanges(env(
+			"FUNDING_PUBLISHED_EXCHANGES",
+			defaultFundingPublicationExchanges,
+		)),
+		SpreadEnabledExchanges: enabledExchanges(env(
+			"FUNDING_SPREAD_ENABLED_EXCHANGES",
+			defaultFundingPublicationExchanges,
+		)),
+		RankingEnabledExchanges: enabledExchanges(env(
+			"FUNDING_RANKING_ENABLED_EXCHANGES",
+			defaultFundingCollectionExchanges,
+		)),
+		AsterFundingAPIURL:   env("ASTER_FUNDING_API_URL", "https://fapi.asterdex.com"),
+		LighterFundingAPIURL: env("LIGHTER_FUNDING_API_URL", "https://mainnet.zklighter.elliot.ai"),
 	}
 	if c.SyncInterval <= 0 || c.HTTPTimeout <= 0 || c.InstrumentSyncInterval <= 0 ||
 		c.RankingQueryTimeout <= 0 || c.RankingPoolSize <= 0 || c.RankingHistoryMaxRows <= 0 ||
-		c.Ranking1hInterval <= 0 || c.RankingSlowInterval <= 0 {
+		c.RankingInterval <= 0 || c.RankingTimeout <= 0 ||
+		c.RankingHistoryIncrement <= 0 || c.RankingRateMaxAge <= 0 {
 		return c, fmt.Errorf("durations must be positive")
 	}
 	if !identifier(c.ClickHouseDatabase) || !identifier(c.ClickHouseTable) {
 		return c, fmt.Errorf("CLICKHOUSE_DATABASE and CLICKHOUSE_TABLE must be identifiers")
 	}
+	if err := validateFundingExchangeSets(c); err != nil {
+		return c, err
+	}
 	return c, nil
+}
+
+const (
+	defaultFundingCollectionExchanges  = "binance,okx,bybit,bitget,gate,hyperliquid,aster,lighter"
+	defaultFundingPublicationExchanges = "binance,okx,bybit,bitget,gate,hyperliquid"
+)
+
+func validateFundingExchangeSets(c Funding) error {
+	if err := requireExchangeSubset(
+		c.PublishedExchanges, c.EnabledExchanges,
+		"FUNDING_PUBLISHED_EXCHANGES", "ENABLED_EXCHANGES",
+	); err != nil {
+		return err
+	}
+	if err := requireExchangeSubset(
+		c.SpreadEnabledExchanges, c.EnabledExchanges,
+		"FUNDING_SPREAD_ENABLED_EXCHANGES", "ENABLED_EXCHANGES",
+	); err != nil {
+		return err
+	}
+	return requireExchangeSubset(
+		c.RankingEnabledExchanges, c.EnabledExchanges,
+		"FUNDING_RANKING_ENABLED_EXCHANGES", "ENABLED_EXCHANGES",
+	)
+}
+
+func requireExchangeSubset(child, parent map[string]bool, childName, parentName string) error {
+	for name := range child {
+		if !parent[name] {
+			return fmt.Errorf("%s must be a subset of %s (%s is not enabled)", childName, parentName, name)
+		}
+	}
+	return nil
 }
 
 func enabledExchanges(value string) map[string]bool {
@@ -307,24 +387,27 @@ func boolean(key string, fallback bool) bool {
 
 func AccountFromEnv() (Account, error) {
 	c := Account{
-		DatabaseURL:         env("DATABASE_URL", "postgres://selfquant:selfquant@localhost:5432/selfquant?sslmode=disable"),
-		GRPCAddress:         env("ACCOUNT_GRPC_ADDRESS", ":9091"),
-		TokenSecret:         env("ACCOUNT_TOKEN_SECRET", ""),
-		ReportInternalToken: env("REPORT_INTERNAL_TOKEN", ""),
-		TraderInternalToken: env("TRADER_INTERNAL_TOKEN", ""),
-		TokenTTL:            duration("ACCOUNT_TOKEN_TTL", 12*time.Hour),
-		CredentialsKey:      env("ACCOUNT_CREDENTIALS_KEY", ""),
-		PolymarketCLOBURL:   env("POLYMARKET_CLOB_URL", "https://clob.polymarket.com"),
-		PolymarketDataURL:   env("POLYMARKET_DATA_URL", "https://data-api.polymarket.com"),
-		BinancePortfolioURL: env("BINANCE_PORTFOLIO_API_URL", "https://papi.binance.com"),
-		OKXAccountURL:       env("OKX_ACCOUNT_API_URL", "https://www.okx.com"),
-		BitgetAccountURL:    env("BITGET_ACCOUNT_API_URL", "https://api.bitget.com"),
-		BybitAccountURL:     env("BYBIT_ACCOUNT_API_URL", "https://api.bybit.com"),
-		GateAccountURL:      env("GATE_ACCOUNT_API_URL", "https://api.gateio.ws"),
-		AccountSnapshotTTL:  duration("ACCOUNT_SNAPSHOT_TTL", 3*time.Second),
-		HTTPTimeout:         duration("ACCOUNT_SNAPSHOT_HTTP_TIMEOUT", 8*time.Second),
-		LogLevel:            env("LOG_LEVEL", "info"),
-		Development:         boolean("DEVELOPMENT", false),
+		DatabaseURL:           env("DATABASE_URL", "postgres://selfquant:selfquant@localhost:5432/selfquant?sslmode=disable"),
+		GRPCAddress:           env("ACCOUNT_GRPC_ADDRESS", ":9091"),
+		TokenSecret:           env("ACCOUNT_TOKEN_SECRET", ""),
+		ReportInternalToken:   env("REPORT_INTERNAL_TOKEN", ""),
+		TraderInternalToken:   env("TRADER_INTERNAL_TOKEN", ""),
+		TokenTTL:              duration("ACCOUNT_TOKEN_TTL", 12*time.Hour),
+		CredentialsKey:        env("ACCOUNT_CREDENTIALS_KEY", ""),
+		PolymarketCLOBURL:     env("POLYMARKET_CLOB_URL", "https://clob.polymarket.com"),
+		PolymarketDataURL:     env("POLYMARKET_DATA_URL", "https://data-api.polymarket.com"),
+		BinancePortfolioURL:   env("BINANCE_PORTFOLIO_API_URL", "https://papi.binance.com"),
+		OKXAccountURL:         env("OKX_ACCOUNT_API_URL", "https://www.okx.com"),
+		BitgetAccountURL:      env("BITGET_ACCOUNT_API_URL", "https://api.bitget.com"),
+		BybitAccountURL:       env("BYBIT_ACCOUNT_API_URL", "https://api.bybit.com"),
+		GateAccountURL:        env("GATE_ACCOUNT_API_URL", "https://api.gateio.ws"),
+		HyperliquidInfoAPIURL: env("HYPERLIQUID_INFO_API_URL", "https://api.hyperliquid.xyz"),
+		AsterFuturesAPIURL:    env("ASTER_FUTURES_API_URL", "https://fapi.asterdex.com"),
+		LighterAPIURL:         env("LIGHTER_API_URL", "https://mainnet.zklighter.elliot.ai"),
+		AccountSnapshotTTL:    duration("ACCOUNT_SNAPSHOT_TTL", 3*time.Second),
+		HTTPTimeout:           duration("ACCOUNT_SNAPSHOT_HTTP_TIMEOUT", 8*time.Second),
+		LogLevel:              env("LOG_LEVEL", "info"),
+		Development:           boolean("DEVELOPMENT", false),
 	}
 	if c.TokenSecret == "" {
 		return c, fmt.Errorf("ACCOUNT_TOKEN_SECRET is required")
@@ -443,69 +526,109 @@ func AIFromEnv() (AI, error) {
 
 func TraderFromEnv() (Trader, error) {
 	c := Trader{
-		DatabaseURL:                 env("DATABASE_URL", "postgres://selfquant:selfquant@localhost:5432/selfquant?sslmode=disable"),
-		GRPCAddress:                 env("TRADER_GRPC_ADDRESS", ":9095"),
-		AccountGRPCAddress:          env("ACCOUNT_GRPC_TARGET", "localhost:9091"),
-		BinanceURL:                  env("BINANCE_PORTFOLIO_API_URL", "https://papi.binance.com"),
-		OKXURL:                      env("OKX_ACCOUNT_API_URL", "https://www.okx.com"),
-		BybitURL:                    env("BYBIT_ACCOUNT_API_URL", "https://api.bybit.com"),
-		BitgetURL:                   env("BITGET_ACCOUNT_API_URL", "https://api.bitget.com"),
-		GateURL:                     env("GATE_ACCOUNT_API_URL", "https://api.gateio.ws"),
-		HTTPTimeout:                 duration("TRADER_HTTP_TIMEOUT", 12*time.Second),
-		InternalToken:               strings.TrimSpace(os.Getenv("TRADER_INTERNAL_TOKEN")),
-		ReconcileInterval:           duration("TRADER_RECONCILE_INTERVAL", time.Second),
-		ReconcileBatchSize:          positiveInteger("TRADER_RECONCILE_BATCH_SIZE", 20),
-		ReconcileWorkers:            positiveInteger("TRADER_RECONCILE_WORKERS", 3),
-		TwapScheduleInterval:        duration("TRADER_TWAP_SCHEDULE_INTERVAL", 500*time.Millisecond),
-		TwapScheduleLease:           duration("TRADER_TWAP_SCHEDULE_LEASE", 30*time.Second),
-		TwapScheduleBatch:           positiveInteger("TRADER_TWAP_SCHEDULE_BATCH", 20),
-		TwapScheduleWorkers:         positiveInteger("TRADER_TWAP_SCHEDULE_WORKERS", 4),
-		TwapRetention:               duration("TRADER_TWAP_RETENTION", 7*24*time.Hour),
-		TwapCleanupInterval:         duration("TRADER_TWAP_CLEANUP_INTERVAL", time.Hour),
-		TwapCleanupBatch:            positiveInteger("TRADER_TWAP_CLEANUP_BATCH", 100),
-		TwapCleanupMaxBatches:       positiveInteger("TRADER_TWAP_CLEANUP_MAX_BATCHES", 10),
-		ArbitrageScheduleInterval:   duration("TRADER_ARBITRAGE_SCHEDULE_INTERVAL", 100*time.Millisecond),
-		ArbitrageScheduleLease:      duration("TRADER_ARBITRAGE_SCHEDULE_LEASE", 30*time.Second),
-		ArbitrageScheduleBatch:      positiveInteger("TRADER_ARBITRAGE_SCHEDULE_BATCH", 50),
-		ArbitrageScheduleWorkers:    positiveInteger("TRADER_ARBITRAGE_SCHEDULE_WORKERS", 8),
-		ArbitrageBBOStale:           duration("TRADER_ARBITRAGE_BBO_STALE", 60*time.Second),
-		ArbitrageRepriceTicks:       positiveInteger("TRADER_ARBITRAGE_REPRICE_TICKS", 2),
-		ArbitrageObserverInterval:   duration("TRADER_ARBITRAGE_OBSERVER_INTERVAL", 200*time.Millisecond),
-		ArbitrageIOCProtectionTicks: positiveInteger("TRADER_ARBITRAGE_IOC_PROTECTION_TICKS", 3),
-		ArbitrageIOCRetries:         positiveInteger("TRADER_ARBITRAGE_IOC_RETRIES", 3),
-		ArbitrageOrderStreamEnabled: boolean("TRADER_ARBITRAGE_ORDER_STREAM_ENABLED", true),
-		BinanceOrderWSURL:           strings.TrimSpace(os.Getenv("BINANCE_ORDER_WS_URL")),
-		OKXOrderWSURL:               strings.TrimSpace(os.Getenv("OKX_ORDER_WS_URL")),
-		BybitOrderWSURL:             strings.TrimSpace(os.Getenv("BYBIT_ORDER_WS_URL")),
-		BitgetOrderWSURL:            strings.TrimSpace(os.Getenv("BITGET_ORDER_WS_URL")),
-		GateOrderWSURL:              strings.TrimSpace(os.Getenv("GATE_ORDER_WS_URL")),
-		OrderStreamReconnectInitial: duration("TRADER_ORDER_STREAM_RECONNECT_INITIAL", 250*time.Millisecond),
-		OrderStreamReconnectMax:     duration("TRADER_ORDER_STREAM_RECONNECT_MAX", 30*time.Second),
-		OrderStreamHeartbeat:        duration("TRADER_ORDER_STREAM_HEARTBEAT", 15*time.Second),
-		OrderStreamStale:            duration("TRADER_ORDER_STREAM_STALE", 45*time.Second),
-		OrderStreamListenKeyRefresh: duration("TRADER_ORDER_STREAM_LISTEN_KEY_REFRESH", 30*time.Minute),
-		OrderStreamRESTAudit:        duration("TRADER_ORDER_STREAM_REST_AUDIT", 30*time.Second),
-		OrderStreamSessionIdle:      duration("TRADER_ORDER_STREAM_SESSION_IDLE", 5*time.Minute),
-		ArbitrageMaxActiveAccount:   positiveInteger("TRADER_ARBITRAGE_MAX_ACTIVE_PER_ACCOUNT", 4),
-		ArbitrageMaxActiveVenue:     positiveInteger("TRADER_ARBITRAGE_MAX_ACTIVE_PER_VENUE", 16),
-		ArbitrageRetention:          duration("TRADER_ARBITRAGE_RETENTION", 7*24*time.Hour),
-		ArbitrageCleanupInterval:    duration("TRADER_ARBITRAGE_CLEANUP_INTERVAL", time.Hour),
-		ArbitrageCleanupBatch:       positiveInteger("TRADER_ARBITRAGE_CLEANUP_BATCH", 100),
-		ArbitrageCleanupMaxBatches:  positiveInteger("TRADER_ARBITRAGE_CLEANUP_MAX_BATCHES", 10),
-		ArbitrageDryRun:             boolean("TRADER_ARBITRAGE_DRY_RUN", true),
-		LogLevel:                    env("LOG_LEVEL", "info"),
-		Development:                 boolean("DEVELOPMENT", false),
+		DatabaseURL:                  env("DATABASE_URL", "postgres://selfquant:selfquant@localhost:5432/selfquant?sslmode=disable"),
+		GRPCAddress:                  env("TRADER_GRPC_ADDRESS", ":9095"),
+		AccountGRPCAddress:           env("ACCOUNT_GRPC_TARGET", "localhost:9091"),
+		BinanceURL:                   env("BINANCE_PORTFOLIO_API_URL", "https://papi.binance.com"),
+		OKXURL:                       env("OKX_ACCOUNT_API_URL", "https://www.okx.com"),
+		BybitURL:                     env("BYBIT_ACCOUNT_API_URL", "https://api.bybit.com"),
+		BitgetURL:                    env("BITGET_ACCOUNT_API_URL", "https://api.bitget.com"),
+		GateURL:                      env("GATE_ACCOUNT_API_URL", "https://api.gateio.ws"),
+		HyperliquidURL:               env("HYPERLIQUID_INFO_API_URL", "https://api.hyperliquid.xyz"),
+		AsterURL:                     env("ASTER_FUTURES_API_URL", "https://fapi.asterdex.com"),
+		LighterURL:                   env("LIGHTER_API_URL", "https://mainnet.zklighter.elliot.ai"),
+		HTTPTimeout:                  duration("TRADER_HTTP_TIMEOUT", 12*time.Second),
+		InternalToken:                strings.TrimSpace(os.Getenv("TRADER_INTERNAL_TOKEN")),
+		ReconcileInterval:            duration("TRADER_RECONCILE_INTERVAL", time.Second),
+		ReconcileBatchSize:           positiveInteger("TRADER_RECONCILE_BATCH_SIZE", 20),
+		ReconcileWorkers:             positiveInteger("TRADER_RECONCILE_WORKERS", 3),
+		TwapScheduleInterval:         duration("TRADER_TWAP_SCHEDULE_INTERVAL", 500*time.Millisecond),
+		TwapScheduleLease:            duration("TRADER_TWAP_SCHEDULE_LEASE", 30*time.Second),
+		TwapScheduleBatch:            positiveInteger("TRADER_TWAP_SCHEDULE_BATCH", 20),
+		TwapScheduleWorkers:          positiveInteger("TRADER_TWAP_SCHEDULE_WORKERS", 4),
+		TwapRetention:                duration("TRADER_TWAP_RETENTION", 7*24*time.Hour),
+		TwapCleanupInterval:          duration("TRADER_TWAP_CLEANUP_INTERVAL", time.Hour),
+		TwapCleanupBatch:             positiveInteger("TRADER_TWAP_CLEANUP_BATCH", 100),
+		TwapCleanupMaxBatches:        positiveInteger("TRADER_TWAP_CLEANUP_MAX_BATCHES", 10),
+		ArbitrageControlInterval:     duration("TRADER_ARBITRAGE_CONTROL_INTERVAL", time.Second),
+		ArbitrageCoalesceWindow:      duration("TRADER_ARBITRAGE_COALESCE_WINDOW", 50*time.Millisecond),
+		ArbitrageScheduleLease:       duration("TRADER_ARBITRAGE_SCHEDULE_LEASE", 30*time.Second),
+		ArbitrageScheduleBatch:       positiveInteger("TRADER_ARBITRAGE_SCHEDULE_BATCH", 50),
+		ArbitrageScheduleWorkers:     positiveInteger("TRADER_ARBITRAGE_SCHEDULE_WORKERS", 16),
+		ArbitrageBBOStale:            duration("TRADER_ARBITRAGE_BBO_STALE", 60*time.Second),
+		ArbitrageSignalBBOStale:      duration("TRADER_ARBITRAGE_SIGNAL_BBO_STALE", 2*time.Second),
+		ArbitrageBBOReconnectInitial: duration("TRADER_ARBITRAGE_BBO_RECONNECT_INITIAL", 250*time.Millisecond),
+		ArbitrageBBOReconnectMax:     duration("TRADER_ARBITRAGE_BBO_RECONNECT_MAX", 30*time.Second),
+		ArbitrageBBOHeartbeat:        duration("TRADER_ARBITRAGE_BBO_HEARTBEAT", 20*time.Second),
+		ArbitrageBBOReadWait:         duration("TRADER_ARBITRAGE_BBO_READ_WAIT", 45*time.Second),
+		ArbitrageBBOWriteWait:        duration("TRADER_ARBITRAGE_BBO_WRITE_WAIT", 5*time.Second),
+		ArbitrageBBOAckWait:          duration("TRADER_ARBITRAGE_BBO_ACK_WAIT", 5*time.Second),
+		ArbitrageRepriceTicks:        positiveInteger("TRADER_ARBITRAGE_REPRICE_TICKS", 2),
+		ArbitrageObserverInterval:    duration("TRADER_ARBITRAGE_OBSERVER_INTERVAL", 200*time.Millisecond),
+		ArbitrageIOCProtectionBps:    positiveInteger("TRADER_ARBITRAGE_IOC_PROTECTION_BPS", 10),
+		ArbitrageIOCRetries:          positiveInteger("TRADER_ARBITRAGE_IOC_RETRIES", 3),
+		ArbitrageOrderStreamEnabled:  boolean("TRADER_ARBITRAGE_ORDER_STREAM_ENABLED", true),
+		BinanceOrderWSURL:            strings.TrimSpace(os.Getenv("BINANCE_ORDER_WS_URL")),
+		OKXOrderWSURL:                strings.TrimSpace(os.Getenv("OKX_ORDER_WS_URL")),
+		BybitOrderWSURL:              strings.TrimSpace(os.Getenv("BYBIT_ORDER_WS_URL")),
+		BitgetOrderWSURL:             strings.TrimSpace(os.Getenv("BITGET_ORDER_WS_URL")),
+		GateOrderWSURL:               strings.TrimSpace(os.Getenv("GATE_ORDER_WS_URL")),
+		HyperliquidOrderWSURL:        strings.TrimSpace(os.Getenv("HYPERLIQUID_ORDER_WS_URL")),
+		AsterOrderWSURL:              strings.TrimSpace(os.Getenv("ASTER_ORDER_WS_URL")),
+		LighterOrderWSURL:            strings.TrimSpace(os.Getenv("LIGHTER_ORDER_WS_URL")),
+		OrderStreamReconnectInitial:  duration("TRADER_ORDER_STREAM_RECONNECT_INITIAL", 250*time.Millisecond),
+		OrderStreamReconnectMax:      duration("TRADER_ORDER_STREAM_RECONNECT_MAX", 30*time.Second),
+		OrderStreamHeartbeat:         duration("TRADER_ORDER_STREAM_HEARTBEAT", 15*time.Second),
+		OrderStreamStale:             duration("TRADER_ORDER_STREAM_STALE", 45*time.Second),
+		OrderStreamListenKeyRefresh:  duration("TRADER_ORDER_STREAM_LISTEN_KEY_REFRESH", 30*time.Minute),
+		OrderStreamRESTAudit:         duration("TRADER_ORDER_STREAM_REST_AUDIT", 30*time.Second),
+		OrderStreamSessionIdle:       duration("TRADER_ORDER_STREAM_SESSION_IDLE", 5*time.Minute),
+		ArbitrageMaxActiveAccount:    positiveInteger("TRADER_ARBITRAGE_MAX_ACTIVE_PER_ACCOUNT", 4),
+		ArbitrageMaxActiveVenue:      positiveInteger("TRADER_ARBITRAGE_MAX_ACTIVE_PER_VENUE", 16),
+		ArbitrageRetention:           duration("TRADER_ARBITRAGE_RETENTION", 7*24*time.Hour),
+		ArbitrageCleanupInterval:     duration("TRADER_ARBITRAGE_CLEANUP_INTERVAL", time.Hour),
+		ArbitrageCleanupBatch:        positiveInteger("TRADER_ARBITRAGE_CLEANUP_BATCH", 100),
+		ArbitrageCleanupMaxBatches:   positiveInteger("TRADER_ARBITRAGE_CLEANUP_MAX_BATCHES", 10),
+		ArbitrageDryRun:              boolean("TRADER_ARBITRAGE_DRY_RUN", true),
+		ArbitrageEnabledExchanges: enabledExchanges(env(
+			"TRADER_ARBITRAGE_ENABLED_EXCHANGES",
+			"binance,okx,bybit,bitget,gate,hyperliquid,aster,lighter",
+		)),
+		LogLevel:    env("LOG_LEVEL", "info"),
+		Development: boolean("DEVELOPMENT", false),
 	}
+	emergencyAfter, emergencySet, err := strictDuration("TRADER_ARBITRAGE_HEDGE_EMERGENCY_AFTER")
+	if err != nil {
+		return c, err
+	}
+	if !emergencySet {
+		emergencyAfter = 2 * time.Second
+	}
+	if emergencyAfter < 0 {
+		return c, fmt.Errorf("TRADER_ARBITRAGE_HEDGE_EMERGENCY_AFTER must be >= 0")
+	}
+	if emergencyAfter != 0 &&
+		(emergencyAfter < 100*time.Millisecond || emergencyAfter > 30*time.Second) {
+		return c, fmt.Errorf("TRADER_ARBITRAGE_HEDGE_EMERGENCY_AFTER must be 0 or between 100ms and 30s")
+	}
+	c.ArbitrageHedgeEmergencyAfter = emergencyAfter
 	if c.HTTPTimeout <= 0 || c.ReconcileInterval <= 0 ||
 		c.ReconcileBatchSize <= 0 || c.ReconcileWorkers <= 0 ||
 		c.TwapScheduleInterval <= 0 || c.TwapScheduleLease <= 0 ||
 		c.TwapScheduleBatch <= 0 || c.TwapScheduleWorkers <= 0 ||
 		c.TwapRetention <= 0 || c.TwapCleanupInterval <= 0 ||
 		c.TwapCleanupBatch <= 0 || c.TwapCleanupMaxBatches <= 0 ||
-		c.ArbitrageScheduleInterval <= 0 || c.ArbitrageScheduleLease <= 0 ||
+		c.ArbitrageControlInterval <= 0 || c.ArbitrageScheduleLease <= 0 ||
 		c.ArbitrageScheduleBatch <= 0 || c.ArbitrageScheduleWorkers <= 0 ||
-		c.ArbitrageBBOStale <= 0 || c.ArbitrageRepriceTicks <= 0 ||
-		c.ArbitrageObserverInterval <= 0 || c.ArbitrageIOCProtectionTicks <= 0 ||
+		c.ArbitrageBBOStale <= 0 ||
+		c.ArbitrageSignalBBOStale <= 0 ||
+		c.ArbitrageBBOReconnectInitial <= 0 ||
+		c.ArbitrageBBOReconnectMax < c.ArbitrageBBOReconnectInitial ||
+		c.ArbitrageBBOHeartbeat <= 0 ||
+		c.ArbitrageBBOReadWait <= c.ArbitrageBBOHeartbeat ||
+		c.ArbitrageBBOWriteWait <= 0 || c.ArbitrageBBOAckWait <= 0 ||
+		c.ArbitrageRepriceTicks <= 0 ||
+		c.ArbitrageObserverInterval <= 0 || c.ArbitrageIOCProtectionBps <= 0 ||
 		c.ArbitrageIOCRetries <= 0 || c.OrderStreamReconnectInitial <= 0 ||
 		c.OrderStreamReconnectMax < c.OrderStreamReconnectInitial ||
 		c.OrderStreamHeartbeat <= 0 || c.OrderStreamStale <= c.OrderStreamHeartbeat ||
@@ -516,6 +639,10 @@ func TraderFromEnv() (Trader, error) {
 		c.ArbitrageCleanupInterval <= 0 || c.ArbitrageCleanupBatch <= 0 ||
 		c.ArbitrageCleanupMaxBatches <= 0 {
 		return c, fmt.Errorf("trader durations must be positive")
+	}
+	if c.ArbitrageCoalesceWindow < 20*time.Millisecond ||
+		c.ArbitrageCoalesceWindow > 100*time.Millisecond {
+		return c, fmt.Errorf("TRADER_ARBITRAGE_COALESCE_WINDOW must be between 20ms and 100ms")
 	}
 	if c.InternalToken == "" {
 		return c, fmt.Errorf("TRADER_INTERNAL_TOKEN is required")
@@ -595,6 +722,7 @@ func AggDataFromEnv() (AggData, error) {
 		MaxSubscriptions:          positiveInteger("AGGDATA_MAX_SUBSCRIPTIONS_PER_CLIENT", 16),
 		ManifestRefresh:           duration("AGGDATA_MANIFEST_REFRESH_INTERVAL", time.Second),
 		StreamInterval:            duration("AGGDATA_STREAM_INTERVAL", 50*time.Millisecond),
+		SnapshotStaleAfter:        duration("AGGDATA_SNAPSHOT_STALE_AFTER", 15*time.Second),
 		HistoryWorkers:            positiveInteger("AGGDATA_HISTORY_WORKERS", 1),
 		HistoryResolution:         duration("AGGDATA_HISTORY_RESOLUTION", time.Minute),
 		DatabaseURL:               env("DATABASE_URL", "postgres://selfquant:selfquant@localhost:5432/selfquant?sslmode=disable"),
@@ -642,7 +770,7 @@ func AggDataFromEnv() (AggData, error) {
 	}
 	if c.MaxClients <= 0 || c.MaxSubscriptions <= 0 || c.HistoryWorkers <= 0 ||
 		c.ManifestRefresh <= 0 || c.StreamInterval < 10*time.Millisecond ||
-		c.HistoryResolution <= 0 {
+		c.SnapshotStaleAfter <= 0 || c.HistoryResolution <= 0 {
 		return c, fmt.Errorf("aggdata limits and durations must be positive")
 	}
 	if c.FairPriceDepth <= 0 || c.FairPriceDepth > 50 ||
@@ -757,6 +885,20 @@ func duration(key string, fallback time.Duration) time.Duration {
 		return time.Duration(seconds) * time.Second
 	}
 	return fallback
+}
+
+func strictDuration(key string) (time.Duration, bool, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0, false, nil
+	}
+	if parsed, err := time.ParseDuration(value); err == nil {
+		return parsed, true, nil
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		return time.Duration(seconds) * time.Second, true, nil
+	}
+	return 0, true, fmt.Errorf("%s must be a duration", key)
 }
 
 func positiveInteger(key string, fallback int) int {

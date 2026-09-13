@@ -1,4 +1,5 @@
 #include "mds/exchange/okx/okx_adapter.h"
+#include "mds/exchange/symbol_policy.h"
 
 #include <array>
 #include <charconv>
@@ -24,8 +25,8 @@ bool expected_symbol(utils::md::ProductType product,
                      std::string_view canonical_symbol,
                      std::string_view supplied_venue_symbol,
                      std::string_view &venue_symbol, std::string &error) {
-  if (canonical_symbol.empty() || supplied_venue_symbol.empty() ||
-      canonical_symbol.size() > 32 || supplied_venue_symbol.size() > 32) {
+  if (!valid_utf8_symbol(canonical_symbol) ||
+      !valid_utf8_symbol(supplied_venue_symbol)) {
     error = "invalid OKX canonical or venue symbol";
     return false;
   }
@@ -55,9 +56,9 @@ bool append_argument(std::string_view channel, std::string_view symbol,
     batch.push_back(',');
   }
   batch += R"({"channel":")";
-  batch.append(channel);
+  append_json_escaped(batch, channel);
   batch += R"(","instId":")";
-  batch.append(symbol);
+  append_json_escaped(batch, symbol);
   batch += R"("})";
   ++argument_count;
   return true;
@@ -221,7 +222,7 @@ bool read_uint64(simdjson::dom::element element, std::uint64_t &value) {
 bool parse_level(simdjson::dom::element raw_level, std::uint8_t price_scale,
                  std::uint8_t contract_quantity_scale,
                  std::int64_t contract_multiplier,
-                 utils::md::Level &level) {
+                 utils::md::Level &level, std::string *error = nullptr) {
   auto array_result = raw_level.get_array();
   if (array_result.error()) {
     return false;
@@ -241,10 +242,23 @@ bool parse_level(simdjson::dom::element raw_level, std::uint8_t price_scale,
   }
   auto quantity = (*iterator).get_string();
   std::int64_t contracts{};
-  if (quantity.error() ||
-      !local_decimal_to_fixed(price.value(), price_scale, level.price) ||
-      !local_decimal_to_fixed(quantity.value(), contract_quantity_scale,
+  if (quantity.error()) {
+    return false;
+  }
+  if (!local_decimal_to_fixed(price.value(), price_scale, level.price)) {
+    if (error != nullptr &&
+        decimal_scale_mismatch(price.value(), price_scale)) {
+      *error = "invalid OKX level reason=scale field=price";
+    }
+    return false;
+  }
+  if (!local_decimal_to_fixed(quantity.value(), contract_quantity_scale,
                               contracts)) {
+    if (error != nullptr &&
+        decimal_scale_mismatch(quantity.value(),
+                               contract_quantity_scale)) {
+      *error = "invalid OKX level reason=scale field=quantity";
+    }
     return false;
   }
   const auto converted = static_cast<Int128>(contracts) *
@@ -282,8 +296,10 @@ bool parse_side(simdjson::dom::element raw_side, std::uint8_t price_scale,
     }
     utils::md::Level level;
     if (!parse_level(raw_level, price_scale, contract_quantity_scale,
-                     contract_multiplier, level)) {
-      error = "invalid or imprecise OKX book level";
+                     contract_multiplier, level, &error)) {
+      if (error.empty()) {
+        error = "invalid or imprecise OKX book level";
+      }
       return false;
     }
     levels.push_back(level);
@@ -326,8 +342,8 @@ class OkxAdapter final : public VenueAdapter {
       std::string_view symbol;
       if (!expected_symbol(product_, request.canonical_symbol,
                            request.venue_symbol, symbol, error)) {
-        batches.clear();
-        return false;
+        error.clear();
+        continue;
       }
       if (!request.ticker && !request.orderbook) {
         error = "at least one OKX stream must be requested";
@@ -414,6 +430,14 @@ class OkxAdapter final : public VenueAdapter {
         }
         if (name == "error") {
           event.type = AdapterEventType::SubscribeError;
+          auto argument = root["arg"].get_object();
+          if (!argument.error()) {
+            const auto symbol = optional_string(argument.value(), "instId");
+            if (!symbol.empty() && !copy_symbol(symbol, event)) {
+              error = "OKX rejection symbol exceeds fixed capacity";
+              return false;
+            }
+          }
           const auto code = optional_string(root, "code");
           const auto message = optional_string(root, "msg");
           error = "OKX subscription error";
@@ -531,6 +555,36 @@ class OkxAdapter final : public VenueAdapter {
     return parse_metadata_impl(json, requests, metadata, error, false);
   }
 
+  bool upsert_metadata(
+      std::string_view json, std::span<const StreamRequest> requests,
+      std::vector<InstrumentMetadata> &metadata,
+      std::string &error) override {
+    auto existing = std::move(scales_);
+    std::vector<InstrumentMetadata> parsed;
+    const bool ok =
+        parse_metadata_impl(json, requests, parsed, error, false);
+    auto refreshed = std::move(scales_);
+    scales_ = std::move(existing);
+    if (!ok) {
+      return false;
+    }
+    for (auto &entry : refreshed) {
+      const auto found = std::find_if(
+          scales_.begin(), scales_.end(),
+          [&entry](const ScaleEntry &current) {
+            return current.venue_symbol == entry.venue_symbol;
+          });
+      if (found == scales_.end()) {
+        scales_.push_back(std::move(entry));
+      } else {
+        *found = std::move(entry);
+      }
+    }
+    metadata = std::move(parsed);
+    error.clear();
+    return true;
+  }
+
   bool parse_discovery_metadata(
       std::string_view json, std::span<const StreamRequest> requests,
       std::vector<InstrumentMetadata> &metadata,
@@ -643,6 +697,13 @@ class OkxAdapter final : public VenueAdapter {
       return false;
     }
 #endif
+  }
+
+ protected:
+  void classify_parse_failure(std::string_view,
+                              const NormalizedEvent &event,
+                              ParseFailure &failure) const noexcept override {
+    (void)classify_scale_mismatch(event, failure);
   }
 
  private:
@@ -794,8 +855,7 @@ class OkxAdapter final : public VenueAdapter {
           break;
         }
         if (!found) {
-          error = "requested OKX instrument was not found";
-          return false;
+          continue;
         }
       }
 
@@ -845,11 +905,13 @@ class OkxAdapter final : public VenueAdapter {
     if (bid == bids.end() || ask == asks.end() ||
         !parse_level(*bid, scale.price_scale,
                      scale.contract_quantity_scale,
-                     scale.contract_multiplier, event.bid) ||
+                     scale.contract_multiplier, event.bid, &error) ||
         !parse_level(*ask, scale.price_scale,
                      scale.contract_quantity_scale,
-                     scale.contract_multiplier, event.ask)) {
-      error = "invalid OKX BBO level";
+                     scale.contract_multiplier, event.ask, &error)) {
+      if (error.empty()) {
+        error = "invalid OKX BBO level";
+      }
       return false;
     }
     event.type = AdapterEventType::Bbo;

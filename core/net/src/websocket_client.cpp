@@ -28,6 +28,68 @@ std::string escape_control_bytes(std::span<const std::byte> bytes) {
   return result;
 }
 
+bool ascii_iequals(std::string_view left, std::string_view right) noexcept {
+  if (left.size() != right.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    auto lhs = static_cast<unsigned char>(left[index]);
+    auto rhs = static_cast<unsigned char>(right[index]);
+    if (lhs >= 'A' && lhs <= 'Z') {
+      lhs = static_cast<unsigned char>(lhs + ('a' - 'A'));
+    }
+    if (rhs >= 'A' && rhs <= 'Z') {
+      rhs = static_cast<unsigned char>(rhs + ('a' - 'A'));
+    }
+    if (lhs != rhs) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool valid_header_name(std::string_view value) noexcept {
+  if (value.empty()) {
+    return false;
+  }
+  for (const char raw_character : value) {
+    const auto character = static_cast<unsigned char>(raw_character);
+    const bool token = (character >= 'a' && character <= 'z') ||
+                       (character >= 'A' && character <= 'Z') ||
+                       (character >= '0' && character <= '9') ||
+                       std::string_view("!#$%&'*+-.^_`|~").find(
+                           static_cast<char>(character)) !=
+                           std::string_view::npos;
+    if (!token) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool valid_header_value(std::string_view value) noexcept {
+  for (const char raw_character : value) {
+    const auto character = static_cast<unsigned char>(raw_character);
+    if (character == '\r' || character == '\n' ||
+        (character < 0x20U && character != '\t') || character == 0x7fU) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool reserved_upgrade_header(std::string_view name) noexcept {
+  return ascii_iequals(name, "Host") ||
+         ascii_iequals(name, "Upgrade") ||
+         ascii_iequals(name, "Connection") ||
+         ascii_iequals(name, "Sec-WebSocket-Version") ||
+         ascii_iequals(name, "Sec-WebSocket-Key") ||
+         ascii_iequals(name, "User-Agent") ||
+         ascii_iequals(name, "Origin") ||
+         ascii_iequals(name, "Content-Length") ||
+         ascii_iequals(name, "Transfer-Encoding");
+}
+
 } // namespace
 
 WebSocketClient::WebSocketClient(SharedSslContext context,
@@ -65,6 +127,26 @@ void WebSocketClient::reset() noexcept {
 
 void WebSocketClient::set_frame_callback(FrameCallback callback) {
   callback_ = std::move(callback);
+}
+
+bool WebSocketClient::set_upgrade_headers(
+    std::span<const WebSocketHeader> headers) noexcept {
+  try {
+    std::vector<std::pair<std::string, std::string>> validated;
+    validated.reserve(headers.size());
+    for (const auto &header : headers) {
+      if (!valid_header_name(header.name) ||
+          !valid_header_value(header.value) ||
+          reserved_upgrade_header(header.name)) {
+        return false;
+      }
+      validated.emplace_back(header.name, header.value);
+    }
+    upgrade_headers_ = std::move(validated);
+    return true;
+  } catch (...) {
+    return false;
+  }
 }
 
 void WebSocketClient::fail(std::string_view error) noexcept {
@@ -154,8 +236,18 @@ bool WebSocketClient::start(std::string_view host, std::string_view service,
       !append(client_key_) ||
       !append("\r\nUser-Agent: self-quant-mds/1\r\n") ||
       (!origin_.empty() &&
-       (!append("Origin: ") || !append(origin_) || !append("\r\n"))) ||
-      !append("\r\n")) {
+       (!append("Origin: ") || !append(origin_) || !append("\r\n")))) {
+    fail("WebSocket upgrade request exceeds configured capacity");
+    return false;
+  }
+  for (const auto &[name, value] : upgrade_headers_) {
+    if (!append(name) || !append(": ") || !append(value) ||
+        !append("\r\n")) {
+      fail("WebSocket upgrade request exceeds configured capacity");
+      return false;
+    }
+  }
+  if (!append("\r\n")) {
     fail("WebSocket upgrade request exceeds configured capacity");
     return false;
   }

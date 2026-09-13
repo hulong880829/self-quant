@@ -26,13 +26,15 @@ std::vector<std::byte> encode(Encode &&call) {
                               static_cast<std::ptrdiff_t>(result.size)};
 }
 
-wire::HeaderFields header(md::InstrumentId id, std::uint64_t sequence) {
+wire::HeaderFields header(md::InstrumentId id, std::uint64_t sequence,
+                          std::uint16_t flags = 0) {
   return {.instrument_id = id,
           .bus_seq = sequence,
           .source_seq = sequence,
           .exchange_ts_ns = sequence,
           .book_generation = 1,
-          .state = md::BookState::Live};
+          .state = md::BookState::Live,
+          .flags = flags};
 }
 
 std::vector<std::byte> catalog(md::InstrumentId id,
@@ -55,9 +57,25 @@ std::vector<std::byte> catalog(md::InstrumentId id,
 std::vector<std::byte> bbo(md::InstrumentId id, std::uint64_t sequence,
                            std::int64_t bid_price = 10'000) {
   return encode([&](std::span<std::byte> destination) {
-    return wire::EncodeBbo(destination, header(id, sequence),
+    return wire::EncodeBbo(destination,
+                           header(id, sequence,
+                                  wire::kBboOriginTickerStream),
                            {.price = bid_price, .quantity = 200},
                            {.price = bid_price + 1, .quantity = 300});
+  });
+}
+
+std::vector<std::byte> ticker(md::InstrumentId id, std::uint64_t sequence,
+                              std::int64_t bid_price = 10'000) {
+  md::TickerEvent event{};
+  event.bid = {.price = bid_price, .quantity = 200};
+  event.ask = {.price = bid_price + 1, .quantity = 300};
+  event.last_price = bid_price;
+  event.last_quantity = 100;
+  return encode([&](std::span<std::byte> destination) {
+    return wire::EncodeTicker(
+        destination,
+        header(id, sequence, wire::kBboOriginTickerStream), event);
   });
 }
 
@@ -255,10 +273,49 @@ void test_stale_cutoff_and_product_isolation() {
   assert(perpetual_rows == 5);
 }
 
+void test_origin_tagged_ticker_and_decode_failure_metric() {
+  std::mutex rows_mutex;
+  std::vector<CapturedRow> rows;
+  auto configured = options();
+  configured.request =
+      [&](std::string_view query, std::span<const std::byte> body,
+          std::string &) {
+        if (!query.starts_with("INSERT")) return true;
+        std::lock_guard lock(rows_mutex);
+        rows.push_back(decode_row(body));
+        return true;
+      };
+
+  mds::record::ClickHouseBboRecorder recorder(std::move(configured));
+  assert(recorder.start());
+  const auto instrument = catalog(303);
+  const auto tagged_ticker = ticker(303, 2, 40'000);
+  recorder.consume(instrument, 1'000'000'000ULL);
+  recorder.consume(tagged_ticker, 1'000'000'001ULL);
+  assert(recorder.metrics().decode_failed == 0);
+
+  auto malformed = bbo(303, 3);
+  wire::BboRecord malformed_record{};
+  std::memcpy(&malformed_record, malformed.data(), sizeof(malformed_record));
+  malformed_record.bid_quantity = -1;
+  std::memcpy(malformed.data(), &malformed_record, sizeof(malformed_record));
+  recorder.consume(malformed, 1'000'000'002ULL);
+  assert(recorder.metrics().decode_failed == 1);
+
+  recorder.sample(2'000'000'000ULL, 2'000'000'000ULL);
+  assert(wait_for(recorder, 1));
+  recorder.stop();
+  std::lock_guard lock(rows_mutex);
+  assert(rows.size() == 1);
+  assert(rows[0].symbol == "BTCUSDT");
+  assert(rows[0].bid_price == 40'000);
+}
+
 }  // namespace
 
 int main() {
   test_retry();
   test_stale_cutoff_and_product_isolation();
+  test_origin_tagged_ticker_and_decode_failure_metric();
   return 0;
 }

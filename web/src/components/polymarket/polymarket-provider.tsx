@@ -27,10 +27,12 @@ import {
   type AggdataMarket,
 } from "@/lib/api/aggdata";
 import {
+  isFairPriceStale,
   mergeFairPricePoints,
   sameFairPriceSequence,
   toPolymarketFairPricePoint,
 } from "@/lib/polymarket-fairprice";
+import { filterFairPricePointsToWindow } from "@/lib/polymarket-chart";
 import type {
   PolymarketAccountSummary,
   PolymarketAssetId,
@@ -120,6 +122,7 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
     PolymarketFairPricePoint[]
   >([]);
   const fairPricePointsRef = React.useRef<PolymarketFairPricePoint[]>([]);
+  const fairSessionRef = React.useRef(0);
   const [fairPriceSource, setFairPriceSource] =
     React.useState<PolymarketFairPriceSource | null>(null);
   const [fairPriceStatus, setFairPriceStatus] =
@@ -246,6 +249,11 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
     resetSnapshotState(setLiveSnapshot, setChartPoints);
     liveSnapshotRef.current = null;
     chartPointsRef.current = [];
+    currentFairPriceRef.current = null;
+    fairPricePointsRef.current = [];
+    setCurrentFairPrice(null);
+    setFairPricePoints([]);
+    setFairPriceStatus("connecting");
     setSnapshotLoading(true);
   }, []);
 
@@ -254,6 +262,11 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
     resetSnapshotState(setLiveSnapshot, setChartPoints);
     liveSnapshotRef.current = null;
     chartPointsRef.current = [];
+    currentFairPriceRef.current = null;
+    fairPricePointsRef.current = [];
+    setCurrentFairPrice(null);
+    setFairPricePoints([]);
+    setFairPriceStatus("connecting");
     setSnapshotLoading(true);
   }, []);
 
@@ -331,6 +344,8 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
   }, [ingestSnapshot, selectedAsset, selectedMarketId, selectedPeriod]);
 
   React.useEffect(() => {
+    const session = ++fairSessionRef.current;
+    const sessionActive = () => fairSessionRef.current === session;
     if (
       !selectedMarketId ||
       !selectedWindowStart ||
@@ -338,6 +353,7 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
       aggdataMarkets.length === 0
     ) {
       const reset = setTimeout(() => {
+        if (!sessionActive()) return;
         currentFairPriceRef.current = null;
         fairPricePointsRef.current = [];
         setCurrentFairPrice(null);
@@ -351,6 +367,7 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
     const fairMarket = resolveFairPriceMarket(aggdataMarkets, selectedAsset);
     if (!fairMarket) {
       const reset = setTimeout(() => {
+        if (!sessionActive()) return;
         currentFairPriceRef.current = null;
         fairPricePointsRef.current = [];
         setCurrentFairPrice(null);
@@ -368,10 +385,13 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let currentTimer: ReturnType<typeof setTimeout> | null = null;
     let chartTimer: ReturnType<typeof setTimeout> | null = null;
+    let staleTimer: ReturnType<typeof setInterval> | null = null;
     let retryCount = 0;
     let pendingCurrent: PolymarketFairPricePoint | null = null;
+    const marketWindowEndMs = Date.parse(selectedWindowEnd);
     const controller = new AbortController();
     const resetTimer = setTimeout(() => {
+      if (!sessionActive()) return;
       currentFairPriceRef.current = null;
       fairPricePointsRef.current = [];
       setCurrentFairPrice(null);
@@ -387,21 +407,45 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
 
     const flushCurrent = () => {
       currentTimer = null;
-      if (cancelled || pendingCurrent == null) return;
+      if (cancelled || !sessionActive() || pendingCurrent == null) return;
       setCurrentFairPrice(pendingCurrent);
       pendingCurrent = null;
     };
     const flushChart = () => {
       chartTimer = null;
-      if (!cancelled) setFairPricePoints(fairPricePointsRef.current);
+      if (!cancelled && sessionActive()) {
+        setFairPricePoints(fairPricePointsRef.current);
+      }
     };
     const ingestFairPrice = (point: PolymarketFairPricePoint) => {
+      if (!sessionActive()) return;
       if (sameFairPriceSequence(currentFairPriceRef.current, point)) return;
+      const inWindow = filterFairPricePointsToWindow(
+        [point],
+        selectedWindowStart,
+        selectedWindowEnd,
+        marketWindowEndMs,
+      ).length > 0;
+      if (!inWindow) {
+        setFairPriceError("out_of_window");
+        return;
+      }
+      if (isFairPriceStale(point)) {
+        setFairPriceStatus("stale");
+        setFairPriceError("source_stale");
+        return;
+      }
       currentFairPriceRef.current = point;
       pendingCurrent = point;
       fairPricePointsRef.current = mergeFairPricePoints(
         fairPricePointsRef.current,
         [point],
+        2000,
+        {
+          start: selectedWindowStart,
+          end: selectedWindowEnd,
+          nowMs: marketWindowEndMs,
+        },
       );
       setFairPriceStatus("live");
       setFairPriceError(null);
@@ -421,10 +465,16 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
         controller.signal,
       )
         .then((history) => {
-          if (cancelled) return;
+          if (cancelled || !sessionActive()) return;
           fairPricePointsRef.current = mergeFairPricePoints(
             fairPricePointsRef.current,
             history.points.map(toPolymarketFairPricePoint),
+            2000,
+            {
+              start: selectedWindowStart,
+              end: selectedWindowEnd,
+              nowMs: marketWindowEndMs,
+            },
           );
           setFairPricePoints(fairPricePointsRef.current);
         })
@@ -437,7 +487,7 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
     }
 
     const connect = () => {
-      if (cancelled || socket != null) return;
+      if (cancelled || !sessionActive() || socket != null) return;
       const nextSocket = new WebSocket(aggdataWebSocketUrl());
       socket = nextSocket;
       nextSocket.onopen = () => {
@@ -450,7 +500,7 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
         }));
       };
       nextSocket.onmessage = (event) => {
-        if (cancelled || typeof event.data !== "string") return;
+        if (cancelled || !sessionActive() || typeof event.data !== "string") return;
         try {
           const message = decodeFairPriceMessage(event.data);
           if (message.type === "ack") {
@@ -461,9 +511,14 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
             return;
           }
           if (message.type === "reset") {
-            setFairPriceStatus(
-              currentFairPriceRef.current == null ? "unavailable" : "stale",
-            );
+            pendingCurrent = null;
+            if (currentTimer) {
+              clearTimeout(currentTimer);
+              currentTimer = null;
+            }
+            currentFairPriceRef.current = null;
+            setCurrentFairPrice(null);
+            setFairPriceStatus("stale");
             setFairPriceError(message.reason);
             return;
           }
@@ -487,6 +542,14 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
       };
     };
     connect();
+    staleTimer = setInterval(() => {
+      if (!sessionActive()) return;
+      if (currentFairPriceRef.current &&
+          isFairPriceStale(currentFairPriceRef.current)) {
+        setFairPriceStatus("stale");
+        setFairPriceError("source_stale");
+      }
+    }, 1000);
 
     return () => {
       cancelled = true;
@@ -495,6 +558,7 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (currentTimer) clearTimeout(currentTimer);
       if (chartTimer) clearTimeout(chartTimer);
+      if (staleTimer) clearInterval(staleTimer);
       socket?.close();
     };
   }, [
@@ -638,6 +702,8 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
 
   const visibleSnapshot =
     liveSnapshot != null &&
+    selectedMarket != null &&
+    liveSnapshot.market.id === selectedMarket.id &&
     liveSnapshot.market.asset === selectedAsset &&
     liveSnapshot.market.period === selectedPeriod
       ? liveSnapshot
@@ -646,6 +712,17 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
     status === "authenticated" ? selectedAccountId : null;
   const value = React.useMemo<PolymarketContextValue>(() => {
     const visibleChartPoints = visibleSnapshot ? chartPoints : [];
+    const marketAligned = visibleSnapshot != null && selectedMarket != null;
+    const visibleFairPricePoints =
+      marketAligned &&
+      (fairPriceStatus === "live" || fairPriceStatus === "stale")
+        ? filterFairPricePointsToWindow(
+            fairPricePoints,
+            selectedMarket.windowStart,
+            selectedMarket.windowEnd,
+            Date.parse(selectedMarket.windowEnd),
+          )
+        : [];
     const visibleLiveQuote = visibleSnapshot
       ? liveQuoteFromSnapshot(visibleSnapshot)
       : null;
@@ -655,8 +732,8 @@ export function PolymarketProvider({ children }: { children: React.ReactNode }) 
       snapshot: visibleSnapshot,
       chartPoints: visibleChartPoints,
       liveQuote: visibleLiveQuote,
-      currentFairPrice,
-      fairPricePoints,
+      currentFairPrice: marketAligned ? currentFairPrice : null,
+      fairPricePoints: visibleFairPricePoints,
       fairPriceSource,
       fairPriceStatus,
       fairPriceError,

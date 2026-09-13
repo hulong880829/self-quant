@@ -167,6 +167,63 @@ SignalEvaluation SignalEngine::evaluate(
   return result;
 }
 
+namespace {
+
+double RequiredTicks(const Parameters& parameters, double market_price,
+                     double spread, double tick_size) noexcept {
+  const double fee_ticks =
+      tick_size > 0.0
+          ? (market_price * parameters.taker_fee_bps / 10'000.0) / tick_size
+          : 0.0;
+  return std::max(0.0, spread / tick_size) + parameters.min_edge_ticks +
+         parameters.slippage_ticks + std::max(0.0, fee_ticks);
+}
+
+}  // namespace
+
+SignalEvaluation SignalEngine::evaluate_executable(
+    double up_bid, double up_ask, double down_bid, double down_ask,
+    double tick_size, std::uint64_t remaining_ns) const noexcept {
+  const double up_mid = (up_bid + up_ask) * 0.5;
+  auto result = evaluate(up_mid, 0.0, tick_size, remaining_ns);
+  if (!result.volatility_ready || result.fair_move == 0.0) {
+    result.direction = SignalEvaluation::Direction::None;
+    return result;
+  }
+  const bool buy_up = result.fair_move > 0.0;
+  const double bid = buy_up ? up_bid : down_bid;
+  const double ask = buy_up ? up_ask : down_ask;
+  if (!(ask > 0.0 && ask < 1.0) || !(bid > 0.0 && bid < ask)) {
+    result.direction = SignalEvaluation::Direction::None;
+    return result;
+  }
+  result.price_in_range = ask >= parameters_.min_market_price &&
+                          ask <= parameters_.max_market_price;
+  const double remaining_seconds = static_cast<double>(remaining_ns) / 1e9;
+  const Sample& latest = at(size_ - 1);
+  const double remaining_sigma =
+      latest.price * result.annualized_vol *
+      std::sqrt(remaining_seconds / kSecondsPerYear);
+  if (!(remaining_sigma > std::numeric_limits<double>::epsilon())) {
+    result.direction = SignalEvaluation::Direction::None;
+    return result;
+  }
+  const double d = InverseNormal(ask);
+  constexpr double inv_sqrt_2pi = 0.3989422804014327;
+  const double density = inv_sqrt_2pi * std::exp(-0.5 * d * d);
+  result.option_edge = result.fair_move * density / remaining_sigma;
+  result.edge_ticks = std::abs(result.option_edge) / tick_size;
+  const double required =
+      RequiredTicks(parameters_, ask, ask - bid, tick_size);
+  if (result.price_in_range && result.edge_ticks >= required) {
+    result.direction = buy_up ? SignalEvaluation::Direction::Up
+                              : SignalEvaluation::Direction::Down;
+  } else {
+    result.direction = SignalEvaluation::Direction::None;
+  }
+  return result;
+}
+
 bool SignalEngine::ready() const noexcept { return size_ >= 3; }
 
 double SignalEngine::latest_price() const noexcept {

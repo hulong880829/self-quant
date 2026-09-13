@@ -42,8 +42,16 @@ import {
   formatSettlementCountdown,
   rateColor,
 } from "@/lib/market-format";
+import { StartTradeButton } from "@/components/funding/start-trade-button";
+import {
+  bboCanonicalSymbol,
+  canStartFundingTrade,
+  formatHistoryWindow,
+} from "@/lib/funding-coverage";
 import { FUNDING_DETAIL_WIDTH_PX, shouldUseSplitLayout } from "@/lib/layout";
+import { buildArbitragePrefillUrlFromSpread } from "@/lib/trading-prefill";
 import { cn } from "@/lib/utils";
+import { useVisibleMeasure } from "@/lib/visible-measure";
 import type { Exchange, FundingSpread, FundingSpreadLeg } from "@/types/market";
 
 type SpreadListItem =
@@ -60,6 +68,9 @@ const exchangeDot: Record<Exchange, string> = {
   Bitget: "bg-cyan-500",
   Gate: "bg-blue-500",
   Hyperliquid: "bg-emerald-500",
+  Aster: "bg-rose-500",
+  Lighter: "bg-indigo-500",
+  Entropy: "bg-fuchsia-500",
   Polymarket: "bg-violet-500",
 };
 
@@ -174,11 +185,23 @@ function SpreadDetail({ spread }: { spread: FundingSpread }) {
             <div className="text-xs text-muted-foreground">跨所资金费套利</div>
             <h2 className="mt-1 font-mono text-xl font-semibold">{spread.symbol}</h2>
           </div>
-          {spread.stale && (
-            <Badge variant="outline" className="gap-1 border-amber-500/30 text-amber-600">
-              <ShieldAlert className="size-3" /> 数据延迟
-            </Badge>
-          )}
+          <div className="flex shrink-0 items-center gap-2">
+            {spread.stale && (
+              <Badge variant="outline" className="gap-1 border-amber-500/30 text-amber-600">
+                <ShieldAlert className="size-3" /> 数据延迟
+              </Badge>
+            )}
+            {canStartFundingTrade(spread.longLeg.exchange, "cross", {
+              venueContractType: spread.longLeg.venueContractType,
+              exchangeSymbol: spread.longLeg.exchangeSymbol,
+            }) &&
+              canStartFundingTrade(spread.shortLeg.exchange, "cross", {
+                venueContractType: spread.shortLeg.venueContractType,
+                exchangeSymbol: spread.shortLeg.exchangeSymbol,
+              }) && (
+                <StartTradeButton href={buildArbitragePrefillUrlFromSpread(spread)} />
+              )}
+          </div>
         </div>
         <div className="mt-4 space-y-2">
           <LegCard leg={spread.longLeg} side="long" />
@@ -187,14 +210,18 @@ function SpreadDetail({ spread }: { spread: FundingSpread }) {
       </div>
       <div className="grid grid-cols-3 gap-px border-b bg-border">
         {[
-          ["即时年化", spread.spreadAnnualized],
-          ["24H 年化", spread.spread24hAnnualized],
-          ["7D 年化", spread.spread7dAnnualized],
-        ].map(([label, value]) => (
+          ["即时年化", spread.spreadAnnualized, undefined],
+          ["24H 年化", spread.spread24hAnnualized, spread.history24hComplete],
+          ["7D 年化", spread.spread7dAnnualized, spread.history7dComplete],
+        ].map(([label, value, complete]) => (
           <div key={String(label)} className="bg-card p-3 text-center">
             <div className="text-[10px] text-muted-foreground">{label}</div>
             <div className={cn("mt-1 font-mono text-xs font-semibold", rateColor(Number(value)))}>
-              {formatPercent(Number(value), 1)}
+              {formatHistoryWindow(
+                complete as boolean | undefined,
+                Number(value),
+                (amount) => formatPercent(amount, 1),
+              )}
             </div>
           </div>
         ))}
@@ -237,7 +264,7 @@ export function FundingSpreadView({
   loading: boolean;
 }) {
   const [sorting, setSorting] = React.useState<SortingState>([
-    { id: "spreadAnnualized", desc: true },
+    { id: "spread24hAnnualized", desc: true },
   ]);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
@@ -271,11 +298,23 @@ export function FundingSpreadView({
       ] as const).map(([key, header]) => ({
         accessorKey: key,
         header,
-        cell: ({ row }: { row: { original: FundingSpread } }) => (
-          <div className={cn("text-right font-mono text-xs font-semibold", rateColor(row.original[key]))}>
-            {formatPercent(row.original[key], 1)}
-          </div>
-        ),
+        cell: ({ row }: { row: { original: FundingSpread } }) => {
+          const complete =
+            key === "spread24hAnnualized"
+              ? row.original.history24hComplete
+              : key === "spread7dAnnualized"
+                ? row.original.history7dComplete
+                : undefined;
+          return (
+            <div className={cn("text-right font-mono text-xs font-semibold", rateColor(row.original[key]))}>
+              {formatHistoryWindow(
+                complete,
+                row.original[key],
+                (value) => formatPercent(value, 1),
+              )}
+            </div>
+          );
+        },
       })),
       {
         accessorKey: "minPositionNotional",
@@ -333,6 +372,7 @@ export function FundingSpreadView({
     overscan: 10,
     getItemKey: (index) => listItems[index]?.key ?? index,
   });
+  useVisibleMeasure(() => virtualizer.measure(), true);
   const virtualRows = virtualizer.getVirtualItems();
   const top = virtualRows[0]?.start ?? 0;
   const bottom = virtualRows.length
@@ -346,6 +386,9 @@ export function FundingSpreadView({
 
   return (
     <>
+      <p className="border-b px-3 py-2 text-[11px] text-muted-foreground">
+        Hyperliquid / Lighter USDC 永续可与其他交易所同币种 USDT 永续配对；USDC/USDT 按 1:1 比较，价差可能包含稳定币基差。
+      </p>
       <WorkspacePanel ref={workspaceRef} className={cn(showSplit && "grid-cols-[minmax(0,1fr)_380px]")}>
         <div ref={containerRef} data-wide-table-scroll className="min-w-0 overflow-auto">
           <table className="w-full min-w-[1120px] border-collapse">
@@ -383,6 +426,8 @@ export function FundingSpreadView({
                               compareVenue={item.spread.longLeg.exchange}
                               baseAsset={item.spread.baseAsset}
                               quoteAsset={item.spread.quoteAsset}
+                              venueSymbol={bboCanonicalSymbol(item.spread.shortLeg)}
+                              compareVenueSymbol={bboCanonicalSymbol(item.spread.longLeg)}
                             />
                           </td>
                         </tr>

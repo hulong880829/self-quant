@@ -7,28 +7,16 @@
 mds:
   # 行情接入模式
   # 可选值: external_shm | self_hosted | replay
-  # - external_shm: 连接外部 mds_producer 写入的共享内存（本策略默认）
-  # - self_hosted: 策略进程内复用完整 ProducerRuntime；配置示例：
-  #     producer:
-  #       config_path: core/mds/config/mds_polymarket.example.yaml
+  # - external_shm: 连接外部 mds_producer 写入的共享内存
+  # - self_hosted: 策略进程内复用完整 ProducerRuntime，并消费其共享内存数据（本策略默认）
   # - replay: 回放模式
-  source: external_shm
-
-  # 共享内存 segment 列表；external_shm 模式下至少配置一个
-  segments:
-    # BTC 5 分钟 UP 合约 BBO ticker
-    - name: /selfquant.mds.poly.polymarket_binary_option.btc5mup.ticker.2
-      ring_bytes: 8388608          # ring 缓冲区大小（字节），需与 producer 一致
-      max_record_bytes: 65536      # 单条记录最大字节数
-      expected_reader_budget: 1    # 预期 reader 数量，用于启动时 slot 预算校验
-      heartbeat_interval_ns: 500000000  # 心跳间隔（纳秒），500ms
-
-    # BTC 5 分钟 DOWN 合约 BBO ticker
-    - name: /selfquant.mds.poly.polymarket_binary_option.btc5mdown.ticker.2
-      ring_bytes: 8388608
-      max_record_bytes: 65536
-      expected_reader_budget: 1
-      heartbeat_interval_ns: 500000000
+  source: self_hosted
+  # Polymarket BBO comes from the ticker-role ring. Suppress any parallel
+  # orderbook-role canonical BBO so freshness has one authoritative source.
+  bbo_policy: ticker_only
+  producer:
+    # 该 MDS 配置只订阅 Polymarket BTC 5m，并同时解析 UP / DOWN。
+    config_path: core/mds/config/mds_polymarket.example.yaml
   required_instruments:
     - {venue: polymarket, product: binary_option, symbol: btc5mup}
     - {venue: polymarket, product: binary_option, symbol: btc5mdown}
@@ -40,8 +28,8 @@ oms:
   # 运行时线程模型
   # 可选值: single_thread | multi_io_thread
   # - single_thread: 策略与 OMS I/O 同线程，延迟最低
-  # - multi_io_thread: 策略与 OMS I/O 分离，适合多 venue 并发
-  threading: single_thread
+  # - multi_io_thread: 策略与 OMS I/O 分离
+  threading: multi_io_thread
 
   # 主循环空闲策略
   # 可选值: busy_spin | adaptive | low_cpu
@@ -105,30 +93,36 @@ strategy:
   # BTC5MUP/BTC5MDOWN are resolved from StrategyFrame InstrumentCatalog.
 
   # --- 信号层 ---
-  vol_lookback_ms: 30000      # 波动率回看窗口（毫秒），用于计算 fair price 对数收益标准差
-  signal_horizon_ms: 250      # 信号 horizon（毫秒），fair price 变动 = 最新价 - horizon 前价格
-  vol_threshold: 0.20         # 年化波动率下限；低于此值不触发开仓
-  min_market_price: 0.15      # 平值过滤：市场中间价下限（仅在此区间内交易）
-  max_market_price: 0.85      # 平值过滤：市场中间价上限
-  min_edge_ticks: 1.0         # taker 开仓安全边际（tick）；要求 edge >= spread + min_edge_ticks
+  vol_lookback_ms: 60000      # 波动率回看窗口（毫秒），降低 5m 合约中的短时噪声
+  signal_horizon_ms: 500      # 信号 horizon（毫秒），避免对单个 fairprice tick 过度反应
+  vol_threshold: 0.40         # 年化波动率下限；过滤低波动、低收益空间时段
+  min_market_price: 0.20      # 避开概率两端的流动性与跳价风险
+  max_market_price: 0.80
+  min_edge_ticks: 4.0         # 为 taker 手续费、滑点和模型误差预留安全边际
 
   # --- 下单与持仓 ---
-  order_shares: 1.0           # 每笔订单 shares 数量
+  order_shares: 5.0           # 小仓试运行；验证净 PnL 后再逐步放大
+  minimum_order_size: 5.0     # Polymarket 最小下单量；更小的剩余仓位进入 Dust
+  startup_reconcile_timeout_ms: 10000 # 启动查询挂单/持仓超时
+  max_bbo_age_ms: 2000        # 单腿 BBO 最大年龄
+  max_bbo_skew_ms: 500        # UP/DOWN 两腿 BBO 最大时间差
+  taker_fee_bps: 0.0          # taker 手续费（bps），计入 edge/止盈/止损
+  slippage_ticks: 0.0         # 滑点 tick，计入 edge/止盈/止损
   max_single_side_shares: 10.0        # 单腿（Yes 或 No）最大持仓；超限仅允许配平方向下单
   imbalance_tolerance_shares: 0.1     # Yes/No 配平容差（shares）；在此误差内视为已配平
-  profit_spread_ticks: 1              # maker 平仓目标利润（相对开仓均价的 tick 数）
+  profit_spread_ticks: 4              # maker 平仓目标利润（相对开仓均价的 tick 数）
   close_improve_ticks: 0              # maker 平仓额外改善 tick（在目标价基础上再让价）
 
   # --- 订单生命周期 ---
-  max_order_resting_ms: 1000          # maker 挂单最大驻留时间（毫秒），超时撤单重挂
-  requote_deviation_ticks: 1          # 挂单价格偏离目标超过此 tick 数时撤单重挂
+  max_order_resting_ms: 2000          # 降低频繁撤单重挂带来的队列位置损失
+  requote_deviation_ticks: 2          # 容忍小幅波动，减少无效 requote
 
   # --- 风控 ---
-  no_trade_before_expiry_ms: 30000    # 距 5 分钟窗口到期前 N 毫秒停止新开仓并撤单
-  stop_loss_ticks: 5.0                # 单边浮亏止损阈值（tick * 持仓量）
+  no_trade_before_expiry_ms: 60000    # 距窗口到期前 60 秒停止新开仓并撤单
+  stop_loss_ticks: 6.0                # 避免正常盘口噪声过早触发，同时限制单边尾部风险
 
   # --- 运行时 ---
-  fairprice_timer_us: 200             # fairprice sidecar 事件轮询间隔（微秒）
+  fairprice_timer_us: 1000            # 1ms 轮询足以覆盖 500ms 信号 horizon，并降低 CPU 抖动
 
   # --- fairprice sidecar（连接 Go aggdata 服务）---
   fairprice:
@@ -139,4 +133,3 @@ strategy:
     secure: false                     # true=wss | false=ws
     profile: ""                       # 可选 profile 参数，空字符串表示默认
     symbol: BTCUSDT                   # fairprice 订阅 symbol
-

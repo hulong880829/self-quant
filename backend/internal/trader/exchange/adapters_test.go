@@ -3,6 +3,7 @@ package exchange
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -339,5 +340,174 @@ func TestBitgetDoesNotRetryHTTP200ApplicationError(t *testing.T) {
 	}
 	if requests != 1 {
 		t.Fatalf("requests=%d", requests)
+	}
+}
+
+func TestGateCanonicalizesWireDecimalsBeforeSubmitting(t *testing.T) {
+	var body string
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		raw, _ := io.ReadAll(request.Body)
+		body = string(raw)
+		_, _ = writer.Write([]byte(`{
+			"id":"gate-1","status":"open","size":"15","left":"15","fill_price":"0"
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := newGate(server.Client(), server.URL)
+	_, err := adapter.PlaceOrder(context.Background(), Credentials{
+		APIKey: "key", APISecret: "secret",
+	}, OrderRequest{
+		Instrument: Instrument{
+			Exchange: "gate", ContractType: "perpetual",
+			BaseAsset: "BEAT", QuoteAsset: "USDT", SettleAsset: "USDT",
+			ContractSize: "10", QuantityStep: "10", PriceTick: "0.0001",
+		},
+		ClientOrderID: "sq1234567890123456",
+		Side:          "buy", OrderType: "limit",
+		Quantity: "150.000000000000000000",
+		Price:    "0.128500000000000000",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 || !strings.Contains(body, `"price":"0.1285"`) ||
+		!strings.Contains(body, `"size":15`) {
+		t.Fatalf("requests=%d body=%s", requests, body)
+	}
+
+	_, err = adapter.PlaceOrder(context.Background(), Credentials{
+		APIKey: "key", APISecret: "secret",
+	}, OrderRequest{
+		Instrument: Instrument{
+			Exchange: "gate", ContractType: "spot",
+			BaseAsset: "BEAT", QuoteAsset: "USDT",
+			QuantityStep: "1", PriceTick: "0.0001",
+		},
+		ClientOrderID: "invalid-price",
+		Side:          "buy", OrderType: "limit", Quantity: "1", Price: "0.12855",
+	})
+	if err == nil || requests != 1 {
+		t.Fatalf("err=%v requests=%d", err, requests)
+	}
+}
+
+func TestGatePreservesVenueErrorAndRejectsPostOnlyRace(t *testing.T) {
+	label := "INVALID_PARAM_VALUE"
+	message := "bad price"
+	detail := ""
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(writer).Encode(map[string]string{
+			"label": label, "message": message, "detail": detail,
+		})
+	}))
+	defer server.Close()
+	adapter := newGate(server.Client(), server.URL)
+	request := OrderRequest{
+		Instrument: Instrument{
+			Exchange: "gate", ContractType: "spot",
+			BaseAsset: "BEAT", QuoteAsset: "USDT",
+		},
+		ClientOrderID: "error-test", Side: "buy", OrderType: "limit",
+		Quantity: "1", Price: "0.1", PostOnly: true,
+	}
+
+	result, err := adapter.PlaceOrder(
+		context.Background(), Credentials{APIKey: "key", APISecret: "secret"}, request,
+	)
+	if !errors.Is(err, ErrRejected) ||
+		result.ErrorCode != label || result.ErrorMessage != "bad price" ||
+		result.Raw["label"] != label {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+
+	for _, test := range []struct {
+		name, code, message, detail, wantMessage string
+	}{
+		{
+			name: "spot", code: "POC_FILL_IMMEDIATELY",
+			message:     "order would immediately fill",
+			wantMessage: "order would immediately fill",
+		},
+		{
+			name: "futures", code: "ORDER_POC_IMMEDIATE",
+			detail:      "order price 0.143 while counter price 0.142",
+			wantMessage: "order price 0.143 while counter price 0.142",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			label, message, detail = test.code, test.message, test.detail
+			result, err = adapter.PlaceOrder(
+				context.Background(),
+				Credentials{APIKey: "key", APISecret: "secret"},
+				request,
+			)
+			if !errors.Is(err, ErrRejected) ||
+				result.Status != "rejected" ||
+				result.ErrorCode != test.code ||
+				result.ErrorMessage != test.wantMessage ||
+				result.Raw["label"] != test.code {
+				t.Fatalf("post-only result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestVenuePositionModeReaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/papi/v1/um/positionSide/dual":
+			_, _ = writer.Write([]byte(`{"dualSidePosition":false}`))
+		case "/api/v5/account/config":
+			_, _ = writer.Write([]byte(`{"code":"0","data":[{"posMode":"net_mode"}]}`))
+		case "/v5/position/list":
+			_, _ = writer.Write([]byte(`{"retCode":0,"result":{"list":[{"positionIdx":0}]}}`))
+		case "/api/v3/account/settings":
+			_, _ = writer.Write([]byte(`{"code":"00000","data":{"holdMode":"one_way_mode"}}`))
+		case "/api/v4/futures/usdt/accounts":
+			_, _ = writer.Write([]byte(`{"position_mode":"single"}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+	credentials := Credentials{APIKey: "key", APISecret: "secret", Passphrase: "pass"}
+	tests := []struct {
+		name       string
+		adapter    Adapter
+		instrument Instrument
+	}{
+		{"binance", newBinance(server.Client(), server.URL), Instrument{
+			ContractType: "perpetual", ExchangeSymbol: "BTCUSDT",
+		}},
+		{"okx", newOKX(server.Client(), server.URL), Instrument{
+			ContractType: "perpetual", BaseAsset: "BTC", QuoteAsset: "USDT",
+		}},
+		{"bybit", newBybit(server.Client(), server.URL), Instrument{
+			ContractType: "perpetual", ExchangeSymbol: "BTCUSDT",
+		}},
+		{"bitget", newBitget(server.Client(), server.URL), Instrument{
+			ContractType: "perpetual", ExchangeSymbol: "BTCUSDT",
+		}},
+		{"gate", newGate(server.Client(), server.URL), Instrument{
+			ContractType: "perpetual", BaseAsset: "BTC", QuoteAsset: "USDT",
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reader, ok := test.adapter.(PositionModeReader)
+			if !ok {
+				t.Fatal("adapter does not expose position mode reader")
+			}
+			mode, err := reader.GetPositionMode(
+				context.Background(), credentials, test.instrument,
+			)
+			if err != nil || mode != PositionModeOneWay {
+				t.Fatalf("mode=%q err=%v", mode, err)
+			}
+		})
 	}
 }

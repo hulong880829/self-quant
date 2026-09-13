@@ -3,8 +3,11 @@ package exchange
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -44,9 +47,49 @@ type hyperliquidSpotMeta struct {
 	} `json:"universe"`
 }
 
-func (h *Hyperliquid) metaAndContexts(ctx context.Context) (hyperliquidMeta, []hyperliquidContext, error) {
+const (
+	hyperliquidPerpMaxDecimals = 6
+	hyperliquidMinNotional     = 10
+	hyperliquidHIP3Dex         = "xyz"
+)
+
+var hyperliquidPerpDexes = []string{"", hyperliquidHIP3Dex}
+
+func hyperliquidMetaBody(dex string) string {
+	if dex == "" {
+		return `{"type":"metaAndAssetCtxs"}`
+	}
+	return fmt.Sprintf(`{"type":"metaAndAssetCtxs","dex":%q}`, dex)
+}
+
+func hyperliquidCoin(dex, name string) (exchangeSymbol, baseAsset string) {
+	if dex == "" {
+		return name, name
+	}
+	baseAsset = name
+	if index := strings.Index(name, ":"); index >= 0 {
+		baseAsset = name[index+1:]
+		return name, baseAsset
+	}
+	return dex + ":" + name, baseAsset
+}
+
+func hyperliquidInstrumentMetadata(item any, dex string) json.RawMessage {
+	raw, _ := json.Marshal(item)
+	metadata := make(map[string]any)
+	_ = json.Unmarshal(raw, &metadata)
+	metadata["dex"] = dex
+	result, _ := json.Marshal(metadata)
+	return result
+}
+
+func (h *Hyperliquid) metaAndContexts(ctx context.Context, dex string) (hyperliquidMeta, []hyperliquidContext, error) {
+	return hyperliquidMetaAndContexts(h.client, ctx, dex)
+}
+
+func hyperliquidMetaAndContexts(c client, ctx context.Context, dex string) (hyperliquidMeta, []hyperliquidContext, error) {
 	var raw []json.RawMessage
-	if err := h.client.post(ctx, "/info", `{"type":"metaAndAssetCtxs"}`, &raw); err != nil {
+	if err := c.post(ctx, "/info", hyperliquidMetaBody(dex), &raw); err != nil {
 		return hyperliquidMeta{}, nil, err
 	}
 	if len(raw) != 2 {
@@ -63,27 +106,53 @@ func (h *Hyperliquid) metaAndContexts(ctx context.Context) (hyperliquidMeta, []h
 	return meta, contexts, nil
 }
 
-func parseHyperliquidInstruments(meta hyperliquidMeta) []Instrument {
+func parseHyperliquidInstruments(meta hyperliquidMeta, dex string) []Instrument {
 	result := make([]Instrument, 0, len(meta.Universe))
 	for _, item := range meta.Universe {
 		if item.IsDelisted {
 			continue
 		}
-		step := 1.0
-		for range item.SzDecimals {
-			step /= 10
-		}
-		metadata, _ := json.Marshal(item)
+		exchangeSymbol, baseAsset := hyperliquidCoin(dex, item.Name)
+		step, stepText := hyperliquidDecimalStep(item.SzDecimals)
+		tick := hyperliquidPerpPriceTick(item.SzDecimals)
 		result = append(result, Instrument{
-			Exchange: "hyperliquid", ExchangeSymbol: item.Name,
-			BaseAsset: item.Name, QuoteAsset: "USDC",
-			GlobalSymbol: GlobalSymbol(item.Name, "USDC"), IntervalHours: 1,
+			Exchange: "hyperliquid", ExchangeSymbol: exchangeSymbol,
+			BaseAsset: baseAsset, QuoteAsset: "USDC",
+			GlobalSymbol: GlobalSymbol(baseAsset, "USDC"), IntervalHours: 1,
 			SettleAsset: "USDC", ContractType: "perpetual", Status: "active",
-			ContractSize: 1, QuantityStep: step, Metadata: metadata,
-			SourceUpdatedAt: time.Now().UTC(),
+			ContractSize: 1, PriceTick: tick, QuantityStep: step,
+			MinQuantity: step, MinNotional: hyperliquidMinNotional,
+			MinQuantityStatus: ConstraintKnown, MinNotionalStatus: ConstraintKnown,
+			MaxQuantityStatus:  ConstraintNotApplicable,
+			MarketQuantityStep: stepText, MarketQuantityStepStatus: ConstraintKnown,
+			MarketMinQuantity: stepText, MarketMinQuantityStatus: ConstraintKnown,
+			MarketMaxQuantityStatus: ConstraintNotApplicable,
+			MarketMinNotional:       strconv.Itoa(hyperliquidMinNotional),
+			MarketMinNotionalStatus: ConstraintKnown,
+			Metadata:                hyperliquidInstrumentMetadata(item, dex), SourceUpdatedAt: time.Now().UTC(),
 		})
 	}
 	return result
+}
+
+func hyperliquidDecimalStep(decimals int) (float64, string) {
+	if decimals < 0 {
+		decimals = 0
+	}
+	step := 1.0
+	for range decimals {
+		step /= 10
+	}
+	return step, strconv.FormatFloat(step, 'f', decimals, 64)
+}
+
+func hyperliquidPerpPriceTick(szDecimals int) float64 {
+	tickDecimals := hyperliquidPerpMaxDecimals - szDecimals
+	if tickDecimals < 0 {
+		tickDecimals = 0
+	}
+	tick, _ := hyperliquidDecimalStep(tickDecimals)
+	return tick
 }
 
 func (h *Hyperliquid) syncSpotInstruments(ctx context.Context) ([]Instrument, error) {
@@ -146,14 +215,27 @@ func (h *Hyperliquid) SyncInstruments(ctx context.Context, contractType string) 
 	if contractType != ContractTypePerpetual {
 		return nil, fmt.Errorf("hyperliquid: unsupported contract type %q", contractType)
 	}
-	meta, _, err := h.metaAndContexts(ctx)
-	if err != nil {
-		return nil, err
+	var result []Instrument
+	var errs []error
+	for _, dex := range hyperliquidPerpDexes {
+		meta, _, err := h.metaAndContexts(ctx, dex)
+		if err != nil {
+			slog.Default().Warn("hyperliquid metaAndAssetCtxs failed", "dex", dex, "error", err)
+			errs = append(errs, err)
+			continue
+		}
+		result = append(result, parseHyperliquidInstruments(meta, dex)...)
 	}
-	return parseHyperliquidInstruments(meta), nil
+	if len(result) == 0 {
+		if err := errors.Join(errs...); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("hyperliquid: empty perpetual catalog")
+	}
+	return result, nil
 }
 
-func parseHyperliquidCurrent(meta hyperliquidMeta, contexts []hyperliquidContext, now time.Time) ([]FundingRate, error) {
+func parseHyperliquidCurrent(meta hyperliquidMeta, contexts []hyperliquidContext, now time.Time, dex string) ([]FundingRate, error) {
 	result := make([]FundingRate, 0, len(contexts))
 	next := now.UTC().Truncate(time.Hour).Add(time.Hour)
 	for i, item := range meta.Universe {
@@ -173,8 +255,9 @@ func parseHyperliquidCurrent(meta hyperliquidMeta, contexts []hyperliquidContext
 		if previous != 0 {
 			change = (markPrice - previous) / previous
 		}
+		exchangeSymbol, _ := hyperliquidCoin(dex, item.Name)
 		result = append(result, FundingRate{
-			Exchange: "hyperliquid", ExchangeSymbol: item.Name, Rate: rate,
+			Exchange: "hyperliquid", ExchangeSymbol: exchangeSymbol, Rate: rate,
 			FundingTime: next, IntervalHours: 1, MarkPrice: markPrice,
 			IndexPrice: indexPrice, LastPrice: markPrice,
 			OpenInterestContracts: oi, OpenInterestBase: oi,
@@ -186,11 +269,29 @@ func parseHyperliquidCurrent(meta hyperliquidMeta, contexts []hyperliquidContext
 }
 
 func (h *Hyperliquid) FetchCurrent(ctx context.Context, _ []Instrument) ([]FundingRate, error) {
-	meta, contexts, err := h.metaAndContexts(ctx)
-	if err != nil {
-		return nil, err
+	var result []FundingRate
+	var errs []error
+	for _, dex := range hyperliquidPerpDexes {
+		meta, contexts, err := h.metaAndContexts(ctx, dex)
+		if err != nil {
+			slog.Default().Warn("hyperliquid current funding failed", "dex", dex, "error", err)
+			errs = append(errs, err)
+			continue
+		}
+		rates, err := parseHyperliquidCurrent(meta, contexts, time.Now(), dex)
+		if err != nil {
+			slog.Default().Warn("hyperliquid current funding parse failed", "dex", dex, "error", err)
+			errs = append(errs, err)
+			continue
+		}
+		result = append(result, rates...)
 	}
-	return parseHyperliquidCurrent(meta, contexts, time.Now())
+	if len(result) == 0 {
+		if err := errors.Join(errs...); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
 type hyperliquidHistory struct {
@@ -221,7 +322,7 @@ func (h *Hyperliquid) FetchHistory(ctx context.Context, instrument Instrument, s
 				return nil, err
 			}
 			result = append(result, FundingRate{
-				Exchange: "hyperliquid", ExchangeSymbol: item.Coin, Rate: rate,
+				Exchange: "hyperliquid", ExchangeSymbol: instrument.ExchangeSymbol, Rate: rate,
 				FundingTime: milliseconds(item.Time), Settled: true, IntervalHours: 1,
 				SourceUpdatedAt: milliseconds(item.Time),
 			})

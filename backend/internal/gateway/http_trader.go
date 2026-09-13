@@ -45,9 +45,61 @@ func (h *Handler) listTraderInstruments(writer http.ResponseWriter, request *htt
 		data = append(data, traderInstrumentJSON(item))
 	}
 	writer.Header().Set("Cache-Control", "no-store")
+	capabilities := response.GetCapabilities()
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"data": data, "meta": map[string]any{"total": len(data)},
 		"serverTime": protoTimeJSON(response.GetServerTime()),
+		"capabilities": map[string]any{
+			"products": capabilities.GetProducts(), "quoteAssets": capabilities.GetQuoteAssets(),
+			"timeInForce": capabilities.GetTimeInForce(), "postOnly": capabilities.GetPostOnly(),
+			"reduceOnly": capabilities.GetReduceOnly(), "makerTwap": capabilities.GetMakerTwap(),
+			"privateOrderStream": capabilities.GetPrivateOrderStream(),
+			"oneWayOnly":         capabilities.GetOneWayOnly(),
+		},
+	})
+}
+
+func (h *Handler) applyTraderAccountProfile(writer http.ResponseWriter, request *http.Request) {
+	token, ok := h.sessionToken(request)
+	if !ok {
+		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+		return
+	}
+	accountID, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(request, "accountId")), 10, 64)
+	if err != nil || accountID <= 0 {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid trading account id"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 20*time.Second)
+	defer cancel()
+	response, err := h.trader.ApplyAccountProfile(
+		ctx,
+		&traderv1.ApplyAccountProfileRequest{
+			Token: token, TradingAccountId: accountID,
+		},
+	)
+	if err != nil {
+		h.writeTraderError(writer, err)
+		return
+	}
+	result := response.GetResult()
+	steps := make([]map[string]any, 0, len(result.GetSteps()))
+	for _, step := range result.GetSteps() {
+		steps = append(steps, map[string]any{
+			"step": step.GetStep(), "status": step.GetStatus(),
+			"code": step.GetCode(), "message": step.GetMessage(),
+		})
+	}
+	writer.Header().Set("Cache-Control", "no-store")
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"tradingAccountId": result.GetTradingAccountId(),
+			"productName":      result.GetProductName(),
+			"accountName":      result.GetAccountName(),
+			"exchange":         result.GetExchange(),
+			"overallStatus":    result.GetOverallStatus(),
+			"steps":            steps,
+		},
 	})
 }
 
@@ -331,18 +383,24 @@ func (h *Handler) cancelTraderTwap(writer http.ResponseWriter, request *http.Req
 }
 
 type createArbitrageCombinationBody struct {
-	ProductName          string `json:"productName"`
-	LegATradingAccountID int64  `json:"legAAccountId"`
-	LegAInstrumentID     int64  `json:"legAInstrumentId"`
-	LegBTradingAccountID int64  `json:"legBAccountId"`
-	LegBInstrumentID     int64  `json:"legBInstrumentId"`
-	AskThresholdBps      string `json:"askThresholdBps"`
-	BidThresholdBps      string `json:"bidThresholdBps"`
-	TargetNotional       string `json:"targetNotional"`
-	OrderNotional        string `json:"orderNotional"`
-	MaxDeltaNotional     string `json:"maxDeltaNotional"`
-	ExecutionMode        string `json:"executionMode"`
-	MakerLeg             string `json:"preferredLeg"`
+	ProductName                       string `json:"productName"`
+	LegATradingAccountID              int64  `json:"legAAccountId"`
+	LegAInstrumentID                  int64  `json:"legAInstrumentId"`
+	LegBTradingAccountID              int64  `json:"legBAccountId"`
+	LegBInstrumentID                  int64  `json:"legBInstrumentId"`
+	AskThresholdBps                   string `json:"askThresholdBps"`
+	BidThresholdBps                   string `json:"bidThresholdBps"`
+	TargetNotional                    string `json:"targetNotional"`
+	ExecutionMode                     string `json:"executionMode"`
+	MakerLeg                          string `json:"preferredLeg"`
+	RunMode                           string `json:"runMode"`
+	EntryDirection                    string `json:"entryDirection"`
+	LegALeverage                      string `json:"legALeverage"`
+	LegBLeverage                      string `json:"legBLeverage"`
+	ExitPolicy                        string `json:"exitPolicy"`
+	ExitAnnualizedRate                string `json:"exitAnnualizedRate"`
+	ExitAfterSeconds                  int    `json:"exitAfterSeconds"`
+	EarlyExitFunding8hAnnualizedFloor string `json:"earlyExitFunding8hAnnualizedFloor"`
 }
 
 func (h *Handler) createArbitrageCombination(writer http.ResponseWriter, request *http.Request) {
@@ -363,7 +421,7 @@ func (h *Handler) createArbitrageCombination(writer http.ResponseWriter, request
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid arbitrage combination payload"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(request.Context(), 30*time.Second)
 	defer cancel()
 	response, err := h.trader.CreateArbitrageCombination(ctx, &traderv1.CreateArbitrageCombinationRequest{
 		Token: token, IdempotencyKey: key,
@@ -372,9 +430,17 @@ func (h *Handler) createArbitrageCombination(writer http.ResponseWriter, request
 		LegBTradingAccountId: body.LegBTradingAccountID,
 		LegBInstrumentId:     body.LegBInstrumentID,
 		AskThresholdBps:      body.AskThresholdBps, BidThresholdBps: body.BidThresholdBps,
-		TargetNotional: body.TargetNotional, OrderNotional: body.OrderNotional,
-		MaxDeltaNotional: body.MaxDeltaNotional, ExecutionMode: body.ExecutionMode,
-		MakerLeg: body.MakerLeg,
+		TargetNotional:                     body.TargetNotional,
+		ExecutionMode:                      body.ExecutionMode,
+		MakerLeg:                           body.MakerLeg,
+		RunMode:                            body.RunMode,
+		EntryDirection:                     body.EntryDirection,
+		LegALeverage:                       body.LegALeverage,
+		LegBLeverage:                       body.LegBLeverage,
+		ExitPolicy:                         body.ExitPolicy,
+		ExitAnnualizedRate:                 body.ExitAnnualizedRate,
+		ExitAfterSeconds:                   int32(body.ExitAfterSeconds),
+		EarlyExitFunding_8HAnnualizedFloor: body.EarlyExitFunding8hAnnualizedFloor,
 	})
 	if err != nil {
 		h.writeTraderError(writer, err)
@@ -382,6 +448,54 @@ func (h *Handler) createArbitrageCombination(writer http.ResponseWriter, request
 	}
 	writer.Header().Set("Cache-Control", "no-store")
 	writeJSON(writer, http.StatusCreated, map[string]any{
+		"data": traderArbitrageCombinationJSON(response.GetCombination()),
+	})
+}
+
+type updateArbitrageCombinationBody struct {
+	AskThresholdBps *string `json:"askThresholdBps"`
+	BidThresholdBps *string `json:"bidThresholdBps"`
+	TargetNotional  *string `json:"targetNotional"`
+}
+
+func (h *Handler) updateArbitrageCombination(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	token, ok := h.sessionToken(request)
+	if !ok {
+		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+		return
+	}
+	var body updateArbitrageCombinationBody
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid arbitrage combination update"})
+		return
+	}
+	if body.AskThresholdBps == nil && body.BidThresholdBps == nil &&
+		body.TargetNotional == nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "at least one arbitrage parameter is required"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
+	defer cancel()
+	response, err := h.trader.UpdateArbitrageCombination(
+		ctx,
+		&traderv1.UpdateArbitrageCombinationRequest{
+			Token: token, CombinationId: chi.URLParam(request, "id"),
+			AskThresholdBps: body.AskThresholdBps,
+			BidThresholdBps: body.BidThresholdBps,
+			TargetNotional:  body.TargetNotional,
+		},
+	)
+	if err != nil {
+		h.writeTraderError(writer, err)
+		return
+	}
+	writer.Header().Set("Cache-Control", "no-store")
+	writeJSON(writer, http.StatusOK, map[string]any{
 		"data": traderArbitrageCombinationJSON(response.GetCombination()),
 	})
 }
@@ -558,21 +672,70 @@ func traderArbitrageCombinationJSON(item *traderv1.ArbitrageCombination) map[str
 		"productName": item.GetLegA().GetProductName(),
 		"legA":        legJSON(item.GetLegA()), "legB": legJSON(item.GetLegB()),
 		"askThresholdBps": item.GetAskThresholdBps(), "bidThresholdBps": item.GetBidThresholdBps(),
-		"targetNotional": item.GetTargetNotional(), "orderNotional": item.GetOrderNotional(),
-		"maxDeltaNotional": item.GetMaxDeltaNotional(), "executionMode": item.GetExecutionMode(),
-		"preferredLeg": item.GetMakerLeg(), "makerLeg": item.GetMakerLeg(), "status": item.GetStatus(),
+		"targetNotional": item.GetTargetNotional(),
+		"executionMode":  item.GetExecutionMode(),
+		"preferredLeg":   item.GetMakerLeg(), "makerLeg": item.GetMakerLeg(), "status": item.GetStatus(),
 		"positionNotional":           item.GetPositionNotional(),
 		"cumulativeTurnoverNotional": item.GetCumulativeTurnoverNotional(),
-		"consecutiveFailures":        item.GetConsecutiveFailures(),
-		"nextRetryAt":                protoTimeJSON(item.GetNextRetryAt()),
-		"positionUncertain":          item.GetPositionUncertain(),
-		"askSpreadBps":               nullableTraderDecimal(item.GetCurrentAskSpreadBps()),
-		"bidSpreadBps":               nullableTraderDecimal(item.GetCurrentBidSpreadBps()),
-		"currentAskSpreadBps":        item.GetCurrentAskSpreadBps(),
-		"currentBidSpreadBps":        item.GetCurrentBidSpreadBps(),
-		"marketDataStale":            item.GetMarketDataStale(), "errorMessage": item.GetErrorMessage(),
+		"grossTurnoverNotional":      item.GetGrossTurnoverNotional(),
+		"runtimeState":               item.GetRuntimeState(),
+		"legABasePosition":           item.GetLegABasePosition(),
+		"legBBasePosition":           item.GetLegBBasePosition(),
+		"carryBaseQuantity":          item.GetCarryBaseQuantity(),
+		"legAVenueBasePosition":      item.GetLegAVenueBasePosition(),
+		"legBVenueBasePosition":      item.GetLegBVenueBasePosition(),
+		"legAPositionDifference":     item.GetLegAPositionDifference(),
+		"legBPositionDifference":     item.GetLegBPositionDifference(),
+		"lastPositionReconciledAt":   protoTimeJSON(item.GetLastPositionReconciledAt()),
+		"legAAverageEntryPrice":      nullableTraderDecimal(item.GetLegAAverageEntryPrice()),
+		"legBAverageEntryPrice":      nullableTraderDecimal(item.GetLegBAverageEntryPrice()),
+		"averageEntrySpreadBps":      nullableTraderDecimal(item.GetAverageEntrySpreadBps()),
+		"legAUnrealizedPnl":          nullableTraderDecimal(item.GetLegAUnrealizedPnl()),
+		"legBUnrealizedPnl":          nullableTraderDecimal(item.GetLegBUnrealizedPnl()),
+		"realizedSpreadPnl":          item.GetRealizedSpreadPnl(),
+		"estimatedFundingPnl":        item.GetEstimatedFundingPnl(),
+		"combinedPositionAnnualized": nullableTraderDecimal(item.GetCombinedPositionAnnualized()),
+		"fundingHistoryComplete":     item.GetFundingHistoryComplete(),
+		"legAVenueBaselineBasePosition": nullableTraderDecimal(
+			item.GetLegAVenueBaselineBasePosition(),
+		),
+		"legBVenueBaselineBasePosition": nullableTraderDecimal(
+			item.GetLegBVenueBaselineBasePosition(),
+		),
+		"venueBaselineCapturedAt":  protoTimeJSON(item.GetVenueBaselineCapturedAt()),
+		"legAExpectedBasePosition": nullableTraderDecimal(item.GetLegAExpectedBasePosition()),
+		"legBExpectedBasePosition": nullableTraderDecimal(item.GetLegBExpectedBasePosition()),
+		"legAVenueNotional":        nullableTraderDecimal(item.GetLegAVenueNotional()),
+		"legBVenueNotional":        nullableTraderDecimal(item.GetLegBVenueNotional()),
+		"legAVenueValuationPrice": nullableTraderDecimal(
+			item.GetLegAVenueValuationPrice(),
+		),
+		"legBVenueValuationPrice": nullableTraderDecimal(
+			item.GetLegBVenueValuationPrice(),
+		),
+		"legAVenueValuationAt": protoTimeJSON(item.GetLegAVenueValuationAt()),
+		"legBVenueValuationAt": protoTimeJSON(item.GetLegBVenueValuationAt()),
+		"consecutiveFailures":  item.GetConsecutiveFailures(),
+		"nextRetryAt":          protoTimeJSON(item.GetNextRetryAt()),
+		"positionUncertain":    item.GetPositionUncertain(),
+		"askSpreadBps":         nullableTraderDecimal(item.GetCurrentAskSpreadBps()),
+		"bidSpreadBps":         nullableTraderDecimal(item.GetCurrentBidSpreadBps()),
+		"currentAskSpreadBps":  item.GetCurrentAskSpreadBps(),
+		"currentBidSpreadBps":  item.GetCurrentBidSpreadBps(),
+		"marketDataStale":      item.GetMarketDataStale(), "errorMessage": item.GetErrorMessage(),
 		"createdAt": protoTimeJSON(item.GetCreatedAt()), "updatedAt": protoTimeJSON(item.GetUpdatedAt()),
-		"closedAt": protoTimeJSON(item.GetClosedAt()),
+		"closedAt":                          protoTimeJSON(item.GetClosedAt()),
+		"runMode":                           item.GetRunMode(),
+		"entryDirection":                    item.GetEntryDirection(),
+		"legALeverage":                      item.GetLegALeverage(),
+		"legBLeverage":                      item.GetLegBLeverage(),
+		"exitPolicy":                        item.GetExitPolicy(),
+		"exitAnnualizedRate":                item.GetExitAnnualizedRate(),
+		"exitAfterSeconds":                  item.GetExitAfterSeconds(),
+		"targetReachedAt":                   protoTimeJSON(item.GetTargetReachedAt()),
+		"scheduledExitAt":                   protoTimeJSON(item.GetScheduledExitAt()),
+		"oneShotPhase":                      item.GetOneShotPhase(),
+		"earlyExitFunding8hAnnualizedFloor": item.GetEarlyExitFunding_8HAnnualizedFloor(),
 	}
 }
 
@@ -583,9 +746,41 @@ func nullableTraderDecimal(value string) any {
 	return value
 }
 
+func traderCreateFailure(err error) *traderv1.ArbitrageCreateFailure {
+	for _, detail := range status.Convert(err).Details() {
+		if failure, ok := detail.(*traderv1.ArbitrageCreateFailure); ok {
+			return failure
+		}
+	}
+	return nil
+}
+
 func (h *Handler) writeTraderError(writer http.ResponseWriter, err error) {
+	if failure := traderCreateFailure(err); failure != nil {
+		httpStatus := http.StatusUnprocessableEntity
+		switch failure.GetCode() {
+		case "invalid_leverage":
+			httpStatus = http.StatusBadRequest
+		case "insufficient_margin", "insufficient_spot_balance", "position_capacity_exceeded":
+			httpStatus = http.StatusUnprocessableEntity
+		case "leverage_apply_failed", "venue_unavailable":
+			httpStatus = http.StatusBadGateway
+		}
+		if status.Code(err) == codes.DeadlineExceeded {
+			httpStatus = http.StatusGatewayTimeout
+		}
+		body := map[string]any{
+			"error":   failure.GetMessage(),
+			"code":    failure.GetCode(),
+			"leg":     failure.GetLeg(),
+			"details": failure.GetDetails(),
+		}
+		writeJSON(writer, httpStatus, body)
+		return
+	}
 	httpStatus := http.StatusBadGateway
 	message := "trader service unavailable"
+	errorCode := ""
 	switch status.Code(err) {
 	case codes.Unauthenticated:
 		httpStatus = http.StatusUnauthorized
@@ -598,7 +793,14 @@ func (h *Handler) writeTraderError(writer http.ResponseWriter, err error) {
 		message = "not found"
 	case codes.AlreadyExists:
 		httpStatus = http.StatusConflict
-		message = "idempotency key conflict"
+		raw := status.Convert(err).Message()
+		const activeConflictPrefix = "active_arbitrage_instrument_conflict: "
+		if strings.HasPrefix(raw, activeConflictPrefix) {
+			errorCode = "active_arbitrage_instrument_conflict"
+			message = strings.TrimPrefix(raw, activeConflictPrefix)
+		} else {
+			message = "idempotency key conflict"
+		}
 	case codes.Aborted:
 		httpStatus = http.StatusConflict
 		message = status.Convert(err).Message()
@@ -625,5 +827,9 @@ func (h *Handler) writeTraderError(writer http.ResponseWriter, err error) {
 			message = "order persistence failed"
 		}
 	}
-	writeJSON(writer, httpStatus, map[string]string{"error": message})
+	body := map[string]string{"error": message}
+	if errorCode != "" {
+		body["code"] = errorCode
+	}
+	writeJSON(writer, httpStatus, body)
 }

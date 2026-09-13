@@ -628,7 +628,7 @@ int main(int argc, char **argv) {
       }
       if (runtime.book_engine && runtime.book_publisher) {
         const auto built = runtime.book_engine->build_orderbook(now);
-        if (built.changed) {
+        if (built.changed && built.publishable) {
           const auto published = runtime.book_publisher->publish_agg_orderbook(
               publish_header(built.record.header, now), built.record);
           if (published) {

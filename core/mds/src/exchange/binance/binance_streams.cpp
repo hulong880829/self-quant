@@ -1,4 +1,5 @@
 #include "mds/exchange/binance/binance_streams.h"
+#include "mds/exchange/symbol_policy.h"
 
 #include <cctype>
 #include <cstring>
@@ -12,16 +13,10 @@ namespace mds::exchange::binance {
 namespace {
 
 bool append_lower_symbol(std::string_view symbol, std::string &output) {
-  if (symbol.empty() || symbol.size() > 32) {
+  if (!mds::exchange::valid_utf8_symbol(symbol)) {
     return false;
   }
-  for (const char raw_character : symbol) {
-    const auto character = static_cast<unsigned char>(raw_character);
-    if (!std::isalnum(character)) {
-      return false;
-    }
-    output.push_back(static_cast<char>(std::tolower(character)));
-  }
+  mds::exchange::append_url_encoded_symbol(output, symbol);
   return true;
 }
 
@@ -121,10 +116,12 @@ bool CombinedStreamParser::route(std::string_view stream, StreamRoute &out,
     return false;
   }
   const auto symbol = stream.substr(0, separator);
+  if (!mds::exchange::valid_utf8_symbol(symbol)) {
+    error = "invalid Binance combined stream symbol";
+    return false;
+  }
   for (const char raw_character : symbol) {
-    const auto character = static_cast<unsigned char>(raw_character);
-    if (!std::isalnum(character) ||
-        std::tolower(character) != static_cast<int>(character)) {
+    if (raw_character >= 'A' && raw_character <= 'Z') {
       error = "Binance combined stream symbol is not lowercase";
       return false;
     }

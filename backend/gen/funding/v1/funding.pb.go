@@ -83,6 +83,9 @@ type FundingRate struct {
 	SourceUpdatedAt        *timestamppb.Timestamp `protobuf:"bytes,21,opt,name=source_updated_at,json=sourceUpdatedAt,proto3" json:"source_updated_at,omitempty"`
 	Stale                  bool                   `protobuf:"varint,22,opt,name=stale,proto3" json:"stale,omitempty"`
 	History                []*FundingHistoryPoint `protobuf:"bytes,23,rep,name=history,proto3" json:"history,omitempty"`
+	History_24HComplete    *bool                  `protobuf:"varint,24,opt,name=history_24h_complete,json=history24hComplete,proto3,oneof" json:"history_24h_complete,omitempty"`
+	History_7DComplete     *bool                  `protobuf:"varint,25,opt,name=history_7d_complete,json=history7dComplete,proto3,oneof" json:"history_7d_complete,omitempty"`
+	VenueContractType      string                 `protobuf:"bytes,26,opt,name=venue_contract_type,json=venueContractType,proto3" json:"venue_contract_type,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -278,6 +281,27 @@ func (x *FundingRate) GetHistory() []*FundingHistoryPoint {
 	return nil
 }
 
+func (x *FundingRate) GetHistory_24HComplete() bool {
+	if x != nil && x.History_24HComplete != nil {
+		return *x.History_24HComplete
+	}
+	return false
+}
+
+func (x *FundingRate) GetHistory_7DComplete() bool {
+	if x != nil && x.History_7DComplete != nil {
+		return *x.History_7DComplete
+	}
+	return false
+}
+
+func (x *FundingRate) GetVenueContractType() string {
+	if x != nil {
+		return x.VenueContractType
+	}
+	return ""
+}
+
 type FundingHistoryPoint struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Rate          string                 `protobuf:"bytes,1,opt,name=rate,proto3" json:"rate,omitempty"`
@@ -446,6 +470,12 @@ type FundingSpreadLeg struct {
 	SourceUpdatedAt        *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=source_updated_at,json=sourceUpdatedAt,proto3" json:"source_updated_at,omitempty"`
 	LastPrice              string                 `protobuf:"bytes,9,opt,name=last_price,json=lastPrice,proto3" json:"last_price,omitempty"`
 	Stale                  bool                   `protobuf:"varint,10,opt,name=stale,proto3" json:"stale,omitempty"`
+	GlobalSymbol           string                 `protobuf:"bytes,11,opt,name=global_symbol,json=globalSymbol,proto3" json:"global_symbol,omitempty"`
+	BaseAsset              string                 `protobuf:"bytes,12,opt,name=base_asset,json=baseAsset,proto3" json:"base_asset,omitempty"`
+	QuoteAsset             string                 `protobuf:"bytes,13,opt,name=quote_asset,json=quoteAsset,proto3" json:"quote_asset,omitempty"`
+	History_24HComplete    *bool                  `protobuf:"varint,14,opt,name=history_24h_complete,json=history24hComplete,proto3,oneof" json:"history_24h_complete,omitempty"`
+	History_7DComplete     *bool                  `protobuf:"varint,15,opt,name=history_7d_complete,json=history7dComplete,proto3,oneof" json:"history_7d_complete,omitempty"`
+	VenueContractType      string                 `protobuf:"bytes,16,opt,name=venue_contract_type,json=venueContractType,proto3" json:"venue_contract_type,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -550,6 +580,48 @@ func (x *FundingSpreadLeg) GetStale() bool {
 	return false
 }
 
+func (x *FundingSpreadLeg) GetGlobalSymbol() string {
+	if x != nil {
+		return x.GlobalSymbol
+	}
+	return ""
+}
+
+func (x *FundingSpreadLeg) GetBaseAsset() string {
+	if x != nil {
+		return x.BaseAsset
+	}
+	return ""
+}
+
+func (x *FundingSpreadLeg) GetQuoteAsset() string {
+	if x != nil {
+		return x.QuoteAsset
+	}
+	return ""
+}
+
+func (x *FundingSpreadLeg) GetHistory_24HComplete() bool {
+	if x != nil && x.History_24HComplete != nil {
+		return *x.History_24HComplete
+	}
+	return false
+}
+
+func (x *FundingSpreadLeg) GetHistory_7DComplete() bool {
+	if x != nil && x.History_7DComplete != nil {
+		return *x.History_7DComplete
+	}
+	return false
+}
+
+func (x *FundingSpreadLeg) GetVenueContractType() string {
+	if x != nil {
+		return x.VenueContractType
+	}
+	return ""
+}
+
 type FundingSpread struct {
 	state                  protoimpl.MessageState `protogen:"open.v1"`
 	GlobalSymbol           string                 `protobuf:"bytes,1,opt,name=global_symbol,json=globalSymbol,proto3" json:"global_symbol,omitempty"`
@@ -564,6 +636,8 @@ type FundingSpread struct {
 	Stale                  bool                   `protobuf:"varint,10,opt,name=stale,proto3" json:"stale,omitempty"`
 	BaseAsset              string                 `protobuf:"bytes,11,opt,name=base_asset,json=baseAsset,proto3" json:"base_asset,omitempty"`
 	QuoteAsset             string                 `protobuf:"bytes,12,opt,name=quote_asset,json=quoteAsset,proto3" json:"quote_asset,omitempty"`
+	History_24HComplete    *bool                  `protobuf:"varint,13,opt,name=history_24h_complete,json=history24hComplete,proto3,oneof" json:"history_24h_complete,omitempty"`
+	History_7DComplete     *bool                  `protobuf:"varint,14,opt,name=history_7d_complete,json=history7dComplete,proto3,oneof" json:"history_7d_complete,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -680,6 +754,20 @@ func (x *FundingSpread) GetQuoteAsset() string {
 		return x.QuoteAsset
 	}
 	return ""
+}
+
+func (x *FundingSpread) GetHistory_24HComplete() bool {
+	if x != nil && x.History_24HComplete != nil {
+		return *x.History_24HComplete
+	}
+	return false
+}
+
+func (x *FundingSpread) GetHistory_7DComplete() bool {
+	if x != nil && x.History_7DComplete != nil {
+		return *x.History_7DComplete
+	}
+	return false
 }
 
 type ListFundingSpreadsResponse struct {
@@ -829,24 +917,30 @@ type FundingOpportunityRanking struct {
 	ShortLeg                   *FundingSpreadLeg      `protobuf:"bytes,7,opt,name=short_leg,json=shortLeg,proto3" json:"short_leg,omitempty"`
 	CurrentMidSpreadBps        string                 `protobuf:"bytes,8,opt,name=current_mid_spread_bps,json=currentMidSpreadBps,proto3" json:"current_mid_spread_bps,omitempty"`
 	CurrentExecutableSpreadBps string                 `protobuf:"bytes,9,opt,name=current_executable_spread_bps,json=currentExecutableSpreadBps,proto3" json:"current_executable_spread_bps,omitempty"`
-	TargetSpreadBps            string                 `protobuf:"bytes,10,opt,name=target_spread_bps,json=targetSpreadBps,proto3" json:"target_spread_bps,omitempty"`
-	PeriodExpectedReturn       string                 `protobuf:"bytes,11,opt,name=period_expected_return,json=periodExpectedReturn,proto3" json:"period_expected_return,omitempty"`
-	FundingExpectedAnnualized  string                 `protobuf:"bytes,12,opt,name=funding_expected_annualized,json=fundingExpectedAnnualized,proto3" json:"funding_expected_annualized,omitempty"`
-	SpreadExpectedAnnualized   string                 `protobuf:"bytes,13,opt,name=spread_expected_annualized,json=spreadExpectedAnnualized,proto3" json:"spread_expected_annualized,omitempty"`
-	CombinedExpectedAnnualized string                 `protobuf:"bytes,14,opt,name=combined_expected_annualized,json=combinedExpectedAnnualized,proto3" json:"combined_expected_annualized,omitempty"`
-	FirstPassageProbability    string                 `protobuf:"bytes,15,opt,name=first_passage_probability,json=firstPassageProbability,proto3" json:"first_passage_probability,omitempty"`
-	ProfitProbability          string                 `protobuf:"bytes,16,opt,name=profit_probability,json=profitProbability,proto3" json:"profit_probability,omitempty"`
-	ExpectedExitMinutes        string                 `protobuf:"bytes,17,opt,name=expected_exit_minutes,json=expectedExitMinutes,proto3" json:"expected_exit_minutes,omitempty"`
-	P5Return                   string                 `protobuf:"bytes,18,opt,name=p5_return,json=p5Return,proto3" json:"p5_return,omitempty"`
-	MinPositionNotionalUsd     string                 `protobuf:"bytes,19,opt,name=min_position_notional_usd,json=minPositionNotionalUsd,proto3" json:"min_position_notional_usd,omitempty"`
-	MinTurnover_24HUsd         string                 `protobuf:"bytes,20,opt,name=min_turnover_24h_usd,json=minTurnover24hUsd,proto3" json:"min_turnover_24h_usd,omitempty"`
-	Coverage                   string                 `protobuf:"bytes,21,opt,name=coverage,proto3" json:"coverage,omitempty"`
-	Confidence                 string                 `protobuf:"bytes,22,opt,name=confidence,proto3" json:"confidence,omitempty"`
-	ModelState                 string                 `protobuf:"bytes,23,opt,name=model_state,json=modelState,proto3" json:"model_state,omitempty"`
-	UpdatedAt                  *timestamppb.Timestamp `protobuf:"bytes,24,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	Stale                      bool                   `protobuf:"varint,25,opt,name=stale,proto3" json:"stale,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// Deprecated: Marked as deprecated in funding/v1/funding.proto.
+	TargetSpreadBps            string `protobuf:"bytes,10,opt,name=target_spread_bps,json=targetSpreadBps,proto3" json:"target_spread_bps,omitempty"`
+	PeriodExpectedReturn       string `protobuf:"bytes,11,opt,name=period_expected_return,json=periodExpectedReturn,proto3" json:"period_expected_return,omitempty"`
+	FundingExpectedAnnualized  string `protobuf:"bytes,12,opt,name=funding_expected_annualized,json=fundingExpectedAnnualized,proto3" json:"funding_expected_annualized,omitempty"`
+	SpreadExpectedAnnualized   string `protobuf:"bytes,13,opt,name=spread_expected_annualized,json=spreadExpectedAnnualized,proto3" json:"spread_expected_annualized,omitempty"`
+	CombinedExpectedAnnualized string `protobuf:"bytes,14,opt,name=combined_expected_annualized,json=combinedExpectedAnnualized,proto3" json:"combined_expected_annualized,omitempty"`
+	// Deprecated: Marked as deprecated in funding/v1/funding.proto.
+	FirstPassageProbability string `protobuf:"bytes,15,opt,name=first_passage_probability,json=firstPassageProbability,proto3" json:"first_passage_probability,omitempty"`
+	ProfitProbability       string `protobuf:"bytes,16,opt,name=profit_probability,json=profitProbability,proto3" json:"profit_probability,omitempty"`
+	// Deprecated: Marked as deprecated in funding/v1/funding.proto.
+	ExpectedExitMinutes    string                 `protobuf:"bytes,17,opt,name=expected_exit_minutes,json=expectedExitMinutes,proto3" json:"expected_exit_minutes,omitempty"`
+	P5Return               string                 `protobuf:"bytes,18,opt,name=p5_return,json=p5Return,proto3" json:"p5_return,omitempty"`
+	MinPositionNotionalUsd string                 `protobuf:"bytes,19,opt,name=min_position_notional_usd,json=minPositionNotionalUsd,proto3" json:"min_position_notional_usd,omitempty"`
+	MinTurnover_24HUsd     string                 `protobuf:"bytes,20,opt,name=min_turnover_24h_usd,json=minTurnover24hUsd,proto3" json:"min_turnover_24h_usd,omitempty"`
+	Coverage               string                 `protobuf:"bytes,21,opt,name=coverage,proto3" json:"coverage,omitempty"`
+	Confidence             string                 `protobuf:"bytes,22,opt,name=confidence,proto3" json:"confidence,omitempty"`
+	ModelState             string                 `protobuf:"bytes,23,opt,name=model_state,json=modelState,proto3" json:"model_state,omitempty"`
+	UpdatedAt              *timestamppb.Timestamp `protobuf:"bytes,24,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	Stale                  bool                   `protobuf:"varint,25,opt,name=stale,proto3" json:"stale,omitempty"`
+	SampleCount            int32                  `protobuf:"varint,26,opt,name=sample_count,json=sampleCount,proto3" json:"sample_count,omitempty"`
+	ExpectedPaybackMinutes string                 `protobuf:"bytes,27,opt,name=expected_payback_minutes,json=expectedPaybackMinutes,proto3" json:"expected_payback_minutes,omitempty"`
+	PaybackStatus          string                 `protobuf:"bytes,28,opt,name=payback_status,json=paybackStatus,proto3" json:"payback_status,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *FundingOpportunityRanking) Reset() {
@@ -942,6 +1036,7 @@ func (x *FundingOpportunityRanking) GetCurrentExecutableSpreadBps() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in funding/v1/funding.proto.
 func (x *FundingOpportunityRanking) GetTargetSpreadBps() string {
 	if x != nil {
 		return x.TargetSpreadBps
@@ -977,6 +1072,7 @@ func (x *FundingOpportunityRanking) GetCombinedExpectedAnnualized() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in funding/v1/funding.proto.
 func (x *FundingOpportunityRanking) GetFirstPassageProbability() string {
 	if x != nil {
 		return x.FirstPassageProbability
@@ -991,6 +1087,7 @@ func (x *FundingOpportunityRanking) GetProfitProbability() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in funding/v1/funding.proto.
 func (x *FundingOpportunityRanking) GetExpectedExitMinutes() string {
 	if x != nil {
 		return x.ExpectedExitMinutes
@@ -1052,6 +1149,27 @@ func (x *FundingOpportunityRanking) GetStale() bool {
 		return x.Stale
 	}
 	return false
+}
+
+func (x *FundingOpportunityRanking) GetSampleCount() int32 {
+	if x != nil {
+		return x.SampleCount
+	}
+	return 0
+}
+
+func (x *FundingOpportunityRanking) GetExpectedPaybackMinutes() string {
+	if x != nil {
+		return x.ExpectedPaybackMinutes
+	}
+	return ""
+}
+
+func (x *FundingOpportunityRanking) GetPaybackStatus() string {
+	if x != nil {
+		return x.PaybackStatus
+	}
+	return ""
 }
 
 type ListFundingOpportunitiesResponse struct {
@@ -1170,6 +1288,238 @@ func (x *ListFundingOpportunitiesResponse) GetGeneration() uint64 {
 	return 0
 }
 
+type FundingRateLookupKey struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Exchange       string                 `protobuf:"bytes,1,opt,name=exchange,proto3" json:"exchange,omitempty"`
+	ExchangeSymbol string                 `protobuf:"bytes,2,opt,name=exchange_symbol,json=exchangeSymbol,proto3" json:"exchange_symbol,omitempty"`
+	BaseAsset      string                 `protobuf:"bytes,3,opt,name=base_asset,json=baseAsset,proto3" json:"base_asset,omitempty"`
+	QuoteAsset     string                 `protobuf:"bytes,4,opt,name=quote_asset,json=quoteAsset,proto3" json:"quote_asset,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *FundingRateLookupKey) Reset() {
+	*x = FundingRateLookupKey{}
+	mi := &file_funding_v1_funding_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FundingRateLookupKey) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FundingRateLookupKey) ProtoMessage() {}
+
+func (x *FundingRateLookupKey) ProtoReflect() protoreflect.Message {
+	mi := &file_funding_v1_funding_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FundingRateLookupKey.ProtoReflect.Descriptor instead.
+func (*FundingRateLookupKey) Descriptor() ([]byte, []int) {
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *FundingRateLookupKey) GetExchange() string {
+	if x != nil {
+		return x.Exchange
+	}
+	return ""
+}
+
+func (x *FundingRateLookupKey) GetExchangeSymbol() string {
+	if x != nil {
+		return x.ExchangeSymbol
+	}
+	return ""
+}
+
+func (x *FundingRateLookupKey) GetBaseAsset() string {
+	if x != nil {
+		return x.BaseAsset
+	}
+	return ""
+}
+
+func (x *FundingRateLookupKey) GetQuoteAsset() string {
+	if x != nil {
+		return x.QuoteAsset
+	}
+	return ""
+}
+
+type BatchGetFundingRatesRequest struct {
+	state         protoimpl.MessageState  `protogen:"open.v1"`
+	Keys          []*FundingRateLookupKey `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchGetFundingRatesRequest) Reset() {
+	*x = BatchGetFundingRatesRequest{}
+	mi := &file_funding_v1_funding_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchGetFundingRatesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchGetFundingRatesRequest) ProtoMessage() {}
+
+func (x *BatchGetFundingRatesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_funding_v1_funding_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchGetFundingRatesRequest.ProtoReflect.Descriptor instead.
+func (*BatchGetFundingRatesRequest) Descriptor() ([]byte, []int) {
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *BatchGetFundingRatesRequest) GetKeys() []*FundingRateLookupKey {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+type FundingRateLookupResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           *FundingRateLookupKey  `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	Item          *FundingRate           `protobuf:"bytes,3,opt,name=item,proto3" json:"item,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FundingRateLookupResult) Reset() {
+	*x = FundingRateLookupResult{}
+	mi := &file_funding_v1_funding_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FundingRateLookupResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FundingRateLookupResult) ProtoMessage() {}
+
+func (x *FundingRateLookupResult) ProtoReflect() protoreflect.Message {
+	mi := &file_funding_v1_funding_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FundingRateLookupResult.ProtoReflect.Descriptor instead.
+func (*FundingRateLookupResult) Descriptor() ([]byte, []int) {
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *FundingRateLookupResult) GetKey() *FundingRateLookupKey {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *FundingRateLookupResult) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *FundingRateLookupResult) GetItem() *FundingRate {
+	if x != nil {
+		return x.Item
+	}
+	return nil
+}
+
+type BatchGetFundingRatesResponse struct {
+	state           protoimpl.MessageState     `protogen:"open.v1"`
+	Results         []*FundingRateLookupResult `protobuf:"bytes,1,rep,name=results,proto3" json:"results,omitempty"`
+	SnapshotVersion string                     `protobuf:"bytes,2,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
+	ServerTime      *timestamppb.Timestamp     `protobuf:"bytes,3,opt,name=server_time,json=serverTime,proto3" json:"server_time,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *BatchGetFundingRatesResponse) Reset() {
+	*x = BatchGetFundingRatesResponse{}
+	mi := &file_funding_v1_funding_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchGetFundingRatesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchGetFundingRatesResponse) ProtoMessage() {}
+
+func (x *BatchGetFundingRatesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_funding_v1_funding_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchGetFundingRatesResponse.ProtoReflect.Descriptor instead.
+func (*BatchGetFundingRatesResponse) Descriptor() ([]byte, []int) {
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *BatchGetFundingRatesResponse) GetResults() []*FundingRateLookupResult {
+	if x != nil {
+		return x.Results
+	}
+	return nil
+}
+
+func (x *BatchGetFundingRatesResponse) GetSnapshotVersion() string {
+	if x != nil {
+		return x.SnapshotVersion
+	}
+	return ""
+}
+
+func (x *BatchGetFundingRatesResponse) GetServerTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ServerTime
+	}
+	return nil
+}
+
 type GetFundingHistoryRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Exchange       string                 `protobuf:"bytes,1,opt,name=exchange,proto3" json:"exchange,omitempty"`
@@ -1181,7 +1531,7 @@ type GetFundingHistoryRequest struct {
 
 func (x *GetFundingHistoryRequest) Reset() {
 	*x = GetFundingHistoryRequest{}
-	mi := &file_funding_v1_funding_proto_msgTypes[11]
+	mi := &file_funding_v1_funding_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1193,7 +1543,7 @@ func (x *GetFundingHistoryRequest) String() string {
 func (*GetFundingHistoryRequest) ProtoMessage() {}
 
 func (x *GetFundingHistoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_funding_v1_funding_proto_msgTypes[11]
+	mi := &file_funding_v1_funding_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1206,7 +1556,7 @@ func (x *GetFundingHistoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFundingHistoryRequest.ProtoReflect.Descriptor instead.
 func (*GetFundingHistoryRequest) Descriptor() ([]byte, []int) {
-	return file_funding_v1_funding_proto_rawDescGZIP(), []int{11}
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *GetFundingHistoryRequest) GetExchange() string {
@@ -1239,7 +1589,7 @@ type GetFundingHistoryResponse struct {
 
 func (x *GetFundingHistoryResponse) Reset() {
 	*x = GetFundingHistoryResponse{}
-	mi := &file_funding_v1_funding_proto_msgTypes[12]
+	mi := &file_funding_v1_funding_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1251,7 +1601,7 @@ func (x *GetFundingHistoryResponse) String() string {
 func (*GetFundingHistoryResponse) ProtoMessage() {}
 
 func (x *GetFundingHistoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_funding_v1_funding_proto_msgTypes[12]
+	mi := &file_funding_v1_funding_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1264,7 +1614,7 @@ func (x *GetFundingHistoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFundingHistoryResponse.ProtoReflect.Descriptor instead.
 func (*GetFundingHistoryResponse) Descriptor() ([]byte, []int) {
-	return file_funding_v1_funding_proto_rawDescGZIP(), []int{12}
+	return file_funding_v1_funding_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *GetFundingHistoryResponse) GetItems() []*FundingHistoryPoint {
@@ -1280,7 +1630,7 @@ const file_funding_v1_funding_proto_rawDesc = "" +
 	"\n" +
 	"\x18funding/v1/funding.proto\x12\n" +
 	"funding.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x19\n" +
-	"\x17ListFundingRatesRequest\"\xe9\a\n" +
+	"\x17ListFundingRatesRequest\"\xb6\t\n" +
 	"\vFundingRate\x12\x1a\n" +
 	"\bexchange\x18\x01 \x01(\tR\bexchange\x12'\n" +
 	"\x0fexchange_symbol\x18\x02 \x01(\tR\x0eexchangeSymbol\x12#\n" +
@@ -1310,8 +1660,13 @@ const file_funding_v1_funding_proto_rawDesc = "" +
 	"\rcumulative_7d\x18\x14 \x01(\tR\fcumulative7d\x12F\n" +
 	"\x11source_updated_at\x18\x15 \x01(\v2\x1a.google.protobuf.TimestampR\x0fsourceUpdatedAt\x12\x14\n" +
 	"\x05stale\x18\x16 \x01(\bR\x05stale\x129\n" +
-	"\ahistory\x18\x17 \x03(\v2\x1f.funding.v1.FundingHistoryPointR\ahistoryB\x14\n" +
-	"\x12_next_funding_rate\"d\n" +
+	"\ahistory\x18\x17 \x03(\v2\x1f.funding.v1.FundingHistoryPointR\ahistory\x125\n" +
+	"\x14history_24h_complete\x18\x18 \x01(\bH\x01R\x12history24hComplete\x88\x01\x01\x123\n" +
+	"\x13history_7d_complete\x18\x19 \x01(\bH\x02R\x11history7dComplete\x88\x01\x01\x12.\n" +
+	"\x13venue_contract_type\x18\x1a \x01(\tR\x11venueContractTypeB\x14\n" +
+	"\x12_next_funding_rateB\x17\n" +
+	"\x15_history_24h_completeB\x16\n" +
+	"\x14_history_7d_complete\"d\n" +
 	"\x13FundingHistoryPoint\x12\x12\n" +
 	"\x04rate\x18\x01 \x01(\tR\x04rate\x129\n" +
 	"\n" +
@@ -1322,7 +1677,7 @@ const file_funding_v1_funding_proto_rawDesc = "" +
 	"\x10snapshot_version\x18\x03 \x01(\tR\x0fsnapshotVersion\x12;\n" +
 	"\vserver_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"serverTime\"\x1b\n" +
-	"\x19ListFundingSpreadsRequest\"\xe6\x03\n" +
+	"\x19ListFundingSpreadsRequest\"\x98\x06\n" +
 	"\x10FundingSpreadLeg\x12\x1a\n" +
 	"\bexchange\x18\x01 \x01(\tR\bexchange\x12'\n" +
 	"\x0fexchange_symbol\x18\x02 \x01(\tR\x0eexchangeSymbol\x124\n" +
@@ -1335,7 +1690,17 @@ const file_funding_v1_funding_proto_rawDesc = "" +
 	"\n" +
 	"last_price\x18\t \x01(\tR\tlastPrice\x12\x14\n" +
 	"\x05stale\x18\n" +
-	" \x01(\bR\x05stale\"\xc5\x04\n" +
+	" \x01(\bR\x05stale\x12#\n" +
+	"\rglobal_symbol\x18\v \x01(\tR\fglobalSymbol\x12\x1d\n" +
+	"\n" +
+	"base_asset\x18\f \x01(\tR\tbaseAsset\x12\x1f\n" +
+	"\vquote_asset\x18\r \x01(\tR\n" +
+	"quoteAsset\x125\n" +
+	"\x14history_24h_complete\x18\x0e \x01(\bH\x00R\x12history24hComplete\x88\x01\x01\x123\n" +
+	"\x13history_7d_complete\x18\x0f \x01(\bH\x01R\x11history7dComplete\x88\x01\x01\x12.\n" +
+	"\x13venue_contract_type\x18\x10 \x01(\tR\x11venueContractTypeB\x17\n" +
+	"\x15_history_24h_completeB\x16\n" +
+	"\x14_history_7d_complete\"\xe2\x05\n" +
 	"\rFundingSpread\x12#\n" +
 	"\rglobal_symbol\x18\x01 \x01(\tR\fglobalSymbol\x127\n" +
 	"\blong_leg\x18\x02 \x01(\v2\x1c.funding.v1.FundingSpreadLegR\alongLeg\x129\n" +
@@ -1352,7 +1717,11 @@ const file_funding_v1_funding_proto_rawDesc = "" +
 	"\n" +
 	"base_asset\x18\v \x01(\tR\tbaseAsset\x12\x1f\n" +
 	"\vquote_asset\x18\f \x01(\tR\n" +
-	"quoteAsset\"\xcb\x01\n" +
+	"quoteAsset\x125\n" +
+	"\x14history_24h_complete\x18\r \x01(\bH\x00R\x12history24hComplete\x88\x01\x01\x123\n" +
+	"\x13history_7d_complete\x18\x0e \x01(\bH\x01R\x11history7dComplete\x88\x01\x01B\x17\n" +
+	"\x15_history_24h_completeB\x16\n" +
+	"\x14_history_7d_complete\"\xcb\x01\n" +
 	"\x1aListFundingSpreadsResponse\x12/\n" +
 	"\x05items\x18\x01 \x03(\v2\x19.funding.v1.FundingSpreadR\x05items\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x05R\x05total\x12)\n" +
@@ -1363,7 +1732,8 @@ const file_funding_v1_funding_proto_rawDesc = "" +
 	"\x06period\x18\x01 \x01(\tR\x06period\x12/\n" +
 	"\x14min_leg_notional_usd\x18\x02 \x01(\tR\x11minLegNotionalUsd\x122\n" +
 	"\x16min_leg_volume_24h_usd\x18\x03 \x01(\tR\x12minLegVolume24hUsd\x12\x14\n" +
-	"\x05limit\x18\x04 \x01(\x05R\x05limit\"\x90\t\n" +
+	"\x05limit\x18\x04 \x01(\x05R\x05limit\"\xa0\n" +
+	"\n" +
 	"\x19FundingOpportunityRanking\x12\x12\n" +
 	"\x04rank\x18\x01 \x01(\x05R\x04rank\x12#\n" +
 	"\rglobal_symbol\x18\x02 \x01(\tR\fglobalSymbol\x12\x1d\n" +
@@ -1375,16 +1745,16 @@ const file_funding_v1_funding_proto_rawDesc = "" +
 	"\blong_leg\x18\x06 \x01(\v2\x1c.funding.v1.FundingSpreadLegR\alongLeg\x129\n" +
 	"\tshort_leg\x18\a \x01(\v2\x1c.funding.v1.FundingSpreadLegR\bshortLeg\x123\n" +
 	"\x16current_mid_spread_bps\x18\b \x01(\tR\x13currentMidSpreadBps\x12A\n" +
-	"\x1dcurrent_executable_spread_bps\x18\t \x01(\tR\x1acurrentExecutableSpreadBps\x12*\n" +
+	"\x1dcurrent_executable_spread_bps\x18\t \x01(\tR\x1acurrentExecutableSpreadBps\x12.\n" +
 	"\x11target_spread_bps\x18\n" +
-	" \x01(\tR\x0ftargetSpreadBps\x124\n" +
+	" \x01(\tB\x02\x18\x01R\x0ftargetSpreadBps\x124\n" +
 	"\x16period_expected_return\x18\v \x01(\tR\x14periodExpectedReturn\x12>\n" +
 	"\x1bfunding_expected_annualized\x18\f \x01(\tR\x19fundingExpectedAnnualized\x12<\n" +
 	"\x1aspread_expected_annualized\x18\r \x01(\tR\x18spreadExpectedAnnualized\x12@\n" +
-	"\x1ccombined_expected_annualized\x18\x0e \x01(\tR\x1acombinedExpectedAnnualized\x12:\n" +
-	"\x19first_passage_probability\x18\x0f \x01(\tR\x17firstPassageProbability\x12-\n" +
-	"\x12profit_probability\x18\x10 \x01(\tR\x11profitProbability\x122\n" +
-	"\x15expected_exit_minutes\x18\x11 \x01(\tR\x13expectedExitMinutes\x12\x1b\n" +
+	"\x1ccombined_expected_annualized\x18\x0e \x01(\tR\x1acombinedExpectedAnnualized\x12>\n" +
+	"\x19first_passage_probability\x18\x0f \x01(\tB\x02\x18\x01R\x17firstPassageProbability\x12-\n" +
+	"\x12profit_probability\x18\x10 \x01(\tR\x11profitProbability\x126\n" +
+	"\x15expected_exit_minutes\x18\x11 \x01(\tB\x02\x18\x01R\x13expectedExitMinutes\x12\x1b\n" +
 	"\tp5_return\x18\x12 \x01(\tR\bp5Return\x129\n" +
 	"\x19min_position_notional_usd\x18\x13 \x01(\tR\x16minPositionNotionalUsd\x12/\n" +
 	"\x14min_turnover_24h_usd\x18\x14 \x01(\tR\x11minTurnover24hUsd\x12\x1a\n" +
@@ -1396,7 +1766,10 @@ const file_funding_v1_funding_proto_rawDesc = "" +
 	"modelState\x129\n" +
 	"\n" +
 	"updated_at\x18\x18 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x14\n" +
-	"\x05stale\x18\x19 \x01(\bR\x05stale\"\xf5\x03\n" +
+	"\x05stale\x18\x19 \x01(\bR\x05stale\x12!\n" +
+	"\fsample_count\x18\x1a \x01(\x05R\vsampleCount\x128\n" +
+	"\x18expected_payback_minutes\x18\x1b \x01(\tR\x16expectedPaybackMinutes\x12%\n" +
+	"\x0epayback_status\x18\x1c \x01(\tR\rpaybackStatus\"\xf5\x03\n" +
 	" ListFundingOpportunitiesResponse\x12;\n" +
 	"\x05items\x18\x01 \x03(\v2%.funding.v1.FundingOpportunityRankingR\x05items\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x05R\x05total\x12)\n" +
@@ -1411,15 +1784,34 @@ const file_funding_v1_funding_proto_rawDesc = "" +
 	"\n" +
 	"generation\x18\n" +
 	" \x01(\x04R\n" +
-	"generation\"u\n" +
+	"generation\"\x9b\x01\n" +
+	"\x14FundingRateLookupKey\x12\x1a\n" +
+	"\bexchange\x18\x01 \x01(\tR\bexchange\x12'\n" +
+	"\x0fexchange_symbol\x18\x02 \x01(\tR\x0eexchangeSymbol\x12\x1d\n" +
+	"\n" +
+	"base_asset\x18\x03 \x01(\tR\tbaseAsset\x12\x1f\n" +
+	"\vquote_asset\x18\x04 \x01(\tR\n" +
+	"quoteAsset\"S\n" +
+	"\x1bBatchGetFundingRatesRequest\x124\n" +
+	"\x04keys\x18\x01 \x03(\v2 .funding.v1.FundingRateLookupKeyR\x04keys\"\x92\x01\n" +
+	"\x17FundingRateLookupResult\x122\n" +
+	"\x03key\x18\x01 \x01(\v2 .funding.v1.FundingRateLookupKeyR\x03key\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12+\n" +
+	"\x04item\x18\x03 \x01(\v2\x17.funding.v1.FundingRateR\x04item\"\xc5\x01\n" +
+	"\x1cBatchGetFundingRatesResponse\x12=\n" +
+	"\aresults\x18\x01 \x03(\v2#.funding.v1.FundingRateLookupResultR\aresults\x12)\n" +
+	"\x10snapshot_version\x18\x02 \x01(\tR\x0fsnapshotVersion\x12;\n" +
+	"\vserver_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"serverTime\"u\n" +
 	"\x18GetFundingHistoryRequest\x12\x1a\n" +
 	"\bexchange\x18\x01 \x01(\tR\bexchange\x12'\n" +
 	"\x0fexchange_symbol\x18\x02 \x01(\tR\x0eexchangeSymbol\x12\x14\n" +
 	"\x05limit\x18\x03 \x01(\x05R\x05limit\"R\n" +
 	"\x19GetFundingHistoryResponse\x125\n" +
-	"\x05items\x18\x01 \x03(\v2\x1f.funding.v1.FundingHistoryPointR\x05items2\xad\x03\n" +
+	"\x05items\x18\x01 \x03(\v2\x1f.funding.v1.FundingHistoryPointR\x05items2\x98\x04\n" +
 	"\x0eFundingService\x12]\n" +
-	"\x10ListFundingRates\x12#.funding.v1.ListFundingRatesRequest\x1a$.funding.v1.ListFundingRatesResponse\x12c\n" +
+	"\x10ListFundingRates\x12#.funding.v1.ListFundingRatesRequest\x1a$.funding.v1.ListFundingRatesResponse\x12i\n" +
+	"\x14BatchGetFundingRates\x12'.funding.v1.BatchGetFundingRatesRequest\x1a(.funding.v1.BatchGetFundingRatesResponse\x12c\n" +
 	"\x12ListFundingSpreads\x12%.funding.v1.ListFundingSpreadsRequest\x1a&.funding.v1.ListFundingSpreadsResponse\x12u\n" +
 	"\x18ListFundingOpportunities\x12+.funding.v1.ListFundingOpportunitiesRequest\x1a,.funding.v1.ListFundingOpportunitiesResponse\x12`\n" +
 	"\x11GetFundingHistory\x12$.funding.v1.GetFundingHistoryRequest\x1a%.funding.v1.GetFundingHistoryResponseB,Z*selfquant/backend/gen/funding/v1;fundingv1b\x06proto3"
@@ -1436,7 +1828,7 @@ func file_funding_v1_funding_proto_rawDescGZIP() []byte {
 	return file_funding_v1_funding_proto_rawDescData
 }
 
-var file_funding_v1_funding_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_funding_v1_funding_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_funding_v1_funding_proto_goTypes = []any{
 	(*ListFundingRatesRequest)(nil),          // 0: funding.v1.ListFundingRatesRequest
 	(*FundingRate)(nil),                      // 1: funding.v1.FundingRate
@@ -1449,46 +1841,57 @@ var file_funding_v1_funding_proto_goTypes = []any{
 	(*ListFundingOpportunitiesRequest)(nil),  // 8: funding.v1.ListFundingOpportunitiesRequest
 	(*FundingOpportunityRanking)(nil),        // 9: funding.v1.FundingOpportunityRanking
 	(*ListFundingOpportunitiesResponse)(nil), // 10: funding.v1.ListFundingOpportunitiesResponse
-	(*GetFundingHistoryRequest)(nil),         // 11: funding.v1.GetFundingHistoryRequest
-	(*GetFundingHistoryResponse)(nil),        // 12: funding.v1.GetFundingHistoryResponse
-	(*timestamppb.Timestamp)(nil),            // 13: google.protobuf.Timestamp
+	(*FundingRateLookupKey)(nil),             // 11: funding.v1.FundingRateLookupKey
+	(*BatchGetFundingRatesRequest)(nil),      // 12: funding.v1.BatchGetFundingRatesRequest
+	(*FundingRateLookupResult)(nil),          // 13: funding.v1.FundingRateLookupResult
+	(*BatchGetFundingRatesResponse)(nil),     // 14: funding.v1.BatchGetFundingRatesResponse
+	(*GetFundingHistoryRequest)(nil),         // 15: funding.v1.GetFundingHistoryRequest
+	(*GetFundingHistoryResponse)(nil),        // 16: funding.v1.GetFundingHistoryResponse
+	(*timestamppb.Timestamp)(nil),            // 17: google.protobuf.Timestamp
 }
 var file_funding_v1_funding_proto_depIdxs = []int32{
-	13, // 0: funding.v1.FundingRate.next_funding_at:type_name -> google.protobuf.Timestamp
-	13, // 1: funding.v1.FundingRate.source_updated_at:type_name -> google.protobuf.Timestamp
+	17, // 0: funding.v1.FundingRate.next_funding_at:type_name -> google.protobuf.Timestamp
+	17, // 1: funding.v1.FundingRate.source_updated_at:type_name -> google.protobuf.Timestamp
 	2,  // 2: funding.v1.FundingRate.history:type_name -> funding.v1.FundingHistoryPoint
-	13, // 3: funding.v1.FundingHistoryPoint.settled_at:type_name -> google.protobuf.Timestamp
+	17, // 3: funding.v1.FundingHistoryPoint.settled_at:type_name -> google.protobuf.Timestamp
 	1,  // 4: funding.v1.ListFundingRatesResponse.items:type_name -> funding.v1.FundingRate
-	13, // 5: funding.v1.ListFundingRatesResponse.server_time:type_name -> google.protobuf.Timestamp
-	13, // 6: funding.v1.FundingSpreadLeg.next_funding_at:type_name -> google.protobuf.Timestamp
-	13, // 7: funding.v1.FundingSpreadLeg.source_updated_at:type_name -> google.protobuf.Timestamp
+	17, // 5: funding.v1.ListFundingRatesResponse.server_time:type_name -> google.protobuf.Timestamp
+	17, // 6: funding.v1.FundingSpreadLeg.next_funding_at:type_name -> google.protobuf.Timestamp
+	17, // 7: funding.v1.FundingSpreadLeg.source_updated_at:type_name -> google.protobuf.Timestamp
 	5,  // 8: funding.v1.FundingSpread.long_leg:type_name -> funding.v1.FundingSpreadLeg
 	5,  // 9: funding.v1.FundingSpread.short_leg:type_name -> funding.v1.FundingSpreadLeg
-	13, // 10: funding.v1.FundingSpread.updated_at:type_name -> google.protobuf.Timestamp
+	17, // 10: funding.v1.FundingSpread.updated_at:type_name -> google.protobuf.Timestamp
 	6,  // 11: funding.v1.ListFundingSpreadsResponse.items:type_name -> funding.v1.FundingSpread
-	13, // 12: funding.v1.ListFundingSpreadsResponse.server_time:type_name -> google.protobuf.Timestamp
+	17, // 12: funding.v1.ListFundingSpreadsResponse.server_time:type_name -> google.protobuf.Timestamp
 	5,  // 13: funding.v1.FundingOpportunityRanking.long_leg:type_name -> funding.v1.FundingSpreadLeg
 	5,  // 14: funding.v1.FundingOpportunityRanking.short_leg:type_name -> funding.v1.FundingSpreadLeg
-	13, // 15: funding.v1.FundingOpportunityRanking.updated_at:type_name -> google.protobuf.Timestamp
+	17, // 15: funding.v1.FundingOpportunityRanking.updated_at:type_name -> google.protobuf.Timestamp
 	9,  // 16: funding.v1.ListFundingOpportunitiesResponse.items:type_name -> funding.v1.FundingOpportunityRanking
-	13, // 17: funding.v1.ListFundingOpportunitiesResponse.server_time:type_name -> google.protobuf.Timestamp
-	13, // 18: funding.v1.ListFundingOpportunitiesResponse.calculated_at:type_name -> google.protobuf.Timestamp
-	13, // 19: funding.v1.ListFundingOpportunitiesResponse.last_successful_at:type_name -> google.protobuf.Timestamp
-	13, // 20: funding.v1.ListFundingOpportunitiesResponse.data_through:type_name -> google.protobuf.Timestamp
-	2,  // 21: funding.v1.GetFundingHistoryResponse.items:type_name -> funding.v1.FundingHistoryPoint
-	0,  // 22: funding.v1.FundingService.ListFundingRates:input_type -> funding.v1.ListFundingRatesRequest
-	4,  // 23: funding.v1.FundingService.ListFundingSpreads:input_type -> funding.v1.ListFundingSpreadsRequest
-	8,  // 24: funding.v1.FundingService.ListFundingOpportunities:input_type -> funding.v1.ListFundingOpportunitiesRequest
-	11, // 25: funding.v1.FundingService.GetFundingHistory:input_type -> funding.v1.GetFundingHistoryRequest
-	3,  // 26: funding.v1.FundingService.ListFundingRates:output_type -> funding.v1.ListFundingRatesResponse
-	7,  // 27: funding.v1.FundingService.ListFundingSpreads:output_type -> funding.v1.ListFundingSpreadsResponse
-	10, // 28: funding.v1.FundingService.ListFundingOpportunities:output_type -> funding.v1.ListFundingOpportunitiesResponse
-	12, // 29: funding.v1.FundingService.GetFundingHistory:output_type -> funding.v1.GetFundingHistoryResponse
-	26, // [26:30] is the sub-list for method output_type
-	22, // [22:26] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	17, // 17: funding.v1.ListFundingOpportunitiesResponse.server_time:type_name -> google.protobuf.Timestamp
+	17, // 18: funding.v1.ListFundingOpportunitiesResponse.calculated_at:type_name -> google.protobuf.Timestamp
+	17, // 19: funding.v1.ListFundingOpportunitiesResponse.last_successful_at:type_name -> google.protobuf.Timestamp
+	17, // 20: funding.v1.ListFundingOpportunitiesResponse.data_through:type_name -> google.protobuf.Timestamp
+	11, // 21: funding.v1.BatchGetFundingRatesRequest.keys:type_name -> funding.v1.FundingRateLookupKey
+	11, // 22: funding.v1.FundingRateLookupResult.key:type_name -> funding.v1.FundingRateLookupKey
+	1,  // 23: funding.v1.FundingRateLookupResult.item:type_name -> funding.v1.FundingRate
+	13, // 24: funding.v1.BatchGetFundingRatesResponse.results:type_name -> funding.v1.FundingRateLookupResult
+	17, // 25: funding.v1.BatchGetFundingRatesResponse.server_time:type_name -> google.protobuf.Timestamp
+	2,  // 26: funding.v1.GetFundingHistoryResponse.items:type_name -> funding.v1.FundingHistoryPoint
+	0,  // 27: funding.v1.FundingService.ListFundingRates:input_type -> funding.v1.ListFundingRatesRequest
+	12, // 28: funding.v1.FundingService.BatchGetFundingRates:input_type -> funding.v1.BatchGetFundingRatesRequest
+	4,  // 29: funding.v1.FundingService.ListFundingSpreads:input_type -> funding.v1.ListFundingSpreadsRequest
+	8,  // 30: funding.v1.FundingService.ListFundingOpportunities:input_type -> funding.v1.ListFundingOpportunitiesRequest
+	15, // 31: funding.v1.FundingService.GetFundingHistory:input_type -> funding.v1.GetFundingHistoryRequest
+	3,  // 32: funding.v1.FundingService.ListFundingRates:output_type -> funding.v1.ListFundingRatesResponse
+	14, // 33: funding.v1.FundingService.BatchGetFundingRates:output_type -> funding.v1.BatchGetFundingRatesResponse
+	7,  // 34: funding.v1.FundingService.ListFundingSpreads:output_type -> funding.v1.ListFundingSpreadsResponse
+	10, // 35: funding.v1.FundingService.ListFundingOpportunities:output_type -> funding.v1.ListFundingOpportunitiesResponse
+	16, // 36: funding.v1.FundingService.GetFundingHistory:output_type -> funding.v1.GetFundingHistoryResponse
+	32, // [32:37] is the sub-list for method output_type
+	27, // [27:32] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_funding_v1_funding_proto_init() }
@@ -1497,13 +1900,15 @@ func file_funding_v1_funding_proto_init() {
 		return
 	}
 	file_funding_v1_funding_proto_msgTypes[1].OneofWrappers = []any{}
+	file_funding_v1_funding_proto_msgTypes[5].OneofWrappers = []any{}
+	file_funding_v1_funding_proto_msgTypes[6].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_funding_v1_funding_proto_rawDesc), len(file_funding_v1_funding_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

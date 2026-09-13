@@ -166,6 +166,11 @@ Manual 模式要求非空 `cpu_ids`；所有 CPU 必须小于 `_SC_NPROCESSORS_O
 
 每个 `(venue, product)` 只能配置一个 profile。当前公共行情支持 Binance、OKX、Bybit、Bitget、Gate 和 Hyperliquid 已实现的 Spot/Perpetual 组合。OKX 最快需登录的公共频道从上述环境变量读取凭据，缺失或登录失败不会静默降级。
 
+Hyperliquid 主 DEX 使用与后端 `GlobalSymbol` 一致的 canonical：永续
+`BTC` 发布为 `BTCUSDC`；现货不使用 `@107` 这类内部 pair alias，而是
+按 universe 引用的 token 名发布为 `BASEUSDC`（例如 `HYPEUSDC`）。
+官方的 `BTC`、`@107` 仍仅作为 venue symbol 用于 WebSocket 订阅。
+
 `MdsConfig` 包含 `runtime`、`shm`、`venues` 和 `max_subscriptions=4096`。
 
 `TickerSubscription`：venue=`"binance"`、product=`Spot`、`symbol` 必填；ticker 语义为低延迟 BBO。
@@ -223,6 +228,7 @@ void shutdown() noexcept;
 - Hyperliquid `BTCUSDC` 聚合到 `BTCUSDT` 时自动 attach Binance Spot `USDCUSDT`；FX 无效或过期时，该成员同时从 raw、gated 和 aggregate depth 排除。
 - cross-skew 仅作用 AggBbo，默认 observe-only。enforce 模式按 `timestamp_venue` 整家逐记录剔除；`kAggSkewEnforced` 表示本条发生过剔除。同一成员自身 crossed BBO 不做 skew 剔除，并通过 `kAggMemberDataError` 报告。
 - 两种 typed read 都复制最新定长 image，不分配内存。两条 aggregate 输出不是原子快照。
+- AggOrderBook 无有效双边时不替换最后一个完整 image；`try_read_agg_orderbook` 会继续返回 last-good，调用方可通过 `header.source_seq` 停止递增识别冻结。进程内聚合不提供 watchdog 或额外 stale 状态。
 
 ## 4. Binance adapter
 
@@ -441,9 +447,14 @@ static Result<std::unique_ptr<ExecutionChannel>> Create(
     const RuntimeConfig&, std::span<const InstrumentInit>,
     std::span<const ReplayStep> replay = {});
 Result<void> initialize_lane(uint32_t lane_id, uint32_t session_epoch);
-Result<RequestToken> place_order(uint32_t lane_id, NewOrderRequest);
+Result<RequestToken> place_order(uint32_t lane_id, SubmitOrderRequest);
 Result<RequestToken> cancel_order(uint32_t lane_id, RequestToken target,
                                   OrderHandle handle = {});
+Result<RequestToken> register_instrument(uint32_t lane_id,
+                                         RegisterInstrumentRequest);
+Result<RequestToken> retire_instrument(uint32_t lane_id, InstrumentId);
+Result<QueryToken> query_open_orders(uint32_t lane_id, QueryRequest);
+Result<QueryToken> query_positions(uint32_t lane_id, QueryRequest);
 Error service_io(int timeout_ms);
 size_t drain_updates(uint32_t lane_id, UpdateCallback, void* context,
                      size_t maximum = SIZE_MAX);
@@ -461,6 +472,12 @@ Error shutdown();
   的 StrategyFrame 线程，不运行在 DedicatedIo worker。
 - 每个 lane 在使用前以非零、进程内唯一的 session epoch 初始化。提交和取消只
   表示命令已接受/排队；最终状态必须从 update 流确认。
+- `SubmitOrderRequest` 内含冻结的 112B `ResolvedInstrument`；submit/cancel
+  不访问 Execution Directory。动态 instrument 必须先收到 register ack，
+  retire 与 submit 必须由同一调用线程、同一 lane 排序。
+- `SubmitOrderRequest` 内含冻结的 112B `ResolvedInstrument`，submit/cancel
+  不访问 Execution Directory。动态 instrument 必须先收到 register ack；
+  retire 与 submit 必须由同一线程、同一 lane 排序。
 - shutdown 顺序是停止新提交、drain 已发布 update、调用 `shutdown`，随后不再
   使用 notification fd 或 callback context。
 - Polymarket `InstrumentInit::polymarket_signature_type` 只接受 type 0

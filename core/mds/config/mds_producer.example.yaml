@@ -178,11 +178,11 @@ subscriptions:
   # Hyperliquid l2Book slow 为满足 top-10 的最快 20档 image。
   - venue: hyperliquid
     stream: ticker
-    symbol: BTCUSDT
+    symbol: BTCUSDC
     product: PERPETUAL
   - venue: hyperliquid
     stream: orderbook
-    symbol: BTCUSDT
+    symbol: BTCUSDC
     product: PERPETUAL
 
   # 一个 BTC5M 逻辑订阅会展开为稳定的 BTC5MUP/BTC5MDOWN 两个

@@ -1,0 +1,4 @@
+mds:
+  source: replay
+  bbo_policy: fastest_arrival
+oms: {}

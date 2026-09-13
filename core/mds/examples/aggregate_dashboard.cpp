@@ -61,6 +61,10 @@ std::string_view venue_name(std::uint8_t venue, bool compact) noexcept {
       return compact ? "BG" : "Bitget";
     case md::Venue::Hyperliquid:
       return compact ? "HL" : "Hyperliquid";
+    case md::Venue::Aster:
+      return compact ? "AS" : "Aster";
+    case md::Venue::Lighter:
+      return compact ? "LT" : "Lighter";
     case md::Venue::Polymarket:
       return compact ? "PM" : "Polymarket";
     case md::Venue::Sse:

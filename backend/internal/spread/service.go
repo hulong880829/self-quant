@@ -75,7 +75,8 @@ func (s *Service) GetHistory(ctx context.Context, request HistoryRequest) (Histo
 
 func cacheKey(request HistoryRequest) string {
 	return request.Venue + "|" + request.CompareVenue + "|" +
-		CanonicalSymbol(request.BaseAsset, request.QuoteAsset) + "|" + string(request.Range)
+		request.VenueCanonicalSymbol + "|" + request.CompareVenueCanonicalSymbol +
+		"|" + string(request.Range)
 }
 
 func (s *Service) cached(key string) (History, bool) {

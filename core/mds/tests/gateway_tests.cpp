@@ -125,6 +125,9 @@ int main() {
   utils::md::wire::AggOrderBookRecord book{};
   book.header = utils::md::wire::MakeHeader(
       utils::md::MessageType::AggOrderBook, sizeof(book));
+  book.header.state =
+      static_cast<std::uint8_t>(utils::md::BookState::Live);
+  book.active_mask = 1;
   book.bid_count = 3;
   book.ask_count = 3;
   for (std::size_t index = 0; index < 3; ++index) {

@@ -133,13 +133,14 @@ func (s *Service) CreatePolymarketTradingAccount(
 	if err != nil {
 		return TradingAccountView{}, err
 	}
-	view, err := s.toTradingAccountView(record)
-	if err != nil {
-		return TradingAccountView{}, err
-	}
+	view := s.toTradingAccountView(record)
 	view.WalletAddress = stored.FunderAddress
 	view.WalletType = stored.WalletType
 	view.BindingStatus = stored.BindingStatus
+	if s.fees != nil {
+		_ = s.fees.MarkUnsupported(ctx, record)
+		s.attachFeeView(ctx, &view)
+	}
 	return view, nil
 }
 
@@ -250,9 +251,13 @@ func (s *Service) RefreshPolymarketCredentials(
 	if err != nil {
 		return PolymarketCredentials{}, err
 	}
+	bindingStatus := strings.TrimSpace(record.BindingStatus)
+	if bindingStatus == "" {
+		bindingStatus = "active"
+	}
 	if err := s.polymarket.UpdateCredentialsByOwner(
 		ctx, session.Username, accountID,
-		apiKeyEnc, apiSecretEnc, passphraseEnc, "active",
+		apiKeyEnc, apiSecretEnc, passphraseEnc, bindingStatus,
 	); err != nil {
 		return PolymarketCredentials{}, err
 	}
@@ -275,6 +280,23 @@ func (s *Service) InvalidatePolymarketCredentials(
 	token string,
 	accountID int64,
 ) error {
+	return s.setPolymarketBindingStatus(ctx, token, accountID, "invalid")
+}
+
+func (s *Service) ActivatePolymarketCredentials(
+	ctx context.Context,
+	token string,
+	accountID int64,
+) error {
+	return s.setPolymarketBindingStatus(ctx, token, accountID, "active")
+}
+
+func (s *Service) setPolymarketBindingStatus(
+	ctx context.Context,
+	token string,
+	accountID int64,
+	status string,
+) error {
 	session, err := s.ValidateSession(token)
 	if err != nil {
 		return err
@@ -283,6 +305,6 @@ func (s *Service) InvalidatePolymarketCredentials(
 		return ErrInvalidPolymarketAccount
 	}
 	return s.polymarket.UpdateBindingStatusByOwner(
-		ctx, session.Username, accountID, "invalid",
+		ctx, session.Username, accountID, status,
 	)
 }

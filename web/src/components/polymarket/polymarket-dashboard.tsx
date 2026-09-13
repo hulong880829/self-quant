@@ -45,6 +45,15 @@ function formatPrice(value: number | null) {
   return value == null ? "--" : formatCurrency(value);
 }
 
+function formatUtcCutoff(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime()) || date.getTime() === 0) {
+    return "";
+  }
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())} UTC`;
+}
+
 function quoteCents(value: number | null) {
   return value == null ? "--" : `${Math.round(value * 100)}¢`;
 }
@@ -405,6 +414,9 @@ export function PolymarketDashboard() {
     removeOpenOrder,
     refreshMarkets,
   } = usePolymarket();
+  const summaryCutoff = summary?.stale
+    ? formatUtcCutoff(summary.sourceUpdatedAt)
+    : "";
   const [portfolioTab, setPortfolioTab] = React.useState<"orders" | "positions">(
     "orders",
   );
@@ -796,6 +808,8 @@ export function PolymarketDashboard() {
                       points={chartPoints}
                       fairPricePoints={fairPricePoints}
                       openPrice={openPrice}
+                      windowStart={selectedMarket?.windowStart ?? null}
+                      windowEnd={selectedMarket?.windowEnd ?? null}
                     />
                     {snapshotLoading || !marketReady ? (
                       <div className="pointer-events-none absolute right-2 top-2 rounded-full border bg-card/90 px-2.5 py-1 text-[11px] text-muted-foreground shadow-sm">
@@ -877,13 +891,18 @@ export function PolymarketDashboard() {
                       <span className="font-mono text-foreground">
                         {summary
                           ? formatCurrency(summary.totalAssets)
-                          : summaryError
-                            ? "--"
-                            : "--"}
+                          : "--"}
                       </span>
-                      {summary?.stale ? " · 缓存" : ""}
+                      {summary?.stale
+                        ? summaryCutoff
+                          ? `（数据截至 ${summaryCutoff}）`
+                          : " · 缓存"
+                        : ""}
                     </div>
-                    {summaryError ? (
+                    {summary?.bindingStatus === "invalid" ? (
+                      <div className="mt-1 text-xs">状态：凭证恢复中</div>
+                    ) : null}
+                    {summaryError && !summary ? (
                       <div className="mt-1 text-xs text-destructive">{summaryError}</div>
                     ) : null}
                   </div>

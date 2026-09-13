@@ -85,4 +85,22 @@ describe("basis spread fetch", () => {
       expect.objectContaining({ method: "GET" }),
     );
   });
+
+  it("passes each venue's native canonical symbol", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(historyWire({ compareVenue: "binance" })), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchBasisSpreadHistory(
+      "Hyperliquid", "zec", "usdt", "24h", null, undefined,
+      "Binance", "ZECUSDC", "ZECUSDT",
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/basis-spreads/hyperliquid/ZEC/USDT/history?range=24h&compareVenue=binance&venueSymbol=ZECUSDC&compareVenueSymbol=ZECUSDT",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
 });

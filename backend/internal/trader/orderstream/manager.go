@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"strings"
@@ -27,6 +28,7 @@ type Options struct {
 	IdleTimeout      time.Duration
 	Now              func() time.Time
 	Jitter           func(time.Duration) time.Duration
+	Logger           *slog.Logger
 }
 
 type Manager struct {
@@ -38,6 +40,7 @@ type Manager struct {
 	idleTimeout      time.Duration
 	now              func() time.Time
 	jitter           func(time.Duration) time.Duration
+	logger           *slog.Logger
 
 	mu       sync.Mutex
 	sessions map[Key]*session
@@ -50,6 +53,9 @@ type Manager struct {
 	disconnects  atomic.Uint64
 	dropped      atomic.Uint64
 	authFailures atomic.Uint64
+
+	hbMu                 sync.Mutex
+	heartbeatWriteFailed map[string]uint64
 }
 
 type session struct {
@@ -61,6 +67,8 @@ type session struct {
 	nextID      uint64
 	subs        map[uint64]chan Update
 	watchers    map[string]map[uint64]chan Update
+	orderState  map[string]Update
+	tradeIDs    map[string]struct{}
 	healthy     bool
 	lastEvent   time.Time
 	generation  uint64
@@ -121,11 +129,14 @@ func New(options Options) (*Manager, error) {
 			Now: options.Now,
 		})
 	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
 	return &Manager{
 		connector: options.Connector, parsers: options.Parsers,
 		staleAfter: options.StaleAfter, reconnectInitial: options.ReconnectInitial,
 		reconnectMax: options.ReconnectMax, idleTimeout: options.IdleTimeout,
-		now: options.Now, jitter: options.Jitter,
+		now: options.Now, jitter: options.Jitter, logger: options.Logger,
 		sessions: make(map[Key]*session),
 	}, nil
 }
@@ -139,7 +150,7 @@ func (m *Manager) Subscribe(
 	if err != nil {
 		return nil, err
 	}
-	if err := credentials.validate(); err != nil {
+	if err := credentials.validate(normalized.Venue); err != nil {
 		return nil, err
 	}
 	if (normalized.Venue == VenueOKX || normalized.Venue == VenueBitget) &&
@@ -156,7 +167,7 @@ func (m *Manager) Subscribe(
 		return nil, ErrClosed
 	}
 	current := m.sessions[normalized]
-	if current != nil && current.credentials != credentials && current.refs == 0 {
+	if current != nil && !credentialsEqual(current.credentials, credentials) && current.refs == 0 {
 		delete(m.sessions, normalized)
 		if current.idleTimer != nil {
 			current.idleTimer.Stop()
@@ -169,13 +180,15 @@ func (m *Manager) Subscribe(
 		sessionCtx, cancel := context.WithCancel(context.Background())
 		current = &session{
 			key: normalized, credentials: credentials, ctx: sessionCtx, cancel: cancel,
-			subs:     make(map[uint64]chan Update),
-			watchers: make(map[string]map[uint64]chan Update),
+			subs:       make(map[uint64]chan Update),
+			watchers:   make(map[string]map[uint64]chan Update),
+			orderState: make(map[string]Update),
+			tradeIDs:   make(map[string]struct{}),
 		}
 		m.sessions[normalized] = current
 		m.wg.Add(1)
 		go m.run(current)
-	} else if current.credentials != credentials {
+	} else if !credentialsEqual(current.credentials, credentials) {
 		m.mu.Unlock()
 		return nil, ErrCredentialMismatch
 	}
@@ -204,6 +217,28 @@ func (m *Manager) Subscribe(
 		}()
 	}
 	return subscription, nil
+}
+
+func credentialsEqual(left, right Credentials) bool {
+	return left.APIKey == right.APIKey &&
+		left.Secret == right.Secret &&
+		left.Passphrase == right.Passphrase &&
+		left.CredentialKind == right.CredentialKind &&
+		left.SigningAddress == right.SigningAddress &&
+		left.VaultAddress == right.VaultAddress &&
+		optionalInt64Equal(left.AccountIndex, right.AccountIndex) &&
+		optionalInt32Equal(left.APIKeyIndex, right.APIKeyIndex) &&
+		left.AuthToken == right.AuthToken
+}
+
+func optionalInt64Equal(left, right *int64) bool {
+	return (left == nil && right == nil) ||
+		(left != nil && right != nil && *left == *right)
+}
+
+func optionalInt32Equal(left, right *int32) bool {
+	return (left == nil && right == nil) ||
+		(left != nil && right != nil && *left == *right)
 }
 
 func (s *Subscription) Updates() <-chan Update {
@@ -260,6 +295,36 @@ func (m *Manager) WatchOrder(
 		return nil, ErrNoSession
 	}
 	return m.watchOrder(ctx, current, clientOrderID)
+}
+
+func (m *Manager) BindClientVenueIDs(key Key, clientOrderID, venueOrderID string) {
+	clientOrderID = strings.TrimSpace(clientOrderID)
+	venueOrderID = strings.TrimSpace(venueOrderID)
+	if clientOrderID == "" || venueOrderID == "" {
+		return
+	}
+	normalized, err := key.normalized()
+	if err != nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current := m.sessions[normalized]
+	if current == nil || m.closed {
+		return
+	}
+	client := current.orderState["client:"+clientOrderID]
+	if client.ClientOrderID == "" {
+		client.ClientOrderID = clientOrderID
+	}
+	client.VenueOrderID = venueOrderID
+	current.orderState["client:"+clientOrderID] = client
+	venue := current.orderState["venue:"+venueOrderID]
+	if venue.VenueOrderID == "" {
+		venue.VenueOrderID = venueOrderID
+	}
+	venue.ClientOrderID = clientOrderID
+	current.orderState["venue:"+venueOrderID] = venue
 }
 
 func (m *Manager) watchOrder(
@@ -389,36 +454,156 @@ func (m *Manager) run(current *session) {
 	defer m.wg.Done()
 	backoff := m.reconnectInitial
 	attempted := false
+	var lastDelay time.Duration
 	for current.ctx.Err() == nil {
 		connection, err := m.connector.Connect(current.ctx, current.key, current.credentials)
-		if err == nil {
-			m.connects.Add(1)
-			if attempted {
-				m.reconnects.Add(1)
+		if err != nil {
+			reason := classifyConnectError(err)
+			if strings.Contains(strings.ToLower(err.Error()), "auth") {
+				m.authFailures.Add(1)
 			}
-			backoff = m.reconnectInitial
-			m.setConnectionState(current, true, nil)
-			err = m.consume(current, connection)
+			if current.ctx.Err() != nil {
+				return
+			}
+			delay := backoff + m.jitter(backoff)
+			m.logConnectFailed(current, reason, delay, err)
+			attempted = true
+			m.disconnects.Add(1)
+			m.setConnectionState(current, false, err)
+			if !m.waitReconnect(current, delay) {
+				return
+			}
+			lastDelay = delay
+			backoff = min(m.reconnectMax, backoff*2)
+			continue
 		}
+		m.connects.Add(1)
+		if attempted {
+			m.reconnects.Add(1)
+		}
+		backoff = m.reconnectInitial
+		m.setConnectionState(current, true, nil)
+		if attempted {
+			m.logReconnected(current, lastDelay)
+		}
+		connectedAt := m.now()
+		err = m.consume(current, connection)
 		if err != nil && strings.Contains(strings.ToLower(err.Error()), "auth") {
 			m.authFailures.Add(1)
 		}
 		if current.ctx.Err() != nil {
 			return
 		}
+		reason := classifyDisconnect(err)
+		delay := backoff + m.jitter(backoff)
+		m.logDisconnected(current, reason, m.now().Sub(connectedAt), delay, err)
 		attempted = true
 		m.disconnects.Add(1)
 		m.setConnectionState(current, false, err)
-		delay := backoff + m.jitter(backoff)
-		timer := time.NewTimer(delay)
-		select {
-		case <-current.ctx.Done():
-			timer.Stop()
+		if !m.waitReconnect(current, delay) {
 			return
-		case <-timer.C:
 		}
+		lastDelay = delay
 		backoff = min(m.reconnectMax, backoff*2)
 	}
+}
+
+func (m *Manager) waitReconnect(current *session, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	select {
+	case <-current.ctx.Done():
+		timer.Stop()
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (m *Manager) logConnectFailed(
+	current *session,
+	reason disconnectReason,
+	delay time.Duration,
+	err error,
+) {
+	attrs := m.streamLogAttrs(current, reason, 0, delay, err)
+	m.logger.Warn("order_stream_connect_failed", attrs...)
+}
+
+func (m *Manager) logDisconnected(
+	current *session,
+	reason disconnectReason,
+	connected time.Duration,
+	delay time.Duration,
+	err error,
+) {
+	if reason == reasonHeartbeatWriteFailed && current != nil {
+		m.addHeartbeatWriteFailed(current.key.Venue)
+	}
+	attrs := m.streamLogAttrs(current, reason, connected, delay, err)
+	switch reason {
+	case reasonShutdown:
+		return
+	case reasonPlannedRotation:
+		m.logger.Info("order_stream_disconnected", attrs...)
+	default:
+		m.logger.Warn("order_stream_disconnected", attrs...)
+	}
+}
+
+func (m *Manager) logReconnected(current *session, delay time.Duration) {
+	attrs := m.streamLogAttrs(current, "", 0, delay, nil)
+	m.logger.Info("order_stream_reconnected", attrs...)
+}
+
+func (m *Manager) streamLogAttrs(
+	current *session,
+	reason disconnectReason,
+	connected time.Duration,
+	delay time.Duration,
+	err error,
+) []any {
+	m.mu.Lock()
+	venue := current.key.Venue
+	account := current.key.Account
+	product := current.key.Product
+	generation := current.generation
+	m.mu.Unlock()
+	attrs := []any{
+		"venue", venue,
+		"account", account,
+		"product", product,
+		"generation", generation,
+		"connected_duration_ms", connected.Milliseconds(),
+		"reconnect_delay_ms", delay.Milliseconds(),
+	}
+	if reason != "" {
+		attrs = append(attrs, "reason", string(reason))
+	}
+	var de *disconnectError
+	if errors.As(err, &de) {
+		if de.HeartbeatType != "" {
+			attrs = append(attrs, "heartbeat_type", de.HeartbeatType)
+		}
+		if !de.WriteDeadline.IsZero() {
+			attrs = append(attrs, "write_deadline", de.WriteDeadline.UTC().Format(time.RFC3339Nano))
+		}
+	}
+	if err != nil {
+		attrs = append(attrs, "error", sanitizeDisconnectError(err))
+	}
+	return attrs
+}
+
+func (m *Manager) addHeartbeatWriteFailed(venue string) {
+	if venue == "" {
+		return
+	}
+	m.hbMu.Lock()
+	defer m.hbMu.Unlock()
+	if m.heartbeatWriteFailed == nil {
+		m.heartbeatWriteFailed = map[string]uint64{}
+	}
+	m.heartbeatWriteFailed[venue]++
 }
 
 func (m *Manager) consume(current *session, connection Connection) error {
@@ -451,6 +636,18 @@ func (m *Manager) consume(current *session, connection Connection) error {
 			continue
 		}
 		for _, update := range updates {
+			if current.key.Venue == VenueHyperliquid &&
+				update.Type == UpdateTrade &&
+				!hyperliquidFillFieldsValid(
+					update.LastPrice, update.LastFilled, update.VenueOrderID, update.TradeID,
+				) {
+				m.logger.Warn(
+					"hyperliquid_fill_invalid_price",
+					slog.String("venue_order_id", update.VenueOrderID),
+					slog.String("trade_id", update.TradeID),
+				)
+				continue
+			}
 			m.publish(current, update)
 		}
 	}
@@ -494,8 +691,147 @@ func (m *Manager) publish(current *session, update Update) {
 	if m.sessions[current.key] != current {
 		return
 	}
+	if !reduceDEXUpdateLocked(current, &update, m.logger) {
+		return
+	}
 	current.lastEvent = m.now()
 	m.publishLocked(current, update)
+}
+
+func reduceDEXUpdateLocked(current *session, update *Update, logger *slog.Logger) bool {
+	if !isDEXVenue(current.key.Venue) || update.Type == UpdateConnection {
+		return true
+	}
+	if update.Type == UpdateTrade && update.TradeID != "" {
+		tradeKey := update.VenueOrderID + "\x00" + update.TradeID
+		if _, exists := current.tradeIDs[tradeKey]; exists {
+			return false
+		}
+		current.tradeIDs[tradeKey] = struct{}{}
+	}
+	previous, found := dexPreviousUpdate(current, *update)
+	if found && update.ClientOrderID == "" {
+		update.ClientOrderID = previous.ClientOrderID
+	}
+	if found && update.VenueOrderID == "" {
+		update.VenueOrderID = previous.VenueOrderID
+	}
+	if found &&
+		current.key.Venue == VenueHyperliquid &&
+		update.Type == UpdateTrade &&
+		update.ClientOrderID != "" &&
+		update.VenueOrderID != "" {
+		clientPrev, hasClient := current.orderState["client:"+update.ClientOrderID]
+		venuePrev, hasVenue := current.orderState["venue:"+update.VenueOrderID]
+		if hasClient && hasVenue &&
+			clientPrev.VenueOrderID != "" &&
+			venuePrev.VenueOrderID != "" &&
+			clientPrev.VenueOrderID != venuePrev.VenueOrderID {
+			if logger != nil {
+				logger.Warn(
+					"hyperliquid_fill_venue_order_mismatch",
+					slog.String("client_order_id", update.ClientOrderID),
+					slog.String("fill_venue_order_id", update.VenueOrderID),
+					slog.String("client_venue_order_id", clientPrev.VenueOrderID),
+					slog.String("cached_venue_order_id", venuePrev.VenueOrderID),
+				)
+			}
+			return false
+		}
+	}
+	if current.key.Venue == VenueHyperliquid &&
+		update.Type == UpdateTrade &&
+		update.ClientOrderID == "" {
+		if logger != nil {
+			logger.Warn(
+				"hyperliquid_fill_order_not_found",
+				slog.String("venue_order_id", update.VenueOrderID),
+				slog.String("trade_id", update.TradeID),
+			)
+		}
+		return false
+	}
+	if found {
+		previousFilled := parseDecimal(previous.CumulativeFilled)
+		currentFilled := parseDecimal(update.CumulativeFilled)
+		if update.Type == UpdateOrder && previous.CumulativeFilled != "" &&
+			(update.CumulativeFilled == "" || currentFilled.LessThan(previousFilled)) {
+			update.CumulativeFilled = previous.CumulativeFilled
+			currentFilled = previousFilled
+		}
+		if isTerminalStreamStatus(previous.Status) {
+			if !isTerminalStreamStatus(update.Status) ||
+				terminalStreamRank(update.Status) <= terminalStreamRank(previous.Status) {
+				if update.Type != UpdateTrade ||
+					update.CumulativeFilled == "" ||
+					currentFilled.LessThanOrEqual(previousFilled) {
+					return false
+				}
+			}
+		}
+		if update.Sequence > 0 && previous.Sequence > 0 &&
+			update.Sequence < previous.Sequence && !isTerminalStreamStatus(update.Status) {
+			return false
+		}
+		if sameDEXUpdate(previous, *update) {
+			return false
+		}
+	}
+	if update.ClientOrderID != "" {
+		current.orderState["client:"+update.ClientOrderID] = *update
+	}
+	if update.VenueOrderID != "" {
+		current.orderState["venue:"+update.VenueOrderID] = *update
+	}
+	return true
+}
+
+func dexPreviousUpdate(current *session, update Update) (Update, bool) {
+	if update.ClientOrderID != "" {
+		if previous, ok := current.orderState["client:"+update.ClientOrderID]; ok {
+			return previous, true
+		}
+	}
+	if update.VenueOrderID != "" {
+		previous, ok := current.orderState["venue:"+update.VenueOrderID]
+		return previous, ok
+	}
+	return Update{}, false
+}
+
+func isDEXVenue(venue string) bool {
+	return venue == VenueAster || venue == VenueHyperliquid || venue == VenueLighter
+}
+
+func isTerminalStreamStatus(status Status) bool {
+	switch status {
+	case StatusFilled, StatusCanceled, StatusRejected, StatusExpired:
+		return true
+	default:
+		return false
+	}
+}
+
+func terminalStreamRank(status Status) int {
+	if status == StatusFilled {
+		return 2
+	}
+	if isTerminalStreamStatus(status) {
+		return 1
+	}
+	return 0
+}
+
+func sameDEXUpdate(left, right Update) bool {
+	return left.Type == right.Type &&
+		left.ClientOrderID == right.ClientOrderID &&
+		left.VenueOrderID == right.VenueOrderID &&
+		left.Status == right.Status &&
+		left.CumulativeFilled == right.CumulativeFilled &&
+		left.LastFilled == right.LastFilled &&
+		left.TradeID == right.TradeID &&
+		left.ErrorCode == right.ErrorCode &&
+		left.ErrorMessage == right.ErrorMessage
 }
 
 func (m *Manager) publishLocked(current *session, update Update) {
@@ -566,16 +902,17 @@ func (m *Manager) closeWatchersLocked(current *session) {
 }
 
 type Stats struct {
-	ActiveSessions  uint64
-	HealthySessions uint64
-	References      uint64
-	Watchers        uint64
-	Connects        uint64
-	Reconnects      uint64
-	Updates         uint64
-	Disconnects     uint64
-	Dropped         uint64
-	AuthFailures    uint64
+	ActiveSessions       uint64
+	HealthySessions      uint64
+	References           uint64
+	Watchers             uint64
+	Connects             uint64
+	Reconnects           uint64
+	Updates              uint64
+	Disconnects          uint64
+	Dropped              uint64
+	AuthFailures         uint64
+	HeartbeatWriteFailed map[string]uint64
 }
 
 func (m *Manager) Stats() Stats {
@@ -591,11 +928,25 @@ func (m *Manager) Stats() Stats {
 			watchers += uint64(len(byID))
 		}
 	}
+	m.hbMu.Lock()
+	heartbeatWriteFailed := copyUint64Map(m.heartbeatWriteFailed)
+	m.hbMu.Unlock()
 	return Stats{
 		ActiveSessions: uint64(len(m.sessions)), HealthySessions: healthy,
 		References: references, Watchers: watchers,
 		Connects: m.connects.Load(), Reconnects: m.reconnects.Load(),
 		Updates: m.updates.Load(), Disconnects: m.disconnects.Load(), Dropped: m.dropped.Load(),
-		AuthFailures: m.authFailures.Load(),
+		AuthFailures: m.authFailures.Load(), HeartbeatWriteFailed: heartbeatWriteFailed,
 	}
+}
+
+func copyUint64Map(values map[string]uint64) map[string]uint64 {
+	if len(values) == 0 {
+		return nil
+	}
+	copied := make(map[string]uint64, len(values))
+	for key, value := range values {
+		copied[key] = value
+	}
+	return copied
 }

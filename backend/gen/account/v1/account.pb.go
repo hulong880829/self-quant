@@ -231,20 +231,37 @@ func (x *ValidateSessionResponse) GetPermission() string {
 }
 
 type TradingAccount struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	ProductName   string                 `protobuf:"bytes,2,opt,name=product_name,json=productName,proto3" json:"product_name,omitempty"`
-	Exchange      string                 `protobuf:"bytes,3,opt,name=exchange,proto3" json:"exchange,omitempty"`
-	AccountName   string                 `protobuf:"bytes,4,opt,name=account_name,json=accountName,proto3" json:"account_name,omitempty"`
-	ApiKeyMasked  string                 `protobuf:"bytes,5,opt,name=api_key_masked,json=apiKeyMasked,proto3" json:"api_key_masked,omitempty"`
-	HasPassphrase bool                   `protobuf:"varint,6,opt,name=has_passphrase,json=hasPassphrase,proto3" json:"has_passphrase,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	WalletAddress string                 `protobuf:"bytes,9,opt,name=wallet_address,json=walletAddress,proto3" json:"wallet_address,omitempty"`
-	WalletType    string                 `protobuf:"bytes,10,opt,name=wallet_type,json=walletType,proto3" json:"wallet_type,omitempty"`
-	BindingStatus string                 `protobuf:"bytes,11,opt,name=binding_status,json=bindingStatus,proto3" json:"binding_status,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	Id                       int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	ProductName              string                 `protobuf:"bytes,2,opt,name=product_name,json=productName,proto3" json:"product_name,omitempty"`
+	Exchange                 string                 `protobuf:"bytes,3,opt,name=exchange,proto3" json:"exchange,omitempty"`
+	AccountName              string                 `protobuf:"bytes,4,opt,name=account_name,json=accountName,proto3" json:"account_name,omitempty"`
+	ApiKeyMasked             string                 `protobuf:"bytes,5,opt,name=api_key_masked,json=apiKeyMasked,proto3" json:"api_key_masked,omitempty"`
+	HasPassphrase            bool                   `protobuf:"varint,6,opt,name=has_passphrase,json=hasPassphrase,proto3" json:"has_passphrase,omitempty"`
+	CreatedAt                *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt                *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	WalletAddress            string                 `protobuf:"bytes,9,opt,name=wallet_address,json=walletAddress,proto3" json:"wallet_address,omitempty"`
+	WalletType               string                 `protobuf:"bytes,10,opt,name=wallet_type,json=walletType,proto3" json:"wallet_type,omitempty"`
+	BindingStatus            string                 `protobuf:"bytes,11,opt,name=binding_status,json=bindingStatus,proto3" json:"binding_status,omitempty"`
+	CredentialsPresent       bool                   `protobuf:"varint,12,opt,name=credentials_present,json=credentialsPresent,proto3" json:"credentials_present,omitempty"`
+	CredentialsVerified      bool                   `protobuf:"varint,13,opt,name=credentials_verified,json=credentialsVerified,proto3" json:"credentials_verified,omitempty"`
+	TradingMode              string                 `protobuf:"bytes,14,opt,name=trading_mode,json=tradingMode,proto3" json:"trading_mode,omitempty"`
+	TradingReady             bool                   `protobuf:"varint,15,opt,name=trading_ready,json=tradingReady,proto3" json:"trading_ready,omitempty"`
+	TradingStatus            string                 `protobuf:"bytes,16,opt,name=trading_status,json=tradingStatus,proto3" json:"trading_status,omitempty"`
+	TradingUnavailableCode   string                 `protobuf:"bytes,17,opt,name=trading_unavailable_code,json=tradingUnavailableCode,proto3" json:"trading_unavailable_code,omitempty"`
+	TradingUnavailableReason string                 `protobuf:"bytes,18,opt,name=trading_unavailable_reason,json=tradingUnavailableReason,proto3" json:"trading_unavailable_reason,omitempty"`
+	ResolvedAccountIndex     *int64                 `protobuf:"varint,19,opt,name=resolved_account_index,json=resolvedAccountIndex,proto3,oneof" json:"resolved_account_index,omitempty"`
+	ResolvedApiKeyIndex      *int32                 `protobuf:"varint,20,opt,name=resolved_api_key_index,json=resolvedApiKeyIndex,proto3,oneof" json:"resolved_api_key_index,omitempty"`
+	SpotFee                  *MarketFeeRate         `protobuf:"bytes,21,opt,name=spot_fee,json=spotFee,proto3" json:"spot_fee,omitempty"`
+	ContractFee              *MarketFeeRate         `protobuf:"bytes,22,opt,name=contract_fee,json=contractFee,proto3" json:"contract_fee,omitempty"`
+	FeeSource                string                 `protobuf:"bytes,23,opt,name=fee_source,json=feeSource,proto3" json:"fee_source,omitempty"`
+	FeeUpdatedAt             *timestamppb.Timestamp `protobuf:"bytes,24,opt,name=fee_updated_at,json=feeUpdatedAt,proto3" json:"fee_updated_at,omitempty"`
+	FeeSyncStatus            string                 `protobuf:"bytes,25,opt,name=fee_sync_status,json=feeSyncStatus,proto3" json:"fee_sync_status,omitempty"`
+	FeeSyncError             string                 `protobuf:"bytes,26,opt,name=fee_sync_error,json=feeSyncError,proto3" json:"fee_sync_error,omitempty"`
+	FeeStale                 bool                   `protobuf:"varint,27,opt,name=fee_stale,json=feeStale,proto3" json:"fee_stale,omitempty"`
+	UnsupportedMarkets       []string               `protobuf:"bytes,28,rep,name=unsupported_markets,json=unsupportedMarkets,proto3" json:"unsupported_markets,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *TradingAccount) Reset() {
@@ -354,6 +371,389 @@ func (x *TradingAccount) GetBindingStatus() string {
 	return ""
 }
 
+func (x *TradingAccount) GetCredentialsPresent() bool {
+	if x != nil {
+		return x.CredentialsPresent
+	}
+	return false
+}
+
+func (x *TradingAccount) GetCredentialsVerified() bool {
+	if x != nil {
+		return x.CredentialsVerified
+	}
+	return false
+}
+
+func (x *TradingAccount) GetTradingMode() string {
+	if x != nil {
+		return x.TradingMode
+	}
+	return ""
+}
+
+func (x *TradingAccount) GetTradingReady() bool {
+	if x != nil {
+		return x.TradingReady
+	}
+	return false
+}
+
+func (x *TradingAccount) GetTradingStatus() string {
+	if x != nil {
+		return x.TradingStatus
+	}
+	return ""
+}
+
+func (x *TradingAccount) GetTradingUnavailableCode() string {
+	if x != nil {
+		return x.TradingUnavailableCode
+	}
+	return ""
+}
+
+func (x *TradingAccount) GetTradingUnavailableReason() string {
+	if x != nil {
+		return x.TradingUnavailableReason
+	}
+	return ""
+}
+
+func (x *TradingAccount) GetResolvedAccountIndex() int64 {
+	if x != nil && x.ResolvedAccountIndex != nil {
+		return *x.ResolvedAccountIndex
+	}
+	return 0
+}
+
+func (x *TradingAccount) GetResolvedApiKeyIndex() int32 {
+	if x != nil && x.ResolvedApiKeyIndex != nil {
+		return *x.ResolvedApiKeyIndex
+	}
+	return 0
+}
+
+func (x *TradingAccount) GetSpotFee() *MarketFeeRate {
+	if x != nil {
+		return x.SpotFee
+	}
+	return nil
+}
+
+func (x *TradingAccount) GetContractFee() *MarketFeeRate {
+	if x != nil {
+		return x.ContractFee
+	}
+	return nil
+}
+
+func (x *TradingAccount) GetFeeSource() string {
+	if x != nil {
+		return x.FeeSource
+	}
+	return ""
+}
+
+func (x *TradingAccount) GetFeeUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.FeeUpdatedAt
+	}
+	return nil
+}
+
+func (x *TradingAccount) GetFeeSyncStatus() string {
+	if x != nil {
+		return x.FeeSyncStatus
+	}
+	return ""
+}
+
+func (x *TradingAccount) GetFeeSyncError() string {
+	if x != nil {
+		return x.FeeSyncError
+	}
+	return ""
+}
+
+func (x *TradingAccount) GetFeeStale() bool {
+	if x != nil {
+		return x.FeeStale
+	}
+	return false
+}
+
+func (x *TradingAccount) GetUnsupportedMarkets() []string {
+	if x != nil {
+		return x.UnsupportedMarkets
+	}
+	return nil
+}
+
+type MarketFeeRate struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	Maker         string                 `protobuf:"bytes,2,opt,name=maker,proto3" json:"maker,omitempty"`
+	Taker         string                 `protobuf:"bytes,3,opt,name=taker,proto3" json:"taker,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MarketFeeRate) Reset() {
+	*x = MarketFeeRate{}
+	mi := &file_account_v1_account_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MarketFeeRate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MarketFeeRate) ProtoMessage() {}
+
+func (x *MarketFeeRate) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MarketFeeRate.ProtoReflect.Descriptor instead.
+func (*MarketFeeRate) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *MarketFeeRate) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *MarketFeeRate) GetMaker() string {
+	if x != nil {
+		return x.Maker
+	}
+	return ""
+}
+
+func (x *MarketFeeRate) GetTaker() string {
+	if x != nil {
+		return x.Taker
+	}
+	return ""
+}
+
+type GetTradingAccountFeeRatesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	Id            int64                  `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetTradingAccountFeeRatesRequest) Reset() {
+	*x = GetTradingAccountFeeRatesRequest{}
+	mi := &file_account_v1_account_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetTradingAccountFeeRatesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetTradingAccountFeeRatesRequest) ProtoMessage() {}
+
+func (x *GetTradingAccountFeeRatesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetTradingAccountFeeRatesRequest.ProtoReflect.Descriptor instead.
+func (*GetTradingAccountFeeRatesRequest) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *GetTradingAccountFeeRatesRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *GetTradingAccountFeeRatesRequest) GetId() int64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+type SyncTradingAccountFeeRatesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	Id            int64                  `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SyncTradingAccountFeeRatesRequest) Reset() {
+	*x = SyncTradingAccountFeeRatesRequest{}
+	mi := &file_account_v1_account_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SyncTradingAccountFeeRatesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SyncTradingAccountFeeRatesRequest) ProtoMessage() {}
+
+func (x *SyncTradingAccountFeeRatesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SyncTradingAccountFeeRatesRequest.ProtoReflect.Descriptor instead.
+func (*SyncTradingAccountFeeRatesRequest) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *SyncTradingAccountFeeRatesRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *SyncTradingAccountFeeRatesRequest) GetId() int64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+type GetTradingAccountFeeRatesResponse struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	SpotFee            *MarketFeeRate         `protobuf:"bytes,1,opt,name=spot_fee,json=spotFee,proto3" json:"spot_fee,omitempty"`
+	ContractFee        *MarketFeeRate         `protobuf:"bytes,2,opt,name=contract_fee,json=contractFee,proto3" json:"contract_fee,omitempty"`
+	FeeSource          string                 `protobuf:"bytes,3,opt,name=fee_source,json=feeSource,proto3" json:"fee_source,omitempty"`
+	FeeUpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=fee_updated_at,json=feeUpdatedAt,proto3" json:"fee_updated_at,omitempty"`
+	FeeSyncStatus      string                 `protobuf:"bytes,5,opt,name=fee_sync_status,json=feeSyncStatus,proto3" json:"fee_sync_status,omitempty"`
+	FeeSyncError       string                 `protobuf:"bytes,6,opt,name=fee_sync_error,json=feeSyncError,proto3" json:"fee_sync_error,omitempty"`
+	FeeStale           bool                   `protobuf:"varint,7,opt,name=fee_stale,json=feeStale,proto3" json:"fee_stale,omitempty"`
+	UnsupportedMarkets []string               `protobuf:"bytes,8,rep,name=unsupported_markets,json=unsupportedMarkets,proto3" json:"unsupported_markets,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *GetTradingAccountFeeRatesResponse) Reset() {
+	*x = GetTradingAccountFeeRatesResponse{}
+	mi := &file_account_v1_account_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetTradingAccountFeeRatesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetTradingAccountFeeRatesResponse) ProtoMessage() {}
+
+func (x *GetTradingAccountFeeRatesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetTradingAccountFeeRatesResponse.ProtoReflect.Descriptor instead.
+func (*GetTradingAccountFeeRatesResponse) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *GetTradingAccountFeeRatesResponse) GetSpotFee() *MarketFeeRate {
+	if x != nil {
+		return x.SpotFee
+	}
+	return nil
+}
+
+func (x *GetTradingAccountFeeRatesResponse) GetContractFee() *MarketFeeRate {
+	if x != nil {
+		return x.ContractFee
+	}
+	return nil
+}
+
+func (x *GetTradingAccountFeeRatesResponse) GetFeeSource() string {
+	if x != nil {
+		return x.FeeSource
+	}
+	return ""
+}
+
+func (x *GetTradingAccountFeeRatesResponse) GetFeeUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.FeeUpdatedAt
+	}
+	return nil
+}
+
+func (x *GetTradingAccountFeeRatesResponse) GetFeeSyncStatus() string {
+	if x != nil {
+		return x.FeeSyncStatus
+	}
+	return ""
+}
+
+func (x *GetTradingAccountFeeRatesResponse) GetFeeSyncError() string {
+	if x != nil {
+		return x.FeeSyncError
+	}
+	return ""
+}
+
+func (x *GetTradingAccountFeeRatesResponse) GetFeeStale() bool {
+	if x != nil {
+		return x.FeeStale
+	}
+	return false
+}
+
+func (x *GetTradingAccountFeeRatesResponse) GetUnsupportedMarkets() []string {
+	if x != nil {
+		return x.UnsupportedMarkets
+	}
+	return nil
+}
+
 type ListTradingAccountsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
@@ -363,7 +763,7 @@ type ListTradingAccountsRequest struct {
 
 func (x *ListTradingAccountsRequest) Reset() {
 	*x = ListTradingAccountsRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[5]
+	mi := &file_account_v1_account_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -375,7 +775,7 @@ func (x *ListTradingAccountsRequest) String() string {
 func (*ListTradingAccountsRequest) ProtoMessage() {}
 
 func (x *ListTradingAccountsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[5]
+	mi := &file_account_v1_account_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -388,7 +788,7 @@ func (x *ListTradingAccountsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTradingAccountsRequest.ProtoReflect.Descriptor instead.
 func (*ListTradingAccountsRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{5}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ListTradingAccountsRequest) GetToken() string {
@@ -407,7 +807,7 @@ type ListTradingAccountsResponse struct {
 
 func (x *ListTradingAccountsResponse) Reset() {
 	*x = ListTradingAccountsResponse{}
-	mi := &file_account_v1_account_proto_msgTypes[6]
+	mi := &file_account_v1_account_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -419,7 +819,7 @@ func (x *ListTradingAccountsResponse) String() string {
 func (*ListTradingAccountsResponse) ProtoMessage() {}
 
 func (x *ListTradingAccountsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[6]
+	mi := &file_account_v1_account_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -432,7 +832,7 @@ func (x *ListTradingAccountsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTradingAccountsResponse.ProtoReflect.Descriptor instead.
 func (*ListTradingAccountsResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{6}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ListTradingAccountsResponse) GetItems() []*TradingAccount {
@@ -443,21 +843,27 @@ func (x *ListTradingAccountsResponse) GetItems() []*TradingAccount {
 }
 
 type CreateTradingAccountRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
-	ProductName   string                 `protobuf:"bytes,2,opt,name=product_name,json=productName,proto3" json:"product_name,omitempty"`
-	Exchange      string                 `protobuf:"bytes,3,opt,name=exchange,proto3" json:"exchange,omitempty"`
-	AccountName   string                 `protobuf:"bytes,4,opt,name=account_name,json=accountName,proto3" json:"account_name,omitempty"`
-	ApiKey        string                 `protobuf:"bytes,5,opt,name=api_key,json=apiKey,proto3" json:"api_key,omitempty"`
-	ApiSecret     string                 `protobuf:"bytes,6,opt,name=api_secret,json=apiSecret,proto3" json:"api_secret,omitempty"`
-	Passphrase    string                 `protobuf:"bytes,7,opt,name=passphrase,proto3" json:"passphrase,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Token            string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	ProductName      string                 `protobuf:"bytes,2,opt,name=product_name,json=productName,proto3" json:"product_name,omitempty"`
+	Exchange         string                 `protobuf:"bytes,3,opt,name=exchange,proto3" json:"exchange,omitempty"`
+	AccountName      string                 `protobuf:"bytes,4,opt,name=account_name,json=accountName,proto3" json:"account_name,omitempty"`
+	ApiKey           string                 `protobuf:"bytes,5,opt,name=api_key,json=apiKey,proto3" json:"api_key,omitempty"`
+	ApiSecret        string                 `protobuf:"bytes,6,opt,name=api_secret,json=apiSecret,proto3" json:"api_secret,omitempty"`
+	Passphrase       string                 `protobuf:"bytes,7,opt,name=passphrase,proto3" json:"passphrase,omitempty"`
+	TradingApiKey    string                 `protobuf:"bytes,8,opt,name=trading_api_key,json=tradingApiKey,proto3" json:"trading_api_key,omitempty"`
+	TradingApiSecret string                 `protobuf:"bytes,9,opt,name=trading_api_secret,json=tradingApiSecret,proto3" json:"trading_api_secret,omitempty"`
+	SigningAddress   string                 `protobuf:"bytes,10,opt,name=signing_address,json=signingAddress,proto3" json:"signing_address,omitempty"`
+	VaultAddress     string                 `protobuf:"bytes,11,opt,name=vault_address,json=vaultAddress,proto3" json:"vault_address,omitempty"`
+	AccountIndex     *int64                 `protobuf:"varint,12,opt,name=account_index,json=accountIndex,proto3,oneof" json:"account_index,omitempty"`
+	ApiKeyIndex      *int32                 `protobuf:"varint,13,opt,name=api_key_index,json=apiKeyIndex,proto3,oneof" json:"api_key_index,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *CreateTradingAccountRequest) Reset() {
 	*x = CreateTradingAccountRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[7]
+	mi := &file_account_v1_account_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -469,7 +875,7 @@ func (x *CreateTradingAccountRequest) String() string {
 func (*CreateTradingAccountRequest) ProtoMessage() {}
 
 func (x *CreateTradingAccountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[7]
+	mi := &file_account_v1_account_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -482,7 +888,7 @@ func (x *CreateTradingAccountRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateTradingAccountRequest.ProtoReflect.Descriptor instead.
 func (*CreateTradingAccountRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{7}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CreateTradingAccountRequest) GetToken() string {
@@ -534,6 +940,48 @@ func (x *CreateTradingAccountRequest) GetPassphrase() string {
 	return ""
 }
 
+func (x *CreateTradingAccountRequest) GetTradingApiKey() string {
+	if x != nil {
+		return x.TradingApiKey
+	}
+	return ""
+}
+
+func (x *CreateTradingAccountRequest) GetTradingApiSecret() string {
+	if x != nil {
+		return x.TradingApiSecret
+	}
+	return ""
+}
+
+func (x *CreateTradingAccountRequest) GetSigningAddress() string {
+	if x != nil {
+		return x.SigningAddress
+	}
+	return ""
+}
+
+func (x *CreateTradingAccountRequest) GetVaultAddress() string {
+	if x != nil {
+		return x.VaultAddress
+	}
+	return ""
+}
+
+func (x *CreateTradingAccountRequest) GetAccountIndex() int64 {
+	if x != nil && x.AccountIndex != nil {
+		return *x.AccountIndex
+	}
+	return 0
+}
+
+func (x *CreateTradingAccountRequest) GetApiKeyIndex() int32 {
+	if x != nil && x.ApiKeyIndex != nil {
+		return *x.ApiKeyIndex
+	}
+	return 0
+}
+
 type CreateTradingAccountResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Account       *TradingAccount        `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
@@ -543,7 +991,7 @@ type CreateTradingAccountResponse struct {
 
 func (x *CreateTradingAccountResponse) Reset() {
 	*x = CreateTradingAccountResponse{}
-	mi := &file_account_v1_account_proto_msgTypes[8]
+	mi := &file_account_v1_account_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -555,7 +1003,7 @@ func (x *CreateTradingAccountResponse) String() string {
 func (*CreateTradingAccountResponse) ProtoMessage() {}
 
 func (x *CreateTradingAccountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[8]
+	mi := &file_account_v1_account_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -568,7 +1016,7 @@ func (x *CreateTradingAccountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateTradingAccountResponse.ProtoReflect.Descriptor instead.
 func (*CreateTradingAccountResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{8}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CreateTradingAccountResponse) GetAccount() *TradingAccount {
@@ -592,7 +1040,7 @@ type CreatePolymarketTradingAccountRequest struct {
 
 func (x *CreatePolymarketTradingAccountRequest) Reset() {
 	*x = CreatePolymarketTradingAccountRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[9]
+	mi := &file_account_v1_account_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -604,7 +1052,7 @@ func (x *CreatePolymarketTradingAccountRequest) String() string {
 func (*CreatePolymarketTradingAccountRequest) ProtoMessage() {}
 
 func (x *CreatePolymarketTradingAccountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[9]
+	mi := &file_account_v1_account_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -617,7 +1065,7 @@ func (x *CreatePolymarketTradingAccountRequest) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use CreatePolymarketTradingAccountRequest.ProtoReflect.Descriptor instead.
 func (*CreatePolymarketTradingAccountRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{9}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CreatePolymarketTradingAccountRequest) GetToken() string {
@@ -671,7 +1119,7 @@ type CreatePolymarketTradingAccountResponse struct {
 
 func (x *CreatePolymarketTradingAccountResponse) Reset() {
 	*x = CreatePolymarketTradingAccountResponse{}
-	mi := &file_account_v1_account_proto_msgTypes[10]
+	mi := &file_account_v1_account_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -683,7 +1131,7 @@ func (x *CreatePolymarketTradingAccountResponse) String() string {
 func (*CreatePolymarketTradingAccountResponse) ProtoMessage() {}
 
 func (x *CreatePolymarketTradingAccountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[10]
+	mi := &file_account_v1_account_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -696,7 +1144,7 @@ func (x *CreatePolymarketTradingAccountResponse) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use CreatePolymarketTradingAccountResponse.ProtoReflect.Descriptor instead.
 func (*CreatePolymarketTradingAccountResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{10}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CreatePolymarketTradingAccountResponse) GetAccount() *TradingAccount {
@@ -716,7 +1164,7 @@ type GetPolymarketCredentialsRequest struct {
 
 func (x *GetPolymarketCredentialsRequest) Reset() {
 	*x = GetPolymarketCredentialsRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[11]
+	mi := &file_account_v1_account_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -728,7 +1176,7 @@ func (x *GetPolymarketCredentialsRequest) String() string {
 func (*GetPolymarketCredentialsRequest) ProtoMessage() {}
 
 func (x *GetPolymarketCredentialsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[11]
+	mi := &file_account_v1_account_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -741,7 +1189,7 @@ func (x *GetPolymarketCredentialsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPolymarketCredentialsRequest.ProtoReflect.Descriptor instead.
 func (*GetPolymarketCredentialsRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{11}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *GetPolymarketCredentialsRequest) GetToken() string {
@@ -776,7 +1224,7 @@ type GetPolymarketCredentialsResponse struct {
 
 func (x *GetPolymarketCredentialsResponse) Reset() {
 	*x = GetPolymarketCredentialsResponse{}
-	mi := &file_account_v1_account_proto_msgTypes[12]
+	mi := &file_account_v1_account_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -788,7 +1236,7 @@ func (x *GetPolymarketCredentialsResponse) String() string {
 func (*GetPolymarketCredentialsResponse) ProtoMessage() {}
 
 func (x *GetPolymarketCredentialsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[12]
+	mi := &file_account_v1_account_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -801,7 +1249,7 @@ func (x *GetPolymarketCredentialsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPolymarketCredentialsResponse.ProtoReflect.Descriptor instead.
 func (*GetPolymarketCredentialsResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{12}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *GetPolymarketCredentialsResponse) GetTradingAccountId() int64 {
@@ -884,7 +1332,7 @@ type DeleteTradingAccountRequest struct {
 
 func (x *DeleteTradingAccountRequest) Reset() {
 	*x = DeleteTradingAccountRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[13]
+	mi := &file_account_v1_account_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -896,7 +1344,7 @@ func (x *DeleteTradingAccountRequest) String() string {
 func (*DeleteTradingAccountRequest) ProtoMessage() {}
 
 func (x *DeleteTradingAccountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[13]
+	mi := &file_account_v1_account_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -909,7 +1357,7 @@ func (x *DeleteTradingAccountRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteTradingAccountRequest.ProtoReflect.Descriptor instead.
 func (*DeleteTradingAccountRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{13}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *DeleteTradingAccountRequest) GetToken() string {
@@ -934,7 +1382,7 @@ type DeleteTradingAccountResponse struct {
 
 func (x *DeleteTradingAccountResponse) Reset() {
 	*x = DeleteTradingAccountResponse{}
-	mi := &file_account_v1_account_proto_msgTypes[14]
+	mi := &file_account_v1_account_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -946,7 +1394,7 @@ func (x *DeleteTradingAccountResponse) String() string {
 func (*DeleteTradingAccountResponse) ProtoMessage() {}
 
 func (x *DeleteTradingAccountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[14]
+	mi := &file_account_v1_account_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -959,7 +1407,7 @@ func (x *DeleteTradingAccountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteTradingAccountResponse.ProtoReflect.Descriptor instead.
 func (*DeleteTradingAccountResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{14}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{18}
 }
 
 type PortfolioPosition struct {
@@ -990,7 +1438,7 @@ type PortfolioPosition struct {
 
 func (x *PortfolioPosition) Reset() {
 	*x = PortfolioPosition{}
-	mi := &file_account_v1_account_proto_msgTypes[15]
+	mi := &file_account_v1_account_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1002,7 +1450,7 @@ func (x *PortfolioPosition) String() string {
 func (*PortfolioPosition) ProtoMessage() {}
 
 func (x *PortfolioPosition) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[15]
+	mi := &file_account_v1_account_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1015,7 +1463,7 @@ func (x *PortfolioPosition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PortfolioPosition.ProtoReflect.Descriptor instead.
 func (*PortfolioPosition) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{15}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *PortfolioPosition) GetKey() string {
@@ -1177,7 +1625,7 @@ type TradingAccountSnapshot struct {
 
 func (x *TradingAccountSnapshot) Reset() {
 	*x = TradingAccountSnapshot{}
-	mi := &file_account_v1_account_proto_msgTypes[16]
+	mi := &file_account_v1_account_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1189,7 +1637,7 @@ func (x *TradingAccountSnapshot) String() string {
 func (*TradingAccountSnapshot) ProtoMessage() {}
 
 func (x *TradingAccountSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[16]
+	mi := &file_account_v1_account_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1202,7 +1650,7 @@ func (x *TradingAccountSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TradingAccountSnapshot.ProtoReflect.Descriptor instead.
 func (*TradingAccountSnapshot) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{16}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *TradingAccountSnapshot) GetTradingAccountId() int64 {
@@ -1286,13 +1734,14 @@ type GetTradingAccountSnapshotRequest struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Token            string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
 	TradingAccountId int64                  `protobuf:"varint,2,opt,name=trading_account_id,json=tradingAccountId,proto3" json:"trading_account_id,omitempty"`
+	CacheOnly        bool                   `protobuf:"varint,3,opt,name=cache_only,json=cacheOnly,proto3" json:"cache_only,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
 
 func (x *GetTradingAccountSnapshotRequest) Reset() {
 	*x = GetTradingAccountSnapshotRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[17]
+	mi := &file_account_v1_account_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1304,7 +1753,7 @@ func (x *GetTradingAccountSnapshotRequest) String() string {
 func (*GetTradingAccountSnapshotRequest) ProtoMessage() {}
 
 func (x *GetTradingAccountSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[17]
+	mi := &file_account_v1_account_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1317,7 +1766,7 @@ func (x *GetTradingAccountSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTradingAccountSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*GetTradingAccountSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{17}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *GetTradingAccountSnapshotRequest) GetToken() string {
@@ -1334,6 +1783,13 @@ func (x *GetTradingAccountSnapshotRequest) GetTradingAccountId() int64 {
 	return 0
 }
 
+func (x *GetTradingAccountSnapshotRequest) GetCacheOnly() bool {
+	if x != nil {
+		return x.CacheOnly
+	}
+	return false
+}
+
 type GetTradingAccountSnapshotResponse struct {
 	state         protoimpl.MessageState  `protogen:"open.v1"`
 	Snapshot      *TradingAccountSnapshot `protobuf:"bytes,1,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
@@ -1344,7 +1800,7 @@ type GetTradingAccountSnapshotResponse struct {
 
 func (x *GetTradingAccountSnapshotResponse) Reset() {
 	*x = GetTradingAccountSnapshotResponse{}
-	mi := &file_account_v1_account_proto_msgTypes[18]
+	mi := &file_account_v1_account_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1356,7 +1812,7 @@ func (x *GetTradingAccountSnapshotResponse) String() string {
 func (*GetTradingAccountSnapshotResponse) ProtoMessage() {}
 
 func (x *GetTradingAccountSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[18]
+	mi := &file_account_v1_account_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1369,7 +1825,7 @@ func (x *GetTradingAccountSnapshotResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use GetTradingAccountSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*GetTradingAccountSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{18}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *GetTradingAccountSnapshotResponse) GetSnapshot() *TradingAccountSnapshot {
@@ -1399,7 +1855,7 @@ type ProductGroupPosition struct {
 
 func (x *ProductGroupPosition) Reset() {
 	*x = ProductGroupPosition{}
-	mi := &file_account_v1_account_proto_msgTypes[19]
+	mi := &file_account_v1_account_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1411,7 +1867,7 @@ func (x *ProductGroupPosition) String() string {
 func (*ProductGroupPosition) ProtoMessage() {}
 
 func (x *ProductGroupPosition) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[19]
+	mi := &file_account_v1_account_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1424,7 +1880,7 @@ func (x *ProductGroupPosition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProductGroupPosition.ProtoReflect.Descriptor instead.
 func (*ProductGroupPosition) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{19}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ProductGroupPosition) GetSymbol() string {
@@ -1479,7 +1935,7 @@ type ProductGroupSnapshot struct {
 
 func (x *ProductGroupSnapshot) Reset() {
 	*x = ProductGroupSnapshot{}
-	mi := &file_account_v1_account_proto_msgTypes[20]
+	mi := &file_account_v1_account_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1491,7 +1947,7 @@ func (x *ProductGroupSnapshot) String() string {
 func (*ProductGroupSnapshot) ProtoMessage() {}
 
 func (x *ProductGroupSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[20]
+	mi := &file_account_v1_account_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1504,7 +1960,7 @@ func (x *ProductGroupSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProductGroupSnapshot.ProtoReflect.Descriptor instead.
 func (*ProductGroupSnapshot) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{20}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ProductGroupSnapshot) GetProductName() string {
@@ -1580,7 +2036,7 @@ type GetProductGroupSnapshotRequest struct {
 
 func (x *GetProductGroupSnapshotRequest) Reset() {
 	*x = GetProductGroupSnapshotRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[21]
+	mi := &file_account_v1_account_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1592,7 +2048,7 @@ func (x *GetProductGroupSnapshotRequest) String() string {
 func (*GetProductGroupSnapshotRequest) ProtoMessage() {}
 
 func (x *GetProductGroupSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[21]
+	mi := &file_account_v1_account_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1605,7 +2061,7 @@ func (x *GetProductGroupSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProductGroupSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*GetProductGroupSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{21}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetProductGroupSnapshotRequest) GetToken() string {
@@ -1632,7 +2088,7 @@ type GetProductGroupSnapshotResponse struct {
 
 func (x *GetProductGroupSnapshotResponse) Reset() {
 	*x = GetProductGroupSnapshotResponse{}
-	mi := &file_account_v1_account_proto_msgTypes[22]
+	mi := &file_account_v1_account_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1644,7 +2100,7 @@ func (x *GetProductGroupSnapshotResponse) String() string {
 func (*GetProductGroupSnapshotResponse) ProtoMessage() {}
 
 func (x *GetProductGroupSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[22]
+	mi := &file_account_v1_account_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1657,7 +2113,7 @@ func (x *GetProductGroupSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProductGroupSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*GetProductGroupSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{22}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *GetProductGroupSnapshotResponse) GetSnapshot() *ProductGroupSnapshot {
@@ -1685,7 +2141,7 @@ type GetProductAccountSnapshotsInternalRequest struct {
 
 func (x *GetProductAccountSnapshotsInternalRequest) Reset() {
 	*x = GetProductAccountSnapshotsInternalRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[23]
+	mi := &file_account_v1_account_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1697,7 +2153,7 @@ func (x *GetProductAccountSnapshotsInternalRequest) String() string {
 func (*GetProductAccountSnapshotsInternalRequest) ProtoMessage() {}
 
 func (x *GetProductAccountSnapshotsInternalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[23]
+	mi := &file_account_v1_account_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1710,7 +2166,7 @@ func (x *GetProductAccountSnapshotsInternalRequest) ProtoReflect() protoreflect.
 
 // Deprecated: Use GetProductAccountSnapshotsInternalRequest.ProtoReflect.Descriptor instead.
 func (*GetProductAccountSnapshotsInternalRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{23}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetProductAccountSnapshotsInternalRequest) GetServiceToken() string {
@@ -1745,7 +2201,7 @@ type GetProductAccountSnapshotsInternalResponse struct {
 
 func (x *GetProductAccountSnapshotsInternalResponse) Reset() {
 	*x = GetProductAccountSnapshotsInternalResponse{}
-	mi := &file_account_v1_account_proto_msgTypes[24]
+	mi := &file_account_v1_account_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1757,7 +2213,7 @@ func (x *GetProductAccountSnapshotsInternalResponse) String() string {
 func (*GetProductAccountSnapshotsInternalResponse) ProtoMessage() {}
 
 func (x *GetProductAccountSnapshotsInternalResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[24]
+	mi := &file_account_v1_account_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1770,7 +2226,7 @@ func (x *GetProductAccountSnapshotsInternalResponse) ProtoReflect() protoreflect
 
 // Deprecated: Use GetProductAccountSnapshotsInternalResponse.ProtoReflect.Descriptor instead.
 func (*GetProductAccountSnapshotsInternalResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{24}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetProductAccountSnapshotsInternalResponse) GetSnapshots() []*TradingAccountSnapshot {
@@ -1806,7 +2262,7 @@ type SyncProductTradeFillsInternalRequest struct {
 
 func (x *SyncProductTradeFillsInternalRequest) Reset() {
 	*x = SyncProductTradeFillsInternalRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[25]
+	mi := &file_account_v1_account_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1818,7 +2274,7 @@ func (x *SyncProductTradeFillsInternalRequest) String() string {
 func (*SyncProductTradeFillsInternalRequest) ProtoMessage() {}
 
 func (x *SyncProductTradeFillsInternalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[25]
+	mi := &file_account_v1_account_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1831,7 +2287,7 @@ func (x *SyncProductTradeFillsInternalRequest) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use SyncProductTradeFillsInternalRequest.ProtoReflect.Descriptor instead.
 func (*SyncProductTradeFillsInternalRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{25}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SyncProductTradeFillsInternalRequest) GetServiceToken() string {
@@ -1875,7 +2331,7 @@ type TradeFillSyncResult struct {
 
 func (x *TradeFillSyncResult) Reset() {
 	*x = TradeFillSyncResult{}
-	mi := &file_account_v1_account_proto_msgTypes[26]
+	mi := &file_account_v1_account_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1887,7 +2343,7 @@ func (x *TradeFillSyncResult) String() string {
 func (*TradeFillSyncResult) ProtoMessage() {}
 
 func (x *TradeFillSyncResult) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[26]
+	mi := &file_account_v1_account_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1900,7 +2356,7 @@ func (x *TradeFillSyncResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TradeFillSyncResult.ProtoReflect.Descriptor instead.
 func (*TradeFillSyncResult) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{26}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *TradeFillSyncResult) GetTradingAccountId() int64 {
@@ -1948,7 +2404,7 @@ type SyncProductTradeFillsInternalResponse struct {
 
 func (x *SyncProductTradeFillsInternalResponse) Reset() {
 	*x = SyncProductTradeFillsInternalResponse{}
-	mi := &file_account_v1_account_proto_msgTypes[27]
+	mi := &file_account_v1_account_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1960,7 +2416,7 @@ func (x *SyncProductTradeFillsInternalResponse) String() string {
 func (*SyncProductTradeFillsInternalResponse) ProtoMessage() {}
 
 func (x *SyncProductTradeFillsInternalResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[27]
+	mi := &file_account_v1_account_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1973,7 +2429,7 @@ func (x *SyncProductTradeFillsInternalResponse) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use SyncProductTradeFillsInternalResponse.ProtoReflect.Descriptor instead.
 func (*SyncProductTradeFillsInternalResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{27}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *SyncProductTradeFillsInternalResponse) GetResults() []*TradeFillSyncResult {
@@ -2000,7 +2456,7 @@ type GetTradingCredentialsRequest struct {
 
 func (x *GetTradingCredentialsRequest) Reset() {
 	*x = GetTradingCredentialsRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[28]
+	mi := &file_account_v1_account_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2012,7 +2468,7 @@ func (x *GetTradingCredentialsRequest) String() string {
 func (*GetTradingCredentialsRequest) ProtoMessage() {}
 
 func (x *GetTradingCredentialsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[28]
+	mi := &file_account_v1_account_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2025,7 +2481,7 @@ func (x *GetTradingCredentialsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTradingCredentialsRequest.ProtoReflect.Descriptor instead.
 func (*GetTradingCredentialsRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{28}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *GetTradingCredentialsRequest) GetToken() string {
@@ -2053,7 +2509,7 @@ type GetTradingCredentialsInternalRequest struct {
 
 func (x *GetTradingCredentialsInternalRequest) Reset() {
 	*x = GetTradingCredentialsInternalRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[29]
+	mi := &file_account_v1_account_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2065,7 +2521,7 @@ func (x *GetTradingCredentialsInternalRequest) String() string {
 func (*GetTradingCredentialsInternalRequest) ProtoMessage() {}
 
 func (x *GetTradingCredentialsInternalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[29]
+	mi := &file_account_v1_account_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2078,7 +2534,7 @@ func (x *GetTradingCredentialsInternalRequest) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use GetTradingCredentialsInternalRequest.ProtoReflect.Descriptor instead.
 func (*GetTradingCredentialsInternalRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{29}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *GetTradingCredentialsInternalRequest) GetServiceToken() string {
@@ -2111,13 +2567,18 @@ type GetTradingCredentialsResponse struct {
 	ApiKey           string                 `protobuf:"bytes,5,opt,name=api_key,json=apiKey,proto3" json:"api_key,omitempty"`
 	ApiSecret        string                 `protobuf:"bytes,6,opt,name=api_secret,json=apiSecret,proto3" json:"api_secret,omitempty"`
 	Passphrase       string                 `protobuf:"bytes,7,opt,name=passphrase,proto3" json:"passphrase,omitempty"`
+	CredentialKind   string                 `protobuf:"bytes,8,opt,name=credential_kind,json=credentialKind,proto3" json:"credential_kind,omitempty"`
+	SigningAddress   string                 `protobuf:"bytes,9,opt,name=signing_address,json=signingAddress,proto3" json:"signing_address,omitempty"`
+	VaultAddress     string                 `protobuf:"bytes,10,opt,name=vault_address,json=vaultAddress,proto3" json:"vault_address,omitempty"`
+	AccountIndex     *int64                 `protobuf:"varint,11,opt,name=account_index,json=accountIndex,proto3,oneof" json:"account_index,omitempty"`
+	ApiKeyIndex      *int32                 `protobuf:"varint,12,opt,name=api_key_index,json=apiKeyIndex,proto3,oneof" json:"api_key_index,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
 
 func (x *GetTradingCredentialsResponse) Reset() {
 	*x = GetTradingCredentialsResponse{}
-	mi := &file_account_v1_account_proto_msgTypes[30]
+	mi := &file_account_v1_account_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2129,7 +2590,7 @@ func (x *GetTradingCredentialsResponse) String() string {
 func (*GetTradingCredentialsResponse) ProtoMessage() {}
 
 func (x *GetTradingCredentialsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[30]
+	mi := &file_account_v1_account_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2142,7 +2603,7 @@ func (x *GetTradingCredentialsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTradingCredentialsResponse.ProtoReflect.Descriptor instead.
 func (*GetTradingCredentialsResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{30}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *GetTradingCredentialsResponse) GetTradingAccountId() int64 {
@@ -2194,6 +2655,361 @@ func (x *GetTradingCredentialsResponse) GetPassphrase() string {
 	return ""
 }
 
+func (x *GetTradingCredentialsResponse) GetCredentialKind() string {
+	if x != nil {
+		return x.CredentialKind
+	}
+	return ""
+}
+
+func (x *GetTradingCredentialsResponse) GetSigningAddress() string {
+	if x != nil {
+		return x.SigningAddress
+	}
+	return ""
+}
+
+func (x *GetTradingCredentialsResponse) GetVaultAddress() string {
+	if x != nil {
+		return x.VaultAddress
+	}
+	return ""
+}
+
+func (x *GetTradingCredentialsResponse) GetAccountIndex() int64 {
+	if x != nil && x.AccountIndex != nil {
+		return *x.AccountIndex
+	}
+	return 0
+}
+
+func (x *GetTradingCredentialsResponse) GetApiKeyIndex() int32 {
+	if x != nil && x.ApiKeyIndex != nil {
+		return *x.ApiKeyIndex
+	}
+	return 0
+}
+
+type GetTradingAccountMetaRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Token            string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	TradingAccountId int64                  `protobuf:"varint,2,opt,name=trading_account_id,json=tradingAccountId,proto3" json:"trading_account_id,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *GetTradingAccountMetaRequest) Reset() {
+	*x = GetTradingAccountMetaRequest{}
+	mi := &file_account_v1_account_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetTradingAccountMetaRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetTradingAccountMetaRequest) ProtoMessage() {}
+
+func (x *GetTradingAccountMetaRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetTradingAccountMetaRequest.ProtoReflect.Descriptor instead.
+func (*GetTradingAccountMetaRequest) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *GetTradingAccountMetaRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *GetTradingAccountMetaRequest) GetTradingAccountId() int64 {
+	if x != nil {
+		return x.TradingAccountId
+	}
+	return 0
+}
+
+type GetTradingAccountMetaResponse struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	TradingAccountId int64                  `protobuf:"varint,1,opt,name=trading_account_id,json=tradingAccountId,proto3" json:"trading_account_id,omitempty"`
+	ProductName      string                 `protobuf:"bytes,2,opt,name=product_name,json=productName,proto3" json:"product_name,omitempty"`
+	Exchange         string                 `protobuf:"bytes,3,opt,name=exchange,proto3" json:"exchange,omitempty"`
+	AccountName      string                 `protobuf:"bytes,4,opt,name=account_name,json=accountName,proto3" json:"account_name,omitempty"`
+	CredentialKind   string                 `protobuf:"bytes,5,opt,name=credential_kind,json=credentialKind,proto3" json:"credential_kind,omitempty"`
+	AccountIndex     *int64                 `protobuf:"varint,6,opt,name=account_index,json=accountIndex,proto3,oneof" json:"account_index,omitempty"`
+	ApiKeyIndex      *int32                 `protobuf:"varint,7,opt,name=api_key_index,json=apiKeyIndex,proto3,oneof" json:"api_key_index,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *GetTradingAccountMetaResponse) Reset() {
+	*x = GetTradingAccountMetaResponse{}
+	mi := &file_account_v1_account_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetTradingAccountMetaResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetTradingAccountMetaResponse) ProtoMessage() {}
+
+func (x *GetTradingAccountMetaResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetTradingAccountMetaResponse.ProtoReflect.Descriptor instead.
+func (*GetTradingAccountMetaResponse) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *GetTradingAccountMetaResponse) GetTradingAccountId() int64 {
+	if x != nil {
+		return x.TradingAccountId
+	}
+	return 0
+}
+
+func (x *GetTradingAccountMetaResponse) GetProductName() string {
+	if x != nil {
+		return x.ProductName
+	}
+	return ""
+}
+
+func (x *GetTradingAccountMetaResponse) GetExchange() string {
+	if x != nil {
+		return x.Exchange
+	}
+	return ""
+}
+
+func (x *GetTradingAccountMetaResponse) GetAccountName() string {
+	if x != nil {
+		return x.AccountName
+	}
+	return ""
+}
+
+func (x *GetTradingAccountMetaResponse) GetCredentialKind() string {
+	if x != nil {
+		return x.CredentialKind
+	}
+	return ""
+}
+
+func (x *GetTradingAccountMetaResponse) GetAccountIndex() int64 {
+	if x != nil && x.AccountIndex != nil {
+		return *x.AccountIndex
+	}
+	return 0
+}
+
+func (x *GetTradingAccountMetaResponse) GetApiKeyIndex() int32 {
+	if x != nil && x.ApiKeyIndex != nil {
+		return *x.ApiKeyIndex
+	}
+	return 0
+}
+
+type InspectTradingReadinessRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Token            string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	TradingAccountId int64                  `protobuf:"varint,2,opt,name=trading_account_id,json=tradingAccountId,proto3" json:"trading_account_id,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *InspectTradingReadinessRequest) Reset() {
+	*x = InspectTradingReadinessRequest{}
+	mi := &file_account_v1_account_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InspectTradingReadinessRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InspectTradingReadinessRequest) ProtoMessage() {}
+
+func (x *InspectTradingReadinessRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InspectTradingReadinessRequest.ProtoReflect.Descriptor instead.
+func (*InspectTradingReadinessRequest) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *InspectTradingReadinessRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *InspectTradingReadinessRequest) GetTradingAccountId() int64 {
+	if x != nil {
+		return x.TradingAccountId
+	}
+	return 0
+}
+
+type InspectTradingReadinessResponse struct {
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	TradingAccountId         int64                  `protobuf:"varint,1,opt,name=trading_account_id,json=tradingAccountId,proto3" json:"trading_account_id,omitempty"`
+	Exchange                 string                 `protobuf:"bytes,2,opt,name=exchange,proto3" json:"exchange,omitempty"`
+	CredentialsPresent       bool                   `protobuf:"varint,3,opt,name=credentials_present,json=credentialsPresent,proto3" json:"credentials_present,omitempty"`
+	CredentialsVerified      bool                   `protobuf:"varint,4,opt,name=credentials_verified,json=credentialsVerified,proto3" json:"credentials_verified,omitempty"`
+	TradingMode              string                 `protobuf:"bytes,5,opt,name=trading_mode,json=tradingMode,proto3" json:"trading_mode,omitempty"`
+	TradingReady             bool                   `protobuf:"varint,6,opt,name=trading_ready,json=tradingReady,proto3" json:"trading_ready,omitempty"`
+	TradingStatus            string                 `protobuf:"bytes,7,opt,name=trading_status,json=tradingStatus,proto3" json:"trading_status,omitempty"`
+	TradingUnavailableCode   string                 `protobuf:"bytes,8,opt,name=trading_unavailable_code,json=tradingUnavailableCode,proto3" json:"trading_unavailable_code,omitempty"`
+	TradingUnavailableReason string                 `protobuf:"bytes,9,opt,name=trading_unavailable_reason,json=tradingUnavailableReason,proto3" json:"trading_unavailable_reason,omitempty"`
+	ResolvedAccountIndex     *int64                 `protobuf:"varint,10,opt,name=resolved_account_index,json=resolvedAccountIndex,proto3,oneof" json:"resolved_account_index,omitempty"`
+	ResolvedApiKeyIndex      *int32                 `protobuf:"varint,11,opt,name=resolved_api_key_index,json=resolvedApiKeyIndex,proto3,oneof" json:"resolved_api_key_index,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
+}
+
+func (x *InspectTradingReadinessResponse) Reset() {
+	*x = InspectTradingReadinessResponse{}
+	mi := &file_account_v1_account_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InspectTradingReadinessResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InspectTradingReadinessResponse) ProtoMessage() {}
+
+func (x *InspectTradingReadinessResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InspectTradingReadinessResponse.ProtoReflect.Descriptor instead.
+func (*InspectTradingReadinessResponse) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *InspectTradingReadinessResponse) GetTradingAccountId() int64 {
+	if x != nil {
+		return x.TradingAccountId
+	}
+	return 0
+}
+
+func (x *InspectTradingReadinessResponse) GetExchange() string {
+	if x != nil {
+		return x.Exchange
+	}
+	return ""
+}
+
+func (x *InspectTradingReadinessResponse) GetCredentialsPresent() bool {
+	if x != nil {
+		return x.CredentialsPresent
+	}
+	return false
+}
+
+func (x *InspectTradingReadinessResponse) GetCredentialsVerified() bool {
+	if x != nil {
+		return x.CredentialsVerified
+	}
+	return false
+}
+
+func (x *InspectTradingReadinessResponse) GetTradingMode() string {
+	if x != nil {
+		return x.TradingMode
+	}
+	return ""
+}
+
+func (x *InspectTradingReadinessResponse) GetTradingReady() bool {
+	if x != nil {
+		return x.TradingReady
+	}
+	return false
+}
+
+func (x *InspectTradingReadinessResponse) GetTradingStatus() string {
+	if x != nil {
+		return x.TradingStatus
+	}
+	return ""
+}
+
+func (x *InspectTradingReadinessResponse) GetTradingUnavailableCode() string {
+	if x != nil {
+		return x.TradingUnavailableCode
+	}
+	return ""
+}
+
+func (x *InspectTradingReadinessResponse) GetTradingUnavailableReason() string {
+	if x != nil {
+		return x.TradingUnavailableReason
+	}
+	return ""
+}
+
+func (x *InspectTradingReadinessResponse) GetResolvedAccountIndex() int64 {
+	if x != nil && x.ResolvedAccountIndex != nil {
+		return *x.ResolvedAccountIndex
+	}
+	return 0
+}
+
+func (x *InspectTradingReadinessResponse) GetResolvedApiKeyIndex() int32 {
+	if x != nil && x.ResolvedApiKeyIndex != nil {
+		return *x.ResolvedApiKeyIndex
+	}
+	return 0
+}
+
 type AICredential struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Provider      string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
@@ -2209,7 +3025,7 @@ type AICredential struct {
 
 func (x *AICredential) Reset() {
 	*x = AICredential{}
-	mi := &file_account_v1_account_proto_msgTypes[31]
+	mi := &file_account_v1_account_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2221,7 +3037,7 @@ func (x *AICredential) String() string {
 func (*AICredential) ProtoMessage() {}
 
 func (x *AICredential) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[31]
+	mi := &file_account_v1_account_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2234,7 +3050,7 @@ func (x *AICredential) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AICredential.ProtoReflect.Descriptor instead.
 func (*AICredential) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{31}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *AICredential) GetProvider() string {
@@ -2296,7 +3112,7 @@ type GetAICredentialRequest struct {
 
 func (x *GetAICredentialRequest) Reset() {
 	*x = GetAICredentialRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[32]
+	mi := &file_account_v1_account_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2308,7 +3124,7 @@ func (x *GetAICredentialRequest) String() string {
 func (*GetAICredentialRequest) ProtoMessage() {}
 
 func (x *GetAICredentialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[32]
+	mi := &file_account_v1_account_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2321,7 +3137,7 @@ func (x *GetAICredentialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAICredentialRequest.ProtoReflect.Descriptor instead.
 func (*GetAICredentialRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{32}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *GetAICredentialRequest) GetToken() string {
@@ -2349,7 +3165,7 @@ type UpsertAICredentialRequest struct {
 
 func (x *UpsertAICredentialRequest) Reset() {
 	*x = UpsertAICredentialRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[33]
+	mi := &file_account_v1_account_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2361,7 +3177,7 @@ func (x *UpsertAICredentialRequest) String() string {
 func (*UpsertAICredentialRequest) ProtoMessage() {}
 
 func (x *UpsertAICredentialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[33]
+	mi := &file_account_v1_account_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2374,7 +3190,7 @@ func (x *UpsertAICredentialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertAICredentialRequest.ProtoReflect.Descriptor instead.
 func (*UpsertAICredentialRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{33}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *UpsertAICredentialRequest) GetToken() string {
@@ -2408,7 +3224,7 @@ type DeleteAICredentialRequest struct {
 
 func (x *DeleteAICredentialRequest) Reset() {
 	*x = DeleteAICredentialRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[34]
+	mi := &file_account_v1_account_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2420,7 +3236,7 @@ func (x *DeleteAICredentialRequest) String() string {
 func (*DeleteAICredentialRequest) ProtoMessage() {}
 
 func (x *DeleteAICredentialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[34]
+	mi := &file_account_v1_account_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2433,7 +3249,7 @@ func (x *DeleteAICredentialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteAICredentialRequest.ProtoReflect.Descriptor instead.
 func (*DeleteAICredentialRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{34}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *DeleteAICredentialRequest) GetToken() string {
@@ -2458,7 +3274,7 @@ type DeleteAICredentialResponse struct {
 
 func (x *DeleteAICredentialResponse) Reset() {
 	*x = DeleteAICredentialResponse{}
-	mi := &file_account_v1_account_proto_msgTypes[35]
+	mi := &file_account_v1_account_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2470,7 +3286,7 @@ func (x *DeleteAICredentialResponse) String() string {
 func (*DeleteAICredentialResponse) ProtoMessage() {}
 
 func (x *DeleteAICredentialResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[35]
+	mi := &file_account_v1_account_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2483,7 +3299,7 @@ func (x *DeleteAICredentialResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteAICredentialResponse.ProtoReflect.Descriptor instead.
 func (*DeleteAICredentialResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{35}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{43}
 }
 
 type AICredentialResponse struct {
@@ -2495,7 +3311,7 @@ type AICredentialResponse struct {
 
 func (x *AICredentialResponse) Reset() {
 	*x = AICredentialResponse{}
-	mi := &file_account_v1_account_proto_msgTypes[36]
+	mi := &file_account_v1_account_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2507,7 +3323,7 @@ func (x *AICredentialResponse) String() string {
 func (*AICredentialResponse) ProtoMessage() {}
 
 func (x *AICredentialResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[36]
+	mi := &file_account_v1_account_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2520,7 +3336,7 @@ func (x *AICredentialResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AICredentialResponse.ProtoReflect.Descriptor instead.
 func (*AICredentialResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{36}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *AICredentialResponse) GetCredential() *AICredential {
@@ -2540,7 +3356,7 @@ type AICredentialSecretResponse struct {
 
 func (x *AICredentialSecretResponse) Reset() {
 	*x = AICredentialSecretResponse{}
-	mi := &file_account_v1_account_proto_msgTypes[37]
+	mi := &file_account_v1_account_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2552,7 +3368,7 @@ func (x *AICredentialSecretResponse) String() string {
 func (*AICredentialSecretResponse) ProtoMessage() {}
 
 func (x *AICredentialSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[37]
+	mi := &file_account_v1_account_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2565,7 +3381,7 @@ func (x *AICredentialSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AICredentialSecretResponse.ProtoReflect.Descriptor instead.
 func (*AICredentialSecretResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{37}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *AICredentialSecretResponse) GetProvider() string {
@@ -2594,7 +3410,7 @@ type UpdateAICredentialStatusRequest struct {
 
 func (x *UpdateAICredentialStatusRequest) Reset() {
 	*x = UpdateAICredentialStatusRequest{}
-	mi := &file_account_v1_account_proto_msgTypes[38]
+	mi := &file_account_v1_account_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2606,7 +3422,7 @@ func (x *UpdateAICredentialStatusRequest) String() string {
 func (*UpdateAICredentialStatusRequest) ProtoMessage() {}
 
 func (x *UpdateAICredentialStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_account_proto_msgTypes[38]
+	mi := &file_account_v1_account_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2619,7 +3435,7 @@ func (x *UpdateAICredentialStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateAICredentialStatusRequest.ProtoReflect.Descriptor instead.
 func (*UpdateAICredentialStatusRequest) Descriptor() ([]byte, []int) {
-	return file_account_v1_account_proto_rawDescGZIP(), []int{38}
+	return file_account_v1_account_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *UpdateAICredentialStatusRequest) GetToken() string {
@@ -2671,7 +3487,8 @@ const file_account_v1_account_proto_rawDesc = "" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
 	"\n" +
 	"permission\x18\x02 \x01(\tR\n" +
-	"permission\"\xb4\x03\n" +
+	"permission\"\x9b\n" +
+	"\n" +
 	"\x0eTradingAccount\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12!\n" +
 	"\fproduct_name\x18\x02 \x01(\tR\vproductName\x12\x1a\n" +
@@ -2687,11 +3504,51 @@ const file_account_v1_account_proto_rawDesc = "" +
 	"\vwallet_type\x18\n" +
 	" \x01(\tR\n" +
 	"walletType\x12%\n" +
-	"\x0ebinding_status\x18\v \x01(\tR\rbindingStatus\"2\n" +
+	"\x0ebinding_status\x18\v \x01(\tR\rbindingStatus\x12/\n" +
+	"\x13credentials_present\x18\f \x01(\bR\x12credentialsPresent\x121\n" +
+	"\x14credentials_verified\x18\r \x01(\bR\x13credentialsVerified\x12!\n" +
+	"\ftrading_mode\x18\x0e \x01(\tR\vtradingMode\x12#\n" +
+	"\rtrading_ready\x18\x0f \x01(\bR\ftradingReady\x12%\n" +
+	"\x0etrading_status\x18\x10 \x01(\tR\rtradingStatus\x128\n" +
+	"\x18trading_unavailable_code\x18\x11 \x01(\tR\x16tradingUnavailableCode\x12<\n" +
+	"\x1atrading_unavailable_reason\x18\x12 \x01(\tR\x18tradingUnavailableReason\x129\n" +
+	"\x16resolved_account_index\x18\x13 \x01(\x03H\x00R\x14resolvedAccountIndex\x88\x01\x01\x128\n" +
+	"\x16resolved_api_key_index\x18\x14 \x01(\x05H\x01R\x13resolvedApiKeyIndex\x88\x01\x01\x124\n" +
+	"\bspot_fee\x18\x15 \x01(\v2\x19.account.v1.MarketFeeRateR\aspotFee\x12<\n" +
+	"\fcontract_fee\x18\x16 \x01(\v2\x19.account.v1.MarketFeeRateR\vcontractFee\x12\x1d\n" +
+	"\n" +
+	"fee_source\x18\x17 \x01(\tR\tfeeSource\x12@\n" +
+	"\x0efee_updated_at\x18\x18 \x01(\v2\x1a.google.protobuf.TimestampR\ffeeUpdatedAt\x12&\n" +
+	"\x0ffee_sync_status\x18\x19 \x01(\tR\rfeeSyncStatus\x12$\n" +
+	"\x0efee_sync_error\x18\x1a \x01(\tR\ffeeSyncError\x12\x1b\n" +
+	"\tfee_stale\x18\x1b \x01(\bR\bfeeStale\x12/\n" +
+	"\x13unsupported_markets\x18\x1c \x03(\tR\x12unsupportedMarketsB\x19\n" +
+	"\x17_resolved_account_indexB\x19\n" +
+	"\x17_resolved_api_key_index\"S\n" +
+	"\rMarketFeeRate\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\x12\x14\n" +
+	"\x05maker\x18\x02 \x01(\tR\x05maker\x12\x14\n" +
+	"\x05taker\x18\x03 \x01(\tR\x05taker\"H\n" +
+	" GetTradingAccountFeeRatesRequest\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\x03R\x02id\"I\n" +
+	"!SyncTradingAccountFeeRatesRequest\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\x03R\x02id\"\x94\x03\n" +
+	"!GetTradingAccountFeeRatesResponse\x124\n" +
+	"\bspot_fee\x18\x01 \x01(\v2\x19.account.v1.MarketFeeRateR\aspotFee\x12<\n" +
+	"\fcontract_fee\x18\x02 \x01(\v2\x19.account.v1.MarketFeeRateR\vcontractFee\x12\x1d\n" +
+	"\n" +
+	"fee_source\x18\x03 \x01(\tR\tfeeSource\x12@\n" +
+	"\x0efee_updated_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\ffeeUpdatedAt\x12&\n" +
+	"\x0ffee_sync_status\x18\x05 \x01(\tR\rfeeSyncStatus\x12$\n" +
+	"\x0efee_sync_error\x18\x06 \x01(\tR\ffeeSyncError\x12\x1b\n" +
+	"\tfee_stale\x18\a \x01(\bR\bfeeStale\x12/\n" +
+	"\x13unsupported_markets\x18\b \x03(\tR\x12unsupportedMarkets\"2\n" +
 	"\x1aListTradingAccountsRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\"O\n" +
 	"\x1bListTradingAccountsResponse\x120\n" +
-	"\x05items\x18\x01 \x03(\v2\x1a.account.v1.TradingAccountR\x05items\"\xed\x01\n" +
+	"\x05items\x18\x01 \x03(\v2\x1a.account.v1.TradingAccountR\x05items\"\x88\x04\n" +
 	"\x1bCreateTradingAccountRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12!\n" +
 	"\fproduct_name\x18\x02 \x01(\tR\vproductName\x12\x1a\n" +
@@ -2702,7 +3559,16 @@ const file_account_v1_account_proto_rawDesc = "" +
 	"api_secret\x18\x06 \x01(\tR\tapiSecret\x12\x1e\n" +
 	"\n" +
 	"passphrase\x18\a \x01(\tR\n" +
-	"passphrase\"T\n" +
+	"passphrase\x12&\n" +
+	"\x0ftrading_api_key\x18\b \x01(\tR\rtradingApiKey\x12,\n" +
+	"\x12trading_api_secret\x18\t \x01(\tR\x10tradingApiSecret\x12'\n" +
+	"\x0fsigning_address\x18\n" +
+	" \x01(\tR\x0esigningAddress\x12#\n" +
+	"\rvault_address\x18\v \x01(\tR\fvaultAddress\x12(\n" +
+	"\raccount_index\x18\f \x01(\x03H\x00R\faccountIndex\x88\x01\x01\x12'\n" +
+	"\rapi_key_index\x18\r \x01(\x05H\x01R\vapiKeyIndex\x88\x01\x01B\x10\n" +
+	"\x0e_account_indexB\x10\n" +
+	"\x0e_api_key_index\"T\n" +
 	"\x1cCreateTradingAccountResponse\x124\n" +
 	"\aaccount\x18\x01 \x01(\v2\x1a.account.v1.TradingAccountR\aaccount\"\xec\x01\n" +
 	"%CreatePolymarketTradingAccountRequest\x12\x14\n" +
@@ -2777,10 +3643,12 @@ const file_account_v1_account_proto_rawDesc = "" +
 	"\n" +
 	"last_error\x18\n" +
 	" \x01(\tR\tlastError\x12,\n" +
-	"\x12account_equity_usd\x18\v \x01(\tR\x10accountEquityUsd\"f\n" +
+	"\x12account_equity_usd\x18\v \x01(\tR\x10accountEquityUsd\"\x85\x01\n" +
 	" GetTradingAccountSnapshotRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12,\n" +
-	"\x12trading_account_id\x18\x02 \x01(\x03R\x10tradingAccountId\"\xa0\x01\n" +
+	"\x12trading_account_id\x18\x02 \x01(\x03R\x10tradingAccountId\x12\x1d\n" +
+	"\n" +
+	"cache_only\x18\x03 \x01(\bR\tcacheOnly\"\xa0\x01\n" +
 	"!GetTradingAccountSnapshotResponse\x12>\n" +
 	"\bsnapshot\x18\x01 \x01(\v2\".account.v1.TradingAccountSnapshotR\bsnapshot\x12;\n" +
 	"\vserver_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
@@ -2838,7 +3706,7 @@ const file_account_v1_account_proto_rawDesc = "" +
 	"$GetTradingCredentialsInternalRequest\x12#\n" +
 	"\rservice_token\x18\x01 \x01(\tR\fserviceToken\x12%\n" +
 	"\x0eowner_username\x18\x02 \x01(\tR\rownerUsername\x12,\n" +
-	"\x12trading_account_id\x18\x03 \x01(\x03R\x10tradingAccountId\"\x87\x02\n" +
+	"\x12trading_account_id\x18\x03 \x01(\x03R\x10tradingAccountId\"\xf5\x03\n" +
 	"\x1dGetTradingCredentialsResponse\x12,\n" +
 	"\x12trading_account_id\x18\x01 \x01(\x03R\x10tradingAccountId\x12!\n" +
 	"\fproduct_name\x18\x02 \x01(\tR\vproductName\x12\x1a\n" +
@@ -2849,7 +3717,46 @@ const file_account_v1_account_proto_rawDesc = "" +
 	"api_secret\x18\x06 \x01(\tR\tapiSecret\x12\x1e\n" +
 	"\n" +
 	"passphrase\x18\a \x01(\tR\n" +
-	"passphrase\"\xbf\x02\n" +
+	"passphrase\x12'\n" +
+	"\x0fcredential_kind\x18\b \x01(\tR\x0ecredentialKind\x12'\n" +
+	"\x0fsigning_address\x18\t \x01(\tR\x0esigningAddress\x12#\n" +
+	"\rvault_address\x18\n" +
+	" \x01(\tR\fvaultAddress\x12(\n" +
+	"\raccount_index\x18\v \x01(\x03H\x00R\faccountIndex\x88\x01\x01\x12'\n" +
+	"\rapi_key_index\x18\f \x01(\x05H\x01R\vapiKeyIndex\x88\x01\x01B\x10\n" +
+	"\x0e_account_indexB\x10\n" +
+	"\x0e_api_key_index\"b\n" +
+	"\x1cGetTradingAccountMetaRequest\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12,\n" +
+	"\x12trading_account_id\x18\x02 \x01(\x03R\x10tradingAccountId\"\xcf\x02\n" +
+	"\x1dGetTradingAccountMetaResponse\x12,\n" +
+	"\x12trading_account_id\x18\x01 \x01(\x03R\x10tradingAccountId\x12!\n" +
+	"\fproduct_name\x18\x02 \x01(\tR\vproductName\x12\x1a\n" +
+	"\bexchange\x18\x03 \x01(\tR\bexchange\x12!\n" +
+	"\faccount_name\x18\x04 \x01(\tR\vaccountName\x12'\n" +
+	"\x0fcredential_kind\x18\x05 \x01(\tR\x0ecredentialKind\x12(\n" +
+	"\raccount_index\x18\x06 \x01(\x03H\x00R\faccountIndex\x88\x01\x01\x12'\n" +
+	"\rapi_key_index\x18\a \x01(\x05H\x01R\vapiKeyIndex\x88\x01\x01B\x10\n" +
+	"\x0e_account_indexB\x10\n" +
+	"\x0e_api_key_index\"d\n" +
+	"\x1eInspectTradingReadinessRequest\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12,\n" +
+	"\x12trading_account_id\x18\x02 \x01(\x03R\x10tradingAccountId\"\xe1\x04\n" +
+	"\x1fInspectTradingReadinessResponse\x12,\n" +
+	"\x12trading_account_id\x18\x01 \x01(\x03R\x10tradingAccountId\x12\x1a\n" +
+	"\bexchange\x18\x02 \x01(\tR\bexchange\x12/\n" +
+	"\x13credentials_present\x18\x03 \x01(\bR\x12credentialsPresent\x121\n" +
+	"\x14credentials_verified\x18\x04 \x01(\bR\x13credentialsVerified\x12!\n" +
+	"\ftrading_mode\x18\x05 \x01(\tR\vtradingMode\x12#\n" +
+	"\rtrading_ready\x18\x06 \x01(\bR\ftradingReady\x12%\n" +
+	"\x0etrading_status\x18\a \x01(\tR\rtradingStatus\x128\n" +
+	"\x18trading_unavailable_code\x18\b \x01(\tR\x16tradingUnavailableCode\x12<\n" +
+	"\x1atrading_unavailable_reason\x18\t \x01(\tR\x18tradingUnavailableReason\x129\n" +
+	"\x16resolved_account_index\x18\n" +
+	" \x01(\x03H\x00R\x14resolvedAccountIndex\x88\x01\x01\x128\n" +
+	"\x16resolved_api_key_index\x18\v \x01(\x05H\x01R\x13resolvedApiKeyIndex\x88\x01\x01B\x19\n" +
+	"\x17_resolved_account_indexB\x19\n" +
+	"\x17_resolved_api_key_index\"\xbf\x02\n" +
 	"\fAICredential\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12$\n" +
 	"\x0eapi_key_masked\x18\x02 \x01(\tR\fapiKeyMasked\x12\x16\n" +
@@ -2883,7 +3790,7 @@ const file_account_v1_account_proto_rawDesc = "" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12#\n" +
-	"\rerror_message\x18\x04 \x01(\tR\ferrorMessage2\xc2\x11\n" +
+	"\rerror_message\x18\x04 \x01(\tR\ferrorMessage2\x92\x16\n" +
 	"\x0eAccountService\x12<\n" +
 	"\x05Login\x12\x18.account.v1.LoginRequest\x1a\x19.account.v1.LoginResponse\x12Z\n" +
 	"\x0fValidateSession\x12\".account.v1.ValidateSessionRequest\x1a#.account.v1.ValidateSessionResponse\x12f\n" +
@@ -2892,19 +3799,24 @@ const file_account_v1_account_proto_rawDesc = "" +
 	"\x1eCreatePolymarketTradingAccount\x121.account.v1.CreatePolymarketTradingAccountRequest\x1a2.account.v1.CreatePolymarketTradingAccountResponse\x12u\n" +
 	"\x18GetPolymarketCredentials\x12+.account.v1.GetPolymarketCredentialsRequest\x1a,.account.v1.GetPolymarketCredentialsResponse\x12y\n" +
 	"\x1cRefreshPolymarketCredentials\x12+.account.v1.GetPolymarketCredentialsRequest\x1a,.account.v1.GetPolymarketCredentialsResponse\x12x\n" +
-	"\x1fInvalidatePolymarketCredentials\x12+.account.v1.GetPolymarketCredentialsRequest\x1a(.account.v1.DeleteTradingAccountResponse\x12i\n" +
+	"\x1fInvalidatePolymarketCredentials\x12+.account.v1.GetPolymarketCredentialsRequest\x1a(.account.v1.DeleteTradingAccountResponse\x12v\n" +
+	"\x1dActivatePolymarketCredentials\x12+.account.v1.GetPolymarketCredentialsRequest\x1a(.account.v1.DeleteTradingAccountResponse\x12i\n" +
 	"\x14DeleteTradingAccount\x12'.account.v1.DeleteTradingAccountRequest\x1a(.account.v1.DeleteTradingAccountResponse\x12x\n" +
 	"\x19GetTradingAccountSnapshot\x12,.account.v1.GetTradingAccountSnapshotRequest\x1a-.account.v1.GetTradingAccountSnapshotResponse\x12r\n" +
 	"\x17GetProductGroupSnapshot\x12*.account.v1.GetProductGroupSnapshotRequest\x1a+.account.v1.GetProductGroupSnapshotResponse\x12\x93\x01\n" +
 	"\"GetProductAccountSnapshotsInternal\x125.account.v1.GetProductAccountSnapshotsInternalRequest\x1a6.account.v1.GetProductAccountSnapshotsInternalResponse\x12\x84\x01\n" +
 	"\x1dSyncProductTradeFillsInternal\x120.account.v1.SyncProductTradeFillsInternalRequest\x1a1.account.v1.SyncProductTradeFillsInternalResponse\x12l\n" +
 	"\x15GetTradingCredentials\x12(.account.v1.GetTradingCredentialsRequest\x1a).account.v1.GetTradingCredentialsResponse\x12|\n" +
-	"\x1dGetTradingCredentialsInternal\x120.account.v1.GetTradingCredentialsInternalRequest\x1a).account.v1.GetTradingCredentialsResponse\x12W\n" +
+	"\x1dGetTradingCredentialsInternal\x120.account.v1.GetTradingCredentialsInternalRequest\x1a).account.v1.GetTradingCredentialsResponse\x12l\n" +
+	"\x15GetTradingAccountMeta\x12(.account.v1.GetTradingAccountMetaRequest\x1a).account.v1.GetTradingAccountMetaResponse\x12r\n" +
+	"\x17InspectTradingReadiness\x12*.account.v1.InspectTradingReadinessRequest\x1a+.account.v1.InspectTradingReadinessResponse\x12W\n" +
 	"\x0fGetAICredential\x12\".account.v1.GetAICredentialRequest\x1a .account.v1.AICredentialResponse\x12]\n" +
 	"\x12UpsertAICredential\x12%.account.v1.UpsertAICredentialRequest\x1a .account.v1.AICredentialResponse\x12c\n" +
 	"\x12DeleteAICredential\x12%.account.v1.DeleteAICredentialRequest\x1a&.account.v1.DeleteAICredentialResponse\x12c\n" +
 	"\x15GetAICredentialSecret\x12\".account.v1.GetAICredentialRequest\x1a&.account.v1.AICredentialSecretResponse\x12i\n" +
-	"\x18UpdateAICredentialStatus\x12+.account.v1.UpdateAICredentialStatusRequest\x1a .account.v1.AICredentialResponseB,Z*selfquant/backend/gen/account/v1;accountv1b\x06proto3"
+	"\x18UpdateAICredentialStatus\x12+.account.v1.UpdateAICredentialStatusRequest\x1a .account.v1.AICredentialResponse\x12x\n" +
+	"\x19GetTradingAccountFeeRates\x12,.account.v1.GetTradingAccountFeeRatesRequest\x1a-.account.v1.GetTradingAccountFeeRatesResponse\x12z\n" +
+	"\x1aSyncTradingAccountFeeRates\x12-.account.v1.SyncTradingAccountFeeRatesRequest\x1a-.account.v1.GetTradingAccountFeeRatesResponseB,Z*selfquant/backend/gen/account/v1;accountv1b\x06proto3"
 
 var (
 	file_account_v1_account_proto_rawDescOnce sync.Once
@@ -2918,119 +3830,143 @@ func file_account_v1_account_proto_rawDescGZIP() []byte {
 	return file_account_v1_account_proto_rawDescData
 }
 
-var file_account_v1_account_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
+var file_account_v1_account_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
 var file_account_v1_account_proto_goTypes = []any{
 	(*LoginRequest)(nil),                               // 0: account.v1.LoginRequest
 	(*LoginResponse)(nil),                              // 1: account.v1.LoginResponse
 	(*ValidateSessionRequest)(nil),                     // 2: account.v1.ValidateSessionRequest
 	(*ValidateSessionResponse)(nil),                    // 3: account.v1.ValidateSessionResponse
 	(*TradingAccount)(nil),                             // 4: account.v1.TradingAccount
-	(*ListTradingAccountsRequest)(nil),                 // 5: account.v1.ListTradingAccountsRequest
-	(*ListTradingAccountsResponse)(nil),                // 6: account.v1.ListTradingAccountsResponse
-	(*CreateTradingAccountRequest)(nil),                // 7: account.v1.CreateTradingAccountRequest
-	(*CreateTradingAccountResponse)(nil),               // 8: account.v1.CreateTradingAccountResponse
-	(*CreatePolymarketTradingAccountRequest)(nil),      // 9: account.v1.CreatePolymarketTradingAccountRequest
-	(*CreatePolymarketTradingAccountResponse)(nil),     // 10: account.v1.CreatePolymarketTradingAccountResponse
-	(*GetPolymarketCredentialsRequest)(nil),            // 11: account.v1.GetPolymarketCredentialsRequest
-	(*GetPolymarketCredentialsResponse)(nil),           // 12: account.v1.GetPolymarketCredentialsResponse
-	(*DeleteTradingAccountRequest)(nil),                // 13: account.v1.DeleteTradingAccountRequest
-	(*DeleteTradingAccountResponse)(nil),               // 14: account.v1.DeleteTradingAccountResponse
-	(*PortfolioPosition)(nil),                          // 15: account.v1.PortfolioPosition
-	(*TradingAccountSnapshot)(nil),                     // 16: account.v1.TradingAccountSnapshot
-	(*GetTradingAccountSnapshotRequest)(nil),           // 17: account.v1.GetTradingAccountSnapshotRequest
-	(*GetTradingAccountSnapshotResponse)(nil),          // 18: account.v1.GetTradingAccountSnapshotResponse
-	(*ProductGroupPosition)(nil),                       // 19: account.v1.ProductGroupPosition
-	(*ProductGroupSnapshot)(nil),                       // 20: account.v1.ProductGroupSnapshot
-	(*GetProductGroupSnapshotRequest)(nil),             // 21: account.v1.GetProductGroupSnapshotRequest
-	(*GetProductGroupSnapshotResponse)(nil),            // 22: account.v1.GetProductGroupSnapshotResponse
-	(*GetProductAccountSnapshotsInternalRequest)(nil),  // 23: account.v1.GetProductAccountSnapshotsInternalRequest
-	(*GetProductAccountSnapshotsInternalResponse)(nil), // 24: account.v1.GetProductAccountSnapshotsInternalResponse
-	(*SyncProductTradeFillsInternalRequest)(nil),       // 25: account.v1.SyncProductTradeFillsInternalRequest
-	(*TradeFillSyncResult)(nil),                        // 26: account.v1.TradeFillSyncResult
-	(*SyncProductTradeFillsInternalResponse)(nil),      // 27: account.v1.SyncProductTradeFillsInternalResponse
-	(*GetTradingCredentialsRequest)(nil),               // 28: account.v1.GetTradingCredentialsRequest
-	(*GetTradingCredentialsInternalRequest)(nil),       // 29: account.v1.GetTradingCredentialsInternalRequest
-	(*GetTradingCredentialsResponse)(nil),              // 30: account.v1.GetTradingCredentialsResponse
-	(*AICredential)(nil),                               // 31: account.v1.AICredential
-	(*GetAICredentialRequest)(nil),                     // 32: account.v1.GetAICredentialRequest
-	(*UpsertAICredentialRequest)(nil),                  // 33: account.v1.UpsertAICredentialRequest
-	(*DeleteAICredentialRequest)(nil),                  // 34: account.v1.DeleteAICredentialRequest
-	(*DeleteAICredentialResponse)(nil),                 // 35: account.v1.DeleteAICredentialResponse
-	(*AICredentialResponse)(nil),                       // 36: account.v1.AICredentialResponse
-	(*AICredentialSecretResponse)(nil),                 // 37: account.v1.AICredentialSecretResponse
-	(*UpdateAICredentialStatusRequest)(nil),            // 38: account.v1.UpdateAICredentialStatusRequest
-	(*timestamppb.Timestamp)(nil),                      // 39: google.protobuf.Timestamp
+	(*MarketFeeRate)(nil),                              // 5: account.v1.MarketFeeRate
+	(*GetTradingAccountFeeRatesRequest)(nil),           // 6: account.v1.GetTradingAccountFeeRatesRequest
+	(*SyncTradingAccountFeeRatesRequest)(nil),          // 7: account.v1.SyncTradingAccountFeeRatesRequest
+	(*GetTradingAccountFeeRatesResponse)(nil),          // 8: account.v1.GetTradingAccountFeeRatesResponse
+	(*ListTradingAccountsRequest)(nil),                 // 9: account.v1.ListTradingAccountsRequest
+	(*ListTradingAccountsResponse)(nil),                // 10: account.v1.ListTradingAccountsResponse
+	(*CreateTradingAccountRequest)(nil),                // 11: account.v1.CreateTradingAccountRequest
+	(*CreateTradingAccountResponse)(nil),               // 12: account.v1.CreateTradingAccountResponse
+	(*CreatePolymarketTradingAccountRequest)(nil),      // 13: account.v1.CreatePolymarketTradingAccountRequest
+	(*CreatePolymarketTradingAccountResponse)(nil),     // 14: account.v1.CreatePolymarketTradingAccountResponse
+	(*GetPolymarketCredentialsRequest)(nil),            // 15: account.v1.GetPolymarketCredentialsRequest
+	(*GetPolymarketCredentialsResponse)(nil),           // 16: account.v1.GetPolymarketCredentialsResponse
+	(*DeleteTradingAccountRequest)(nil),                // 17: account.v1.DeleteTradingAccountRequest
+	(*DeleteTradingAccountResponse)(nil),               // 18: account.v1.DeleteTradingAccountResponse
+	(*PortfolioPosition)(nil),                          // 19: account.v1.PortfolioPosition
+	(*TradingAccountSnapshot)(nil),                     // 20: account.v1.TradingAccountSnapshot
+	(*GetTradingAccountSnapshotRequest)(nil),           // 21: account.v1.GetTradingAccountSnapshotRequest
+	(*GetTradingAccountSnapshotResponse)(nil),          // 22: account.v1.GetTradingAccountSnapshotResponse
+	(*ProductGroupPosition)(nil),                       // 23: account.v1.ProductGroupPosition
+	(*ProductGroupSnapshot)(nil),                       // 24: account.v1.ProductGroupSnapshot
+	(*GetProductGroupSnapshotRequest)(nil),             // 25: account.v1.GetProductGroupSnapshotRequest
+	(*GetProductGroupSnapshotResponse)(nil),            // 26: account.v1.GetProductGroupSnapshotResponse
+	(*GetProductAccountSnapshotsInternalRequest)(nil),  // 27: account.v1.GetProductAccountSnapshotsInternalRequest
+	(*GetProductAccountSnapshotsInternalResponse)(nil), // 28: account.v1.GetProductAccountSnapshotsInternalResponse
+	(*SyncProductTradeFillsInternalRequest)(nil),       // 29: account.v1.SyncProductTradeFillsInternalRequest
+	(*TradeFillSyncResult)(nil),                        // 30: account.v1.TradeFillSyncResult
+	(*SyncProductTradeFillsInternalResponse)(nil),      // 31: account.v1.SyncProductTradeFillsInternalResponse
+	(*GetTradingCredentialsRequest)(nil),               // 32: account.v1.GetTradingCredentialsRequest
+	(*GetTradingCredentialsInternalRequest)(nil),       // 33: account.v1.GetTradingCredentialsInternalRequest
+	(*GetTradingCredentialsResponse)(nil),              // 34: account.v1.GetTradingCredentialsResponse
+	(*GetTradingAccountMetaRequest)(nil),               // 35: account.v1.GetTradingAccountMetaRequest
+	(*GetTradingAccountMetaResponse)(nil),              // 36: account.v1.GetTradingAccountMetaResponse
+	(*InspectTradingReadinessRequest)(nil),             // 37: account.v1.InspectTradingReadinessRequest
+	(*InspectTradingReadinessResponse)(nil),            // 38: account.v1.InspectTradingReadinessResponse
+	(*AICredential)(nil),                               // 39: account.v1.AICredential
+	(*GetAICredentialRequest)(nil),                     // 40: account.v1.GetAICredentialRequest
+	(*UpsertAICredentialRequest)(nil),                  // 41: account.v1.UpsertAICredentialRequest
+	(*DeleteAICredentialRequest)(nil),                  // 42: account.v1.DeleteAICredentialRequest
+	(*DeleteAICredentialResponse)(nil),                 // 43: account.v1.DeleteAICredentialResponse
+	(*AICredentialResponse)(nil),                       // 44: account.v1.AICredentialResponse
+	(*AICredentialSecretResponse)(nil),                 // 45: account.v1.AICredentialSecretResponse
+	(*UpdateAICredentialStatusRequest)(nil),            // 46: account.v1.UpdateAICredentialStatusRequest
+	(*timestamppb.Timestamp)(nil),                      // 47: google.protobuf.Timestamp
 }
 var file_account_v1_account_proto_depIdxs = []int32{
-	39, // 0: account.v1.TradingAccount.created_at:type_name -> google.protobuf.Timestamp
-	39, // 1: account.v1.TradingAccount.updated_at:type_name -> google.protobuf.Timestamp
-	4,  // 2: account.v1.ListTradingAccountsResponse.items:type_name -> account.v1.TradingAccount
-	4,  // 3: account.v1.CreateTradingAccountResponse.account:type_name -> account.v1.TradingAccount
-	4,  // 4: account.v1.CreatePolymarketTradingAccountResponse.account:type_name -> account.v1.TradingAccount
-	39, // 5: account.v1.PortfolioPosition.end_time:type_name -> google.protobuf.Timestamp
-	15, // 6: account.v1.TradingAccountSnapshot.positions:type_name -> account.v1.PortfolioPosition
-	39, // 7: account.v1.TradingAccountSnapshot.source_updated_at:type_name -> google.protobuf.Timestamp
-	16, // 8: account.v1.GetTradingAccountSnapshotResponse.snapshot:type_name -> account.v1.TradingAccountSnapshot
-	39, // 9: account.v1.GetTradingAccountSnapshotResponse.server_time:type_name -> google.protobuf.Timestamp
-	19, // 10: account.v1.ProductGroupSnapshot.positions:type_name -> account.v1.ProductGroupPosition
-	39, // 11: account.v1.ProductGroupSnapshot.source_updated_at:type_name -> google.protobuf.Timestamp
-	20, // 12: account.v1.GetProductGroupSnapshotResponse.snapshot:type_name -> account.v1.ProductGroupSnapshot
-	39, // 13: account.v1.GetProductGroupSnapshotResponse.server_time:type_name -> google.protobuf.Timestamp
-	16, // 14: account.v1.GetProductAccountSnapshotsInternalResponse.snapshots:type_name -> account.v1.TradingAccountSnapshot
-	39, // 15: account.v1.GetProductAccountSnapshotsInternalResponse.server_time:type_name -> google.protobuf.Timestamp
-	39, // 16: account.v1.SyncProductTradeFillsInternalRequest.through_time:type_name -> google.protobuf.Timestamp
-	39, // 17: account.v1.TradeFillSyncResult.synced_through:type_name -> google.protobuf.Timestamp
-	26, // 18: account.v1.SyncProductTradeFillsInternalResponse.results:type_name -> account.v1.TradeFillSyncResult
-	39, // 19: account.v1.SyncProductTradeFillsInternalResponse.server_time:type_name -> google.protobuf.Timestamp
-	39, // 20: account.v1.AICredential.last_tested_at:type_name -> google.protobuf.Timestamp
-	39, // 21: account.v1.AICredential.created_at:type_name -> google.protobuf.Timestamp
-	39, // 22: account.v1.AICredential.updated_at:type_name -> google.protobuf.Timestamp
-	31, // 23: account.v1.AICredentialResponse.credential:type_name -> account.v1.AICredential
-	0,  // 24: account.v1.AccountService.Login:input_type -> account.v1.LoginRequest
-	2,  // 25: account.v1.AccountService.ValidateSession:input_type -> account.v1.ValidateSessionRequest
-	5,  // 26: account.v1.AccountService.ListTradingAccounts:input_type -> account.v1.ListTradingAccountsRequest
-	7,  // 27: account.v1.AccountService.CreateTradingAccount:input_type -> account.v1.CreateTradingAccountRequest
-	9,  // 28: account.v1.AccountService.CreatePolymarketTradingAccount:input_type -> account.v1.CreatePolymarketTradingAccountRequest
-	11, // 29: account.v1.AccountService.GetPolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
-	11, // 30: account.v1.AccountService.RefreshPolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
-	11, // 31: account.v1.AccountService.InvalidatePolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
-	13, // 32: account.v1.AccountService.DeleteTradingAccount:input_type -> account.v1.DeleteTradingAccountRequest
-	17, // 33: account.v1.AccountService.GetTradingAccountSnapshot:input_type -> account.v1.GetTradingAccountSnapshotRequest
-	21, // 34: account.v1.AccountService.GetProductGroupSnapshot:input_type -> account.v1.GetProductGroupSnapshotRequest
-	23, // 35: account.v1.AccountService.GetProductAccountSnapshotsInternal:input_type -> account.v1.GetProductAccountSnapshotsInternalRequest
-	25, // 36: account.v1.AccountService.SyncProductTradeFillsInternal:input_type -> account.v1.SyncProductTradeFillsInternalRequest
-	28, // 37: account.v1.AccountService.GetTradingCredentials:input_type -> account.v1.GetTradingCredentialsRequest
-	29, // 38: account.v1.AccountService.GetTradingCredentialsInternal:input_type -> account.v1.GetTradingCredentialsInternalRequest
-	32, // 39: account.v1.AccountService.GetAICredential:input_type -> account.v1.GetAICredentialRequest
-	33, // 40: account.v1.AccountService.UpsertAICredential:input_type -> account.v1.UpsertAICredentialRequest
-	34, // 41: account.v1.AccountService.DeleteAICredential:input_type -> account.v1.DeleteAICredentialRequest
-	32, // 42: account.v1.AccountService.GetAICredentialSecret:input_type -> account.v1.GetAICredentialRequest
-	38, // 43: account.v1.AccountService.UpdateAICredentialStatus:input_type -> account.v1.UpdateAICredentialStatusRequest
-	1,  // 44: account.v1.AccountService.Login:output_type -> account.v1.LoginResponse
-	3,  // 45: account.v1.AccountService.ValidateSession:output_type -> account.v1.ValidateSessionResponse
-	6,  // 46: account.v1.AccountService.ListTradingAccounts:output_type -> account.v1.ListTradingAccountsResponse
-	8,  // 47: account.v1.AccountService.CreateTradingAccount:output_type -> account.v1.CreateTradingAccountResponse
-	10, // 48: account.v1.AccountService.CreatePolymarketTradingAccount:output_type -> account.v1.CreatePolymarketTradingAccountResponse
-	12, // 49: account.v1.AccountService.GetPolymarketCredentials:output_type -> account.v1.GetPolymarketCredentialsResponse
-	12, // 50: account.v1.AccountService.RefreshPolymarketCredentials:output_type -> account.v1.GetPolymarketCredentialsResponse
-	14, // 51: account.v1.AccountService.InvalidatePolymarketCredentials:output_type -> account.v1.DeleteTradingAccountResponse
-	14, // 52: account.v1.AccountService.DeleteTradingAccount:output_type -> account.v1.DeleteTradingAccountResponse
-	18, // 53: account.v1.AccountService.GetTradingAccountSnapshot:output_type -> account.v1.GetTradingAccountSnapshotResponse
-	22, // 54: account.v1.AccountService.GetProductGroupSnapshot:output_type -> account.v1.GetProductGroupSnapshotResponse
-	24, // 55: account.v1.AccountService.GetProductAccountSnapshotsInternal:output_type -> account.v1.GetProductAccountSnapshotsInternalResponse
-	27, // 56: account.v1.AccountService.SyncProductTradeFillsInternal:output_type -> account.v1.SyncProductTradeFillsInternalResponse
-	30, // 57: account.v1.AccountService.GetTradingCredentials:output_type -> account.v1.GetTradingCredentialsResponse
-	30, // 58: account.v1.AccountService.GetTradingCredentialsInternal:output_type -> account.v1.GetTradingCredentialsResponse
-	36, // 59: account.v1.AccountService.GetAICredential:output_type -> account.v1.AICredentialResponse
-	36, // 60: account.v1.AccountService.UpsertAICredential:output_type -> account.v1.AICredentialResponse
-	35, // 61: account.v1.AccountService.DeleteAICredential:output_type -> account.v1.DeleteAICredentialResponse
-	37, // 62: account.v1.AccountService.GetAICredentialSecret:output_type -> account.v1.AICredentialSecretResponse
-	36, // 63: account.v1.AccountService.UpdateAICredentialStatus:output_type -> account.v1.AICredentialResponse
-	44, // [44:64] is the sub-list for method output_type
-	24, // [24:44] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	47, // 0: account.v1.TradingAccount.created_at:type_name -> google.protobuf.Timestamp
+	47, // 1: account.v1.TradingAccount.updated_at:type_name -> google.protobuf.Timestamp
+	5,  // 2: account.v1.TradingAccount.spot_fee:type_name -> account.v1.MarketFeeRate
+	5,  // 3: account.v1.TradingAccount.contract_fee:type_name -> account.v1.MarketFeeRate
+	47, // 4: account.v1.TradingAccount.fee_updated_at:type_name -> google.protobuf.Timestamp
+	5,  // 5: account.v1.GetTradingAccountFeeRatesResponse.spot_fee:type_name -> account.v1.MarketFeeRate
+	5,  // 6: account.v1.GetTradingAccountFeeRatesResponse.contract_fee:type_name -> account.v1.MarketFeeRate
+	47, // 7: account.v1.GetTradingAccountFeeRatesResponse.fee_updated_at:type_name -> google.protobuf.Timestamp
+	4,  // 8: account.v1.ListTradingAccountsResponse.items:type_name -> account.v1.TradingAccount
+	4,  // 9: account.v1.CreateTradingAccountResponse.account:type_name -> account.v1.TradingAccount
+	4,  // 10: account.v1.CreatePolymarketTradingAccountResponse.account:type_name -> account.v1.TradingAccount
+	47, // 11: account.v1.PortfolioPosition.end_time:type_name -> google.protobuf.Timestamp
+	19, // 12: account.v1.TradingAccountSnapshot.positions:type_name -> account.v1.PortfolioPosition
+	47, // 13: account.v1.TradingAccountSnapshot.source_updated_at:type_name -> google.protobuf.Timestamp
+	20, // 14: account.v1.GetTradingAccountSnapshotResponse.snapshot:type_name -> account.v1.TradingAccountSnapshot
+	47, // 15: account.v1.GetTradingAccountSnapshotResponse.server_time:type_name -> google.protobuf.Timestamp
+	23, // 16: account.v1.ProductGroupSnapshot.positions:type_name -> account.v1.ProductGroupPosition
+	47, // 17: account.v1.ProductGroupSnapshot.source_updated_at:type_name -> google.protobuf.Timestamp
+	24, // 18: account.v1.GetProductGroupSnapshotResponse.snapshot:type_name -> account.v1.ProductGroupSnapshot
+	47, // 19: account.v1.GetProductGroupSnapshotResponse.server_time:type_name -> google.protobuf.Timestamp
+	20, // 20: account.v1.GetProductAccountSnapshotsInternalResponse.snapshots:type_name -> account.v1.TradingAccountSnapshot
+	47, // 21: account.v1.GetProductAccountSnapshotsInternalResponse.server_time:type_name -> google.protobuf.Timestamp
+	47, // 22: account.v1.SyncProductTradeFillsInternalRequest.through_time:type_name -> google.protobuf.Timestamp
+	47, // 23: account.v1.TradeFillSyncResult.synced_through:type_name -> google.protobuf.Timestamp
+	30, // 24: account.v1.SyncProductTradeFillsInternalResponse.results:type_name -> account.v1.TradeFillSyncResult
+	47, // 25: account.v1.SyncProductTradeFillsInternalResponse.server_time:type_name -> google.protobuf.Timestamp
+	47, // 26: account.v1.AICredential.last_tested_at:type_name -> google.protobuf.Timestamp
+	47, // 27: account.v1.AICredential.created_at:type_name -> google.protobuf.Timestamp
+	47, // 28: account.v1.AICredential.updated_at:type_name -> google.protobuf.Timestamp
+	39, // 29: account.v1.AICredentialResponse.credential:type_name -> account.v1.AICredential
+	0,  // 30: account.v1.AccountService.Login:input_type -> account.v1.LoginRequest
+	2,  // 31: account.v1.AccountService.ValidateSession:input_type -> account.v1.ValidateSessionRequest
+	9,  // 32: account.v1.AccountService.ListTradingAccounts:input_type -> account.v1.ListTradingAccountsRequest
+	11, // 33: account.v1.AccountService.CreateTradingAccount:input_type -> account.v1.CreateTradingAccountRequest
+	13, // 34: account.v1.AccountService.CreatePolymarketTradingAccount:input_type -> account.v1.CreatePolymarketTradingAccountRequest
+	15, // 35: account.v1.AccountService.GetPolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
+	15, // 36: account.v1.AccountService.RefreshPolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
+	15, // 37: account.v1.AccountService.InvalidatePolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
+	15, // 38: account.v1.AccountService.ActivatePolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
+	17, // 39: account.v1.AccountService.DeleteTradingAccount:input_type -> account.v1.DeleteTradingAccountRequest
+	21, // 40: account.v1.AccountService.GetTradingAccountSnapshot:input_type -> account.v1.GetTradingAccountSnapshotRequest
+	25, // 41: account.v1.AccountService.GetProductGroupSnapshot:input_type -> account.v1.GetProductGroupSnapshotRequest
+	27, // 42: account.v1.AccountService.GetProductAccountSnapshotsInternal:input_type -> account.v1.GetProductAccountSnapshotsInternalRequest
+	29, // 43: account.v1.AccountService.SyncProductTradeFillsInternal:input_type -> account.v1.SyncProductTradeFillsInternalRequest
+	32, // 44: account.v1.AccountService.GetTradingCredentials:input_type -> account.v1.GetTradingCredentialsRequest
+	33, // 45: account.v1.AccountService.GetTradingCredentialsInternal:input_type -> account.v1.GetTradingCredentialsInternalRequest
+	35, // 46: account.v1.AccountService.GetTradingAccountMeta:input_type -> account.v1.GetTradingAccountMetaRequest
+	37, // 47: account.v1.AccountService.InspectTradingReadiness:input_type -> account.v1.InspectTradingReadinessRequest
+	40, // 48: account.v1.AccountService.GetAICredential:input_type -> account.v1.GetAICredentialRequest
+	41, // 49: account.v1.AccountService.UpsertAICredential:input_type -> account.v1.UpsertAICredentialRequest
+	42, // 50: account.v1.AccountService.DeleteAICredential:input_type -> account.v1.DeleteAICredentialRequest
+	40, // 51: account.v1.AccountService.GetAICredentialSecret:input_type -> account.v1.GetAICredentialRequest
+	46, // 52: account.v1.AccountService.UpdateAICredentialStatus:input_type -> account.v1.UpdateAICredentialStatusRequest
+	6,  // 53: account.v1.AccountService.GetTradingAccountFeeRates:input_type -> account.v1.GetTradingAccountFeeRatesRequest
+	7,  // 54: account.v1.AccountService.SyncTradingAccountFeeRates:input_type -> account.v1.SyncTradingAccountFeeRatesRequest
+	1,  // 55: account.v1.AccountService.Login:output_type -> account.v1.LoginResponse
+	3,  // 56: account.v1.AccountService.ValidateSession:output_type -> account.v1.ValidateSessionResponse
+	10, // 57: account.v1.AccountService.ListTradingAccounts:output_type -> account.v1.ListTradingAccountsResponse
+	12, // 58: account.v1.AccountService.CreateTradingAccount:output_type -> account.v1.CreateTradingAccountResponse
+	14, // 59: account.v1.AccountService.CreatePolymarketTradingAccount:output_type -> account.v1.CreatePolymarketTradingAccountResponse
+	16, // 60: account.v1.AccountService.GetPolymarketCredentials:output_type -> account.v1.GetPolymarketCredentialsResponse
+	16, // 61: account.v1.AccountService.RefreshPolymarketCredentials:output_type -> account.v1.GetPolymarketCredentialsResponse
+	18, // 62: account.v1.AccountService.InvalidatePolymarketCredentials:output_type -> account.v1.DeleteTradingAccountResponse
+	18, // 63: account.v1.AccountService.ActivatePolymarketCredentials:output_type -> account.v1.DeleteTradingAccountResponse
+	18, // 64: account.v1.AccountService.DeleteTradingAccount:output_type -> account.v1.DeleteTradingAccountResponse
+	22, // 65: account.v1.AccountService.GetTradingAccountSnapshot:output_type -> account.v1.GetTradingAccountSnapshotResponse
+	26, // 66: account.v1.AccountService.GetProductGroupSnapshot:output_type -> account.v1.GetProductGroupSnapshotResponse
+	28, // 67: account.v1.AccountService.GetProductAccountSnapshotsInternal:output_type -> account.v1.GetProductAccountSnapshotsInternalResponse
+	31, // 68: account.v1.AccountService.SyncProductTradeFillsInternal:output_type -> account.v1.SyncProductTradeFillsInternalResponse
+	34, // 69: account.v1.AccountService.GetTradingCredentials:output_type -> account.v1.GetTradingCredentialsResponse
+	34, // 70: account.v1.AccountService.GetTradingCredentialsInternal:output_type -> account.v1.GetTradingCredentialsResponse
+	36, // 71: account.v1.AccountService.GetTradingAccountMeta:output_type -> account.v1.GetTradingAccountMetaResponse
+	38, // 72: account.v1.AccountService.InspectTradingReadiness:output_type -> account.v1.InspectTradingReadinessResponse
+	44, // 73: account.v1.AccountService.GetAICredential:output_type -> account.v1.AICredentialResponse
+	44, // 74: account.v1.AccountService.UpsertAICredential:output_type -> account.v1.AICredentialResponse
+	43, // 75: account.v1.AccountService.DeleteAICredential:output_type -> account.v1.DeleteAICredentialResponse
+	45, // 76: account.v1.AccountService.GetAICredentialSecret:output_type -> account.v1.AICredentialSecretResponse
+	44, // 77: account.v1.AccountService.UpdateAICredentialStatus:output_type -> account.v1.AICredentialResponse
+	8,  // 78: account.v1.AccountService.GetTradingAccountFeeRates:output_type -> account.v1.GetTradingAccountFeeRatesResponse
+	8,  // 79: account.v1.AccountService.SyncTradingAccountFeeRates:output_type -> account.v1.GetTradingAccountFeeRatesResponse
+	55, // [55:80] is the sub-list for method output_type
+	30, // [30:55] is the sub-list for method input_type
+	30, // [30:30] is the sub-list for extension type_name
+	30, // [30:30] is the sub-list for extension extendee
+	0,  // [0:30] is the sub-list for field type_name
 }
 
 func init() { file_account_v1_account_proto_init() }
@@ -3038,13 +3974,18 @@ func file_account_v1_account_proto_init() {
 	if File_account_v1_account_proto != nil {
 		return
 	}
+	file_account_v1_account_proto_msgTypes[4].OneofWrappers = []any{}
+	file_account_v1_account_proto_msgTypes[11].OneofWrappers = []any{}
+	file_account_v1_account_proto_msgTypes[34].OneofWrappers = []any{}
+	file_account_v1_account_proto_msgTypes[36].OneofWrappers = []any{}
+	file_account_v1_account_proto_msgTypes[38].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_account_v1_account_proto_rawDesc), len(file_account_v1_account_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   39,
+			NumMessages:   47,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

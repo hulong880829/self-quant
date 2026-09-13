@@ -18,6 +18,10 @@ int main() {
              Venue::Binance, 400,
              R"({"code":-1121,"msg":"Invalid symbol."})") ==
          SnapshotHttpAction::QuarantineSymbol);
+  assert(classify_snapshot_http(
+             Venue::Aster, 400,
+             R"({"code":-1121,"msg":"Invalid symbol."})") ==
+         SnapshotHttpAction::QuarantineSymbol);
   assert(classify_snapshot_http(Venue::Binance, 503, "") ==
          SnapshotHttpAction::RetrySymbol);
   assert(classify_snapshot_http(Venue::Binance, 200, "{") ==

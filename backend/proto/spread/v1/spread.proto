@@ -31,6 +31,8 @@ message GetBasisSpreadHistoryRequest {
   string quote_asset = 3;
   BasisSpreadRange range = 4;
   string compare_venue = 5;
+  string venue_canonical_symbol = 6;
+  string compare_venue_canonical_symbol = 7;
 }
 
 message BasisSpreadPoint {

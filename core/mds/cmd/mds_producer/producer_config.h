@@ -21,6 +21,8 @@ struct ProductDiscovery {
   std::string symbol_regex;
   std::uint64_t minimum_turnover{};
   std::optional<std::size_t> max_symbols;
+
+  bool operator==(const ProductDiscovery &) const = default;
 };
 
 struct UniverseChange {
@@ -57,6 +59,7 @@ struct VenueEndpoint {
   std::uint32_t snapshot_ban_backoff_ms{300'000};
   std::uint32_t recovery_deadline_ms{30'000};
   std::uint32_t max_continuous_recovery_ms{300'000};
+  std::uint32_t client_message_limit_per_minute{};
 };
 
 struct StreamSpec {
@@ -71,6 +74,7 @@ struct StreamSpec {
   std::uint32_t polymarket_rollover_grace_seconds{2};
   std::uint32_t polymarket_resolver_timeout_ms{3000};
   bool subscribe_ticker{};
+  bool ticker_requires_first_data{};
   bool subscribe_orderbook{};
   std::string ticker_channel;
   std::string orderbook_channel;
@@ -92,6 +96,7 @@ struct StreamSpec {
   std::size_t shard_count{1};
   transport::RingOptions multiplex_ring{};
   std::optional<ProductDiscovery> discovery;
+  std::string venue_symbol;
 };
 
 struct ConnectionSpec {

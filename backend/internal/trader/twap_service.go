@@ -33,8 +33,19 @@ func (s *Service) CreateTwap(ctx context.Context, input CreateTwapInput) (TwapJo
 	if instrument.Exchange != account.Exchange {
 		return TwapJob{}, ErrInvalidArgument
 	}
-	if _, ok := s.venues.Adapter(account.Exchange); !ok {
+	adapter, ok := s.venues.Adapter(account.Exchange)
+	if !ok {
 		return TwapJob{}, ErrUnsupportedExchange
+	}
+	capabilities, err := venueCapabilities(ctx, adapter, account)
+	if err != nil {
+		return TwapJob{}, err
+	}
+	if !supportsCapability(capabilities.Products, instrument.ContractType) ||
+		(len(capabilities.QuoteAssets) > 0 &&
+			!supportsCapability(capabilities.QuoteAssets, instrument.QuoteAsset)) ||
+		(normalized.ExecutionType == "maker" && !capabilities.MakerTwap) {
+		return TwapJob{}, ErrInvalidArgument
 	}
 	if err := validateTwapInstrument(instrument, normalized); err != nil {
 		return TwapJob{}, err
@@ -120,7 +131,7 @@ func (s *Service) ListTwaps(
 		return nil, "", err
 	}
 	if accountID > 0 {
-		if _, err := s.credentials.Get(ctx, token, accountID); err != nil {
+		if _, err := s.credentials.Meta(ctx, token, accountID); err != nil {
 			return nil, "", err
 		}
 	}

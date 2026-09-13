@@ -130,14 +130,16 @@ func (BasisSpreadAvailability) EnumDescriptor() ([]byte, []int) {
 }
 
 type GetBasisSpreadHistoryRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Venue         string                 `protobuf:"bytes,1,opt,name=venue,proto3" json:"venue,omitempty"`
-	BaseAsset     string                 `protobuf:"bytes,2,opt,name=base_asset,json=baseAsset,proto3" json:"base_asset,omitempty"`
-	QuoteAsset    string                 `protobuf:"bytes,3,opt,name=quote_asset,json=quoteAsset,proto3" json:"quote_asset,omitempty"`
-	Range         BasisSpreadRange       `protobuf:"varint,4,opt,name=range,proto3,enum=spread.v1.BasisSpreadRange" json:"range,omitempty"`
-	CompareVenue  string                 `protobuf:"bytes,5,opt,name=compare_venue,json=compareVenue,proto3" json:"compare_venue,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                       protoimpl.MessageState `protogen:"open.v1"`
+	Venue                       string                 `protobuf:"bytes,1,opt,name=venue,proto3" json:"venue,omitempty"`
+	BaseAsset                   string                 `protobuf:"bytes,2,opt,name=base_asset,json=baseAsset,proto3" json:"base_asset,omitempty"`
+	QuoteAsset                  string                 `protobuf:"bytes,3,opt,name=quote_asset,json=quoteAsset,proto3" json:"quote_asset,omitempty"`
+	Range                       BasisSpreadRange       `protobuf:"varint,4,opt,name=range,proto3,enum=spread.v1.BasisSpreadRange" json:"range,omitempty"`
+	CompareVenue                string                 `protobuf:"bytes,5,opt,name=compare_venue,json=compareVenue,proto3" json:"compare_venue,omitempty"`
+	VenueCanonicalSymbol        string                 `protobuf:"bytes,6,opt,name=venue_canonical_symbol,json=venueCanonicalSymbol,proto3" json:"venue_canonical_symbol,omitempty"`
+	CompareVenueCanonicalSymbol string                 `protobuf:"bytes,7,opt,name=compare_venue_canonical_symbol,json=compareVenueCanonicalSymbol,proto3" json:"compare_venue_canonical_symbol,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *GetBasisSpreadHistoryRequest) Reset() {
@@ -201,6 +203,20 @@ func (x *GetBasisSpreadHistoryRequest) GetRange() BasisSpreadRange {
 func (x *GetBasisSpreadHistoryRequest) GetCompareVenue() string {
 	if x != nil {
 		return x.CompareVenue
+	}
+	return ""
+}
+
+func (x *GetBasisSpreadHistoryRequest) GetVenueCanonicalSymbol() string {
+	if x != nil {
+		return x.VenueCanonicalSymbol
+	}
+	return ""
+}
+
+func (x *GetBasisSpreadHistoryRequest) GetCompareVenueCanonicalSymbol() string {
+	if x != nil {
+		return x.CompareVenueCanonicalSymbol
 	}
 	return ""
 }
@@ -485,7 +501,7 @@ var File_spread_v1_spread_proto protoreflect.FileDescriptor
 
 const file_spread_v1_spread_proto_rawDesc = "" +
 	"\n" +
-	"\x16spread/v1/spread.proto\x12\tspread.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\x01\n" +
+	"\x16spread/v1/spread.proto\x12\tspread.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc7\x02\n" +
 	"\x1cGetBasisSpreadHistoryRequest\x12\x14\n" +
 	"\x05venue\x18\x01 \x01(\tR\x05venue\x12\x1d\n" +
 	"\n" +
@@ -493,7 +509,9 @@ const file_spread_v1_spread_proto_rawDesc = "" +
 	"\vquote_asset\x18\x03 \x01(\tR\n" +
 	"quoteAsset\x121\n" +
 	"\x05range\x18\x04 \x01(\x0e2\x1b.spread.v1.BasisSpreadRangeR\x05range\x12#\n" +
-	"\rcompare_venue\x18\x05 \x01(\tR\fcompareVenue\"\xb7\x01\n" +
+	"\rcompare_venue\x18\x05 \x01(\tR\fcompareVenue\x124\n" +
+	"\x16venue_canonical_symbol\x18\x06 \x01(\tR\x14venueCanonicalSymbol\x12C\n" +
+	"\x1ecompare_venue_canonical_symbol\x18\a \x01(\tR\x1bcompareVenueCanonicalSymbol\"\xb7\x01\n" +
 	"\x10BasisSpreadPoint\x12*\n" +
 	"\x02ts\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x12\x1d\n" +
 	"\n" +

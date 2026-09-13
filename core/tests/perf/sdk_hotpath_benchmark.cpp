@@ -15,6 +15,9 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
+#if defined(__x86_64__) || defined(__i386__)
+#include <x86intrin.h>
+#endif
 
 namespace {
 
@@ -30,6 +33,15 @@ std::uint64_t now_ns() {
           .count());
 }
 
+std::uint64_t read_cycles() noexcept {
+#if defined(__x86_64__) || defined(__i386__)
+  unsigned auxiliary{};
+  return __rdtscp(&auxiliary);
+#else
+  return now_ns();
+#endif
+}
+
 struct Summary {
   double throughput{};
   double p50{};
@@ -37,11 +49,16 @@ struct Summary {
   double p99{};
   double p999{};
   double maximum{};
+  double average_cycles{};
+  double p99_cycles{};
+  double p999_cycles{};
 };
 
 Summary summarize(const char *name, std::vector<double> samples,
+                  std::vector<std::uint64_t> cycle_samples,
                   double elapsed_seconds) {
   std::sort(samples.begin(), samples.end());
+  std::sort(cycle_samples.begin(), cycle_samples.end());
   if (const char *directory =
           std::getenv("SELF_QUANT_BENCHMARK_HISTOGRAM_DIR")) {
     std::filesystem::create_directories(directory);
@@ -59,6 +76,15 @@ Summary summarize(const char *name, std::vector<double> samples,
         static_cast<std::size_t>(fraction * static_cast<double>(samples.size())));
     return samples[index];
   };
+  const auto cycle_percentile = [&cycle_samples](double fraction) {
+    const auto index = std::min(
+        cycle_samples.size() - 1,
+        static_cast<std::size_t>(
+            fraction * static_cast<double>(cycle_samples.size())));
+    return static_cast<double>(cycle_samples[index]);
+  };
+  std::uint64_t total_cycles{};
+  for (const auto value : cycle_samples) total_cycles += value;
   return {
       .throughput = static_cast<double>(samples.size()) / elapsed_seconds,
       .p50 = percentile(0.50),
@@ -66,6 +92,10 @@ Summary summarize(const char *name, std::vector<double> samples,
       .p99 = percentile(0.99),
       .p999 = percentile(0.999),
       .maximum = samples.back(),
+      .average_cycles = static_cast<double>(total_cycles) /
+                        static_cast<double>(cycle_samples.size()),
+      .p99_cycles = cycle_percentile(0.99),
+      .p999_cycles = cycle_percentile(0.999),
   };
 }
 
@@ -75,7 +105,10 @@ void print_summary(const char *name, const Summary &summary) {
             << " throughput_ops_s=" << summary.throughput
             << " p50_ns=" << summary.p50 << " p95_ns=" << summary.p95
             << " p99_ns=" << summary.p99 << " p99_9_ns=" << summary.p999
-            << " max_ns=" << summary.maximum << '\n';
+            << " max_ns=" << summary.maximum
+            << " avg_cycles=" << summary.average_cycles
+            << " p99_cycles=" << summary.p99_cycles
+            << " p99_9_cycles=" << summary.p999_cycles << '\n';
 }
 
 utils::md::wire::HeaderFields header_fields() {
@@ -118,11 +151,15 @@ Summary benchmark_wire_encode() {
   }
 
   std::vector<double> samples;
+  std::vector<std::uint64_t> cycle_samples;
   samples.reserve(kMeasuredIterations);
+  cycle_samples.reserve(kMeasuredIterations);
   const auto total_start = Clock::now();
   for (std::size_t i = 0; i < kMeasuredIterations; ++i) {
     const auto start = Clock::now();
+    const auto cycle_start = read_cycles();
     const auto encoded = utils::md::wire::EncodeTicker(buffer, header, event);
+    const auto cycle_stop = read_cycles();
     const auto stop = Clock::now();
     if (!encoded) {
       throw std::runtime_error("EncodeTicker benchmark failed");
@@ -130,13 +167,15 @@ Summary benchmark_wire_encode() {
     checksum += encoded.size;
     samples.push_back(
         std::chrono::duration<double, std::nano>(stop - start).count());
+    cycle_samples.push_back(cycle_stop - cycle_start);
   }
   const auto elapsed =
       std::chrono::duration<double>(Clock::now() - total_start).count();
   if (checksum == 0) {
     std::abort();
   }
-  return summarize("wire_encode_ticker", std::move(samples), elapsed);
+  return summarize("wire_encode_ticker", std::move(samples),
+                   std::move(cycle_samples), elapsed);
 }
 
 Summary benchmark_shared_ring() {
@@ -191,21 +230,27 @@ Summary benchmark_shared_ring() {
   }
 
   std::vector<double> samples;
+  std::vector<std::uint64_t> cycle_samples;
   samples.reserve(kMeasuredIterations);
+  cycle_samples.reserve(kMeasuredIterations);
   const auto total_start = Clock::now();
   for (std::size_t i = 0; i < kMeasuredIterations; ++i) {
     const auto start = Clock::now();
+    const auto cycle_start = read_cycles();
     one_round_trip();
+    const auto cycle_stop = read_cycles();
     const auto stop = Clock::now();
     samples.push_back(
         std::chrono::duration<double, std::nano>(stop - start).count());
+    cycle_samples.push_back(cycle_stop - cycle_start);
   }
   const auto elapsed =
       std::chrono::duration<double>(Clock::now() - total_start).count();
   if (checksum == 0) {
     std::abort();
   }
-  return summarize("shared_ring_round_trip", std::move(samples), elapsed);
+  return summarize("shared_ring_round_trip", std::move(samples),
+                   std::move(cycle_samples), elapsed);
 }
 
 } // namespace

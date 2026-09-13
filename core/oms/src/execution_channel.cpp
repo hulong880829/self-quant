@@ -17,7 +17,6 @@
 #include "oms/exchange/binance/trade_adapter.h"
 #include "oms/exchange/live_transport.h"
 #include "oms/exchange/polymarket/trade_adapter.h"
-#include "oms/instrument_registry.h"
 
 namespace oms::api {
 namespace {
@@ -258,115 +257,7 @@ std::string PolymarketSubscription(const PolymarketSecrets& credentials) {
   return output;
 }
 
-Error PopulateRegistry(InstrumentRegistry& registry,
-                       std::span<const InstrumentInit> instruments) {
-  for (const InstrumentInit& source : instruments) {
-    TradingMetadata trading{};
-    trading.instrument_id = source.instrument.instrument_id;
-    if (source.instrument.venue == utils::md::Venue::Polymarket) {
-      if (source.polymarket_signature_type != 0 &&
-          source.polymarket_signature_type != 3) {
-        return Error::InvalidArgument;
-      }
-      trading.kind = MetadataKind::Polymarket;
-      trading.polymarket.condition_id = source.polymarket_condition_id;
-      trading.polymarket.token_id = source.polymarket_token_id;
-      trading.polymarket.outcome =
-          source.polymarket_outcome == PolymarketOutcome::Yes
-              ? oms::PolymarketOutcome::Yes
-              : source.polymarket_outcome == PolymarketOutcome::No
-                    ? oms::PolymarketOutcome::No
-                    : oms::PolymarketOutcome::Unknown;
-      trading.polymarket.negative_risk =
-          source.polymarket_negative_risk;
-      trading.polymarket.signature_type =
-          source.polymarket_signature_type;
-      trading.polymarket.minimum_order_size =
-          std::max<std::int64_t>(1, source.minimum_order_size);
-      trading.polymarket.taker_delay_ms =
-          source.polymarket_taker_delay_ms;
-    }
-    const Error added = registry.Add(source.instrument, &trading);
-    if (added != Error::Ok) return added;
-  }
-  return registry.Freeze();
-}
-
-bool ParseUnsigned(std::string_view value, unsigned& output) noexcept {
-  if (value.empty()) return false;
-  const auto converted =
-      std::from_chars(value.data(), value.data() + value.size(), output);
-  return converted.ec == std::errc{} &&
-         converted.ptr == value.data() + value.size();
-}
-
 struct BinanceResolver {
-  const InstrumentRegistry* registry{};
-  bool usdm{};
-
-  static bool ResolveSymbol(void* context, api::InstrumentId instrument_id,
-                            char* output, std::size_t capacity,
-                            std::uint8_t& length) noexcept {
-    if (context == nullptr || output == nullptr) return false;
-    const auto& self = *static_cast<const BinanceResolver*>(context);
-    const utils::md::Instrument* instrument =
-        self.registry->Find(instrument_id);
-    const bool product_matches =
-        self.usdm
-            ? (instrument != nullptr &&
-               (instrument->product_type ==
-                    utils::md::ProductType::Perpetual ||
-                instrument->product_type == utils::md::ProductType::Future))
-            : (instrument != nullptr &&
-               instrument->product_type == utils::md::ProductType::Spot);
-    if (instrument == nullptr ||
-        instrument->venue != utils::md::Venue::Binance ||
-        !product_matches) {
-      return false;
-    }
-
-    const auto end =
-        std::find(instrument->instrument_key.begin(),
-                  instrument->instrument_key.end(), '\0');
-    const std::string_view key(
-        instrument->instrument_key.data(),
-        static_cast<std::size_t>(end - instrument->instrument_key.begin()));
-    const std::size_t first = key.find(':');
-    const std::size_t second =
-        first == std::string_view::npos ? first : key.find(':', first + 1);
-    const std::size_t third = second == std::string_view::npos
-                                  ? second
-                                  : key.find(':', second + 1);
-    if (first == std::string_view::npos ||
-        second == std::string_view::npos) {
-      return false;
-    }
-    unsigned venue = 0;
-    unsigned product = 0;
-    if (!ParseUnsigned(key.substr(0, first), venue) ||
-        !ParseUnsigned(key.substr(first + 1, second - first - 1), product) ||
-        venue != static_cast<unsigned>(utils::md::Venue::Binance) ||
-        product != static_cast<unsigned>(instrument->product_type)) {
-      return false;
-    }
-    const std::string_view symbol =
-        key.substr(second + 1, third == std::string_view::npos
-                                   ? std::string_view::npos
-                                   : third - second - 1);
-    if (symbol.empty() || symbol.size() > capacity ||
-        symbol.size() > std::numeric_limits<std::uint8_t>::max() ||
-        !std::all_of(symbol.begin(), symbol.end(), [](char value) {
-          const unsigned char c = static_cast<unsigned char>(value);
-          return std::isdigit(c) != 0 ||
-                 (value >= 'A' && value <= 'Z');
-        })) {
-      return false;
-    }
-    std::memcpy(output, symbol.data(), symbol.size());
-    length = static_cast<std::uint8_t>(symbol.size());
-    return true;
-  }
-
   // BinanceTradeAdapter consults its adapter-owned order bindings first.
   // This callback is deliberately a safe miss for stale/unbound handles.
   static bool ResolveCancel(
@@ -396,12 +287,18 @@ bool CopyPolymarketAdapterCredentials(const PolymarketSecrets& source,
 
 struct ExecutionChannel::Impl {
   // Destruction is reverse declaration order: OmsApi stops first, then trade
-  // adapters, transport wrappers, transports, SSL, registry, and secrets.
+  // adapters, transport wrappers, transports, SSL, and secrets.
+  static InstrumentId ResolvePolymarketToken(
+      void* context,
+      const std::array<std::uint8_t, 32>& token_id) noexcept {
+    auto* self = static_cast<Impl*>(context);
+    return self == nullptr || self->api == nullptr
+               ? 0
+               : self->api->resolve_polymarket_token(token_id);
+  }
+
   SecretStore secrets;
-  InstrumentRegistry registry;
   net::SharedSslContext ssl_context;
-  BinanceResolver spot_resolver;
-  BinanceResolver usdm_resolver;
   std::unique_ptr<LiveTransport> spot_transport;
   std::unique_ptr<LiveTransport> usdm_transport;
   std::unique_ptr<LiveTransport> spot_trading_transport;
@@ -453,8 +350,6 @@ Result<std::unique_ptr<ExecutionChannel>> ExecutionChannel::Create(
 
   try {
     auto impl = std::make_unique<Impl>();
-    const Error registry_error = PopulateRegistry(impl->registry, instruments);
-    if (registry_error != Error::Ok) return {{}, registry_error};
 
     Config spot_transport_config{};
     Config usdm_transport_config{};
@@ -527,7 +422,6 @@ Result<std::unique_ptr<ExecutionChannel>> ExecutionChannel::Create(
     std::size_t driver_index = 0;
 
     if (config.binance_spot.enabled) {
-      impl->spot_resolver = {&impl->registry, false};
       impl->spot_transport = std::make_unique<LiveTransport>(
           impl->ssl_context, std::move(spot_transport_config));
       impl->spot_trading_transport = std::make_unique<LiveTransport>(
@@ -542,8 +436,7 @@ Result<std::unique_ptr<ExecutionChannel>> ExecutionChannel::Create(
           impl->secrets.spot.api_key.view(),
           impl->secrets.spot.secret_key.view()};
       adapter_config.callbacks = {
-          &impl->spot_resolver, &BinanceResolver::ResolveSymbol,
-          &BinanceResolver::ResolveCancel, nullptr};
+          nullptr, &BinanceResolver::ResolveCancel, nullptr};
       adapter_config.transport = impl->spot_wrapper.get();
       impl->spot_adapter =
           std::make_unique<BinanceTradeAdapter>(adapter_config);
@@ -558,7 +451,6 @@ Result<std::unique_ptr<ExecutionChannel>> ExecutionChannel::Create(
     }
 
     if (config.binance_usdm.enabled) {
-      impl->usdm_resolver = {&impl->registry, true};
       impl->usdm_transport = std::make_unique<LiveTransport>(
           impl->ssl_context, std::move(usdm_transport_config));
       impl->usdm_trading_transport = std::make_unique<LiveTransport>(
@@ -573,8 +465,7 @@ Result<std::unique_ptr<ExecutionChannel>> ExecutionChannel::Create(
           impl->secrets.usdm.api_key.view(),
           impl->secrets.usdm.secret_key.view()};
       adapter_config.callbacks = {
-          &impl->usdm_resolver, &BinanceResolver::ResolveSymbol,
-          &BinanceResolver::ResolveCancel, nullptr};
+          nullptr, &BinanceResolver::ResolveCancel, nullptr};
       adapter_config.transport = impl->usdm_wrapper.get();
       impl->usdm_adapter =
           std::make_unique<BinanceTradeAdapter>(adapter_config);
@@ -603,7 +494,9 @@ Result<std::unique_ptr<ExecutionChannel>> ExecutionChannel::Create(
               *impl->polymarket_data_transport, std::chrono::seconds(5), "",
               "");
       AdapterConfig adapter_config{};
-      adapter_config.instruments = &impl->registry;
+      adapter_config.instrument_context = impl.get();
+      adapter_config.resolve_polymarket_token =
+          &ExecutionChannel::Impl::ResolvePolymarketToken;
       adapter_config.transport = impl->polymarket_wrapper.get();
       adapter_config.data_transport = impl->polymarket_data_wrapper.get();
       if (!CopyPolymarketAdapterCredentials(impl->secrets.polymarket,
@@ -651,13 +544,8 @@ Result<void> ExecutionChannel::initialize_lane(
 }
 
 Result<RequestToken> ExecutionChannel::place_order(
-    std::uint32_t lane_id, NewOrderRequest request) noexcept {
-  return impl_->api->submit_order(lane_id, request);
-}
-
-Result<RequestToken> ExecutionChannel::place_prepared_order(
-    std::uint32_t lane_id, PreparedOrderRequest request) noexcept {
-  return impl_->api->submit_prepared_order(lane_id, request);
+    std::uint32_t lane_id, SubmitOrderRequest request) noexcept {
+  return impl_->api->submit_order_impl(lane_id, request);
 }
 
 Result<RequestToken> ExecutionChannel::cancel_order(
@@ -665,10 +553,14 @@ Result<RequestToken> ExecutionChannel::cancel_order(
   return impl_->api->cancel_order(lane_id, target, handle);
 }
 
-Result<RequestToken> ExecutionChannel::rebind_polymarket_instrument(
-    std::uint32_t lane_id,
-    RebindPolymarketInstrumentRequest request) noexcept {
-  return impl_->api->rebind_polymarket_instrument(lane_id, request);
+Result<RequestToken> ExecutionChannel::register_instrument(
+    std::uint32_t lane_id, RegisterInstrumentRequest request) noexcept {
+  return impl_->api->register_instrument(lane_id, request);
+}
+
+Result<RequestToken> ExecutionChannel::retire_instrument(
+    std::uint32_t lane_id, InstrumentId instrument_id) noexcept {
+  return impl_->api->retire_instrument(lane_id, instrument_id);
 }
 
 Result<QueryToken> ExecutionChannel::query_open_orders(
@@ -676,9 +568,19 @@ Result<QueryToken> ExecutionChannel::query_open_orders(
   return impl_->api->query_open_orders(lane_id, account_id);
 }
 
+Result<QueryToken> ExecutionChannel::query_open_orders(
+    std::uint32_t lane_id, QueryRequest request) noexcept {
+  return impl_->api->query_open_orders(lane_id, request);
+}
+
 Result<QueryToken> ExecutionChannel::query_positions(
     std::uint32_t lane_id, AccountId account_id) noexcept {
   return impl_->api->query_positions(lane_id, account_id);
+}
+
+Result<QueryToken> ExecutionChannel::query_positions(
+    std::uint32_t lane_id, QueryRequest request) noexcept {
+  return impl_->api->query_positions(lane_id, request);
 }
 
 Error ExecutionChannel::service_io(int timeout_ms) noexcept {

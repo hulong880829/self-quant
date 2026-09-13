@@ -1,6 +1,8 @@
 "use client";
 
 import * as React from "react";
+import { Activity } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   ChevronRight,
   Clock,
@@ -13,9 +15,14 @@ import { ArbitrageTradingView } from "@/components/trading/arbitrage-trading";
 import { ManualTradingView } from "@/components/trading/manual-trading";
 import { TwapTradingView } from "@/components/trading/twap-trading";
 import { PageFrame, WorkspacePanel } from "@/components/layout/responsive";
+import {
+  parseArbitragePrefill,
+  arbitragePrefillSignature,
+  type TradingViewMode,
+} from "@/lib/trading-prefill";
 import { cn } from "@/lib/utils";
 
-type TradingView = "manual" | "algorithm" | "arbitrage";
+type TradingView = TradingViewMode;
 
 const tradingViews: Array<{
   id: TradingView;
@@ -28,12 +35,48 @@ const tradingViews: Array<{
   { id: "arbitrage", label: "套利交易", description: "多腿策略执行", icon: Zap },
 ];
 
-export default function TradingPage() {
-  const [activeView, setActiveView] = React.useState<TradingView>("manual");
+export function TradingWorkspace({
+  searchParamsOverride,
+}: {
+  searchParamsOverride?: URLSearchParams;
+} = {}) {
+  const routeSearchParams = useSearchParams();
+  const searchParams = searchParamsOverride ?? routeSearchParams;
+  const query = searchParams.toString();
+  const redirectTo = query ? `/trading?${query}` : "/trading";
+  const prefill = parseArbitragePrefill(searchParams);
+  const prefillSignature = arbitragePrefillSignature(prefill);
+  const [activeView, setActiveView] = React.useState<TradingViewMode>(() =>
+    prefill ? "arbitrage" : "manual",
+  );
+  const [visitedViews, setVisitedViews] = React.useState<Set<TradingViewMode>>(
+    () => new Set<TradingViewMode>([prefill ? "arbitrage" : "manual"]),
+  );
+
+  const selectView = React.useCallback((view: TradingViewMode) => {
+    setVisitedViews((current) => {
+      if (current.has(view)) return current;
+      const next = new Set(current);
+      next.add(view);
+      return next;
+    });
+    setActiveView(view);
+  }, []);
+
+  React.useEffect(() => {
+    if (!prefillSignature) return;
+    setVisitedViews((current) => {
+      if (current.has("arbitrage")) return current;
+      const next = new Set(current);
+      next.add("arbitrage");
+      return next;
+    });
+    setActiveView("arbitrage");
+  }, [prefillSignature]);
 
   return (
     <AuthGate
-      redirectTo="/trading"
+      redirectTo={redirectTo}
       title="需要登录"
       description="实盘交易涉及下单与风险确认，请先登录后再访问。"
     >
@@ -61,7 +104,7 @@ export default function TradingPage() {
                   <button
                     key={view.id}
                     type="button"
-                    onClick={() => setActiveView(view.id)}
+                    onClick={() => selectView(view.id)}
                     className={cn(
                       "flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors",
                       active
@@ -93,12 +136,38 @@ export default function TradingPage() {
           </aside>
 
           <main className="min-h-0 min-w-0 overflow-y-auto" data-trading-scroll>
-            {activeView === "manual" ? <ManualTradingView /> : null}
-            {activeView === "algorithm" ? <TwapTradingView /> : null}
-            {activeView === "arbitrage" ? <ArbitrageTradingView /> : null}
+            {visitedViews.has("manual") ? (
+              <Activity mode={activeView === "manual" ? "visible" : "hidden"}>
+                <ManualTradingView />
+              </Activity>
+            ) : null}
+            {visitedViews.has("algorithm") ? (
+              <Activity mode={activeView === "algorithm" ? "visible" : "hidden"}>
+                <TwapTradingView />
+              </Activity>
+            ) : null}
+            {visitedViews.has("arbitrage") ? (
+              <Activity mode={activeView === "arbitrage" ? "visible" : "hidden"}>
+                <ArbitrageTradingView searchParams={searchParams} />
+              </Activity>
+            ) : null}
           </main>
         </WorkspacePanel>
       </PageFrame>
     </AuthGate>
+  );
+}
+
+export default function TradingPage() {
+  return (
+    <React.Suspense
+      fallback={
+        <div className="flex min-h-[var(--app-page-min-height)] items-center justify-center text-sm text-muted-foreground">
+          正在加载实盘交易…
+        </div>
+      }
+    >
+      <TradingWorkspace />
+    </React.Suspense>
   );
 }

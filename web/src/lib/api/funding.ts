@@ -34,6 +34,7 @@ export interface FundingWireDTO {
   priceChange24h: DecimalWire;
   sourceUpdatedAt: string;
   stale?: boolean;
+  venueContractType?: string;
   fundingHistory?: FundingHistoryWireDTO[];
   index?: {
     name: string;
@@ -63,6 +64,9 @@ export interface FundingHistoryWireResponse {
 export interface FundingSpreadLegWireDTO {
   exchange: string;
   exchangeSymbol: string;
+  globalSymbol: string;
+  baseAsset: string;
+  quoteAsset: string;
   fundingRate: DecimalWire;
   settlementIntervalHours: DecimalWire;
   nextFundingAt: string;
@@ -71,6 +75,7 @@ export interface FundingSpreadLegWireDTO {
   latestPrice: DecimalWire;
   sourceUpdatedAt: string;
   stale: boolean;
+  venueContractType?: string;
 }
 
 export interface FundingSpreadWireDTO {
@@ -120,6 +125,9 @@ const exchanges = new Set<Exchange>([
   "Bitget",
   "Gate",
   "Hyperliquid",
+  "Aster",
+  "Lighter",
+  "Entropy",
 ]);
 
 function record(value: unknown, path: string): Record<string, unknown> {
@@ -180,6 +188,23 @@ function exchange(value: unknown, path: string): Exchange {
     throw new Error(`${path} 不是受支持的交易所`);
   }
   return parsed;
+}
+
+function optionalBoolean(value: unknown, path: string): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error(`${path} 必须是 boolean`);
+  }
+  return value;
+}
+
+function venueContractType(value: unknown, path: string): string {
+  if (value === undefined || value === null || value === "") {
+    return "PERPETUAL";
+  }
+  return text(value, path);
 }
 
 function boolean(value: unknown, path: string): boolean {
@@ -272,6 +297,18 @@ export function mapFundingDto(
           : (() => {
               throw new Error(`${path}.stale 必须是 boolean`);
             })(),
+    history24hComplete: optionalBoolean(
+      item.history24hComplete,
+      `${path}.history24hComplete`,
+    ),
+    history7dComplete: optionalBoolean(
+      item.history7dComplete,
+      `${path}.history7dComplete`,
+    ),
+    venueContractType: venueContractType(
+      item.venueContractType,
+      `${path}.venueContractType`,
+    ),
     fundingHistory: rawHistory.map((point, historyIndex) =>
       historyPoint(point, `${path}.fundingHistory[${historyIndex}]`),
     ),
@@ -315,9 +352,13 @@ export function mapFundingRatesResponse(value: unknown): FundingSnapshot {
 
 function mapFundingSpreadLeg(value: unknown, path: string): FundingSpreadLeg {
   const item = record(value, path);
+  const exchangeSymbol = text(item.exchangeSymbol, `${path}.exchangeSymbol`);
   return {
     exchange: exchange(item.exchange, `${path}.exchange`),
-    exchangeSymbol: text(item.exchangeSymbol, `${path}.exchangeSymbol`),
+    exchangeSymbol,
+    globalSymbol: text(item.globalSymbol, `${path}.globalSymbol`),
+    baseAsset: text(item.baseAsset, `${path}.baseAsset`),
+    quoteAsset: text(item.quoteAsset, `${path}.quoteAsset`),
     fundingRate: percentageRatio(item.fundingRate, `${path}.fundingRate`),
     settlementIntervalHours: integer(
       item.settlementIntervalHours,
@@ -329,6 +370,18 @@ function mapFundingSpreadLeg(value: unknown, path: string): FundingSpreadLeg {
     latestPrice: decimal(item.latestPrice, `${path}.latestPrice`),
     updatedAt: isoTime(item.sourceUpdatedAt, `${path}.sourceUpdatedAt`),
     stale: boolean(item.stale, `${path}.stale`),
+    history24hComplete: optionalBoolean(
+      item.history24hComplete,
+      `${path}.history24hComplete`,
+    ),
+    history7dComplete: optionalBoolean(
+      item.history7dComplete,
+      `${path}.history7dComplete`,
+    ),
+    venueContractType: venueContractType(
+      item.venueContractType,
+      `${path}.venueContractType`,
+    ),
   };
 }
 
@@ -361,6 +414,14 @@ export function mapFundingSpreadDto(value: unknown, index: number): FundingSprea
     minDailyVolume: decimal(item.minDailyVolume, `${path}.minDailyVolume`),
     updatedAt: isoTime(item.sourceUpdatedAt, `${path}.sourceUpdatedAt`),
     stale: boolean(item.stale, `${path}.stale`),
+    history24hComplete: optionalBoolean(
+      item.history24hComplete,
+      `${path}.history24hComplete`,
+    ),
+    history7dComplete: optionalBoolean(
+      item.history7dComplete,
+      `${path}.history7dComplete`,
+    ),
   };
 }
 
@@ -415,6 +476,75 @@ function fundingSpreadsUrl() {
   return `${baseUrl}/api/v1/funding-spreads`;
 }
 
+export const FUNDING_RATES_LOOKUP_MAX_KEYS = 256;
+
+export type FundingRateLookupKey = {
+  exchange: string;
+  exchangeSymbol: string;
+  baseAsset: string;
+  quoteAsset: string;
+};
+
+export type FundingRateLookupResultRow = {
+  key: string;
+  status: "hit" | "missing";
+  item?: FundingOpportunity;
+};
+
+export type FundingRatesLookupResult = {
+  results: FundingRateLookupResultRow[];
+  snapshotVersion: string;
+  serverTime: string;
+};
+
+export function fundingRequestKey(
+  instrument: Pick<{ exchange: string; exchangeSymbol: string }, "exchange" | "exchangeSymbol">,
+): string {
+  return `${instrument.exchange.trim().toLowerCase()}|${instrument.exchangeSymbol.trim().toLowerCase()}`;
+}
+
+export function mapFundingRatesLookupResponse(
+  value: unknown,
+  requested: FundingRateLookupKey[],
+): FundingRatesLookupResult {
+  const response = record(value, "response");
+  if (!Array.isArray(response.results)) {
+    throw new Error("response.results 必须是数组");
+  }
+  if (response.results.length !== requested.length) {
+    throw new Error("response.results 与请求 keys 数量不一致");
+  }
+  const meta = record(response.meta, "response.meta");
+  const results = response.results.map((row, index) => {
+    const item = record(row, `results[${index}]`);
+    const rawStatus = text(item.status, `results[${index}].status`);
+    if (rawStatus !== "hit" && rawStatus !== "missing") {
+      throw new Error(`results[${index}].status 必须是 hit 或 missing`);
+    }
+    const status: "hit" | "missing" = rawStatus;
+    const requestKey = fundingRequestKey(requested[index]!);
+    if (status === "hit") {
+      if (item.item === undefined || item.item === null) {
+        throw new Error(`results[${index}].item 缺失`);
+      }
+      return {
+        key: requestKey,
+        status,
+        item: mapFundingDto(item.item, index),
+      };
+    }
+    return { key: requestKey, status };
+  });
+  return {
+    results,
+    snapshotVersion: version(
+      meta.snapshotVersion,
+      "response.meta.snapshotVersion",
+    ),
+    serverTime: isoTime(meta.serverTime, "response.meta.serverTime"),
+  };
+}
+
 export async function fetchFundingRates(
   etag?: string | null,
   signal?: AbortSignal,
@@ -443,6 +573,33 @@ export async function fetchFundingRates(
     snapshot: mapFundingRatesResponse(await response.json()),
     etag: response.headers.get("ETag"),
   };
+}
+
+export async function fetchFundingRatesLookup(
+  keys: FundingRateLookupKey[],
+  signal?: AbortSignal,
+): Promise<FundingRatesLookupResult> {
+  if (keys.length === 0 || keys.length > FUNDING_RATES_LOOKUP_MAX_KEYS) {
+    throw new Error("资金费 lookup keys 数量无效");
+  }
+  const response = await fetch(`${fundingRatesUrl()}/lookup`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    cache: "no-store",
+    signal,
+    body: JSON.stringify({ keys }),
+  });
+  if (response.status === 401) {
+    throw new Error("请先登录");
+  }
+  if (!response.ok) {
+    throw new Error(`资金费 lookup 请求失败 (${response.status})`);
+  }
+  return mapFundingRatesLookupResponse(await response.json(), keys);
 }
 
 export async function fetchFundingSpreads(

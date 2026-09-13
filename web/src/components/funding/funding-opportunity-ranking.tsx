@@ -17,10 +17,10 @@ import {
   Info,
   LoaderCircle,
   RefreshCw,
-  ShieldAlert,
 } from "lucide-react";
 
 import { BasisSpreadPanel } from "@/components/funding/basis-spread-chart";
+import { StartTradeButton } from "@/components/funding/start-trade-button";
 import { WorkspacePanel } from "@/components/layout/responsive";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,9 +36,19 @@ import {
   fetchFundingOpportunities,
   type FundingOpportunitySnapshot,
 } from "@/lib/api/funding-opportunities";
+import { bboCanonicalSymbol } from "@/lib/funding-coverage";
 import { FUNDING_DETAIL_WIDTH_PX, shouldUseSplitLayout } from "@/lib/layout";
-import { formatCurrency, formatDateTime, formatFundingRate, formatPercent, rateColor } from "@/lib/market-format";
+import { buildArbitragePrefillUrlFromSpread } from "@/lib/trading-prefill";
+import {
+  formatCurrency,
+  formatDateTime,
+  formatFundingRate,
+  formatPaybackPeriod,
+  formatPercent,
+  rateColor,
+} from "@/lib/market-format";
 import { cn } from "@/lib/utils";
+import { useVisibleMeasure } from "@/lib/visible-measure";
 import type {
   FundingFilters,
   FundingOpportunityPeriod,
@@ -53,7 +63,7 @@ type RankingListItem =
 const DATA_ROW_HEIGHT_PX = 64;
 const DETAIL_ROW_HEIGHT_PX = 328;
 
-const periods: FundingOpportunityPeriod[] = ["1h", "4h", "8h", "24h"];
+const periods: FundingOpportunityPeriod[] = ["8h", "24h"];
 
 function SortHeader({
   label,
@@ -119,16 +129,16 @@ function RankingDetail({ item }: { item: RankedFundingOpportunity }) {
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="border-b p-4">
-        <div className="flex items-start justify-between">
+        <div className="flex items-start justify-between gap-2">
           <div>
             <div className="text-xs text-muted-foreground">机会排名 #{item.rank} · {item.period}</div>
             <h2 className="mt-1 font-mono text-xl font-semibold">{item.symbol}</h2>
           </div>
-          {(item.stale || item.longLeg.stale || item.shortLeg.stale) && (
-            <Badge variant="outline" className="gap-1 border-amber-500/30 text-amber-600">
-              <ShieldAlert className="size-3" /> 数据延迟
-            </Badge>
-          )}
+          <div className="flex shrink-0 items-center gap-2">
+            <StartTradeButton
+              href={buildArbitragePrefillUrlFromSpread(item)}
+            />
+          </div>
         </div>
         <div className="mt-4 space-y-2">
           <LegDetail leg={item.longLeg} side="long" />
@@ -136,40 +146,55 @@ function RankingDetail({ item }: { item: RankedFundingOpportunity }) {
         </div>
       </div>
       <div className="grid grid-cols-3 gap-px border-b bg-border">
-        {[
-          ["周期预期收益", item.periodExpectedReturn],
-          ["盈利概率", item.profitProbability],
-          ["触及目标概率", item.firstPassageProbability],
-        ].map(([label, value]) => (
-          <div key={String(label)} className="bg-card p-3 text-center">
-            <div className="text-[10px] text-muted-foreground">{label}</div>
-            <div className={cn("mt-1 font-mono text-xs font-semibold", rateColor(Number(value)))}>
-              {formatPercent(Number(value), 2)}
-            </div>
+        <div className="bg-card p-3 text-center">
+          <div className="text-[10px] text-muted-foreground">周期预期收益</div>
+          <div className={cn("mt-1 font-mono text-xs font-semibold", rateColor(item.periodExpectedReturn))}>
+            {formatPercent(item.periodExpectedReturn, 2)}
           </div>
-        ))}
+        </div>
+        <div className="bg-card p-3 text-center">
+          <div className="text-[10px] text-muted-foreground">盈利概率</div>
+          <div className="mt-1 font-mono text-xs font-semibold">
+            {formatPercent(item.profitProbability, 2)}
+          </div>
+        </div>
+        <div className="bg-card p-3 text-center">
+          <div className="text-[10px] text-muted-foreground">有效样本</div>
+          <div className="mt-1 font-mono text-xs font-semibold">{item.sampleCount}</div>
+        </div>
       </div>
       <div className="space-y-4 p-4 text-xs">
         <div>
           <h3 className="font-medium">收益拆解（年化）</h3>
-          <div className="mt-2 grid grid-cols-3 gap-2">
-            {[["资金费", item.fundingExpectedAnnualized], ["价差", item.spreadExpectedAnnualized], ["合计", item.combinedExpectedAnnualized]].map(([label, value]) => (
-              <div key={String(label)} className="rounded-md bg-muted/45 p-2 text-center">
-                <div className="text-[10px] text-muted-foreground">{label}</div>
-                <div className={cn("mt-1 font-mono font-semibold", rateColor(Number(value)))}>{formatPercent(Number(value), 1)}</div>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            {[
+              ["资金费", item.fundingExpectedAnnualized],
+              ["价差（已扣 12bps）", item.spreadExpectedAnnualized],
+              ["合计", item.combinedExpectedAnnualized],
+            ].map(([label, value]) => (
+              <div key={String(label)} className="min-w-0 rounded-md bg-muted/45 p-2 text-center">
+                <div className="truncate text-[10px] text-muted-foreground">{label}</div>
+                <div className={cn("mt-1 truncate font-mono text-xs font-semibold", rateColor(Number(value)))}>
+                  {formatPercent(Number(value), 1)}
+                </div>
               </div>
             ))}
+            <div className="min-w-0 rounded-md bg-muted/45 p-2 text-center">
+              <div className="text-[10px] text-muted-foreground">预计回本周期</div>
+              <div className="mt-1 truncate font-mono text-xs font-semibold">
+                {formatPaybackPeriod(item.paybackStatus, item.expectedPaybackMinutes)}
+              </div>
+            </div>
           </div>
           <div className="mt-2 text-[10px] text-muted-foreground">
-            当前资金费率非零不代表 1h 模型资金费收益非零；持有窗口内未跨越结算点时，该项按 0 计算。
+            基于近 7 日真实 BBO 与已结算资金费的非重叠窗口回放；每个完整开平窗口固定扣除 12bps。
           </div>
         </div>
         <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-          <span className="text-muted-foreground">可执行 / 目标价差</span><span className="text-right font-mono">{item.currentExecutableSpreadBps.toFixed(1)} / {item.targetSpreadBps.toFixed(1)} bps</span>
-          <span className="text-muted-foreground">预期退出时间</span><span className="text-right font-mono">{item.expectedExitMinutes.toFixed(0)} 分钟</span>
+          <span className="text-muted-foreground">当前可执行价差</span><span className="text-right font-mono">{item.currentExecutableSpreadBps.toFixed(1)} bps</span>
+          <span className="text-muted-foreground">预计回本周期</span><span className="text-right font-mono">{formatPaybackPeriod(item.paybackStatus, item.expectedPaybackMinutes)}</span>
           <span className="text-muted-foreground">P5 收益</span><span className={cn("text-right font-mono", rateColor(item.p5Return))}>{formatPercent(item.p5Return, 2)}</span>
-          <span className="text-muted-foreground">覆盖率 / 置信度</span><span className="text-right font-mono">{formatPercent(item.coverage, 0)} / {formatPercent(item.confidence, 0)}</span>
-          <span className="text-muted-foreground">模型状态</span><span className="text-right font-mono">{item.modelState}</span>
+          <span className="text-muted-foreground">窗口覆盖率 / 有效样本</span><span className="text-right font-mono">{formatPercent(item.coverage, 0)} / {item.sampleCount}</span>
           <span className="text-muted-foreground">较小腿持仓 / 成交额</span><span className="text-right font-mono">{formatCurrency(item.minPositionNotional, true)} / {formatCurrency(item.minDailyVolume, true)}</span>
         </div>
         <div className="text-[10px] text-muted-foreground">来源更新于 {formatDateTime(item.updatedAt)}</div>
@@ -185,7 +210,7 @@ export function FundingOpportunityRanking({
   filters: FundingFilters;
   onResultCountChange?: (count: number) => void;
 }) {
-  const [period, setPeriod] = React.useState<FundingOpportunityPeriod>("1h");
+  const [period, setPeriod] = React.useState<FundingOpportunityPeriod>("8h");
   const [snapshot, setSnapshot] = React.useState<FundingOpportunitySnapshot | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
@@ -233,8 +258,7 @@ export function FundingOpportunityRanking({
   React.useEffect(() => {
     etag.current = null;
     const initialTimer = window.setTimeout(() => void load(), 0);
-    const refreshInterval = period === "1h" ? 60_000 : 600_000;
-    const timer = window.setInterval(() => void load(), refreshInterval);
+    const timer = window.setInterval(() => void load(), 60_000);
     return () => {
       window.clearTimeout(initialTimer);
       window.clearInterval(timer);
@@ -265,14 +289,14 @@ export function FundingOpportunityRanking({
   const selected = data.find((item) => item.id === selectedId) ?? data[0] ?? null;
 
   const columns = React.useMemo<LegacyColumnDef<RankedFundingOpportunity>[]>(() => [
-    { accessorKey: "symbol", header: "币对", cell: ({ row }) => <div><div className="font-mono text-xs font-semibold">{row.original.baseAsset}/{row.original.quoteAsset}</div><div className="mt-0.5 text-[10px] text-muted-foreground">{row.original.modelState}</div></div> },
+    { accessorKey: "symbol", header: "币对", cell: ({ row }) => <div className="font-mono text-xs font-semibold">{row.original.baseAsset}/{row.original.quoteAsset}</div> },
     { id: "longLeg", accessorFn: (row) => row.longLeg.exchange, header: "做多腿", cell: ({ row }) => <LegSummary leg={row.original.longLeg} side="long" /> },
     { id: "shortLeg", accessorFn: (row) => row.shortLeg.exchange, header: "做空腿", cell: ({ row }) => <LegSummary leg={row.original.shortLeg} side="short" /> },
     { accessorKey: "currentExecutableSpreadBps", header: "可执行价差", cell: ({ row }) => <div className="text-right font-mono text-xs">{row.original.currentExecutableSpreadBps.toFixed(1)} bps</div> },
     { accessorKey: "periodExpectedReturn", header: "周期预期收益", cell: ({ row }) => <div className={cn("text-right font-mono text-xs font-semibold", rateColor(row.original.periodExpectedReturn))}>{formatPercent(row.original.periodExpectedReturn, 2)}</div> },
     { accessorKey: "combinedExpectedAnnualized", header: "综合预期年化", cell: ({ row }) => <div className={cn("text-right font-mono text-xs font-semibold", rateColor(row.original.combinedExpectedAnnualized))}>{formatPercent(row.original.combinedExpectedAnnualized, 1)}</div> },
     { accessorKey: "profitProbability", header: "盈利概率", cell: ({ row }) => <div className="text-right font-mono text-xs">{formatPercent(row.original.profitProbability, 1)}</div> },
-    { accessorKey: "expectedExitMinutes", header: "预期退出", cell: ({ row }) => <div className="text-right font-mono text-xs">{row.original.expectedExitMinutes.toFixed(0)}m</div> },
+    { accessorKey: "expectedPaybackMinutes", header: "预计回本", cell: ({ row }) => <div className="text-right font-mono text-xs">{formatPaybackPeriod(row.original.paybackStatus, row.original.expectedPaybackMinutes)}</div> },
     { id: "open", enableSorting: false, header: "", cell: () => <ChevronRight className="ml-auto size-4 text-muted-foreground" /> },
   ], []);
   const table = useLegacyTable({
@@ -316,6 +340,7 @@ export function FundingOpportunityRanking({
     overscan: 10,
     getItemKey: (index) => listItems[index]?.key ?? index,
   });
+  useVisibleMeasure(() => virtualizer.measure(), true);
   const virtualRows = virtualizer.getVirtualItems();
   const top = virtualRows[0]?.start ?? 0;
   const bottom = virtualRows.length ? virtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0;
@@ -343,9 +368,12 @@ export function FundingOpportunityRanking({
           </span>}
         </div>
       </div>
-      {(error || snapshot?.meta.status !== "ready") && (
+      <p className="text-[11px] text-muted-foreground">
+        Hyperliquid / Lighter USDC 永续可与其他交易所同币种 USDT 永续配对；USDC/USDT 按 1:1 比较，收益可能包含稳定币基差。
+      </p>
+      {(error || unavailable || warming) && (
         <div className="flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-          <span>{error ? (snapshot ? `刷新失败，继续展示上次数据：${error}` : `加载失败：${error}`) : unavailable ? "排名数据暂时不可用，请检查 BBO 覆盖" : warming ? "排名历史正在预热，已有周期会先展示" : "排名快照已过期，继续展示最后一次正确结果"}</span>
+          <span>{error ? (snapshot ? `刷新失败，继续展示上次数据：${error}` : `加载失败：${error}`) : unavailable ? "排名数据暂时不可用，请检查 BBO 覆盖" : "排名历史正在预热，已有周期会先展示"}</span>
           {error && <Button variant="outline" size="sm" className="h-7 gap-1" onClick={() => void load()}><RefreshCw className="size-3" />重试</Button>}
         </div>
       )}
@@ -371,6 +399,8 @@ export function FundingOpportunityRanking({
                               compareVenue={item.item.longLeg.exchange}
                               baseAsset={item.item.baseAsset}
                               quoteAsset={item.item.quoteAsset}
+                              venueSymbol={bboCanonicalSymbol(item.item.shortLeg)}
+                              compareVenueSymbol={bboCanonicalSymbol(item.item.longLeg)}
                             />
                           </td>
                         </tr>

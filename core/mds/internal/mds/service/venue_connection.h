@@ -20,6 +20,9 @@
 
 namespace mds::service {
 
+class ClientMessageBudget;
+class ConnectionAttemptBudget;
+
 struct PublicWsCredentials {
   std::string api_key;
   std::string secret;
@@ -50,12 +53,14 @@ struct SymbolStreamOptions {
   std::size_t max_levels_per_message{1000};
   std::uint32_t update_interval_ms{};
   bool ticker{};
+  bool ticker_requires_first_data{};
   bool orderbook{};
   transport::RingOptions ring{};
   publish::RingLayout ring_layout{publish::RingLayout::PerSymbol};
   std::size_t shard_count{1};
   transport::RingOptions multiplex_ring{};
   std::chrono::nanoseconds reader_lease_timeout{5'000'000'000};
+  std::string venue_symbol;
 };
 
 struct VenueConnectionOptions {
@@ -81,6 +86,9 @@ struct VenueConnectionOptions {
   std::chrono::milliseconds reconnect_base{250};
   std::chrono::milliseconds reconnect_max{30'000};
   std::chrono::milliseconds max_continuous_recovery_duration{300'000};
+  std::uint32_t client_message_limit_per_minute{};
+  std::shared_ptr<ClientMessageBudget> client_message_budget;
+  std::shared_ptr<ConnectionAttemptBudget> connection_attempt_budget;
 };
 
 [[nodiscard]] std::vector<std::vector<std::size_t>>
@@ -111,6 +119,10 @@ class VenueConnection final : public MarketDataSession {
   websocket_shard(std::string_view canonical_symbol) const noexcept;
 
  private:
+  friend class VenueConnectionManager;
+
+  void adopt_multiplex_publishers(VenueConnection &source) noexcept;
+
   class Impl;
   std::unique_ptr<Impl> impl_;
 };
@@ -122,14 +134,21 @@ class VenueConnectionManager {
 
   api::Result<VenueConnection *>
   create(VenueConnectionOptions options, bool start_immediately = true);
+  api::Result<VenueConnection *> replace(
+      VenueConnection *current, VenueConnectionOptions options,
+      bool start_immediately = true);
   int run_once(int timeout_ms);
   void stop() noexcept;
 
  private:
+  api::Result<void> prepare_options(VenueConnectionOptions &options);
   net::EpollLoop loop_;
   net::SharedSslContext tls_;
   std::shared_ptr<instrument::InstrumentManager> instrument_manager_{
       std::make_shared<instrument::InstrumentManager>()};
+  std::shared_ptr<ClientMessageBudget> lighter_message_budget_;
+  std::shared_ptr<ConnectionAttemptBudget> lighter_connection_budget_;
+  std::uint32_t lighter_message_limit_{};
   std::vector<std::unique_ptr<VenueConnection>> connections_;
 };
 

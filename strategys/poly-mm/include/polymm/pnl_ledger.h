@@ -4,15 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "polymm/types.h"
 #include "strategyframe/types.h"
 
 namespace polymm {
-
-enum class OrderPurpose : std::uint8_t {
-  Open = 1,
-  Close = 2,
-  ForceFlatten = 3,
-};
 
 struct PnlView {
   double quantity{};
@@ -46,6 +41,7 @@ class PnlLedger {
       strategyframe::InstrumentId down_instrument) noexcept;
   [[nodiscard]] std::uint64_t duplicate_fills() const noexcept;
   [[nodiscard]] std::uint64_t orphan_fills() const noexcept;
+  [[nodiscard]] std::size_t used_order_slots() const noexcept;
 
  private:
   struct Row {
@@ -85,6 +81,8 @@ class PnlLedger {
   strategyframe::AccountId account_id_{};
   std::array<Row, 2> rows_{};
   std::array<OrderRef, 64> orders_{};
+  std::array<OrderRef, 128> tombstones_{};
+  std::size_t tombstone_cursor_{};
   std::array<SeenTrade, 8192> trades_{};
   std::size_t trade_cursor_{};
   std::uint64_t duplicate_fills_{};

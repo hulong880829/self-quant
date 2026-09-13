@@ -12,6 +12,7 @@ import {
   useLegacyTable,
 } from "@tanstack/react-table/legacy";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { Activity } from "react";
 import {
   ArrowDown,
   ArrowDownUp,
@@ -47,7 +48,15 @@ import {
   resolveFundingRate,
 } from "@/lib/market-format";
 import { fetchFundingHistory } from "@/lib/api/funding";
+import {
+  canStartFundingTrade,
+  contractKindFromVenue,
+  formatHistoryWindow,
+} from "@/lib/funding-coverage";
 import { BasisSpreadPanel } from "@/components/funding/basis-spread-chart";
+import { StartTradeButton } from "@/components/funding/start-trade-button";
+import { buildArbitragePrefillUrlFromOpportunity } from "@/lib/trading-prefill";
+import { useVisibleMeasure } from "@/lib/visible-measure";
 import { cn } from "@/lib/utils";
 import type {
   Exchange,
@@ -55,7 +64,7 @@ import type {
   FundingHistoryPoint,
   FundingOpportunity,
   FundingSpread,
-  RateDirection,
+  ContractKind,
 } from "@/types/market";
 
 type FundingViewMode = "single" | "spread" | "ranking";
@@ -73,6 +82,15 @@ const exchanges: Exchange[] = [
   "Bitget",
   "Gate",
   "Hyperliquid",
+  "Aster",
+  "Lighter",
+  "Entropy",
+];
+
+const contractKinds: { id: ContractKind; label: string }[] = [
+  { id: "crypto", label: "加密永续" },
+  { id: "tradifi", label: "TradFi" },
+  { id: "hip3", label: "HIP-3" },
 ];
 
 const defaultFilters: FundingFilters = {
@@ -81,6 +99,7 @@ const defaultFilters: FundingFilters = {
   minDailyVolume: 1_000_000,
   intervalHours: "all",
   exchanges: [],
+  contractKinds: [],
   direction: "all",
 };
 
@@ -91,6 +110,9 @@ const exchangeDot: Record<Exchange, string> = {
   Bitget: "bg-cyan-500",
   Gate: "bg-blue-500",
   Hyperliquid: "bg-emerald-500",
+  Aster: "bg-rose-500",
+  Lighter: "bg-indigo-500",
+  Entropy: "bg-fuchsia-500",
   Polymarket: "bg-violet-500",
 };
 
@@ -217,6 +239,14 @@ function Filters({
         : [...current.exchanges, exchange],
     }));
   };
+  const toggleContractKind = (kind: ContractKind) => {
+    setFilters((current) => ({
+      ...current,
+      contractKinds: current.contractKinds.includes(kind)
+        ? current.contractKinds.filter((item) => item !== kind)
+        : [...current.contractKinds, kind],
+    }));
+  };
 
   return (
     <section className="min-w-0 rounded-xl border bg-card/80 shadow-sm backdrop-blur">
@@ -337,37 +367,35 @@ function Filters({
               </button>
             );
           })}
-        </div>
-
-        <div className="flex items-center gap-1 rounded-md bg-muted/70 p-1">
-          {mode === "single" &&
-            (
-              [
-                ["all", "全部费率"],
-                ["positive", "正费率"],
-                ["negative", "负费率"],
-              ] as [RateDirection, string][]
-            ).map(([value, label]) => (
+          {mode !== "ranking" && <span className="ml-2 mr-1 text-xs text-muted-foreground">合约类型</span>}
+          {mode !== "ranking" && contractKinds.map(({ id, label }) => {
+            const selected =
+              filters.contractKinds.length === 0 || filters.contractKinds.includes(id);
+            return (
               <button
                 type="button"
-                key={value}
-                onClick={() =>
-                  setFilters((current) => ({ ...current, direction: value }))
-                }
+                key={id}
+                onClick={() => toggleContractKind(id)}
                 className={cn(
-                  "rounded px-2.5 py-1 text-xs transition-colors",
-                  filters.direction === value
-                    ? "bg-background font-medium text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
+                  "inline-flex items-center rounded-md border px-2.5 py-1.5 text-xs transition-all",
+                  selected
+                    ? "border-primary/25 bg-primary/8 text-foreground"
+                    : "border-transparent bg-muted/50 text-muted-foreground opacity-50",
                 )}
               >
                 {label}
               </button>
-            ))}
-          <span className="px-2 font-mono text-[11px] text-muted-foreground">
-            {resultCount} 条
-          </span>
+            );
+          })}
         </div>
+
+        {mode !== "single" && (
+          <div className="flex items-center gap-1 rounded-md bg-muted/70 p-1">
+            <span className="px-2 font-mono text-[11px] text-muted-foreground">
+              {resultCount} 条
+            </span>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -413,10 +441,20 @@ const DetailPanel = React.memo(function DetailPanel({
               {opportunity.symbol}
             </h2>
           </div>
-          <Badge className="gap-1 bg-positive-soft text-positive">
-            <Sparkles className="size-3" />
-            机会排名
-          </Badge>
+          <div className="flex shrink-0 flex-col items-end gap-2">
+            <Badge className="gap-1 bg-positive-soft text-positive">
+              <Sparkles className="size-3" />
+              机会排名
+            </Badge>
+            {canStartFundingTrade(opportunity.exchange, "basis", {
+              venueContractType: opportunity.venueContractType,
+              exchangeSymbol: opportunity.exchangeSymbol,
+            }) && (
+              <StartTradeButton
+                href={buildArbitragePrefillUrlFromOpportunity(opportunity)}
+              />
+            )}
+          </div>
         </div>
 
         <div className="mt-5 grid grid-cols-2 gap-3">
@@ -486,7 +524,11 @@ const DetailPanel = React.memo(function DetailPanel({
                 24H 年化
               </span>
               <span className={rateColor(annualize24h(opportunity.cumulative24h))}>
-                {formatPercent(annualize24h(opportunity.cumulative24h), 1)}
+                {formatHistoryWindow(
+                  opportunity.history24hComplete,
+                  annualize24h(opportunity.cumulative24h),
+                  (value) => formatPercent(value, 1),
+                )}
               </span>
             </span>
             <span>
@@ -497,7 +539,11 @@ const DetailPanel = React.memo(function DetailPanel({
                 7D 年化
               </span>
               <span className={rateColor(annualize7d(opportunity.cumulative7d))}>
-                {formatPercent(annualize7d(opportunity.cumulative7d), 1)}
+                {formatHistoryWindow(
+                  opportunity.history7dComplete,
+                  annualize7d(opportunity.cumulative7d),
+                  (value) => formatPercent(value, 1),
+                )}
               </span>
             </span>
           </div>
@@ -587,6 +633,18 @@ export function FundingDashboard() {
     [spreadSnapshot],
   );
   const [mode, setMode] = React.useState<FundingViewMode>("single");
+  const [visitedModes, setVisitedModes] = React.useState<Set<FundingViewMode>>(
+    () => new Set<FundingViewMode>(["single"]),
+  );
+  const selectMode = React.useCallback((next: FundingViewMode) => {
+    setVisitedModes((current) => {
+      if (current.has(next)) return current;
+      const nextSet = new Set(current);
+      nextSet.add(next);
+      return nextSet;
+    });
+    setMode(next);
+  }, []);
   const [rankingResultCount, setRankingResultCount] = React.useState(0);
   const [filters, setFilters] = React.useState<FundingFilters>(defaultFilters);
   const [sorting, setSorting] = React.useState<SortingState>([
@@ -686,6 +744,15 @@ export function FundingDashboard() {
       ) {
         return false;
       }
+      if (filters.contractKinds.length > 0) {
+        const kind = contractKindFromVenue(
+          item.venueContractType,
+          item.exchangeSymbol,
+        );
+        if (!filters.contractKinds.includes(kind)) {
+          return false;
+        }
+      }
       if (
         filters.direction === "positive" &&
         (displayedRate === null || displayedRate <= 0)
@@ -715,12 +782,14 @@ export function FundingDashboard() {
       }
       if (item.minPositionNotional < filters.minPositionNotional) return false;
       if (item.minDailyVolume < filters.minDailyVolume) return false;
-      if (
-        filters.exchanges.length > 0 &&
-        !filters.exchanges.includes(item.longLeg.exchange) &&
-        !filters.exchanges.includes(item.shortLeg.exchange)
-      ) {
-        return false;
+      if (filters.exchanges.length > 0) {
+        if (filters.exchanges.length < 2) return false;
+        if (
+          !filters.exchanges.includes(item.longLeg.exchange) ||
+          !filters.exchanges.includes(item.shortLeg.exchange)
+        ) {
+          return false;
+        }
       }
       if (
         filters.intervalHours !== "all" &&
@@ -728,6 +797,22 @@ export function FundingDashboard() {
         item.shortLeg.settlementIntervalHours !== filters.intervalHours
       ) {
         return false;
+      }
+      if (filters.contractKinds.length > 0) {
+        const longKind = contractKindFromVenue(
+          item.longLeg.venueContractType,
+          item.longLeg.exchangeSymbol,
+        );
+        const shortKind = contractKindFromVenue(
+          item.shortLeg.venueContractType,
+          item.shortLeg.exchangeSymbol,
+        );
+        if (
+          !filters.contractKinds.includes(longKind) ||
+          !filters.contractKinds.includes(shortKind)
+        ) {
+          return false;
+        }
       }
       return true;
     });
@@ -801,7 +886,11 @@ export function FundingDashboard() {
               rateColor(row.original.annualizedRate),
             )}
           >
-            {formatPercent(row.original.annualizedRate, 1)}
+            {formatHistoryWindow(
+              row.original.history7dComplete,
+              row.original.annualizedRate,
+              (value) => formatPercent(value, 1),
+            )}
           </div>
         ),
       },
@@ -853,7 +942,11 @@ export function FundingDashboard() {
               rateColor(annualize24h(row.original.cumulative24h)),
             )}
           >
-            {formatPercent(annualize24h(row.original.cumulative24h), 1)}
+            {formatHistoryWindow(
+              row.original.history24hComplete,
+              annualize24h(row.original.cumulative24h),
+              (value) => formatPercent(value, 1),
+            )}
           </div>
         ),
       },
@@ -868,7 +961,11 @@ export function FundingDashboard() {
               rateColor(annualize7d(row.original.cumulative7d)),
             )}
           >
-            {formatPercent(annualize7d(row.original.cumulative7d), 1)}
+            {formatHistoryWindow(
+              row.original.history7dComplete,
+              annualize7d(row.original.cumulative7d),
+              (value) => formatPercent(value, 1),
+            )}
           </div>
         ),
       },
@@ -926,6 +1023,12 @@ export function FundingDashboard() {
     overscan: 10,
     getItemKey: (index) => listItems[index]?.key ?? index,
   });
+  useVisibleMeasure(
+    () => {
+      rowVirtualizer.measure();
+    },
+    mode === "single",
+  );
   const virtualRows = rowVirtualizer.getVirtualItems();
   const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0;
   const paddingBottom =
@@ -946,7 +1049,7 @@ export function FundingDashboard() {
               : rankingResultCount
         }
         mode={mode}
-        onModeChange={setMode}
+        onModeChange={selectMode}
       />
 
       {mode !== "ranking" && refreshing && snapshot && !error && (
@@ -995,7 +1098,8 @@ export function FundingDashboard() {
         </div>
       )}
 
-      {mode === "single" ? (
+      {visitedModes.has("single") ? (
+      <Activity mode={mode === "single" ? "visible" : "hidden"}>
       <WorkspacePanel
         className="grid-cols-[minmax(0,1fr)_380px]"
       >
@@ -1143,14 +1247,21 @@ export function FundingDashboard() {
           )}
         </aside>
       </WorkspacePanel>
-      ) : mode === "spread" ? (
-        <FundingSpreadView data={filteredSpreads} loading={loading} />
-      ) : (
-        <FundingOpportunityRanking
-          filters={filters}
-          onResultCountChange={setRankingResultCount}
-        />
-      )}
+      </Activity>
+      ) : null}
+      {visitedModes.has("spread") ? (
+        <Activity mode={mode === "spread" ? "visible" : "hidden"}>
+          <FundingSpreadView data={filteredSpreads} loading={loading} />
+        </Activity>
+      ) : null}
+      {visitedModes.has("ranking") ? (
+        <Activity mode={mode === "ranking" ? "visible" : "hidden"}>
+          <FundingOpportunityRanking
+            filters={filters}
+            onResultCountChange={setRankingResultCount}
+          />
+        </Activity>
+      ) : null}
 
       <div className="flex items-center justify-between px-1 text-[11px] text-muted-foreground">
         <span>实时快照仅供研究参考，不构成投资建议</span>

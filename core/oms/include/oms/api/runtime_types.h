@@ -15,11 +15,12 @@ inline constexpr std::size_t kTradeAdapterCapacityCount = 4;
 inline constexpr std::uint32_t kDefaultOrderCapacity = 4096;
 inline constexpr std::uint32_t kDefaultFillDedupCapacity = 8192;
 inline constexpr std::uint32_t kDefaultPendingEventCapacity = 1024;
+inline constexpr std::uint32_t kDefaultInstrumentDirectoryCapacity = 4096;
 inline constexpr std::uint32_t kDefaultAdapterSendCapacity = 256;
 inline constexpr std::uint32_t kDefaultAdapterReceiveCapacity = 1024;
 inline constexpr std::uint32_t kMaximumRuntimeSlotCapacity = 1U << 24U;
 inline constexpr std::uint32_t kMaximumAdapterReceiveCapacity = 1U << 26U;
-inline constexpr std::uint32_t kRuntimeConfigAbiRevision = 2;
+inline constexpr std::uint32_t kRuntimeConfigAbiRevision = 3;
 
 enum class ExecutionMode : std::uint8_t {
   Inline = 0,
@@ -63,6 +64,9 @@ struct RuntimeConfig {
   std::uint32_t pending_event_capacity{};
   std::uint32_t abi_revision{};
   AdapterCapacityConfig adapter_capacities[kTradeAdapterCapacityCount]{};
+  // Appended in ABI revision 3. This is a control-plane table and is never
+  // consulted by submit/cancel.
+  std::uint32_t instrument_directory_capacity{};
 };
 
 [[nodiscard]] constexpr RuntimeConfig NormalizeRuntimeConfig(
@@ -73,6 +77,8 @@ struct RuntimeConfig {
     config.fill_dedup_capacity = kDefaultFillDedupCapacity;
   if (config.pending_event_capacity == 0)
     config.pending_event_capacity = kDefaultPendingEventCapacity;
+  if (config.instrument_directory_capacity == 0)
+    config.instrument_directory_capacity = kDefaultInstrumentDirectoryCapacity;
   for (auto& capacity : config.adapter_capacities) {
     if (capacity.send_capacity == 0)
       capacity.send_capacity = kDefaultAdapterSendCapacity;
@@ -92,7 +98,8 @@ struct RuntimeConfig {
   if (config.abi_revision != kRuntimeConfigAbiRevision ||
       !valid_slots(config.order_capacity) ||
       !valid_slots(config.fill_dedup_capacity) ||
-      !valid_slots(config.pending_event_capacity))
+      !valid_slots(config.pending_event_capacity) ||
+      !valid_slots(config.instrument_directory_capacity))
     return false;
   for (const auto& capacity : config.adapter_capacities) {
     if (!valid_slots(capacity.send_capacity) ||
@@ -106,7 +113,8 @@ struct RuntimeConfig {
 enum class RuntimeCommandResultKind : std::uint8_t {
   Place = 1,
   Cancel = 2,
-  RebindInstrument = 3,
+  RegisterInstrument = 3,
+  RetireInstrument = 4,
 };
 
 struct RuntimeCommandResult {
@@ -115,7 +123,7 @@ struct RuntimeCommandResult {
   std::uint8_t reserved[6]{};
   union {
     CancelCommandCorrelation correlation;
-    RebindPolymarketInstrumentResult rebind;
+    InstrumentCommandResult instrument;
   };
 
   constexpr RuntimeCommandResult() noexcept : correlation{} {}
@@ -242,12 +250,14 @@ static_assert(sizeof(ExecutionMode) == 1);
 static_assert(sizeof(AdapterCapacitySlot) == 1);
 static_assert(sizeof(LaneConfig) == 16);
 static_assert(sizeof(AdapterCapacityConfig) == 8);
-static_assert(sizeof(RuntimeConfig) == 1088);
+static_assert(sizeof(RuntimeConfig) == 1092);
 static_assert(sizeof(RuntimeCommandResultKind) == 1);
 static_assert(sizeof(RuntimeCommandResult) == 40);
 static_assert(sizeof(RuntimeUpdateKind) == 1);
 static_assert(sizeof(RuntimeControlKind) == 1);
 static_assert(sizeof(RuntimeControlUpdate) == 24);
+static_assert(sizeof(RuntimeUpdate) == 984);
+static_assert(alignof(RuntimeUpdate) == 8);
 static_assert(sizeof(QueueMetrics) == 32);
 static_assert(sizeof(LatencyMetrics) == 32);
 static_assert(sizeof(DeadlineMetrics) == 32);
@@ -263,7 +273,10 @@ static_assert(static_cast<std::uint8_t>(AdapterCapacitySlot::Fake) == 3);
 static_assert(static_cast<std::uint8_t>(RuntimeCommandResultKind::Place) == 1);
 static_assert(static_cast<std::uint8_t>(RuntimeCommandResultKind::Cancel) == 2);
 static_assert(
-    static_cast<std::uint8_t>(RuntimeCommandResultKind::RebindInstrument) == 3);
+    static_cast<std::uint8_t>(
+        RuntimeCommandResultKind::RegisterInstrument) == 3);
+static_assert(static_cast<std::uint8_t>(
+                  RuntimeCommandResultKind::RetireInstrument) == 4);
 static_assert(static_cast<std::uint8_t>(RuntimeUpdateKind::Order) == 1);
 static_assert(static_cast<std::uint8_t>(RuntimeUpdateKind::Fill) == 2);
 static_assert(static_cast<std::uint8_t>(RuntimeUpdateKind::CommandResult) == 3);

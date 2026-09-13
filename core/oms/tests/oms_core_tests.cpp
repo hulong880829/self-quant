@@ -11,8 +11,9 @@
 #include <string_view>
 #include <vector>
 
-#include "oms/instrument_registry.h"
+#include "oms/execution_directory.h"
 #include "oms/state_engine.h"
+#include "utils/md/symbol.h"
 
 namespace {
 std::atomic<bool> track_allocations{false};
@@ -72,23 +73,6 @@ utils::md::Instrument Instrument(std::uint32_t id,
   return instrument;
 }
 
-oms::TradingMetadata Trading(std::uint32_t id, std::uint8_t marker = 1) {
-  oms::TradingMetadata metadata{};
-  metadata.instrument_id = id;
-  metadata.kind = oms::MetadataKind::Polymarket;
-  metadata.polymarket.condition_id[0] = marker;
-  metadata.polymarket.condition_id[31] =
-      static_cast<std::uint8_t>(marker + 1);
-  metadata.polymarket.token_id[0] = static_cast<std::uint8_t>(marker + 2);
-  metadata.polymarket.token_id[31] = static_cast<std::uint8_t>(marker + 3);
-  metadata.polymarket.outcome = oms::PolymarketOutcome::Yes;
-  metadata.polymarket.negative_risk = true;
-  metadata.polymarket.signature_type = 3;
-  metadata.polymarket.minimum_order_size = 1;
-  metadata.polymarket.taker_delay_ms = 250;
-  return metadata;
-}
-
 oms::api::NewOrderRequest Request(std::uint64_t sequence,
                                   std::int64_t quantity = 10) {
   oms::api::NewOrderRequest request{};
@@ -104,6 +88,28 @@ oms::api::NewOrderRequest Request(std::uint64_t sequence,
   request.quantity = {quantity, 3, {}};
   request.price = {5000, 4, {}};
   return request;
+}
+
+oms::api::SubmitOrderRequest Submitted(
+    oms::api::NewOrderRequest request) {
+  oms::api::SubmitOrderRequest submitted{};
+  submitted.order = request;
+  submitted.routing.kind = oms::api::ExecutionRouteKind::Polymarket;
+  submitted.routing.venue =
+      static_cast<std::uint8_t>(utils::md::Venue::Polymarket);
+  submitted.routing.product_type =
+      static_cast<std::uint8_t>(utils::md::ProductType::BinaryOption);
+  submitted.routing.price_scale = 4;
+  submitted.routing.quantity_scale = 3;
+  submitted.routing.catalog_revision = 1;
+  submitted.routing.tick_size = 1;
+  submitted.routing.lot_size = 1;
+  submitted.routing.minimum_order_size = 1;
+  submitted.routing.signature_type = 3;
+  submitted.routing.outcome = oms::api::PolymarketOutcome::Yes;
+  submitted.routing.polymarket.condition_id[0] = 1;
+  submitted.routing.polymarket.token_id[0] = 2;
+  return submitted;
 }
 
 struct Updates {
@@ -129,24 +135,19 @@ struct Updates {
 };
 
 struct Harness {
-  oms::InstrumentRegistry registry;
   oms::OrderTable table;
   oms::StateEngine engine;
   Updates updates;
 
   explicit Harness(std::size_t capacity = 32,
                    std::size_t dedup_capacity = 64)
-      : table(capacity), engine(table, registry, dedup_capacity) {
-    const auto instrument = Instrument(1);
-    const auto trading = Trading(1);
-    REQUIRE(registry.Add(instrument, &trading) == oms::api::Error::Ok);
-    REQUIRE(registry.Freeze() == oms::api::Error::Ok);
-  }
+      : table(capacity), engine(table, dedup_capacity) {}
 
   oms::api::OrderHandle Submit(std::uint64_t sequence,
                                std::int64_t quantity = 10) {
     oms::api::OrderHandle handle{};
-    REQUIRE(engine.Submit(Request(sequence, quantity), handle, updates.sink()) ==
+    REQUIRE(engine.Submit(Submitted(Request(sequence, quantity)), handle,
+                          updates.sink()) ==
             oms::api::Error::Ok);
     return handle;
   }
@@ -169,68 +170,38 @@ oms::api::VenueEvent Fill(oms::api::OrderHandle handle, std::string_view trade,
   return event;
 }
 
-void TestRegistry() {
-  oms::InstrumentRegistry registry;
-  auto first = Instrument(1);
-  auto metadata = Trading(1, 9);
-  REQUIRE(registry.Add(first, &metadata) == oms::api::Error::Ok);
-  REQUIRE(registry.Add(first, &metadata) == oms::api::Error::Duplicate);
+void TestExecutionDirectory() {
+  oms::ExecutionDirectory directory(2);
+  auto first = Submitted(Request(1)).routing;
+  REQUIRE(directory.Register(1, first) == oms::api::Error::Ok);
+  const auto* entry = directory.Find(1);
+  REQUIRE(entry != nullptr);
+  REQUIRE(entry->lifecycle == oms::ExecutionDirectory::Lifecycle::Active);
+  REQUIRE(directory.Find(first) == 1);
+  REQUIRE(directory.FindPolymarketToken(first.polymarket.token_id) == 1);
+  REQUIRE(directory.Register(2, first) == oms::api::Error::Duplicate);
 
-  auto second = Instrument(2, "6:4:NO");
-  REQUIRE(registry.Add(second) == oms::api::Error::Ok);
-  REQUIRE(registry.Freeze() == oms::api::Error::Ok);
-  REQUIRE(registry.frozen());
-  REQUIRE(registry.Find(1) != nullptr);
-  REQUIRE(registry.IsTradeable(1));
-  REQUIRE(!registry.IsTradeable(2));
-  const auto* found = registry.FindTradingMetadata(1);
-  REQUIRE(found != nullptr);
-  REQUIRE(found->polymarket.condition_id[0] == 9);
-  REQUIRE(found->polymarket.condition_id[31] == 10);
-  REQUIRE(found->polymarket.token_id[0] == 11);
-  REQUIRE(found->polymarket.token_id[31] == 12);
-  for (std::size_t index = 0; index < found->polymarket.token_id.size();
-       ++index) {
-    REQUIRE(found->polymarket.token_id[index] ==
-            metadata.polymarket.token_id[index]);
-  }
-  REQUIRE(registry.Add(Instrument(3, "6:4:OTHER")) ==
-          oms::api::Error::Frozen);
-  REQUIRE(registry.Freeze() == oms::api::Error::Frozen);
+  auto second = first;
+  second.polymarket.token_id[0] = 3;
+  REQUIRE(directory.Register(2, second) == oms::api::Error::Ok);
+  auto third = first;
+  third.polymarket.token_id[0] = 4;
+  REQUIRE(directory.Register(3, third) ==
+          oms::api::Error::CapacityExceeded);
 
-  oms::InstrumentRegistry invalid;
-  auto missing_token = Trading(4);
-  missing_token.polymarket.token_id = {};
-  REQUIRE(invalid.Add(Instrument(4, "6:4:MISSING"), &missing_token) ==
-          oms::api::Error::InvalidArgument);
-  auto invalid_signature = Trading(5);
-  invalid_signature.polymarket.signature_type = 2;
-  REQUIRE(invalid.Add(Instrument(5, "6:4:SIG"), &invalid_signature) ==
-          oms::api::Error::InvalidArgument);
-  auto invalid_scale = Instrument(6, "6:4:SCALE");
-  invalid_scale.price_scale = 19;
-  REQUIRE(invalid.Add(invalid_scale) == oms::api::Error::InvalidScale);
-
-  oms::InstrumentRegistry duplicates;
-  REQUIRE(duplicates.Add(Instrument(7, "6:4:DUP")) == oms::api::Error::Ok);
-  REQUIRE(duplicates.Add(Instrument(8, "6:4:DUP")) ==
-          oms::api::Error::Duplicate);
-  auto mismatched = Trading(10);
-  REQUIRE(duplicates.Add(Instrument(9, "6:4:MISMATCH"), &mismatched) ==
-          oms::api::Error::Conflict);
-  auto binance = Instrument(10, "1:1:BTCUSDT");
-  binance.venue = utils::md::Venue::Binance;
-  binance.product_type = utils::md::ProductType::Spot;
-  auto wrong_metadata = Trading(10);
-  REQUIRE(duplicates.Add(binance, &wrong_metadata) ==
-          oms::api::Error::InvalidArgument);
+  REQUIRE(directory.Retire(1, true) == oms::api::Error::Deferred);
+  entry = directory.Find(1);
+  REQUIRE(entry != nullptr);
+  REQUIRE(entry->lifecycle == oms::ExecutionDirectory::Lifecycle::Retiring);
+  REQUIRE(directory.Retire(1, false) == oms::api::Error::Ok);
+  REQUIRE(directory.Find(1) == nullptr);
 }
 
 void TestOrderTableIndexesCapacityAndAba() {
   oms::OrderTable table(2);
   oms::api::OrderHandle first{};
   oms::api::OrderHandle second{};
-  REQUIRE(table.Insert(Request(1), first) == oms::api::Error::Ok);
+  REQUIRE(table.Insert(Submitted(Request(1)), first) == oms::api::Error::Ok);
   REQUIRE(table.Find(Token(1)) == table.Lookup(first));
   REQUIRE(table.Find(Request(1).client_order_id) == table.Lookup(first));
   const auto venue = MakeId<oms::api::VenueOrderId>("venue-1");
@@ -240,34 +211,35 @@ void TestOrderTableIndexesCapacityAndAba() {
   REQUIRE(table.BindVenueId(first, MakeId<oms::api::VenueOrderId>("other")) ==
           oms::api::Error::Conflict);
 
-  REQUIRE(table.Insert(Request(2), second) == oms::api::Error::Ok);
+  REQUIRE(table.Insert(Submitted(Request(2)), second) == oms::api::Error::Ok);
   REQUIRE(table.BindVenueId(second, venue) == oms::api::Error::Conflict);
   oms::api::OrderHandle unused{};
-  REQUIRE(table.Insert(Request(3), unused) ==
+  REQUIRE(table.Insert(Submitted(Request(3)), unused) ==
           oms::api::Error::CapacityExceeded);
   auto duplicate_token = Request(4);
   duplicate_token.token = Token(2);
   REQUIRE(table.Erase(first) == oms::api::Error::Ok);
   REQUIRE(table.Lookup(first) == nullptr);
   REQUIRE(table.Find(venue) == nullptr);
-  REQUIRE(table.Insert(Request(3), unused) == oms::api::Error::Ok);
+  REQUIRE(table.Insert(Submitted(Request(3)), unused) == oms::api::Error::Ok);
   REQUIRE(unused.slot == first.slot);
   REQUIRE(unused.generation != first.generation);
   REQUIRE(unused.generation != 0);
   REQUIRE(table.BindVenueId(first, venue) == oms::api::Error::StaleHandle);
-  REQUIRE(table.Insert(duplicate_token, first) == oms::api::Error::Conflict);
+  REQUIRE(table.Insert(Submitted(duplicate_token), first) ==
+          oms::api::Error::Conflict);
 }
 
-void TestPreparedRoutingIsFrozenOnOrder() {
+void TestRoutingIsFrozenOnOrder() {
   oms::OrderTable table(1);
-  oms::api::PreparedOrderRequest prepared{};
+  oms::api::SubmitOrderRequest prepared{};
   prepared.order = Request(91);
   prepared.routing.kind = oms::api::ExecutionRouteKind::Polymarket;
   prepared.routing.venue =
       static_cast<std::uint8_t>(utils::md::Venue::Polymarket);
   prepared.routing.product_type =
       static_cast<std::uint8_t>(utils::md::ProductType::BinaryOption);
-  prepared.routing.catalog_generation = 12;
+  prepared.routing.catalog_revision = 12;
   prepared.routing.price_scale = 2;
   prepared.routing.quantity_scale = 2;
   prepared.routing.tick_size = 1;
@@ -275,19 +247,19 @@ void TestPreparedRoutingIsFrozenOnOrder() {
   prepared.routing.minimum_order_size = 1;
   prepared.routing.signature_type = 3;
   prepared.routing.outcome = oms::api::PolymarketOutcome::Yes;
-  prepared.routing.condition_id[0] = 0x11;
-  prepared.routing.token_id[31] = 0x22;
+  prepared.routing.polymarket.condition_id[0] = 0x11;
+  prepared.routing.polymarket.token_id[31] = 0x22;
   oms::api::OrderHandle handle{};
   REQUIRE(table.Insert(prepared, handle) == oms::api::Error::Ok);
 
-  prepared.routing.catalog_generation = 13;
-  prepared.routing.condition_id[0] = 0x33;
-  prepared.routing.token_id[31] = 0x44;
+  prepared.routing.catalog_revision = 13;
+  prepared.routing.polymarket.condition_id[0] = 0x33;
+  prepared.routing.polymarket.token_id[31] = 0x44;
   const auto* stored = table.Lookup(handle);
   REQUIRE(stored != nullptr);
-  REQUIRE(stored->routing.catalog_generation == 12);
-  REQUIRE(stored->routing.condition_id[0] == 0x11);
-  REQUIRE(stored->routing.token_id[31] == 0x22);
+  REQUIRE(stored->routing.catalog_revision == 12);
+  REQUIRE(stored->routing.polymarket.condition_id[0] == 0x11);
+  REQUIRE(stored->routing.polymarket.token_id[31] == 0x22);
 }
 
 void TestSubmitValidationAndLocalReject() {
@@ -295,27 +267,33 @@ void TestSubmitValidationAndLocalReject() {
   auto bad = Request(1);
   bad.quantity.scale = 2;
   oms::api::OrderHandle handle{};
-  REQUIRE(harness.engine.Submit(bad, handle, harness.updates.sink()) ==
+  REQUIRE(harness.engine.Submit(Submitted(bad), handle,
+                                harness.updates.sink()) ==
           oms::api::Error::InvalidScale);
   bad = Request(2);
   bad.time_in_force = oms::api::TimeInForce::GTD;
-  REQUIRE(harness.engine.Submit(bad, handle, harness.updates.sink()) ==
+  REQUIRE(harness.engine.Submit(Submitted(bad), handle,
+                                harness.updates.sink()) ==
           oms::api::Error::InvalidArgument);
   bad = Request(3);
   bad.type = oms::api::OrderType::Market;
-  REQUIRE(harness.engine.Submit(bad, handle, harness.updates.sink()) ==
+  REQUIRE(harness.engine.Submit(Submitted(bad), handle,
+                                harness.updates.sink()) ==
           oms::api::Error::InvalidArgument);
   bad = Request(4);
   bad.side = static_cast<oms::api::Side>(99);
-  REQUIRE(harness.engine.Submit(bad, handle, harness.updates.sink()) ==
+  REQUIRE(harness.engine.Submit(Submitted(bad), handle,
+                                harness.updates.sink()) ==
           oms::api::Error::InvalidArgument);
   bad = Request(5);
   bad.time_in_force = static_cast<oms::api::TimeInForce>(99);
-  REQUIRE(harness.engine.Submit(bad, handle, harness.updates.sink()) ==
+  REQUIRE(harness.engine.Submit(Submitted(bad), handle,
+                                harness.updates.sink()) ==
           oms::api::Error::InvalidArgument);
   bad = Request(6);
   bad.flags = static_cast<std::uint16_t>(1U << 15U);
-  REQUIRE(harness.engine.Submit(bad, handle, harness.updates.sink()) ==
+  REQUIRE(harness.engine.Submit(Submitted(bad), handle,
+                                harness.updates.sink()) ==
           oms::api::Error::InvalidArgument);
 
   handle = harness.Submit(7);
@@ -417,7 +395,8 @@ void TestFillDuplicateConflictOverfillAndBounds() {
   auto request = Request(9, std::numeric_limits<std::int64_t>::max());
   request.price.value = std::numeric_limits<std::int64_t>::max();
   oms::api::OrderHandle wide_handle{};
-  REQUIRE(wide.engine.Submit(request, wide_handle, wide.updates.sink()) ==
+  REQUIRE(wide.engine.Submit(Submitted(request), wide_handle,
+                             wide.updates.sink()) ==
           oms::api::Error::Ok);
   REQUIRE(wide.engine.Apply(
               Fill(wide_handle, "wide", std::numeric_limits<std::int64_t>::max(),
@@ -682,7 +661,7 @@ void TestHotPathDoesNotAllocate() {
 
   tracked_allocations.store(0, std::memory_order_relaxed);
   track_allocations.store(true, std::memory_order_relaxed);
-  const auto submit = harness.engine.Submit(request, handle, sink);
+  const auto submit = harness.engine.Submit(Submitted(request), handle, sink);
   ack.handle = handle;
   fill.handle = handle;
   const auto accepted = harness.engine.Apply(ack, sink);
@@ -864,9 +843,9 @@ void TestFixtureManifestStructure() {
 
 int main() {
   const std::array tests{
-      &TestRegistry,
+      &TestExecutionDirectory,
       &TestOrderTableIndexesCapacityAndAba,
-      &TestPreparedRoutingIsFrozenOnOrder,
+      &TestRoutingIsFrozenOnOrder,
       &TestSubmitValidationAndLocalReject,
       &TestAckCancelAndEarlyCancel,
       &TestFillsBeforeAckLateAndSeparate,

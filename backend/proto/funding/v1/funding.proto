@@ -8,6 +8,7 @@ import "google/protobuf/timestamp.proto";
 
 service FundingService {
   rpc ListFundingRates(ListFundingRatesRequest) returns (ListFundingRatesResponse);
+  rpc BatchGetFundingRates(BatchGetFundingRatesRequest) returns (BatchGetFundingRatesResponse);
   rpc ListFundingSpreads(ListFundingSpreadsRequest) returns (ListFundingSpreadsResponse);
   rpc ListFundingOpportunities(ListFundingOpportunitiesRequest) returns (ListFundingOpportunitiesResponse);
   rpc GetFundingHistory(GetFundingHistoryRequest) returns (GetFundingHistoryResponse);
@@ -39,6 +40,9 @@ message FundingRate {
   google.protobuf.Timestamp source_updated_at = 21;
   bool stale = 22;
   repeated FundingHistoryPoint history = 23;
+  optional bool history_24h_complete = 24;
+  optional bool history_7d_complete = 25;
+  string venue_contract_type = 26;
 }
 
 message FundingHistoryPoint {
@@ -66,6 +70,12 @@ message FundingSpreadLeg {
   google.protobuf.Timestamp source_updated_at = 8;
   string last_price = 9;
   bool stale = 10;
+  string global_symbol = 11;
+  string base_asset = 12;
+  string quote_asset = 13;
+  optional bool history_24h_complete = 14;
+  optional bool history_7d_complete = 15;
+  string venue_contract_type = 16;
 }
 
 message FundingSpread {
@@ -81,6 +91,8 @@ message FundingSpread {
   bool stale = 10;
   string base_asset = 11;
   string quote_asset = 12;
+  optional bool history_24h_complete = 13;
+  optional bool history_7d_complete = 14;
 }
 
 message ListFundingSpreadsResponse {
@@ -107,14 +119,14 @@ message FundingOpportunityRanking {
   FundingSpreadLeg short_leg = 7;
   string current_mid_spread_bps = 8;
   string current_executable_spread_bps = 9;
-  string target_spread_bps = 10;
+  string target_spread_bps = 10 [deprecated = true];
   string period_expected_return = 11;
   string funding_expected_annualized = 12;
   string spread_expected_annualized = 13;
   string combined_expected_annualized = 14;
-  string first_passage_probability = 15;
+  string first_passage_probability = 15 [deprecated = true];
   string profit_probability = 16;
-  string expected_exit_minutes = 17;
+  string expected_exit_minutes = 17 [deprecated = true];
   string p5_return = 18;
   string min_position_notional_usd = 19;
   string min_turnover_24h_usd = 20;
@@ -123,6 +135,9 @@ message FundingOpportunityRanking {
   string model_state = 23;
   google.protobuf.Timestamp updated_at = 24;
   bool stale = 25;
+  int32 sample_count = 26;
+  string expected_payback_minutes = 27;
+  string payback_status = 28;
 }
 
 message ListFundingOpportunitiesResponse {
@@ -136,6 +151,29 @@ message ListFundingOpportunitiesResponse {
   google.protobuf.Timestamp last_successful_at = 8;
   google.protobuf.Timestamp data_through = 9;
   uint64 generation = 10;
+}
+
+message FundingRateLookupKey {
+  string exchange = 1;
+  string exchange_symbol = 2;
+  string base_asset = 3;
+  string quote_asset = 4;
+}
+
+message BatchGetFundingRatesRequest {
+  repeated FundingRateLookupKey keys = 1;
+}
+
+message FundingRateLookupResult {
+  FundingRateLookupKey key = 1;
+  string status = 2;
+  FundingRate item = 3;
+}
+
+message BatchGetFundingRatesResponse {
+  repeated FundingRateLookupResult results = 1;
+  string snapshot_version = 2;
+  google.protobuf.Timestamp server_time = 3;
 }
 
 message GetFundingHistoryRequest {

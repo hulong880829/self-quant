@@ -31,6 +31,23 @@ enum class AdapterEventType : std::uint8_t {
 
 enum class InputSide : std::uint8_t { None, Bid, Ask };
 
+enum class IgnoreReason : std::uint8_t {
+  None,
+  OneSidedBook,
+};
+
+enum class SubscribeErrorKind : std::uint8_t {
+  Unknown,
+  SymbolUnavailable,
+  TransientRateLimit,
+};
+
+enum class SubscriptionStream : std::uint8_t {
+  Unknown,
+  Ticker,
+  Orderbook,
+};
+
 enum class ParseFailureCategory : std::uint8_t {
   None,
   DirtyData,
@@ -56,6 +73,7 @@ enum class ParseFailureCode : std::uint16_t {
   SequenceDiscontinuity,
   UnsupportedMessage,
   MetadataUnavailable,
+  ScaleMismatch,
 };
 
 struct ParseFailure {
@@ -148,6 +166,10 @@ struct NormalizedEvent {
   std::uint64_t final_sequence{};
   std::uint64_t previous_sequence{};
   std::uint64_t exchange_time_ms{};
+  IgnoreReason ignore_reason{IgnoreReason::None};
+  SubscribeErrorKind subscribe_error_kind{SubscribeErrorKind::Unknown};
+  SubscriptionStream subscription_stream{SubscriptionStream::Unknown};
+  std::uint8_t normalized_tail_fields{};
   utils::md::Level bid{};
   utils::md::Level ask{};
   std::vector<utils::md::Level> bids;
@@ -170,6 +192,10 @@ struct NormalizedEvent {
     final_sequence = 0;
     previous_sequence = 0;
     exchange_time_ms = 0;
+    ignore_reason = IgnoreReason::None;
+    subscribe_error_kind = SubscribeErrorKind::Unknown;
+    subscription_stream = SubscriptionStream::Unknown;
+    normalized_tail_fields = 0;
     bid = {};
     ask = {};
     bids.clear();
@@ -186,6 +212,11 @@ struct NormalizedEvent {
   }
 };
 
+[[nodiscard]] bool decimal_scale_mismatch(
+    std::string_view value, std::uint8_t configured_scale) noexcept;
+[[nodiscard]] bool classify_scale_mismatch(
+    const NormalizedEvent &event, ParseFailure &failure) noexcept;
+
 struct HttpRequestSpec {
   enum class Method : std::uint8_t { Get, Post };
   Method method{Method::Get};
@@ -198,6 +229,19 @@ struct MetadataRequestBatch {
   HttpRequestSpec http;
   std::size_t request_offset{};
   std::size_t request_count{};
+  bool cursor_paginated{};
+  std::string page_cursor;
+};
+
+enum class MetadataResponseKind : std::uint8_t {
+  Success,
+  SymbolUnavailable,
+  ConnectionFailure,
+};
+
+struct MetadataResponse {
+  MetadataResponseKind kind{MetadataResponseKind::ConnectionFailure};
+  std::string reason;
 };
 
 enum class HeartbeatKind : std::uint8_t {
@@ -230,6 +274,10 @@ class VenueAdapter {
       ++count;
     }
     return count == 0 ? 1 : count;
+  }
+  [[nodiscard]] virtual std::size_t subscription_send_window()
+      const noexcept {
+    return 1;
   }
 
   virtual bool build_subscription_batches(
@@ -295,6 +343,21 @@ class VenueAdapter {
     error.clear();
     return true;
   }
+  virtual bool discovery_metadata_next_cursor(
+      std::string_view request_cursor, std::string_view json,
+      std::string &cursor, std::string &error) {
+    (void)request_cursor;
+    return discovery_metadata_next_cursor(json, cursor, error);
+  }
+  [[nodiscard]] virtual bool discovery_page_is_optional(
+      std::string_view cursor) const noexcept {
+    (void)cursor;
+    return false;
+  }
+  [[nodiscard]] virtual bool
+  discovery_metadata_includes_turnover() const noexcept {
+    return false;
+  }
   virtual bool build_metadata_request_batches(
       std::span<const StreamRequest> requests,
       std::vector<MetadataRequestBatch> &batches,
@@ -304,9 +367,37 @@ class VenueAdapter {
       return false;
     }
     std::vector<MetadataRequestBatch> built;
-    built.push_back(
-        {metadata_request(requests), 0, requests.size()});
+    built.push_back({metadata_request(requests), 0, requests.size(), false,
+                     {}});
     batches = std::move(built);
+    error.clear();
+    return true;
+  }
+  virtual bool build_bootstrap_metadata_request_batches(
+      std::span<const StreamRequest> requests,
+      std::vector<MetadataRequestBatch> &batches,
+      std::string &error) const {
+    return build_metadata_request_batches(requests, batches, error);
+  }
+  virtual bool apply_metadata_page_cursor(
+      MetadataRequestBatch &batch, std::string_view cursor,
+      std::string &error) const {
+    (void)batch;
+    (void)cursor;
+    error = "metadata pagination is not supported";
+    return false;
+  }
+  virtual bool metadata_page_list_empty(
+      std::string_view json, bool &empty, std::string &error) {
+    (void)json;
+    empty = false;
+    error.clear();
+    return true;
+  }
+  virtual bool metadata_page_repeated_venue_symbol(
+      std::string_view json, std::string &symbol, std::string &error) {
+    (void)json;
+    symbol.clear();
     error.clear();
     return true;
   }
@@ -314,10 +405,44 @@ class VenueAdapter {
       std::string_view json, std::span<const StreamRequest> requests,
       std::vector<InstrumentMetadata> &metadata,
       std::string &error) = 0;
+  virtual bool upsert_metadata(
+      std::string_view json, std::span<const StreamRequest> requests,
+      std::vector<InstrumentMetadata> &metadata,
+      std::string &error) {
+    (void)json;
+    (void)requests;
+    (void)metadata;
+    error = "incremental venue metadata refresh is unsupported";
+    return false;
+  }
   virtual bool parse_discovery_metadata(
       std::string_view json, std::span<const StreamRequest> requests,
       std::vector<InstrumentMetadata> &metadata, std::string &error) {
     return parse_metadata(json, requests, metadata, error);
+  }
+  virtual MetadataResponse parse_metadata_response(
+      std::string_view json, std::span<const StreamRequest> requests,
+      std::vector<InstrumentMetadata> &metadata) {
+    std::string error;
+    if (!parse_discovery_metadata(json, requests, metadata, error)) {
+      return {MetadataResponseKind::ConnectionFailure,
+              error.empty() ? "failed to parse venue metadata"
+                            : std::move(error)};
+    }
+    if (requests.size() == 1) {
+      const auto &request = requests.front();
+      const bool found = std::any_of(
+          metadata.begin(), metadata.end(),
+          [&request](const InstrumentMetadata &instrument) {
+            return instrument.venue_symbol == request.venue_symbol ||
+                   instrument.canonical_symbol == request.canonical_symbol;
+          });
+      if (!found) {
+        return {MetadataResponseKind::SymbolUnavailable,
+                "successful exact metadata lookup omitted requested symbol"};
+      }
+    }
+    return {MetadataResponseKind::Success, {}};
   }
   [[nodiscard]] virtual HttpRequestSpec
   discovery_turnover_request() const {

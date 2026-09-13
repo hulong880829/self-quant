@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/reflection"
 	accountv1 "selfquant/backend/gen/account/v1"
 	traderv1 "selfquant/backend/gen/trader/v1"
+	"selfquant/backend/internal/account/portfolio"
 	"selfquant/backend/internal/config"
 	"selfquant/backend/internal/database"
 	traderrpc "selfquant/backend/internal/rpc"
@@ -38,7 +39,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := database.Open(ctx, cfg.DatabaseURL)
+	pool, err := database.OpenWithOptions(ctx, cfg.DatabaseURL, database.OpenOptions{
+		ApplicationName: "selfquant-trader-service",
+	})
 	if err != nil {
 		logger.Error("trader database startup failed", "error", err)
 		os.Exit(1)
@@ -60,7 +63,17 @@ func main() {
 	venues := exchange.NewRegistry(&http.Client{Timeout: cfg.HTTPTimeout}, map[string]string{
 		"binance": cfg.BinanceURL, "okx": cfg.OKXURL, "bybit": cfg.BybitURL,
 		"bitget": cfg.BitgetURL, "gate": cfg.GateURL,
+		"hyperliquid": cfg.HyperliquidURL, "aster": cfg.AsterURL, "lighter": cfg.LighterURL,
 	})
+	defer venues.Close()
+	portfolios := portfolio.NewRegistry(
+		&http.Client{Timeout: cfg.HTTPTimeout},
+		map[string]string{
+			"binance": cfg.BinanceURL, "okx": cfg.OKXURL, "bybit": cfg.BybitURL,
+			"bitget": cfg.BitgetURL, "gate": cfg.GateURL,
+			"hyperliquid": cfg.HyperliquidURL, "aster": cfg.AsterURL, "lighter": cfg.LighterURL,
+		},
+	)
 	service := trader.NewService(
 		repository,
 		catalog,
@@ -71,6 +84,8 @@ func main() {
 	)
 	service.ConfigureTwap(repository)
 	service.ConfigureArbitrage(repository)
+	service.ConfigureArbitrageExchanges(cfg.ArbitrageEnabledExchanges)
+	service.ConfigureArbitragePositionSnapshots(portfolios)
 	reconciler := trader.NewReconciler(
 		repository, catalog, credentialProvider, venues, cfg.InternalToken,
 		cfg.ReconcileInterval, cfg.HTTPTimeout, cfg.ReconcileBatchSize,
@@ -87,56 +102,100 @@ func main() {
 		cfg.TwapCleanupBatch, cfg.TwapCleanupMaxBatches, logger,
 	)
 	go twapCleanup.Run(ctx)
+	marketDataConnector := marketdata.NewWebSocketConnector(marketdata.ConnectorOptions{
+		Heartbeat: cfg.ArbitrageBBOHeartbeat,
+		ReadWait:  cfg.ArbitrageBBOReadWait,
+		WriteWait: cfg.ArbitrageBBOWriteWait,
+		AckWait:   cfg.ArbitrageBBOAckWait,
+	})
 	marketData, err := marketdata.New(marketdata.Options{
-		StaleAfter: cfg.ArbitrageBBOStale,
-		Logger:     logger,
+		Connector:        marketDataConnector,
+		StaleAfter:       cfg.ArbitrageBBOStale,
+		ReconnectInitial: cfg.ArbitrageBBOReconnectInitial,
+		ReconnectMax:     cfg.ArbitrageBBOReconnectMax,
+		Logger:           logger,
 	})
 	if err != nil {
 		logger.Error("arbitrage market data startup failed", "error", err)
 		os.Exit(1)
 	}
 	defer marketData.Close()
-	var orderStreams *orderstream.Manager
-	if cfg.ArbitrageOrderStreamEnabled {
-		urls := orderstream.DefaultURLs()
-		overrideOrderWSURL(&urls.Binance, cfg.BinanceOrderWSURL)
-		overrideOrderWSURL(&urls.OKX, cfg.OKXOrderWSURL)
-		overrideOrderWSURL(&urls.Bybit, cfg.BybitOrderWSURL)
-		overrideOrderWSURL(&urls.Bitget, cfg.BitgetOrderWSURL)
-		overrideOrderWSURL(&urls.Gate, cfg.GateOrderWSURL)
-		orderStreams, err = orderstream.New(orderstream.Options{
-			URLs: urls, HTTPClient: &http.Client{Timeout: cfg.HTTPTimeout},
-			Heartbeat: cfg.OrderStreamHeartbeat, StaleAfter: cfg.OrderStreamStale,
-			ListenKeyRefresh: cfg.OrderStreamListenKeyRefresh,
-			ReconnectInitial: cfg.OrderStreamReconnectInitial,
-			ReconnectMax:     cfg.OrderStreamReconnectMax,
-			IdleTimeout:      cfg.OrderStreamSessionIdle,
-		})
-		if err != nil {
-			logger.Error("arbitrage private order stream startup failed", "error", err)
-			os.Exit(1)
-		}
-		defer orderStreams.Close()
+	urls := orderstream.DefaultURLs()
+	overrideOrderWSURL(&urls.Binance, cfg.BinanceOrderWSURL)
+	overrideOrderWSURL(&urls.OKX, cfg.OKXOrderWSURL)
+	overrideOrderWSURL(&urls.Bybit, cfg.BybitOrderWSURL)
+	overrideOrderWSURL(&urls.Bitget, cfg.BitgetOrderWSURL)
+	overrideOrderWSURL(&urls.Gate, cfg.GateOrderWSURL)
+	overrideOrderWSURL(&urls.Hyperliquid, cfg.HyperliquidOrderWSURL)
+	overrideOrderWSURL(&urls.Aster, cfg.AsterOrderWSURL)
+	overrideOrderWSURL(&urls.Lighter, cfg.LighterOrderWSURL)
+	orderStreams, err := orderstream.New(orderstream.Options{
+		URLs: urls, HTTPClient: &http.Client{Timeout: cfg.HTTPTimeout},
+		Heartbeat: cfg.OrderStreamHeartbeat, StaleAfter: cfg.OrderStreamStale,
+		ListenKeyRefresh: cfg.OrderStreamListenKeyRefresh,
+		ReconnectInitial: cfg.OrderStreamReconnectInitial,
+		ReconnectMax:     cfg.OrderStreamReconnectMax,
+		IdleTimeout:      cfg.OrderStreamSessionIdle,
+		Logger:           logger,
+	})
+	if err != nil {
+		logger.Error("private order stream startup failed", "error", err)
+		os.Exit(1)
 	}
+	defer orderStreams.Close()
 	reconciler.ConfigureOrderStreams(orderStreams, cfg.OrderStreamRESTAudit)
 	go reconciler.Run(ctx)
+	positionAuditor := trader.NewArbitragePositionAuditor(
+		repository, catalog, credentialProvider, portfolios, cfg.InternalToken,
+		time.Minute, cfg.HTTPTimeout, cfg.ReconcileBatchSize, logger,
+	)
+	positionAuditor.ConfigureDEXFillReaders(venues)
 	arbitrageExecutor := trader.NewArbitrageExecutor(
 		repository, repository, service, catalog, credentialProvider, venues, marketData,
 		cfg.InternalToken, cfg.ArbitrageObserverInterval, cfg.ArbitrageRepriceTicks,
-		cfg.ArbitrageIOCProtectionTicks, cfg.ArbitrageIOCRetries, cfg.HTTPTimeout, logger,
+		cfg.ArbitrageIOCProtectionBps, cfg.ArbitrageIOCRetries, cfg.HTTPTimeout, logger,
 	)
-	arbitrageExecutor.ConfigureOrderStreams(orderStreams, cfg.OrderStreamRESTAudit)
+	var arbitrageOrderStreams *orderstream.Manager
+	if cfg.ArbitrageOrderStreamEnabled {
+		arbitrageOrderStreams = orderStreams
+	}
+	service.ConfigureOrderStreams(arbitrageOrderStreams)
+	arbitrageExecutor.ConfigureOrderStreams(arbitrageOrderStreams, cfg.OrderStreamRESTAudit)
+	arbitrageExecutor.ConfigurePortfolios(portfolios)
+	arbitrageExecutor.ConfigureHedgeEmergencyAfter(cfg.ArbitrageHedgeEmergencyAfter)
+	arbitragePositionMetrics := trader.NewArbitragePositionMetricsWorker(
+		repository, marketData, logger,
+	)
+	arbitragePositionMetrics.ConfigureFillAverageCompensator(
+		trader.NewHyperliquidArbitrageFillAverageCompensator(
+			repository, catalog, credentialProvider, venues,
+			cfg.InternalToken, cfg.HTTPTimeout, logger,
+		),
+	)
 	arbitrageScheduler := trader.NewArbitrageScheduler(
 		repository, marketData, arbitrageExecutor,
-		cfg.ArbitrageScheduleInterval, cfg.ArbitrageScheduleLease,
+		cfg.ArbitrageControlInterval, cfg.ArbitrageCoalesceWindow,
+		cfg.ArbitrageScheduleLease,
 		cfg.ArbitrageScheduleBatch, cfg.ArbitrageScheduleWorkers,
 		cfg.ArbitrageMaxActiveAccount, cfg.ArbitrageMaxActiveVenue,
 		cfg.ArbitrageDryRun, logger,
 	)
+	arbitrageScheduler.ConfigureArbitrageInstruments(catalog)
+	arbitrageScheduler.ConfigureArbitrageExchanges(cfg.ArbitrageEnabledExchanges)
+	arbitrageScheduler.ConfigureSignalBBOStale(cfg.ArbitrageSignalBBOStale)
+	arbitrageExecutor.ConfigureSignalBBOStale(cfg.ArbitrageSignalBBOStale)
+	service.ConfigureArbitrageValuations(arbitrageScheduler)
+	positionAuditor.ConfigureArbitrageValuations(arbitrageScheduler)
+	arbitrageScheduler.ConfigureRuntimeLifecycle(arbitragePositionMetrics)
+	arbitrageScheduler.StartBatchers(ctx)
 	go arbitrageScheduler.Run(ctx)
+	go arbitragePositionMetrics.Run(ctx)
+	go trader.NewArbitrageFunding8hExitWorker(repository, logger).Run(ctx)
+	go positionAuditor.Run(ctx)
 	arbitrageMetrics := trader.NewArbitrageMetricsReporter(
-		arbitrageScheduler, marketData, orderStreams, arbitrageExecutor, time.Minute, logger,
+		arbitrageScheduler, marketData, arbitrageOrderStreams, arbitrageExecutor, time.Minute, logger,
 	)
+	arbitrageMetrics.ConfigureRepositorySQLStats(repository)
 	go arbitrageMetrics.Run(ctx)
 	arbitrageCleanup := trader.NewArbitrageCleanup(
 		repository, cfg.ArbitrageRetention, cfg.ArbitrageCleanupInterval,

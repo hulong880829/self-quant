@@ -33,15 +33,34 @@ func parseBinanceSpotInstruments(payload binanceExchangeInfo) []Instrument {
 		if item.Status != "TRADING" {
 			continue
 		}
-		var tick, step float64
+		var tick, step, minQuantity, minNotional float64
+		var maxQuantity, marketStep, marketMinQuantity, marketMaxQuantity string
+		var minNotionalRaw string
+		minQuantityStatus, minNotionalStatus := ConstraintUnknown, ConstraintUnknown
+		maxQuantityStatus := ConstraintUnknown
+		marketStepStatus, marketMinQuantityStatus := ConstraintUnknown, ConstraintUnknown
+		marketMaxQuantityStatus := ConstraintUnknown
 		for _, filter := range item.Filters {
 			switch filter.FilterType {
 			case "PRICE_FILTER":
 				tick, _ = parseFloat(filter.TickSize)
 			case "LOT_SIZE":
 				step, _ = parseFloat(filter.StepSize)
+				minQuantity, minQuantityStatus = knownConstraint(filter.MinQty)
+				maxQuantity, maxQuantityStatus = maximumDecimalConstraint(filter.MaxQty)
+			case "MARKET_LOT_SIZE":
+				marketStep, marketStepStatus = knownDecimalConstraint(filter.StepSize)
+				marketMinQuantity, marketMinQuantityStatus = knownDecimalConstraint(filter.MinQty)
+				marketMaxQuantity, marketMaxQuantityStatus = maximumDecimalConstraint(filter.MaxQty)
+			case "MIN_NOTIONAL", "NOTIONAL":
+				minNotionalRaw = filter.MinNotional
+				if minNotionalRaw == "" {
+					minNotionalRaw = filter.Notional
+				}
+				minNotional, minNotionalStatus = knownConstraint(minNotionalRaw)
 			}
 		}
+		marketMinNotional, marketMinNotionalStatus := knownDecimalConstraint(minNotionalRaw)
 		metadata, _ := json.Marshal(item)
 		result = append(result, Instrument{
 			Exchange: "binance", ExchangeSymbol: item.Symbol,
@@ -49,6 +68,13 @@ func parseBinanceSpotInstruments(payload binanceExchangeInfo) []Instrument {
 			GlobalSymbol: GlobalSymbol(item.BaseAsset, item.QuoteAsset),
 			SettleAsset:  item.QuoteAsset, ContractType: ContractTypeSpot,
 			Status: "active", ContractSize: 1, PriceTick: tick, QuantityStep: step,
+			MinQuantity: minQuantity, MinNotional: minNotional,
+			MinQuantityStatus: minQuantityStatus, MinNotionalStatus: minNotionalStatus,
+			MaxQuantity: maxQuantity, MaxQuantityStatus: maxQuantityStatus,
+			MarketQuantityStep: marketStep, MarketQuantityStepStatus: marketStepStatus,
+			MarketMinQuantity: marketMinQuantity, MarketMinQuantityStatus: marketMinQuantityStatus,
+			MarketMaxQuantity: marketMaxQuantity, MarketMaxQuantityStatus: marketMaxQuantityStatus,
+			MarketMinNotional: marketMinNotional, MarketMinNotionalStatus: marketMinNotionalStatus,
 			Metadata: metadata, SourceUpdatedAt: time.Now().UTC(),
 		})
 	}
@@ -62,28 +88,57 @@ type binanceExchangeInfo struct {
 		Symbol, BaseAsset, QuoteAsset, MarginAsset, Status, ContractType string
 		ContractSize                                                     float64 `json:"contractSize"`
 		Filters                                                          []struct {
-			FilterType string `json:"filterType"`
-			TickSize   string `json:"tickSize"`
-			StepSize   string `json:"stepSize"`
+			FilterType  string `json:"filterType"`
+			TickSize    string `json:"tickSize"`
+			StepSize    string `json:"stepSize"`
+			MinQty      string `json:"minQty"`
+			MaxQty      string `json:"maxQty"`
+			MinNotional string `json:"minNotional"`
+			Notional    string `json:"notional"`
 		} `json:"filters"`
 	}
+}
+
+func binanceLinearPerpetual(contractType string) bool {
+	return contractType == "PERPETUAL" || contractType == "TRADIFI_PERPETUAL"
 }
 
 func parseBinanceInstruments(payload binanceExchangeInfo) []Instrument {
 	result := make([]Instrument, 0, len(payload.Symbols))
 	for _, item := range payload.Symbols {
-		if item.Status != "TRADING" || item.ContractType != "PERPETUAL" {
+		if item.Status != "TRADING" || !binanceLinearPerpetual(item.ContractType) {
 			continue
 		}
-		var tick, step float64
+		var tick, step, minQuantity, minNotional float64
+		var maxQuantity, marketStep, marketMinQuantity, marketMaxQuantity string
+		var minNotionalRaw string
+		minQuantityStatus, minNotionalStatus := ConstraintUnknown, ConstraintUnknown
+		maxQuantityStatus := ConstraintUnknown
+		marketStepStatus, marketMinQuantityStatus := ConstraintUnknown, ConstraintUnknown
+		marketMaxQuantityStatus := ConstraintUnknown
 		for _, filter := range item.Filters {
 			if filter.FilterType == "PRICE_FILTER" {
 				tick, _ = parseFloat(filter.TickSize)
 			}
 			if filter.FilterType == "LOT_SIZE" {
 				step, _ = parseFloat(filter.StepSize)
+				minQuantity, minQuantityStatus = knownConstraint(filter.MinQty)
+				maxQuantity, maxQuantityStatus = maximumDecimalConstraint(filter.MaxQty)
+			}
+			if filter.FilterType == "MARKET_LOT_SIZE" {
+				marketStep, marketStepStatus = knownDecimalConstraint(filter.StepSize)
+				marketMinQuantity, marketMinQuantityStatus = knownDecimalConstraint(filter.MinQty)
+				marketMaxQuantity, marketMaxQuantityStatus = maximumDecimalConstraint(filter.MaxQty)
+			}
+			if filter.FilterType == "MIN_NOTIONAL" || filter.FilterType == "NOTIONAL" {
+				minNotionalRaw = filter.MinNotional
+				if minNotionalRaw == "" {
+					minNotionalRaw = filter.Notional
+				}
+				minNotional, minNotionalStatus = knownConstraint(minNotionalRaw)
 			}
 		}
+		marketMinNotional, marketMinNotionalStatus := knownDecimalConstraint(minNotionalRaw)
 		metadata := instrumentMetadata(item, "linear", "base")
 		result = append(result, Instrument{
 			Exchange: "binance", ExchangeSymbol: item.Symbol,
@@ -92,6 +147,13 @@ func parseBinanceInstruments(payload binanceExchangeInfo) []Instrument {
 			IntervalHours: 8, SettleAsset: item.MarginAsset,
 			ContractType: "perpetual", Status: "active",
 			ContractSize: 1, PriceTick: tick, QuantityStep: step,
+			MinQuantity: minQuantity, MinNotional: minNotional,
+			MinQuantityStatus: minQuantityStatus, MinNotionalStatus: minNotionalStatus,
+			MaxQuantity: maxQuantity, MaxQuantityStatus: maxQuantityStatus,
+			MarketQuantityStep: marketStep, MarketQuantityStepStatus: marketStepStatus,
+			MarketMinQuantity: marketMinQuantity, MarketMinQuantityStatus: marketMinQuantityStatus,
+			MarketMaxQuantity: marketMaxQuantity, MarketMaxQuantityStatus: marketMaxQuantityStatus,
+			MarketMinNotional: marketMinNotional, MarketMinNotionalStatus: marketMinNotionalStatus,
 			Metadata: metadata, SourceUpdatedAt: time.Now().UTC(),
 		})
 	}
@@ -105,13 +167,18 @@ func parseBinanceCoinInstruments(payload binanceExchangeInfo) []Instrument {
 			item.ContractSize <= 0 {
 			continue
 		}
-		var tick, step float64
+		var tick, step, minQuantity, minNotional float64
+		minQuantityStatus, minNotionalStatus := ConstraintUnknown, ConstraintUnknown
 		for _, filter := range item.Filters {
 			if filter.FilterType == "PRICE_FILTER" {
 				tick, _ = parseFloat(filter.TickSize)
 			}
 			if filter.FilterType == "LOT_SIZE" {
 				step, _ = parseFloat(filter.StepSize)
+				minQuantity, minQuantityStatus = knownConstraint(filter.MinQty)
+			}
+			if filter.FilterType == "MIN_NOTIONAL" || filter.FilterType == "NOTIONAL" {
+				minNotional, minNotionalStatus = knownConstraint(filter.MinNotional)
 			}
 		}
 		result = append(result, Instrument{
@@ -121,6 +188,8 @@ func parseBinanceCoinInstruments(payload binanceExchangeInfo) []Instrument {
 			IntervalHours: 8, SettleAsset: item.MarginAsset,
 			ContractType: ContractTypePerpetual, Status: "active",
 			ContractSize: item.ContractSize, PriceTick: tick, QuantityStep: step,
+			MinQuantity: minQuantity, MinNotional: minNotional,
+			MinQuantityStatus: minQuantityStatus, MinNotionalStatus: minNotionalStatus,
 			Metadata:        instrumentMetadata(item, "inverse", "contracts"),
 			SourceUpdatedAt: time.Now().UTC(),
 		})

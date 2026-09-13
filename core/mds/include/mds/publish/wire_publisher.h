@@ -35,6 +35,9 @@ public:
   [[nodiscard]] std::uint64_t current_bus_seq() const noexcept {
     return current_bus_seq_;
   }
+  [[nodiscard]] std::uint64_t bbo_origin_missing() const noexcept {
+    return bbo_origin_missing_;
+  }
   [[nodiscard]] std::uint32_t reader_registry_generation() const noexcept;
   void set_mirror(WirePublisher *mirror) noexcept { mirror_ = mirror; }
   std::size_t reclaim_stale_readers(std::uint64_t now_ns,
@@ -112,6 +115,7 @@ private:
   std::optional<transport::SharedRing> owned_ring_{};
   transport::SharedRing *ring_{};
   std::uint64_t current_bus_seq_{};
+  std::uint64_t bbo_origin_missing_{};
   bool bus_seq_exhausted_{};
   std::uint32_t observed_registry_generation_{};
   void *reader_change_context_{};
