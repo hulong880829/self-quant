@@ -960,7 +960,8 @@ func (r *Repository) ListOneShotFunding8hExitRows(
 			SELECT id, version, entry_direction,
 			       trim_scale(early_exit_funding_8h_annualized_floor)::text AS floor,
 			       leg_a_instrument_id, leg_b_instrument_id,
-			       leg_a_contract_type, leg_b_contract_type
+			       leg_a_contract_type, leg_b_contract_type,
+			       target_reached_at
 			FROM trader_arbitrage_combinations
 			WHERE status='running'
 			  AND run_mode='one_shot'
@@ -969,15 +970,16 @@ func (r *Repository) ListOneShotFunding8hExitRows(
 		), legs AS (
 			SELECT id, version, entry_direction, floor, 'a'::text AS leg,
 			       leg_a_instrument_id AS instrument_id,
-			       leg_a_contract_type AS contract_type
+			       leg_a_contract_type AS contract_type,
+			       target_reached_at
 			FROM candidates
 			UNION ALL
 			SELECT id, version, entry_direction, floor, 'b',
-			       leg_b_instrument_id, leg_b_contract_type
+			       leg_b_instrument_id, leg_b_contract_type, target_reached_at
 			FROM candidates
 		)
 		SELECT l.id::text, l.version, COALESCE(l.entry_direction,''), l.floor,
-		       l.leg, l.contract_type,
+		       l.leg, l.contract_type, l.target_reached_at,
 		       f.funding_time, f.funding_rate::text, f.interval_hours::text
 		FROM legs l
 		LEFT JOIN funding_rates f
@@ -1002,7 +1004,7 @@ func (r *Repository) ListOneShotFunding8hExitRows(
 		var row funding8hExitRow
 		if scanErr := rows.Scan(
 			&row.CombinationID, &row.Version, &row.EntryDirection, &row.Floor,
-			&row.Leg, &row.ContractType,
+			&row.Leg, &row.ContractType, &row.TargetReachedAt,
 			&row.FundingTime, &row.FundingRate, &row.IntervalHours,
 		); scanErr != nil {
 			return nil, scanErr

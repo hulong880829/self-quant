@@ -98,10 +98,11 @@ func TestEvaluateFunding8hAskBidAndSpot(t *testing.T) {
 	end := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 	start := end.Add(-8 * time.Hour)
 	combo := funding8hCombo{
-		EntryDirection: "ask",
-		Floor:          "0.05",
-		LegAType:       "perpetual",
-		LegBType:       "perpetual",
+		EntryDirection:  "ask",
+		Floor:           "0.05",
+		TargetReachedAt: funding8hTimePtr(start),
+		LegAType:        "perpetual",
+		LegBType:        "perpetual",
 		LegA: []funding8hPoint{
 			funding8hPt(start, "1", "8"),
 			funding8hPt(end, "0.0001", "8"),
@@ -169,13 +170,35 @@ func TestEvaluateFunding8hCoverage(t *testing.T) {
 	})
 
 	t.Run("6h periods", func(t *testing.T) {
+		end := time.Date(2026, 9, 9, 11, 59, 0, 0, time.UTC)
+		start := end.Add(-8 * time.Hour)
+		combo := funding8hCombo{
+			EntryDirection: "ask", Floor: "1",
+			TargetReachedAt: funding8hTimePtr(start),
+			LegAType:        "perpetual", LegBType: "perpetual",
+			LegA: []funding8hPoint{
+				funding8hPt(time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC), "1", "6"),
+				funding8hPt(time.Date(2026, 9, 9, 6, 0, 0, 0, time.UTC), "0.0002", "6"),
+			},
+			LegB: []funding8hPoint{
+				funding8hPt(start, "0", "8"),
+				funding8hPt(end, "0", "8"),
+			},
+		}
+		result := evaluateFunding8hExit(combo, start, end)
+		if !result.OK || !result.CumA.Equal(decimal.RequireFromString("0.0002")) {
+			t.Fatalf("6h=%+v", result)
+		}
+	})
+
+	t.Run("next expected equal to window end is incomplete", func(t *testing.T) {
 		combo := perpCombo(
 			funding8hPt(start.Add(-4*time.Hour), "1", "6"),
 			funding8hPt(start.Add(2*time.Hour), "0.0002", "6"),
 		)
 		result := evaluateFunding8hExit(combo, start, end)
-		if !result.OK || !result.CumA.Equal(decimal.RequireFromString("0.0002")) {
-			t.Fatalf("6h=%+v", result)
+		if result.OK || result.Trigger {
+			t.Fatalf("equality boundary=%+v", result)
 		}
 	})
 
@@ -261,7 +284,8 @@ func TestEvaluateFunding8hDoesNotTriggerWhenIncomplete(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			combo := funding8hCombo{
 				EntryDirection: "ask", Floor: "0.05",
-				LegAType: "perpetual", LegBType: "perpetual",
+				TargetReachedAt: funding8hTimePtr(start),
+				LegAType:        "perpetual", LegBType: "perpetual",
 				LegA: tc.legA, LegB: completeB,
 			}
 			result := evaluateFunding8hExit(combo, start, end)
@@ -273,7 +297,8 @@ func TestEvaluateFunding8hDoesNotTriggerWhenIncomplete(t *testing.T) {
 
 	missing := funding8hCombo{
 		EntryDirection: "ask", Floor: "0.05",
-		LegAType: "perpetual", LegBType: "perpetual",
+		TargetReachedAt: funding8hTimePtr(start),
+		LegAType:        "perpetual", LegBType: "perpetual",
 		LegA: nil, LegB: completeB,
 	}
 	if result := evaluateFunding8hExit(missing, start, end); result.OK || result.Trigger {
@@ -288,11 +313,241 @@ func TestGroupFunding8hExitRowsSkipsDuplicateKeys(t *testing.T) {
 	row := funding8hExitRow{
 		CombinationID: "combo-1", Version: 3, EntryDirection: "ask", Floor: "0.05",
 		Leg: "a", ContractType: "perpetual", FundingTime: &at, FundingRate: &rate,
-		IntervalHours: &hours,
+		IntervalHours: &hours, TargetReachedAt: funding8hTimePtr(at.Add(-time.Hour)),
 	}
 	_, duplicates := groupFunding8hExitRows([]funding8hExitRow{row, row})
 	if _, ok := duplicates["combo-1"]; !ok {
 		t.Fatal("expected duplicate skip")
+	}
+}
+
+func TestEvaluateFunding8hIncidentDueSettlementIncomplete(t *testing.T) {
+	end := funding8hIncidentEnd
+	start := end.Add(-funding8hWindow)
+	combo := funding8hIncidentCombo(false)
+	result := evaluateFunding8hExit(combo, start, end)
+	if result.OK || result.Trigger {
+		t.Fatalf("missing 06:00=%+v", result)
+	}
+}
+
+func TestEvaluateFunding8hIncidentAfterIngestDoesNotTrigger(t *testing.T) {
+	end := time.Date(2026, 9, 10, 6, 12, 0, 0, time.UTC)
+	start := end.Add(-funding8hWindow)
+	combo := funding8hIncidentCombo(true)
+	result := evaluateFunding8hExit(combo, start, end)
+	wantA := decimal.RequireFromString("-0.0192166052020955")
+	wantB := decimal.RequireFromString("-0.016538")
+	wantObserved := wantB.Sub(wantA).Mul(decimal.NewFromInt(3)).Mul(decimal.NewFromInt(365))
+	if !result.OK || result.Trigger ||
+		!result.CumA.Equal(wantA) || !result.CumB.Equal(wantB) ||
+		!result.Observed.Equal(wantObserved) {
+		t.Fatalf("after ingest=%+v wantA=%s wantB=%s wantObserved=%s",
+			result, wantA, wantB, wantObserved)
+	}
+}
+
+func TestEvaluateFunding8hIncidentMissingMidpoints(t *testing.T) {
+	end := funding8hIncidentEnd
+	start := end.Add(-funding8hWindow)
+	base := funding8hIncidentCombo(false)
+	cases := []struct {
+		name string
+		legA []funding8hPoint
+	}{
+		{
+			name: "missing 02:00",
+			legA: []funding8hPoint{
+				funding8hPt(time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC), "0", "2"),
+				funding8hPt(time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC), "0", "2"),
+				funding8hPt(time.Date(2026, 9, 10, 4, 0, 0, 0, time.UTC), "0", "2"),
+			},
+		},
+		{
+			name: "missing 04:00",
+			legA: []funding8hPoint{
+				funding8hPt(time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC), "0", "2"),
+				funding8hPt(time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC), "0", "2"),
+				funding8hPt(time.Date(2026, 9, 10, 2, 0, 0, 0, time.UTC), "0", "2"),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			combo := base
+			combo.LegA = tc.legA
+			result := evaluateFunding8hExit(combo, start, end)
+			if result.OK || result.Trigger {
+				t.Fatalf("result=%+v", result)
+			}
+		})
+	}
+}
+
+func TestEvaluateFunding8hPostTargetEligibility(t *testing.T) {
+	end := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	start := end.Add(-8 * time.Hour)
+	target := start.Add(6 * time.Hour)
+
+	completeA := []funding8hPoint{
+		funding8hPt(start, "0", "1"),
+		funding8hPt(start.Add(time.Hour), "0.0001", "1"),
+		funding8hPt(start.Add(2*time.Hour), "0.0001", "1"),
+		funding8hPt(start.Add(3*time.Hour), "0.0001", "1"),
+		funding8hPt(start.Add(4*time.Hour), "0.0001", "1"),
+		funding8hPt(start.Add(5*time.Hour), "0.0001", "1"),
+		funding8hPt(start.Add(6*time.Hour), "0.0001", "1"),
+		funding8hPt(start.Add(7*time.Hour), "0.0001", "1"),
+		funding8hPt(end, "0.0001", "1"),
+	}
+	bPreTargetOnly := []funding8hPoint{
+		funding8hPt(start, "0", "8"),
+		funding8hPt(start.Add(4*time.Hour), "0", "8"),
+	}
+	bWithPostTarget := []funding8hPoint{
+		funding8hPt(start, "0", "8"),
+		funding8hPt(start.Add(4*time.Hour), "0", "8"),
+		funding8hPt(end, "0", "8"),
+	}
+
+	t.Run("only A settled after target", func(t *testing.T) {
+		combo := funding8hCombo{
+			EntryDirection: "ask", Floor: "0.05",
+			TargetReachedAt: funding8hTimePtr(target),
+			LegAType:        "perpetual", LegBType: "perpetual",
+			LegA: completeA, LegB: bPreTargetOnly,
+		}
+		result := evaluateFunding8hExit(combo, start, end)
+		if result.OK || result.Trigger {
+			t.Fatalf("single post-target leg=%+v", result)
+		}
+	})
+
+	t.Run("B post-target later allows evaluation", func(t *testing.T) {
+		combo := funding8hCombo{
+			EntryDirection: "ask", Floor: "0.05",
+			TargetReachedAt: funding8hTimePtr(target),
+			LegAType:        "perpetual", LegBType: "perpetual",
+			LegA: completeA, LegB: bWithPostTarget,
+		}
+		result := evaluateFunding8hExit(combo, start, end)
+		if !result.OK {
+			t.Fatalf("both post-target=%+v", result)
+		}
+	})
+
+	t.Run("complete window all at or before target", func(t *testing.T) {
+		combo := perpCombo(
+			funding8hPt(start, "1", "8"),
+			funding8hPt(end, "0.0001", "8"),
+		)
+		combo.TargetReachedAt = funding8hTimePtr(end)
+		result := evaluateFunding8hExit(combo, start, end)
+		if result.OK || result.Trigger {
+			t.Fatalf("pre-target only=%+v", result)
+		}
+	})
+
+	t.Run("both post-target below floor triggers", func(t *testing.T) {
+		combo := funding8hCombo{
+			EntryDirection: "ask", Floor: "0.40",
+			TargetReachedAt: funding8hTimePtr(start),
+			LegAType:        "perpetual", LegBType: "perpetual",
+			LegA: []funding8hPoint{
+				funding8hPt(start, "1", "8"),
+				funding8hPt(end, "0.0001", "8"),
+			},
+			LegB: []funding8hPoint{
+				funding8hPt(start, "1", "8"),
+				funding8hPt(end, "0", "8"),
+			},
+		}
+		result := evaluateFunding8hExit(combo, start, end)
+		if !result.OK || !result.Trigger {
+			t.Fatalf("trigger=%+v", result)
+		}
+		if result.LegALatestPostTarget == nil || !result.LegALatestPostTarget.Equal(end) ||
+			result.LegBLatestPostTarget == nil || !result.LegBLatestPostTarget.Equal(end) {
+			t.Fatalf("latest=%+v", result)
+		}
+	})
+
+	t.Run("both post-target still fail completeness", func(t *testing.T) {
+		combo := funding8hIncidentCombo(false)
+		result := evaluateFunding8hExit(combo, funding8hIncidentEnd.Add(-funding8hWindow), funding8hIncidentEnd)
+		if result.OK || result.Trigger {
+			t.Fatalf("incomplete after eligibility=%+v", result)
+		}
+	})
+
+	t.Run("spot only requires perpetual leg", func(t *testing.T) {
+		combo := funding8hCombo{
+			EntryDirection: "ask", Floor: "0.05",
+			TargetReachedAt: funding8hTimePtr(start),
+			LegAType:        "spot", LegBType: "perpetual",
+			LegB: []funding8hPoint{
+				funding8hPt(start, "0", "8"),
+				funding8hPt(end, "0.0004", "8"),
+			},
+		}
+		result := evaluateFunding8hExit(combo, start, end)
+		if !result.OK || !result.CumA.IsZero() || result.LegALatestPostTarget != nil ||
+			result.LegBLatestPostTarget == nil || !result.LegBLatestPostTarget.Equal(end) {
+			t.Fatalf("spot/perp=%+v", result)
+		}
+	})
+
+	t.Run("nil target skips", func(t *testing.T) {
+		combo := perpCombo(
+			funding8hPt(start, "1", "8"),
+			funding8hPt(end, "0.0001", "8"),
+		)
+		combo.TargetReachedAt = nil
+		result := evaluateFunding8hExit(combo, start, end)
+		if result.OK || result.Trigger {
+			t.Fatalf("nil target=%+v", result)
+		}
+	})
+
+	t.Run("spot spot skips", func(t *testing.T) {
+		combo := funding8hCombo{
+			EntryDirection: "ask", Floor: "0.05",
+			TargetReachedAt: funding8hTimePtr(start),
+			LegAType:        "spot", LegBType: "spot",
+		}
+		result := evaluateFunding8hExit(combo, start, end)
+		if result.OK || result.Trigger {
+			t.Fatalf("spot/spot=%+v", result)
+		}
+	})
+}
+
+var funding8hIncidentEnd = time.Date(2026, 9, 10, 6, 0, 29, 0, time.UTC)
+
+func funding8hIncidentCombo(includeA0600 bool) funding8hCombo {
+	legA := []funding8hPoint{
+		funding8hPt(time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC), "0", "2"),
+		funding8hPt(time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC), "0", "2"),
+		funding8hPt(time.Date(2026, 9, 10, 2, 0, 0, 0, time.UTC), "0", "2"),
+		funding8hPt(time.Date(2026, 9, 10, 4, 0, 0, 0, time.UTC), "0", "2"),
+	}
+	if includeA0600 {
+		legA = append(legA, funding8hPt(
+			time.Date(2026, 9, 10, 6, 0, 0, 0, time.UTC),
+			"-0.0192166052020955", "2",
+		))
+	}
+	return funding8hCombo{
+		ID: "combo-incident", Version: 4,
+		EntryDirection: "ask", Floor: "0",
+		TargetReachedAt: funding8hTimePtr(time.Date(2026, 9, 9, 21, 0, 0, 0, time.UTC)),
+		LegAType:        "perpetual", LegBType: "perpetual",
+		LegA: legA,
+		LegB: []funding8hPoint{
+			funding8hPt(time.Date(2026, 9, 9, 20, 0, 0, 0, time.UTC), "0", "4"),
+			funding8hPt(time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC), "0", "4"),
+			funding8hPt(time.Date(2026, 9, 10, 4, 0, 0, 0, time.UTC), "-0.016538", "4"),
+		},
 	}
 }
 
@@ -308,11 +563,17 @@ func perpCombo(points ...funding8hPoint) funding8hCombo {
 	start := end.Add(-8 * time.Hour)
 	return funding8hCombo{
 		EntryDirection: "ask", Floor: "1",
-		LegAType: "perpetual", LegBType: "perpetual",
+		TargetReachedAt: funding8hTimePtr(start),
+		LegAType:        "perpetual", LegBType: "perpetual",
 		LegA: points,
 		LegB: []funding8hPoint{
 			funding8hPt(start, "0", "8"),
 			funding8hPt(end, "0", "8"),
 		},
 	}
+}
+
+func funding8hTimePtr(value time.Time) *time.Time {
+	copied := value.UTC()
+	return &copied
 }

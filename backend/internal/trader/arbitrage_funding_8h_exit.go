@@ -96,13 +96,16 @@ func (w *ArbitrageFunding8hExitWorker) runOnce(ctx context.Context) {
 		_, applied, markErr := w.store.MarkOneShotExiting(
 			ctx, combo.ID, combo.Version, "funding_8h_floor",
 			map[string]any{
-				"reason":             "funding_8h_floor",
-				"windowStart":        windowStart.Format(time.RFC3339Nano),
-				"windowEnd":          windowEnd.Format(time.RFC3339Nano),
-				"legACumulativeRate": result.CumA.String(),
-				"legBCumulativeRate": result.CumB.String(),
-				"observedAnnualized": result.Observed.String(),
-				"configuredFloor":    combo.Floor,
+				"reason":                           "funding_8h_floor",
+				"targetReachedAt":                  funding8hTimeString(combo.TargetReachedAt),
+				"legALatestPostTargetSettlementAt": funding8hTimeString(result.LegALatestPostTarget),
+				"legBLatestPostTargetSettlementAt": funding8hTimeString(result.LegBLatestPostTarget),
+				"windowStart":                      windowStart.Format(time.RFC3339Nano),
+				"windowEnd":                        windowEnd.Format(time.RFC3339Nano),
+				"legACumulativeRate":               result.CumA.String(),
+				"legBCumulativeRate":               result.CumB.String(),
+				"observedAnnualized":               result.Observed.String(),
+				"configuredFloor":                  combo.Floor,
 			},
 		)
 		if markErr != nil {
@@ -117,4 +120,11 @@ func (w *ArbitrageFunding8hExitWorker) runOnce(ctx context.Context) {
 				"combination_id", combo.ID)
 		}
 	}
+}
+
+func funding8hTimeString(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }

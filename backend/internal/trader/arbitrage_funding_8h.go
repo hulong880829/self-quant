@@ -11,21 +11,21 @@ import (
 const (
 	funding8hWindow           = 8 * time.Hour
 	funding8hGapSlack         = 5 * time.Minute
-	funding8hStaleSlack       = 20 * time.Minute
 	funding8hExitInterval     = time.Minute
 	funding8hExitQueryTimeout = 5 * time.Second
 )
 
 type funding8hExitRow struct {
-	CombinationID  string
-	Version        int64
-	EntryDirection string
-	Floor          string
-	Leg            string
-	ContractType   string
-	FundingTime    *time.Time
-	FundingRate    *string
-	IntervalHours  *string
+	CombinationID   string
+	Version         int64
+	EntryDirection  string
+	Floor           string
+	Leg             string
+	ContractType    string
+	TargetReachedAt *time.Time
+	FundingTime     *time.Time
+	FundingRate     *string
+	IntervalHours   *string
 }
 
 type funding8hPoint struct {
@@ -35,11 +35,13 @@ type funding8hPoint struct {
 }
 
 type funding8hEvalResult struct {
-	OK       bool
-	Trigger  bool
-	Observed decimal.Decimal
-	CumA     decimal.Decimal
-	CumB     decimal.Decimal
+	OK                   bool
+	Trigger              bool
+	Observed             decimal.Decimal
+	CumA                 decimal.Decimal
+	CumB                 decimal.Decimal
+	LegALatestPostTarget *time.Time
+	LegBLatestPostTarget *time.Time
 }
 
 func funding8hWindows(now time.Time) (time.Time, time.Time) {
@@ -58,14 +60,18 @@ func groupFunding8hExitRows(rows []funding8hExitRow) (
 		combo := combos[row.CombinationID]
 		if combo == nil {
 			combo = &funding8hCombo{
-				ID:             row.CombinationID,
-				Version:        row.Version,
-				EntryDirection: row.EntryDirection,
-				Floor:          row.Floor,
-				LegAType:       "",
-				LegBType:       "",
+				ID:              row.CombinationID,
+				Version:         row.Version,
+				EntryDirection:  row.EntryDirection,
+				Floor:           row.Floor,
+				TargetReachedAt: row.TargetReachedAt,
+				LegAType:        "",
+				LegBType:        "",
 			}
 			combos[row.CombinationID] = combo
+		}
+		if combo.TargetReachedAt == nil && row.TargetReachedAt != nil {
+			combo.TargetReachedAt = row.TargetReachedAt
 		}
 		switch strings.ToLower(strings.TrimSpace(row.Leg)) {
 		case "a":
@@ -100,15 +106,16 @@ func groupFunding8hExitRows(rows []funding8hExitRow) (
 }
 
 type funding8hCombo struct {
-	ID             string
-	Version        int64
-	EntryDirection string
-	Floor          string
-	LegAType       string
-	LegBType       string
-	LegA           []funding8hPoint
-	LegB           []funding8hPoint
-	Invalid        bool
+	ID              string
+	Version         int64
+	EntryDirection  string
+	Floor           string
+	TargetReachedAt *time.Time
+	LegAType        string
+	LegBType        string
+	LegA            []funding8hPoint
+	LegB            []funding8hPoint
+	Invalid         bool
 }
 
 func evaluateFunding8hExit(
@@ -116,6 +123,10 @@ func evaluateFunding8hExit(
 	windowStart, windowEnd time.Time,
 ) funding8hEvalResult {
 	if combo.Invalid {
+		return funding8hEvalResult{}
+	}
+	latestA, latestB, eligible := funding8hPostTargetEligibility(combo)
+	if !eligible {
 		return funding8hEvalResult{}
 	}
 	floor, err := decimal.NewFromString(strings.TrimSpace(combo.Floor))
@@ -140,7 +151,48 @@ func evaluateFunding8hExit(
 	return funding8hEvalResult{
 		OK: true, Trigger: observed.LessThan(floor),
 		Observed: observed, CumA: cumA, CumB: cumB,
+		LegALatestPostTarget: latestA, LegBLatestPostTarget: latestB,
 	}
+}
+
+func funding8hPostTargetEligibility(combo funding8hCombo) (latestA, latestB *time.Time, ok bool) {
+	if combo.TargetReachedAt == nil {
+		return nil, nil, false
+	}
+	aPerp := strings.EqualFold(strings.TrimSpace(combo.LegAType), "perpetual")
+	bPerp := strings.EqualFold(strings.TrimSpace(combo.LegBType), "perpetual")
+	if !aPerp && !bPerp {
+		return nil, nil, false
+	}
+	target := combo.TargetReachedAt.UTC()
+	if aPerp {
+		latestA = funding8hLatestAfter(combo.LegA, target)
+		if latestA == nil {
+			return nil, nil, false
+		}
+	}
+	if bPerp {
+		latestB = funding8hLatestAfter(combo.LegB, target)
+		if latestB == nil {
+			return nil, nil, false
+		}
+	}
+	return latestA, latestB, true
+}
+
+func funding8hLatestAfter(points []funding8hPoint, target time.Time) *time.Time {
+	var latest *time.Time
+	for _, point := range points {
+		at := point.At.UTC()
+		if !at.After(target) {
+			continue
+		}
+		if latest == nil || at.After(*latest) {
+			copied := at
+			latest = &copied
+		}
+	}
+	return latest
 }
 
 func funding8hLegCumulative(
@@ -187,7 +239,8 @@ func funding8hLegCumulative(
 		}
 	}
 	last := ordered[len(ordered)-1]
-	if windowEnd.Sub(last.At) > intervalHoursDuration(last.IntervalHours)+funding8hStaleSlack {
+	nextExpectedAt := last.At.Add(intervalHoursDuration(last.IntervalHours))
+	if !windowEnd.Before(nextExpectedAt) {
 		return decimal.Zero, false
 	}
 	sum := decimal.Zero

@@ -60,6 +60,12 @@ func TestOneShotFunding8hExitIntegration(t *testing.T) {
 
 	end := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 	start := end.Add(-8 * time.Hour)
+	if _, err := pool.Exec(ctx, `
+		UPDATE trader_arbitrage_combinations
+		SET target_reached_at=$2
+		WHERE id=$1::uuid`, created.ID, start); err != nil {
+		t.Fatal(err)
+	}
 	insertSettledFundingRate(t, ctx, pool, instrumentC, start, "9", "1")
 	insertSettledFundingRate(t, ctx, pool, instrumentD, start, "9", "1")
 	for hour := 1; hour <= 8; hour++ {
@@ -138,7 +144,10 @@ func TestOneShotFunding8hExitIntegration(t *testing.T) {
 	}
 	if event["configuredFloor"] != "0.05" ||
 		event["legACumulativeRate"] != "0.008" ||
-		event["legBCumulativeRate"] != "0" {
+		event["legBCumulativeRate"] != "0" ||
+		event["targetReachedAt"] != start.UTC().Format(time.RFC3339Nano) ||
+		event["legALatestPostTargetSettlementAt"] != end.UTC().Format(time.RFC3339Nano) ||
+		event["legBLatestPostTargetSettlementAt"] != end.UTC().Format(time.RFC3339Nano) {
 		t.Fatalf("event=%v", event)
 	}
 }
