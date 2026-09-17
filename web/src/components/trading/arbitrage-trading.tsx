@@ -84,6 +84,12 @@ import {
   formatPercent,
   rateColor,
 } from "@/lib/market-format";
+import {
+  estimateDirectionalFundingPayback,
+  formatFundingPayback,
+  fundingPaybackLegFromState,
+  fundingPaybackTitle,
+} from "@/lib/funding-payback";
 import { spreadYDomain } from "@/components/funding/basis-spread-chart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1066,9 +1072,16 @@ export function ArbitrageTradingView({
     for (const row of pages[combinationView]) {
       legs.push(row.legA, row.legB);
     }
-    legs.push(chartLegA, chartLegB);
+    legs.push(chartLegA, chartLegB, legAInstrument, legBInstrument);
     return collectPerpetualFundingLookupKeys(legs);
-  }, [pages, combinationView, chartLegA, chartLegB]);
+  }, [
+    pages,
+    combinationView,
+    chartLegA,
+    chartLegB,
+    legAInstrument,
+    legBInstrument,
+  ]);
   const visibleFundingSignature = React.useMemo(
     () => fundingLookupSignature(visibleFundingKeys),
     [visibleFundingKeys],
@@ -1732,6 +1745,26 @@ export function ArbitrageTradingView({
     legBAccountID !== null &&
     isTradingAccountReady(selectedLegAAccount) &&
     isTradingAccountReady(selectedLegBAccount);
+  const createPayback = React.useMemo(
+    () =>
+      estimateDirectionalFundingPayback(
+        fundingPaybackLegFromState(
+          legAInstrument?.contractType ?? legAContractType,
+          legAInstrument ? resolveFundingLegState(legAInstrument) : undefined,
+        ),
+        fundingPaybackLegFromState(
+          legBInstrument?.contractType ?? legBContractType,
+          legBInstrument ? resolveFundingLegState(legBInstrument) : undefined,
+        ),
+      ),
+    [
+      legAInstrument,
+      legBInstrument,
+      legAContractType,
+      legBContractType,
+      resolveFundingLegState,
+    ],
+  );
 
   function clearSelectedChartCombination() {
     setSelectedChartCombinationID(null);
@@ -2249,6 +2282,15 @@ export function ArbitrageTradingView({
             </Field>
           </div>
           <div className="border-t p-3">
+            <div
+              className="mb-2 text-xs text-muted-foreground"
+              title={fundingPaybackTitle(createPayback)}
+            >
+              预计回本时间：
+              <span className="font-mono text-foreground">
+                {formatFundingPayback(createPayback)}
+              </span>
+            </div>
             <Button
               className="w-full"
               disabled={!canCreate}

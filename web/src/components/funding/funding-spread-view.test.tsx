@@ -118,6 +118,24 @@ describe("FundingSpreadView", () => {
     expect(screen.getByText("可用容量（较小腿）")).not.toBeNull();
     expect(screen.getAllByText("8h").length).toBeGreaterThan(0);
     expect(screen.getAllByText("4h").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("预计回本时间").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("15 天").length).toBeGreaterThan(0);
+    expect(screen.queryByText("30 bps")).toBeNull();
+  });
+
+  it("shows stale 24h payback copy and recomputes from a different spread", () => {
+    const staleSpread: FundingSpread = { ...spread, stale: true };
+    const fastSpread: FundingSpread = {
+      ...spread,
+      id: "ETHUSDT-binance-okx",
+      symbol: "ETHUSDT",
+      baseAsset: "ETH",
+      spread24hAnnualized: 109.5,
+    };
+    render(<FundingSpreadView data={[staleSpread, fastSpread]} loading={false} />);
+    expect(screen.getAllByText("行情过期，暂不估算").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1 天").length).toBeGreaterThan(0);
+    expect(screen.queryByText("30 bps")).toBeNull();
   });
 
   it("sorts by 24H annualized spread descending by default", () => {

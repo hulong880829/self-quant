@@ -180,7 +180,7 @@ function RankingDetail({ item }: { item: RankedFundingOpportunity }) {
               </div>
             ))}
             <div className="min-w-0 rounded-md bg-muted/45 p-2 text-center">
-              <div className="text-[10px] text-muted-foreground">预计回本周期</div>
+              <div className="text-[10px] text-muted-foreground" title="基于近 7 日真实 BBO 与已结算资金费回放；每个完整开平窗口固定扣除 12bps，不是过去24h已结算 30bps 回本。">预计回本周期</div>
               <div className="mt-1 truncate font-mono text-xs font-semibold">
                 {formatPaybackPeriod(item.paybackStatus, item.expectedPaybackMinutes)}
               </div>
@@ -192,7 +192,7 @@ function RankingDetail({ item }: { item: RankedFundingOpportunity }) {
         </div>
         <div className="grid grid-cols-2 gap-x-4 gap-y-2">
           <span className="text-muted-foreground">当前可执行价差</span><span className="text-right font-mono">{item.currentExecutableSpreadBps.toFixed(1)} bps</span>
-          <span className="text-muted-foreground">预计回本周期</span><span className="text-right font-mono">{formatPaybackPeriod(item.paybackStatus, item.expectedPaybackMinutes)}</span>
+          <span className="text-muted-foreground" title="基于近 7 日真实 BBO 与已结算资金费回放；每个完整开平窗口固定扣除 12bps，不是过去24h已结算 30bps 回本。">预计回本周期</span><span className="text-right font-mono">{formatPaybackPeriod(item.paybackStatus, item.expectedPaybackMinutes)}</span>
           <span className="text-muted-foreground">P5 收益</span><span className={cn("text-right font-mono", rateColor(item.p5Return))}>{formatPercent(item.p5Return, 2)}</span>
           <span className="text-muted-foreground">窗口覆盖率 / 有效样本</span><span className="text-right font-mono">{formatPercent(item.coverage, 0)} / {item.sampleCount}</span>
           <span className="text-muted-foreground">较小腿持仓 / 成交额</span><span className="text-right font-mono">{formatCurrency(item.minPositionNotional, true)} / {formatCurrency(item.minDailyVolume, true)}</span>
@@ -296,7 +296,7 @@ export function FundingOpportunityRanking({
     { accessorKey: "periodExpectedReturn", header: "周期预期收益", cell: ({ row }) => <div className={cn("text-right font-mono text-xs font-semibold", rateColor(row.original.periodExpectedReturn))}>{formatPercent(row.original.periodExpectedReturn, 2)}</div> },
     { accessorKey: "combinedExpectedAnnualized", header: "综合预期年化", cell: ({ row }) => <div className={cn("text-right font-mono text-xs font-semibold", rateColor(row.original.combinedExpectedAnnualized))}>{formatPercent(row.original.combinedExpectedAnnualized, 1)}</div> },
     { accessorKey: "profitProbability", header: "盈利概率", cell: ({ row }) => <div className="text-right font-mono text-xs">{formatPercent(row.original.profitProbability, 1)}</div> },
-    { accessorKey: "expectedPaybackMinutes", header: "预计回本", cell: ({ row }) => <div className="text-right font-mono text-xs">{formatPaybackPeriod(row.original.paybackStatus, row.original.expectedPaybackMinutes)}</div> },
+    { accessorKey: "expectedPaybackMinutes", header: () => <span title="基于近 7 日真实 BBO 与已结算资金费回放；每个完整开平窗口固定扣除 12bps，不是过去24h已结算 30bps 回本。">预计回本周期</span>, cell: ({ row }) => <div className="text-right font-mono text-xs" title="基于近 7 日真实 BBO 与已结算资金费回放；每个完整开平窗口固定扣除 12bps，不是过去24h已结算 30bps 回本。">{formatPaybackPeriod(row.original.paybackStatus, row.original.expectedPaybackMinutes)}</div> },
     { id: "open", enableSorting: false, header: "", cell: () => <ChevronRight className="ml-auto size-4 text-muted-foreground" /> },
   ], []);
   const table = useLegacyTable({

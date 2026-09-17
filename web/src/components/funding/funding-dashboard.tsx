@@ -47,6 +47,12 @@ import {
   rateColor,
   resolveFundingRate,
 } from "@/lib/market-format";
+import {
+  FUNDING_PAYBACK_TOOLTIP,
+  estimateSingleFundingPayback,
+  formatFundingPayback,
+  fundingPaybackTitle,
+} from "@/lib/funding-payback";
 import { fetchFundingHistory } from "@/lib/api/funding";
 import {
   canStartFundingTrade,
@@ -418,6 +424,10 @@ const DetailPanel = React.memo(function DetailPanel({
     opportunity.nextFundingRate,
     opportunity.currentFundingRate,
   );
+  const payback = estimateSingleFundingPayback({
+    cumulative24h: opportunity.cumulative24h,
+    stale: opportunity.stale,
+  });
   return (
     <div className={cn("flex h-full flex-col", compact && "overflow-y-auto")}>
       <div className="border-b p-4">
@@ -488,6 +498,21 @@ const DetailPanel = React.memo(function DetailPanel({
               每 {opportunity.settlementIntervalHours} 小时结算
             </div>
           </div>
+        </div>
+      </div>
+
+      <div className="border-b px-4 py-3">
+        <div
+          className="text-[11px] text-muted-foreground"
+          title={FUNDING_PAYBACK_TOOLTIP}
+        >
+          预计回本时间
+        </div>
+        <div
+          className="mt-1 font-mono text-sm font-semibold"
+          title={fundingPaybackTitle(payback)}
+        >
+          {formatFundingPayback(payback)}
         </div>
       </div>
 
@@ -968,6 +993,31 @@ export function FundingDashboard() {
             )}
           </div>
         ),
+      },
+      {
+        id: "fundingPayback",
+        accessorFn: (row) =>
+          estimateSingleFundingPayback({
+            cumulative24h: row.cumulative24h,
+            stale: row.stale,
+          }).paybackMinutes ?? Number.POSITIVE_INFINITY,
+        header: () => (
+          <span title={FUNDING_PAYBACK_TOOLTIP}>预计回本时间</span>
+        ),
+        cell: ({ row }) => {
+          const estimate = estimateSingleFundingPayback({
+            cumulative24h: row.original.cumulative24h,
+            stale: row.original.stale,
+          });
+          return (
+            <div
+              className="text-right font-mono text-xs"
+              title={fundingPaybackTitle(estimate)}
+            >
+              {formatFundingPayback(estimate)}
+            </div>
+          );
+        },
       },
       {
         id: "open",

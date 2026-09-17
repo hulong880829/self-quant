@@ -31,8 +31,56 @@ const opportunities: FundingOpportunity[] = [
     latestPrice: 60_000,
     priceChange24h: 1,
     updatedAt: "2026-08-19T15:00:00Z",
+    history24hComplete: false,
     fundingHistory: [],
     index: { name: "BINANCE_INDEX", value: 59_990, weight: 100 },
+  },
+  {
+    id: "okx-solusdt",
+    exchange: "OKX",
+    exchangeSymbol: "SOL-USDT-SWAP",
+    symbol: "SOLUSDT",
+    baseAsset: "SOL",
+    quoteAsset: "USDT",
+    positionQuantity: 500,
+    positionNotional: 3_000_000,
+    dailyVolume: 40_000_000,
+    annualizedRate: -6,
+    currentFundingRate: -0.01,
+    nextFundingRate: null,
+    settlementIntervalHours: 8,
+    nextSettlementAt: "2026-08-20T00:00:00Z",
+    cumulative24h: -0.04,
+    cumulative7d: -0.1,
+    latestPrice: 150,
+    priceChange24h: -0.2,
+    updatedAt: "2026-08-19T15:00:00Z",
+    fundingHistory: [],
+    index: { name: "OKX_INDEX", value: 149, weight: 100 },
+  },
+  {
+    id: "binance-adausdt",
+    exchange: "Binance",
+    exchangeSymbol: "ADAUSDT",
+    symbol: "ADAUSDT",
+    baseAsset: "ADA",
+    quoteAsset: "USDT",
+    positionQuantity: 10_000,
+    positionNotional: 2_500_000,
+    dailyVolume: 15_000_000,
+    annualizedRate: 9,
+    currentFundingRate: 0.01,
+    nextFundingRate: null,
+    settlementIntervalHours: 8,
+    nextSettlementAt: "2026-08-20T00:00:00Z",
+    cumulative24h: 0.3,
+    cumulative7d: 0.8,
+    latestPrice: 0.5,
+    priceChange24h: 0.01,
+    updatedAt: "2026-08-19T15:00:00Z",
+    stale: true,
+    fundingHistory: [],
+    index: { name: "BINANCE_INDEX", value: 0.5, weight: 100 },
   },
   {
     id: "okx-ethusdt",
@@ -316,8 +364,20 @@ describe("FundingDashboard single-exchange detail", () => {
     expect(within(workspace as HTMLElement).getByText("历史资金费")).not.toBeNull();
     expect(screen.getByLabelText("期现 Best Ask 价差")).not.toBeNull();
     expect(screen.getByText("OKX-ETH-USDT")).not.toBeNull();
+    expect(screen.getAllByText("预计回本时间").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("10 天").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("15 天").length).toBeGreaterThan(0);
+    expect(screen.queryByText("30 bps")).toBeNull();
+    expect(screen.queryByText(/按过去24h已结算资金费估算/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "1h" }));
     expect(screen.getByRole("button", { name: "1h" })).not.toBeNull();
+  });
+
+  it("shows non-coverable and stale 24h payback copy", () => {
+    render(<FundingDashboard />);
+    expect(screen.getAllByText("当前24h累计收益无法覆盖成本").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("行情过期，暂不估算").length).toBeGreaterThan(0);
+    expect(screen.queryByText("30 bps")).toBeNull();
   });
 
   it("collapses the selected row on a second click and only expands one row", () => {

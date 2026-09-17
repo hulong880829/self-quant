@@ -42,6 +42,12 @@ import {
   formatSettlementCountdown,
   rateColor,
 } from "@/lib/market-format";
+import {
+  FUNDING_PAYBACK_TOOLTIP,
+  estimateCrossFundingPayback,
+  formatFundingPayback,
+  fundingPaybackTitle,
+} from "@/lib/funding-payback";
 import { StartTradeButton } from "@/components/funding/start-trade-button";
 import {
   bboCanonicalSymbol,
@@ -177,6 +183,10 @@ function LegCard({ leg, side }: { leg: FundingSpreadLeg; side: "long" | "short" 
 }
 
 function SpreadDetail({ spread }: { spread: FundingSpread }) {
+  const payback = estimateCrossFundingPayback({
+    spread24hAnnualized: spread.spread24hAnnualized,
+    stale: spread.stale,
+  });
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="border-b p-4">
@@ -225,6 +235,20 @@ function SpreadDetail({ spread }: { spread: FundingSpread }) {
             </div>
           </div>
         ))}
+      </div>
+      <div className="border-b px-4 py-3">
+        <div
+          className="text-[11px] text-muted-foreground"
+          title={FUNDING_PAYBACK_TOOLTIP}
+        >
+          预计回本时间
+        </div>
+        <div
+          className="mt-1 font-mono text-sm font-semibold"
+          title={fundingPaybackTitle(payback)}
+        >
+          {formatFundingPayback(payback)}
+        </div>
       </div>
       <div className="p-4">
         <h3 className="text-sm font-medium">可用容量（较小腿）</h3>
@@ -325,6 +349,31 @@ export function FundingSpreadView({
         accessorKey: "minDailyVolume",
         header: "较小成交额",
         cell: ({ row }) => <div className="text-right font-mono text-xs">{formatCurrency(row.original.minDailyVolume, true)}</div>,
+      },
+      {
+        id: "fundingPayback",
+        accessorFn: (row) =>
+          estimateCrossFundingPayback({
+            spread24hAnnualized: row.spread24hAnnualized,
+            stale: row.stale,
+          }).paybackMinutes ?? Number.POSITIVE_INFINITY,
+        header: () => (
+          <span title={FUNDING_PAYBACK_TOOLTIP}>预计回本时间</span>
+        ),
+        cell: ({ row }) => {
+          const estimate = estimateCrossFundingPayback({
+            spread24hAnnualized: row.original.spread24hAnnualized,
+            stale: row.original.stale,
+          });
+          return (
+            <div
+              className="text-right font-mono text-xs"
+              title={fundingPaybackTitle(estimate)}
+            >
+              {formatFundingPayback(estimate)}
+            </div>
+          );
+        },
       },
       { id: "open", enableSorting: false, header: "", cell: () => <ChevronRight className="ml-auto size-4 text-muted-foreground" /> },
     ],

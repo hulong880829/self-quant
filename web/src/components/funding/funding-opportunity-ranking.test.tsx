@@ -183,6 +183,7 @@ describe("FundingOpportunityRanking", () => {
     expect(screen.getAllByText("盈利概率").length).toBeGreaterThan(0);
     expect(screen.getByText("有效样本")).not.toBeNull();
     expect(screen.getAllByText("预计回本周期").length).toBeGreaterThan(0);
+    expect(screen.queryByText("预计回本时间")).toBeNull();
     expect(screen.getAllByText("1 小时 15 分钟").length).toBeGreaterThan(0);
     expect(screen.getByText("价差（已扣 12bps）")).not.toBeNull();
     expect(screen.getByText("机会排名 #1 · 8h")).not.toBeNull();

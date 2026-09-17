@@ -2572,6 +2572,38 @@ describe("ArbitrageTradingView", () => {
     ).toBe(true);
   }, 15000);
 
+  it("shows compact 24h funding payback above create without 30bps copy", async () => {
+    setup();
+    render(<ArbitrageTradingView />);
+    await waitForCreateReady();
+    const payback = screen.getByText("预计回本时间：", { exact: false });
+    expect(payback.textContent).toContain("10 天");
+    expect(payback.getAttribute("title")).toContain("30bps");
+    expect(screen.queryByText("30 bps")).toBeNull();
+    expect(screen.queryByText(/按过去24h已结算资金费估算/)).toBeNull();
+  }, 15000);
+
+  it("does not treat a missing perpetual lookup as zero carry", async () => {
+    setup();
+    mocks.fetchFundingRatesLookup.mockImplementation(async (keys) =>
+      fundingLookupResponse(keys, [
+        fundingRate("Binance", "BTCUSDT", 0.02, 0.1, {
+          positionNotional: 1_500_000,
+          dailyVolume: 20_000_000,
+          settlementIntervalHours: 8,
+        }),
+      ]),
+    );
+    render(<ArbitrageTradingView />);
+    await waitForCreateReady();
+    expect(screen.getByText("资金费数据不可用")).not.toBeNull();
+    expect(screen.queryByText("10 天")).toBeNull();
+    expect(
+      (screen.getByRole("button", { name: "创建套利组合" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  }, 15000);
+
   it("defaults to one_shot and hides spread thresholds", async () => {
     setup();
     render(<ArbitrageTradingView />);
