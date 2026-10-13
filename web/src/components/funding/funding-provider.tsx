@@ -5,13 +5,17 @@ import * as React from "react";
 import {
   fetchFundingRates,
   fetchFundingSpreads,
+  fetchTradefiPerps,
   type FundingSnapshot,
   type FundingSpreadSnapshot,
+  type TradefiPerpsSnapshot,
 } from "@/lib/api/funding";
 
 interface FundingContextValue {
   snapshot: FundingSnapshot | null;
   spreadSnapshot: FundingSpreadSnapshot | null;
+  tradefiSnapshot: TradefiPerpsSnapshot | null;
+  tradefiError: string | null;
   loading: boolean;
   refreshing: boolean;
   error: string | null;
@@ -26,6 +30,9 @@ export function FundingProvider({ children }: { children: React.ReactNode }) {
   const [snapshot, setSnapshot] = React.useState<FundingSnapshot | null>(null);
   const [spreadSnapshot, setSpreadSnapshot] =
     React.useState<FundingSpreadSnapshot | null>(null);
+  const [tradefiSnapshot, setTradefiSnapshot] =
+    React.useState<TradefiPerpsSnapshot | null>(null);
+  const [tradefiError, setTradefiError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -35,6 +42,8 @@ export function FundingProvider({ children }: { children: React.ReactNode }) {
   const spreadSnapshotVersion = React.useRef<string | null>(null);
   const etag = React.useRef<string | null>(null);
   const spreadEtag = React.useRef<string | null>(null);
+  const tradefiVersion = React.useRef<string | null>(null);
+  const tradefiEtag = React.useRef<string | null>(null);
 
   const load = React.useCallback(async () => {
     if (activeRequest.current) return;
@@ -43,9 +52,10 @@ export function FundingProvider({ children }: { children: React.ReactNode }) {
     setRefreshing(true);
 
     try {
-      const [ratesResult, spreadsResult] = await Promise.allSettled([
+      const [ratesResult, spreadsResult, tradefiResult] = await Promise.allSettled([
         fetchFundingRates(etag.current, controller.signal),
         fetchFundingSpreads(spreadEtag.current, controller.signal),
+        fetchTradefiPerps(tradefiEtag.current, controller.signal),
       ]);
       if (ratesResult.status === "rejected") {
         throw ratesResult.reason;
@@ -59,6 +69,20 @@ export function FundingProvider({ children }: { children: React.ReactNode }) {
           setSnapshot(nextSnapshot);
           changed = true;
         }
+      }
+      if (tradefiResult.status === "fulfilled") {
+        tradefiEtag.current = tradefiResult.value.etag;
+        if (tradefiResult.value.status === "updated") {
+          const nextSnapshot = tradefiResult.value.snapshot;
+          if (tradefiVersion.current !== nextSnapshot.meta.snapshotVersion) {
+            tradefiVersion.current = nextSnapshot.meta.snapshotVersion;
+            setTradefiSnapshot(nextSnapshot);
+            changed = true;
+          }
+        }
+        setTradefiError(null);
+      } else {
+        setTradefiError("TradeFi-Perps 数据加载失败，请重试");
       }
       if (spreadsResult.status === "fulfilled") {
         spreadEtag.current = spreadsResult.value.etag;
@@ -101,13 +125,15 @@ export function FundingProvider({ children }: { children: React.ReactNode }) {
     () => ({
       snapshot,
       spreadSnapshot,
+      tradefiSnapshot,
+      tradefiError,
       loading,
       refreshing,
       error,
       lastSuccessAt,
       retry: () => void load(),
     }),
-    [error, lastSuccessAt, load, loading, refreshing, snapshot, spreadSnapshot],
+    [error, lastSuccessAt, load, loading, refreshing, snapshot, spreadSnapshot, tradefiError, tradefiSnapshot],
   );
 
   return (

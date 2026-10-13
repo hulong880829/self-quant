@@ -103,4 +103,28 @@ describe("basis spread fetch", () => {
       expect.objectContaining({ method: "GET" }),
     );
   });
+
+  it("keeps mixed-case exchange symbols in the history URL", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(historyWire({ compareVenue: "ibkr" })), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchBasisSpreadHistory(
+      "Hyperliquid", "gme", "usdc", "24h", null, undefined,
+      "IBKR", "XYZGMEUSDC", "GME",
+      {
+        identityMode: "venue_symbol",
+        venueProduct: "perpetual",
+        compareVenueProduct: "equity",
+        venueExchangeSymbol: "xyz:GME",
+        compareExchangeSymbol: "36285627",
+      },
+    );
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain("venueExchangeSymbol=xyz%3AGME");
+    expect(url).not.toContain("venueExchangeSymbol=XYZ%3AGME");
+  });
 });

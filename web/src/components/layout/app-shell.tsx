@@ -47,7 +47,7 @@ import { cn } from "@/lib/utils";
 const navigation = [
   { href: "/global-stocks", label: "全球股票", icon: Globe2 },
   { href: "/crypto-options", label: "Polymarket", icon: CircleDollarSign },
-  { href: "/funding", label: "Crypto 资金费", icon: Zap },
+  { href: "/funding", label: "套利机会", icon: Zap },
   { href: "/orderbook", label: "聚合盘口", icon: BookOpen },
   { href: "/trading", label: "实盘交易", icon: ShieldCheck },
   { href: "/accounts", label: "账户管理", icon: WalletCards },
@@ -93,7 +93,10 @@ export function NavigationLinks({
   return (
     <>
       {navigation.map((item) => {
-        const active = activePath === item.href;
+        const active =
+          item.href === "/funding"
+            ? activePath === "/funding" || activePath.startsWith("/funding/")
+            : activePath === item.href;
         const pending = pendingHref === item.href;
         const Icon = item.icon;
         const guarded = isAuthRequiredPath(item.href);
@@ -206,6 +209,53 @@ function AccountMenu() {
   );
 }
 
+function ThemeToggle() {
+  const { resolvedTheme, setTheme } = useTheme();
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      aria-label="切换主题"
+      onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+    >
+      <Sun className="hidden size-4 dark:block" />
+      <Moon className="size-4 dark:hidden" />
+    </Button>
+  );
+}
+
+export function AdminStandaloneShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-dvh min-w-0 max-w-full overflow-x-clip">
+      <header className="sticky top-0 z-40 h-16 border-b bg-background/88 backdrop-blur-xl">
+        <div className="flex h-16 items-center gap-2 px-3 xl:gap-4 xl:px-6">
+          <Link href="/admin" className="flex shrink-0 items-center gap-2">
+            <span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm shadow-primary/20">
+              <Bot className="size-4.5" />
+            </span>
+            <span className="hidden leading-none sm:block">
+              <span className="block text-sm font-semibold tracking-tight">
+                龙歪歪Quant
+              </span>
+              <span className="mt-1 hidden text-[9px] uppercase tracking-[0.26em] text-muted-foreground xl:block">
+                Admin
+              </span>
+            </span>
+          </Link>
+          <div className="min-w-0 flex-1 text-sm font-medium">管理后台</div>
+          <div className="flex shrink-0 items-center gap-1 xl:gap-1.5">
+            <ThemeToggle />
+            <AccountMenu />
+          </div>
+        </div>
+      </header>
+      <main className="w-full min-w-0 max-w-full p-3 sm:p-4 xl:p-6">
+        <div className="mx-auto w-full min-w-0 max-w-[1920px]">{children}</div>
+      </main>
+    </div>
+  );
+}
+
 function KeepAliveFundingPage() {
   return <FundingDashboard />;
 }
@@ -226,7 +276,6 @@ function KeepAliveTradingPage() {
 
 function AppShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { resolvedTheme, setTheme } = useTheme();
   const [assistantOpen, setAssistantOpen] = React.useState(true);
   const [assistantReady, setAssistantReady] = React.useState(false);
   const { status, user, requireAuth } = useAuth();
@@ -289,17 +338,7 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
                 </span>
                 实时 API
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label="切换主题"
-                onClick={() =>
-                  setTheme(resolvedTheme === "dark" ? "light" : "dark")
-                }
-              >
-                <Sun className="hidden size-4 dark:block" />
-                <Moon className="size-4 dark:hidden" />
-              </Button>
+              <ThemeToggle />
               <AccountMenu />
             </div>
           </div>
@@ -334,12 +373,22 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
   );
 }
 
+function ShellSwitch({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  if (pathname.startsWith("/admin")) {
+    return <AdminStandaloneShell>{children}</AdminStandaloneShell>;
+  }
+  return (
+    <AIStatusProvider>
+      <AppShellInner>{children}</AppShellInner>
+    </AIStatusProvider>
+  );
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <AuthProvider>
-      <AIStatusProvider>
-        <AppShellInner>{children}</AppShellInner>
-      </AIStatusProvider>
+      <ShellSwitch>{children}</ShellSwitch>
     </AuthProvider>
   );
 }

@@ -31,6 +31,15 @@ export interface BasisSpreadHistory {
   summary: BasisSpreadSummary;
 }
 
+export interface BasisSpreadIdentityQuery {
+  identityMode: "venue_symbol";
+  venueProduct: string;
+  compareVenueProduct: string;
+  venueExchangeSymbol: string;
+  compareExchangeSymbol: string;
+  priceMultiplier?: string;
+}
+
 export type BasisSpreadFetchResult =
   | { status: "updated"; history: BasisSpreadHistory; etag: string | null }
   | { status: "unchanged"; etag: string | null };
@@ -154,6 +163,7 @@ function historyUrl(
   compareVenue?: string,
   venueSymbol?: string,
   compareVenueSymbol?: string,
+  identity?: BasisSpreadIdentityQuery,
 ) {
   const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(/\/+$/, "");
   const query = new URLSearchParams({ range });
@@ -163,6 +173,16 @@ function historyUrl(
   if (venueSymbol) query.set("venueSymbol", venueSymbol.toUpperCase());
   if (compareVenueSymbol) {
     query.set("compareVenueSymbol", compareVenueSymbol.toUpperCase());
+  }
+  if (identity) {
+    query.set("identityMode", identity.identityMode);
+    query.set("venueProduct", identity.venueProduct);
+    query.set("compareVenueProduct", identity.compareVenueProduct);
+    query.set("venueExchangeSymbol", identity.venueExchangeSymbol);
+    query.set("compareExchangeSymbol", identity.compareExchangeSymbol);
+    if (identity.priceMultiplier) {
+      query.set("priceMultiplier", identity.priceMultiplier);
+    }
   }
   return `${baseUrl}/api/v1/basis-spreads/${encodeURIComponent(venue.toLowerCase())}/${encodeURIComponent(baseAsset.toUpperCase())}/${encodeURIComponent(quoteAsset.toUpperCase())}/history?${query.toString()}`;
 }
@@ -177,6 +197,7 @@ export async function fetchBasisSpreadHistory(
   compareVenue?: string,
   venueSymbol?: string,
   compareVenueSymbol?: string,
+  identity?: BasisSpreadIdentityQuery,
 ): Promise<BasisSpreadFetchResult> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (etag) {
@@ -190,6 +211,7 @@ export async function fetchBasisSpreadHistory(
     compareVenue,
     venueSymbol,
     compareVenueSymbol,
+    identity,
   ), {
     method: "GET",
     headers,

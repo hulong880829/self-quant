@@ -32,7 +32,7 @@ npm run build
 器本地执行；刷新失败时保留上一份成功快照。登录相关请求使用
 `credentials: "include"`。浏览器不直接访问交易所或 C++ MDS。
 
-聚合盘口由浏览器直接连接 Go aggdata 服务。设置
+聚合盘口由浏览器直接连接 C++ Fairprice。设置
 `NEXT_PUBLIC_AGGDATA_BASE_URL`（默认 `http://127.0.0.1:9093`）；WebSocket 默认
 由该地址推导为 `/v1/stream`，也可用 `NEXT_PUBLIC_AGGDATA_WS_URL` 单独覆盖。若
 服务启用了 browser token，可设置公开的 `NEXT_PUBLIC_AGGDATA_TOKEN`。REST
@@ -41,7 +41,7 @@ npm run build
 聚合盘口以 `profile + symbol` 区分同名现货和永续市场，WebSocket 订阅也会
 同时发送这两个字段。
 
-Polymarket 页面也直接使用 aggdata：通过 `channel:"fairprice"` 的 JSON
+Polymarket 页面也直接使用 Fairprice：通过 `channel:"fairprice"` 的 JSON
 WebSocket 帧显示当前 Fair Price，并从
 `/v1/markets/{symbol}/fair-price-history` 加载当前合约窗口内的历史折线。
 `NEXT_PUBLIC_AGGDATA_FAIRPRICE_PROFILE` 用于在同 symbol 多 profile 时精确选择
@@ -49,7 +49,7 @@ WebSocket 帧显示当前 Fair Price，并从
 最多每 100ms 刷新，图表每秒合并一次；历史查询失败不会影响实时 Fair Price 或
 原有 Open/Chainlink 数据。
 
-compact binary v1 与 `backend/internal/aggdata/browser.go` 对齐，细节集中记录在
+compact binary v1 与 C++ Fairprice 的 SQAB 帧对齐，细节集中记录在
 `src/lib/api/aggdata.ts` 的 decoder 上方：小端 `SQAB` 帧头、帧级
 price/quantity scale、逐档 int64 mantissa 和 slot 化 venue contributions。客户端
 发送 `{op:"subscribe", symbol, channel:"orderbook", depth:50}`，服务端持续发送

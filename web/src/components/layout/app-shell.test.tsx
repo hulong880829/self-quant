@@ -19,6 +19,25 @@ vi.mock("next/dynamic", () => ({
   },
 }));
 
+vi.mock("next-themes", () => ({
+  useTheme: () => ({ resolvedTheme: "light", setTheme: vi.fn() }),
+}));
+
+const authMocks = vi.hoisted(() => ({
+  status: "authenticated" as "authenticated" | "anonymous" | "loading",
+  user: { username: "admin", permission: "admin" } as {
+    username: string;
+    permission: string;
+  } | null,
+  openLogin: vi.fn(),
+  logout: vi.fn(),
+}));
+
+vi.mock("@/components/auth/auth-provider", () => ({
+  useAuth: () => authMocks,
+  AuthProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
 vi.mock("next/link", () => ({
   default: React.forwardRef<
     HTMLAnchorElement,
@@ -42,7 +61,7 @@ vi.mock("next/link", () => ({
   }),
 }));
 
-import { NavigationLinks } from "./app-shell";
+import { AdminStandaloneShell, NavigationLinks } from "./app-shell";
 import { assistantSurface, navDensity } from "@/lib/layout";
 
 describe("NavigationLinks", () => {
@@ -109,12 +128,24 @@ describe("NavigationLinks", () => {
         requireAuth={vi.fn()}
       />,
     );
-    const funding = screen.getByRole("link", { name: "Crypto 资金费" });
+    const funding = screen.getByRole("link", { name: "套利机会" });
 
     fireEvent.click(funding);
 
     expect(funding.getAttribute("aria-current")).toBe("page");
     expect(funding.getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("shows the renamed funding entry and hides admin even for administrators", () => {
+    render(
+      <NavigationLinks
+        pathname="/funding"
+        status="authenticated"
+        requireAuth={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "套利机会" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "管理后台" })).toBeNull();
   });
 
   it("classifies compact navigation and assistant surfaces without measuring jsdom", () => {
@@ -123,5 +154,24 @@ describe("NavigationLinks", () => {
     expect(assistantSurface(1093, 614)).toBe("sheet");
     expect(assistantSurface(1536, 864)).toBe("sheet");
     expect(assistantSurface(1920, 1080)).toBe("dock");
+  });
+});
+
+describe("AdminStandaloneShell", () => {
+  afterEach(cleanup);
+
+  it("keeps admin chrome without user navigation or the research assistant", () => {
+    render(
+      <AdminStandaloneShell>
+        <div>admin body</div>
+      </AdminStandaloneShell>,
+    );
+    const brand = screen.getByRole("link", { name: /龙歪歪Quant/ });
+    expect(brand.getAttribute("href")).toBe("/admin");
+    expect(screen.getByText("管理后台")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "套利机会" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "实盘交易" })).toBeNull();
+    expect(screen.queryByLabelText("投研助手加载中")).toBeNull();
+    expect(screen.getByLabelText("切换主题")).toBeTruthy();
   });
 });

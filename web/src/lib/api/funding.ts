@@ -4,6 +4,7 @@ import type {
   FundingOpportunity,
   FundingSpread,
   FundingSpreadLeg,
+  TradefiPerpRow,
 } from "@/types/market";
 
 export type DecimalWire = string | number;
@@ -135,6 +136,21 @@ function record(value: unknown, path: string): Record<string, unknown> {
     throw new Error(`${path} 必须是对象`);
   }
   return value as Record<string, unknown>;
+}
+
+function optionalText(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value;
+}
+
+function optionalString(value: unknown, path: string): string {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  if (typeof value !== "string") {
+    throw new Error(`${path} 必须是字符串`);
+  }
+  return value;
 }
 
 function text(value: unknown, path: string): string {
@@ -626,6 +642,129 @@ export async function fetchFundingSpreads(
   return {
     status: "updated",
     snapshot: mapFundingSpreadsResponse(await response.json()),
+    etag: response.headers.get("ETag"),
+  };
+}
+
+export interface TradefiPerpsSnapshot {
+  data: TradefiPerpRow[];
+  meta: {
+    total: number;
+    snapshotVersion: string;
+    serverTime: string;
+  };
+}
+
+export type TradefiPerpsFetchResult =
+  | { status: "updated"; snapshot: TradefiPerpsSnapshot; etag: string | null }
+  | { status: "unchanged"; etag: string | null };
+
+function tradefiPerpsUrl() {
+  const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(/\/+$/, "");
+  return `${baseUrl}/api/v1/tradefi-perps-opportunities`;
+}
+
+export function mapTradefiPerpsResponse(value: unknown): TradefiPerpsSnapshot {
+  const response = record(value, "response");
+  if (!Array.isArray(response.data)) {
+    throw new Error("response.data 必须是数组");
+  }
+  const meta = record(response.meta, "response.meta");
+  const total = nonNegativeInteger(meta.total, "response.meta.total");
+  const data = response.data.map(mapTradefiPerpRow);
+  if (total !== data.length) {
+    throw new Error(`response.meta.total (${total}) 与 data 长度不一致`);
+  }
+  return {
+    data,
+    meta: {
+      total,
+      snapshotVersion: version(meta.snapshotVersion, "response.meta.snapshotVersion"),
+      serverTime: isoTime(meta.serverTime, "response.meta.serverTime"),
+    },
+  };
+}
+
+function mapTradefiPerpRow(value: unknown, index: number): TradefiPerpRow {
+  const path = `data[${index}]`;
+  const item = record(value, path);
+  const spot = record(item.spot, `${path}.spot`);
+  const perpetual = record(item.perpetual, `${path}.perpetual`);
+  const venue = exchange(perpetual.exchange, `${path}.perpetual.exchange`);
+  const exchangeSymbol = text(perpetual.exchangeSymbol, `${path}.perpetual.exchangeSymbol`);
+  const stockSymbol = text(item.stockSymbol, `${path}.stockSymbol`);
+  const fundingRate = percentageRatio(item.fundingRate, `${path}.fundingRate`);
+  const annualizedRate = percentageRatio(
+    item.perpetualFundingAnnualized,
+    `${path}.perpetualFundingAnnualized`,
+  );
+  const nextFundingAt = isoTime(item.nextFundingAt, `${path}.nextFundingAt`);
+  const turnover24hUsd = decimal(item.turnover24hUsd, `${path}.turnover24hUsd`);
+  return {
+    id: text(item.id, `${path}.id`),
+    stockSymbol,
+    spotExchange: text(spot.exchange, `${path}.spot.exchange`),
+    conId: text(spot.conId, `${path}.spot.conId`),
+    primaryExchange: optionalString(spot.primaryExchange, `${path}.spot.primaryExchange`),
+    localSymbol: optionalText(spot.localSymbol),
+    tradingClass: optionalText(spot.tradingClass),
+    exchange: venue,
+    exchangeSymbol,
+    baseAsset: text(perpetual.baseAsset, `${path}.perpetual.baseAsset`),
+    quoteAsset: text(perpetual.quoteAsset, `${path}.perpetual.quoteAsset`),
+    fundingRate,
+    perpetualFundingAnnualized: annualizedRate,
+    annualizedRate,
+    currentFundingRate: fundingRate,
+    nextFundingRate: optionalPercentage(item.nextFundingRate, `${path}.nextFundingRate`),
+    settlementIntervalHours:
+      nonNegativeInteger(item.fundingIntervalSeconds, `${path}.fundingIntervalSeconds`) / 3600,
+    nextFundingAt,
+    nextSettlementAt: nextFundingAt,
+    volume24hBase: decimal(item.volume24hBase, `${path}.volume24hBase`),
+    turnover24hUsd,
+    dailyVolume: turnover24hUsd,
+    positionQuantity: decimal(item.positionQuantity, `${path}.positionQuantity`),
+    positionNotional: decimal(item.positionNotionalUsd, `${path}.positionNotionalUsd`),
+    cumulative24h: percentageRatio(item.cumulative24h, `${path}.cumulative24h`),
+    cumulative7d: percentageRatio(item.cumulative7d, `${path}.cumulative7d`),
+    history24hComplete: optionalBoolean(item.history24hComplete, `${path}.history24hComplete`),
+    history7dComplete: optionalBoolean(item.history7dComplete, `${path}.history7dComplete`),
+    stale: item.stale === undefined ? false : boolean(item.stale, `${path}.stale`),
+    updatedAt: isoTime(item.sourceUpdatedAt, `${path}.sourceUpdatedAt`),
+    verifiedAt: isoTime(item.verifiedAt, `${path}.verifiedAt`),
+    priceMultiplier: optionalText(item.priceMultiplier) || "1",
+  };
+}
+
+function optionalPercentage(value: unknown, path: string): number | null {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  return percentageRatio(value, path);
+}
+
+export async function fetchTradefiPerps(
+  etag?: string | null,
+  signal?: AbortSignal,
+): Promise<TradefiPerpsFetchResult> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (etag) headers["If-None-Match"] = etag;
+  const response = await fetch(tradefiPerpsUrl(), {
+    method: "GET",
+    headers,
+    cache: "no-store",
+    signal,
+  });
+  if (response.status === 304) {
+    return { status: "unchanged", etag: response.headers.get("ETag") ?? etag ?? null };
+  }
+  if (!response.ok) {
+    throw new Error(`TradeFi-Perps API 请求失败 (${response.status})`);
+  }
+  return {
+    status: "updated",
+    snapshot: mapTradefiPerpsResponse(await response.json()),
     etag: response.headers.get("ETag"),
   };
 }

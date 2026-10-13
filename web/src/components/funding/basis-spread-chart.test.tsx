@@ -4,7 +4,11 @@ import * as React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { BasisSpreadFetchResult, BasisSpreadHistory } from "@/lib/api/spread";
+import type {
+  BasisSpreadFetchResult,
+  BasisSpreadHistory,
+  BasisSpreadIdentityQuery,
+} from "@/lib/api/spread";
 
 const fetchBasisSpreadHistory = vi.fn<
   (
@@ -17,6 +21,7 @@ const fetchBasisSpreadHistory = vi.fn<
     compareVenue?: string,
     venueSymbol?: string,
     compareVenueSymbol?: string,
+    identity?: BasisSpreadIdentityQuery,
   ) => Promise<BasisSpreadFetchResult>
 >();
 
@@ -31,14 +36,16 @@ vi.mock("@/lib/api/spread", () => ({
     compareVenue?: string,
     venueSymbol?: string,
     compareVenueSymbol?: string,
+    identity?: BasisSpreadIdentityQuery,
   ) => fetchBasisSpreadHistory(
     venue, baseAsset, quoteAsset, range, etag, signal,
-    compareVenue, venueSymbol, compareVenueSymbol,
+    compareVenue, venueSymbol, compareVenueSymbol, identity,
   ),
 }));
 
 import {
   BasisSpreadPanel,
+  cacheKey,
   resetBasisSpreadCacheForTests,
   spreadYDomain,
 } from "./basis-spread-chart";
@@ -113,6 +120,7 @@ describe("BasisSpreadPanel", () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
   });
 
@@ -147,6 +155,7 @@ describe("BasisSpreadPanel", () => {
       "Binance",
       "BTCUSDC",
       "BTCUSDT",
+      undefined,
     );
   });
 
@@ -169,6 +178,7 @@ describe("BasisSpreadPanel", () => {
         "1h",
         null,
         expect.any(AbortSignal),
+        undefined,
         undefined,
         undefined,
         undefined,
@@ -218,6 +228,43 @@ describe("BasisSpreadPanel", () => {
     await waitFor(() => {
       expect(screen.getByText("当前周期暂无配对价差")).not.toBeNull();
     });
+  });
+
+  it("keeps same-ticker contracts with different conIds in separate caches", async () => {
+    const first = {
+      identityMode: "venue_symbol" as const,
+      venueProduct: "perpetual",
+      compareVenueProduct: "equity",
+      venueExchangeSymbol: "AAPLUSDT",
+      compareExchangeSymbol: "1",
+      priceMultiplier: "1",
+    };
+    const second = { ...first, compareExchangeSymbol: "2" };
+    expect(cacheKey("binance", "AAPL", "USDT", "24h", "ibkr", "AAPLUSDT", "AAPL", first))
+      .not.toBe(cacheKey("binance", "AAPL", "USDT", "24h", "ibkr", "AAPLUSDT", "AAPL", second));
+    fetchBasisSpreadHistory.mockResolvedValue({
+      status: "updated",
+      etag: '"aapl"',
+      history: availableHistory({ availability: "unavailable", points: [] }),
+    });
+    render(
+      <BasisSpreadPanel
+        venue="binance"
+        compareVenue="ibkr"
+        baseAsset="AAPL"
+        quoteAsset="USDT"
+        venueSymbol="AAPLUSDT"
+        compareVenueSymbol="AAPL"
+        identity={first}
+      />,
+    );
+    await waitFor(() => {
+      expect(fetchBasisSpreadHistory).toHaveBeenCalledWith(
+        "binance", "AAPL", "USDT", "24h", null, expect.any(AbortSignal),
+        "ibkr", "AAPLUSDT", "AAPL", first,
+      );
+    });
+    expect(screen.getByText("该组合暂无对应永续 BBO 数据")).not.toBeNull();
   });
 
   it("refreshes in the background every 30 seconds", async () => {

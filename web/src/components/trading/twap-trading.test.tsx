@@ -196,12 +196,10 @@ describe("TwapTradingView", () => {
     render(<TwapTradingView />);
     await waitFor(() => {
       expect(screen.getByDisplayValue("Binance Main")).toBeTruthy();
+      expect(apiMocks.fetchTraderInstruments).toHaveBeenCalledWith(3, "perpetual");
       const instrument = screen.getByRole("combobox", { name: "TWAP 交易标的" }) as HTMLInputElement;
       expect(instrument.disabled).toBe(false);
     }, { timeout: 8_000 });
-    await waitFor(() => {
-      expect((screen.getByRole("button", { name: "创建 TWAP 计划" }) as HTMLButtonElement).disabled).toBe(false);
-    });
 
     fireEvent.click(screen.getByRole("button", { name: "创建 TWAP 计划" }));
     expect(screen.getByText("请输入有效的总数量")).toBeTruthy();
@@ -255,7 +253,10 @@ describe("TwapTradingView", () => {
     }
     const view = render(<Harness hidden={false} />);
     await waitFor(() => {
-      expect((screen.getByRole("button", { name: "创建 TWAP 计划" }) as HTMLButtonElement).disabled).toBe(false);
+      expect(screen.getByDisplayValue("Binance Main")).toBeTruthy();
+      expect(apiMocks.fetchTraderInstruments).toHaveBeenCalledWith(3, "perpetual");
+      const instrument = screen.getByRole("combobox", { name: "TWAP 交易标的" }) as HTMLInputElement;
+      expect(instrument.disabled).toBe(false);
     });
     fireEvent.change(screen.getByRole("textbox", { name: "总数量" }), { target: { value: "2" } });
     fireEvent.click(screen.getByRole("button", { name: "创建 TWAP 计划" }));

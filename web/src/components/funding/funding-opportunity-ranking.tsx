@@ -10,9 +10,6 @@ import {
 } from "@tanstack/react-table/legacy";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
-  ArrowDown,
-  ArrowDownUp,
-  ArrowUp,
   ChevronRight,
   Info,
   LoaderCircle,
@@ -20,6 +17,7 @@ import {
 } from "lucide-react";
 
 import { BasisSpreadPanel } from "@/components/funding/basis-spread-chart";
+import { SortHeader } from "@/components/funding/funding-sort-header";
 import { StartTradeButton } from "@/components/funding/start-trade-button";
 import { WorkspacePanel } from "@/components/layout/responsive";
 import { Badge } from "@/components/ui/badge";
@@ -64,33 +62,6 @@ const DATA_ROW_HEIGHT_PX = 64;
 const DETAIL_ROW_HEIGHT_PX = 328;
 
 const periods: FundingOpportunityPeriod[] = ["8h", "24h"];
-
-function SortHeader({
-  label,
-  sorted,
-  align = "left",
-  onClick,
-}: {
-  label: string;
-  sorted: false | "asc" | "desc";
-  align?: "left" | "right";
-  onClick: () => void;
-}) {
-  const Icon = sorted === "asc" ? ArrowUp : sorted === "desc" ? ArrowDown : ArrowDownUp;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground",
-        align === "right" && "w-full justify-end",
-      )}
-    >
-      {label}
-      <Icon className={cn("size-3", !sorted && "opacity-35")} />
-    </button>
-  );
-}
 
 function LegSummary({ leg, side }: { leg: FundingSpreadLeg; side: "long" | "short" }) {
   return (
@@ -296,7 +267,7 @@ export function FundingOpportunityRanking({
     { accessorKey: "periodExpectedReturn", header: "周期预期收益", cell: ({ row }) => <div className={cn("text-right font-mono text-xs font-semibold", rateColor(row.original.periodExpectedReturn))}>{formatPercent(row.original.periodExpectedReturn, 2)}</div> },
     { accessorKey: "combinedExpectedAnnualized", header: "综合预期年化", cell: ({ row }) => <div className={cn("text-right font-mono text-xs font-semibold", rateColor(row.original.combinedExpectedAnnualized))}>{formatPercent(row.original.combinedExpectedAnnualized, 1)}</div> },
     { accessorKey: "profitProbability", header: "盈利概率", cell: ({ row }) => <div className="text-right font-mono text-xs">{formatPercent(row.original.profitProbability, 1)}</div> },
-    { accessorKey: "expectedPaybackMinutes", header: () => <span title="基于近 7 日真实 BBO 与已结算资金费回放；每个完整开平窗口固定扣除 12bps，不是过去24h已结算 30bps 回本。">预计回本周期</span>, cell: ({ row }) => <div className="text-right font-mono text-xs" title="基于近 7 日真实 BBO 与已结算资金费回放；每个完整开平窗口固定扣除 12bps，不是过去24h已结算 30bps 回本。">{formatPaybackPeriod(row.original.paybackStatus, row.original.expectedPaybackMinutes)}</div> },
+    { accessorKey: "expectedPaybackMinutes", header: "预计回本周期", cell: ({ row }) => <div className="text-right font-mono text-xs" title="基于近 7 日真实 BBO 与已结算资金费回放；每个完整开平窗口固定扣除 12bps，不是过去24h已结算 30bps 回本。">{formatPaybackPeriod(row.original.paybackStatus, row.original.expectedPaybackMinutes)}</div> },
     { id: "open", enableSorting: false, header: "", cell: () => <ChevronRight className="ml-auto size-4 text-muted-foreground" /> },
   ], []);
   const table = useLegacyTable({

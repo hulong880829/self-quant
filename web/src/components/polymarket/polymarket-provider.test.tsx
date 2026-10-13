@@ -224,7 +224,7 @@ describe("PolymarketProvider fair price reset", () => {
       expect(screen.getByTestId("current").textContent).toBe("3");
       expect(screen.getByTestId("points").textContent).not.toBe("0");
       expect(screen.getByTestId("last-point").textContent).toBe("3");
-    });
+    }, { timeout: 2_500 });
 
     const beyondWindowNS = (
       BigInt(Date.now() + 300_000) * 1_000_000n

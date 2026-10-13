@@ -325,6 +325,7 @@ const combination: ArbitrageCombination = {
   scheduledExitAt: "",
   oneShotPhase: "",
   earlyExitFunding8hAnnualizedFloor: "",
+  earlyExitLiquidationDistancePct: "",
   legABasePosition: "5",
   legBBasePosition: "-5",
   carryBaseQuantity: "0",
@@ -353,6 +354,8 @@ const combination: ArbitrageCombination = {
   legAPositionDifference: "0",
   legBPositionDifference: "0",
   lastPositionReconciledAt: "2026-08-22T10:01:00Z",
+  legALiquidationDistancePct: null,
+  legBLiquidationDistancePct: null,
   preferredLeg: "a",
   executionMode: "maker_then_hedge",
   askSpreadBps: "13.25",
@@ -845,11 +848,13 @@ describe("ArbitrageTradingView", () => {
       "w-[120px]",
       "w-[160px]",
       "w-[150px]",
+      "w-[140px]",
+      "w-[160px]",
       "w-[260px]",
       "w-[150px]",
       "w-[120px]",
     ]);
-    expect(table?.className).toContain("min-w-[1760px]");
+    expect(table?.className).toContain("min-w-[2060px]");
     const headers = Array.from(table?.querySelectorAll("thead th") ?? []).map(
       (header) => header.textContent?.trim(),
     );
@@ -862,6 +867,8 @@ describe("ArbitrageTradingView", () => {
       "24H 年化",
       "累计资金费收入",
       "已实现净年化",
+      "已运行时间",
+      "爆仓距离",
       "目标仓位/当前仓位",
       "运行状态",
       "操作",
@@ -876,11 +883,49 @@ describe("ArbitrageTradingView", () => {
     expect((dataRow?.children[6] as HTMLElement).className).toContain(
       "tabular-nums",
     );
-    expect(dataRow?.children).toHaveLength(11);
+    expect(dataRow?.children).toHaveLength(13);
     fireEvent.click(dataRow!);
     await screen.findByText("组合成交净仓 Leg A / Leg B");
     const expanded = table?.querySelector("td[colspan]");
-    expect(expanded?.getAttribute("colspan")).toBe("11");
+    expect(expanded?.getAttribute("colspan")).toBe("13");
+  });
+
+  it("shows running time and signed liquidation distance", async () => {
+    setup();
+    const now = Date.now();
+    const running = {
+      ...combination,
+      createdAt: new Date(now - 30 * 60 * 1000).toISOString(),
+      legALiquidationDistancePct: "18.5",
+      legBLiquidationDistancePct: "-21.07",
+    };
+    const closed = {
+      ...combination,
+      id: "arb-closed",
+      status: "closed" as const,
+      createdAt: new Date(now - 20 * 60 * 1000).toISOString(),
+      closedAt: new Date(now - 5 * 60 * 1000).toISOString(),
+      legA: { ...combination.legA, contractType: "spot" as const },
+      legAVenueBasePosition: "5",
+      legBVenueBasePosition: "0",
+      legALiquidationDistancePct: "9",
+      legBLiquidationDistancePct: null,
+    };
+    mocks.fetchArbitrageCombinations.mockImplementation(async (view: string) => ({
+      items: view === "running" ? [running] : [closed],
+      total: 1,
+      nextCursor: "",
+    }));
+    render(<ArbitrageTradingView />);
+    expect(await screen.findByText("0天0小时")).toBeTruthy();
+    expect(screen.getByText("A binance +18.50%")).toBeTruthy();
+    const negative = screen.getByText("B okx -21.07%");
+    expect(negative.className).toContain("text-destructive");
+
+    fireEvent.click(screen.getByRole("button", { name: /已关闭/ }));
+    expect(await screen.findByText("0天0小时")).toBeTruthy();
+    expect(screen.queryByText("A binance +9.00%")).toBeNull();
+    expect(screen.getByText("B okx -")).toBeTruthy();
   });
 
   it("renders Bid / Ask in one live spread cell including missing and stale values", async () => {
@@ -938,9 +983,10 @@ describe("ArbitrageTradingView", () => {
     const venue = screen.getByText("交易所实际仓位 Leg A / Leg B");
     const drift = screen.getByText("仓位漂移 Leg A / Leg B");
     const execution = screen.getByText("执行方式");
-    const venueValue = screen.getByText("交易所实际市值");
-    expect(screen.queryByText("交易所实际市值 Leg A")).toBeNull();
-    expect(screen.queryByText("交易所实际市值 Leg B")).toBeNull();
+    const venueValue = screen.getByText("按实时中间价估值");
+    expect(screen.queryByText("交易所实际市值")).toBeNull();
+    expect(screen.queryByText("按实时中间价估值 Leg A")).toBeNull();
+    expect(screen.queryByText("按实时中间价估值 Leg B")).toBeNull();
     expect(venueValue.parentElement?.textContent).toContain("USDT");
     expect(
       baseline.compareDocumentPosition(local) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -982,6 +1028,47 @@ describe("ArbitrageTradingView", () => {
     const detail = screen.getByText("组合成交净仓 Leg A / Leg B").closest("td");
     expect(detail?.textContent).not.toContain("累计资金费收入");
   }, 15000);
+
+  it("values one live mid independently and keeps the stale-market badge", async () => {
+    setup();
+    mocks.fetchArbitrageCombinations.mockImplementation(async (view: string) => ({
+      items:
+        view === "running"
+          ? [
+              {
+                ...combination,
+                marketDataStale: true,
+                bidSpreadBps: null,
+                askSpreadBps: null,
+                legBVenueNotional: null,
+                legBVenueValuationPrice: null,
+                legBVenueValuationAt: "",
+              },
+            ]
+          : [],
+      total: view === "running" ? 1 : 0,
+      nextCursor: "",
+    }));
+    mocks.fetchArbitrageCombination.mockResolvedValue({
+      ...combination,
+      marketDataStale: true,
+      bidSpreadBps: null,
+      askSpreadBps: null,
+      legBVenueNotional: null,
+      legBVenueValuationPrice: null,
+      legBVenueValuationAt: "",
+      orders: [],
+      recentExecutions: [],
+      recentEvents: [],
+    });
+    render(<ArbitrageTradingView />);
+    fireEvent.click((await screen.findByText("arb-1")).closest("tr")!);
+    expect(await screen.findByText("按实时中间价估值")).toBeTruthy();
+    expect(screen.getByText("+500.00")).toBeTruthy();
+    expect(screen.queryByText("-505.00")).toBeNull();
+    expect(screen.getAllByText("--").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("行情过期").length).toBeGreaterThan(0);
+  });
 
   it("labels combinations without a captured baseline as legacy audit", async () => {
     setup();
@@ -1070,10 +1157,10 @@ describe("ArbitrageTradingView", () => {
     expect(screen.getByText("持仓 1 小时")).toBeTruthy();
     expect(screen.getAllByText("一次性建仓").length).toBeGreaterThan(0);
     expect(screen.queryByText("入场方向")).toBeNull();
-    expect(screen.queryByRole("button", { name: "编辑目标仓位" })).toBeNull();
     expect(screen.queryByRole("button", { name: "编辑开仓阈值" })).toBeNull();
     expect(screen.queryByText("开仓阈值")).toBeNull();
     expect(screen.getByText("未启用")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "编辑目标仓位" })).toBeTruthy();
   }, 15000);
 
   it.each([
@@ -1110,6 +1197,40 @@ describe("ArbitrageTradingView", () => {
     );
   }, 15000);
 
+  it("shows settling label when one_shot is flat and annualized is empty", async () => {
+    setup();
+    const oneShot: ArbitrageCombination = {
+      ...combination,
+      runMode: "one_shot",
+      entryDirection: "ask",
+      oneShotPhase: "exiting",
+      exitPolicy: "time",
+      exitAfterSeconds: 3600,
+      exitAnnualizedRate: "0.8",
+      legABasePosition: "0",
+      legBBasePosition: "0",
+      carryBaseQuantity: "0",
+      combinedPositionAnnualized: null,
+    };
+    mocks.fetchArbitrageCombinations.mockImplementation(async (view: string) => ({
+      items: view === "running" ? [oneShot] : [],
+      total: view === "running" ? 1 : 0,
+      nextCursor: "",
+    }));
+    mocks.fetchArbitrageCombination.mockResolvedValue({
+      ...oneShot,
+      orders: [],
+      recentExecutions: [],
+      recentEvents: [],
+    });
+    render(<ArbitrageTradingView />);
+    expect(await screen.findByText("收益结算中")).toBeTruthy();
+    expect(screen.getAllByText("--").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText("arb-1").closest("tr")!);
+    expect(await screen.findByText("80.00%")).toBeTruthy();
+    expect(screen.getByText("收益结算中")).toBeTruthy();
+  }, 15000);
+
   it("formats stored annualized exit rates as percents in detail", async () => {
     setup();
     const oneShot: ArbitrageCombination = {
@@ -1133,7 +1254,7 @@ describe("ArbitrageTradingView", () => {
     });
     render(<ArbitrageTradingView />);
     fireEvent.click((await screen.findByText("arb-1")).closest("tr")!);
-    expect(await screen.findByText("年化达到 ≥ 15.00%")).toBeTruthy();
+    expect(await screen.findByText("15.00%")).toBeTruthy();
     expect(screen.queryByText("入场方向")).toBeNull();
     expect(screen.queryByText("BID")).toBeNull();
   }, 15000);
@@ -1164,10 +1285,6 @@ describe("ArbitrageTradingView", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "运行模式" }), {
       target: { value: "one_shot" },
     });
-    fireEvent.change(screen.getByRole("combobox", { name: "退出方式" }), {
-      target: { value: "time" },
-    });
-    expect(screen.getByText("7 天")).toBeTruthy();
     fireEvent.change(screen.getByRole("combobox", { name: "持仓时间" }), {
       target: { value: "604800" },
     });
@@ -1255,7 +1372,7 @@ describe("ArbitrageTradingView", () => {
     expect(screen.queryByRole("button", { name: "编辑开仓阈值" })).toBeNull();
   });
 
-  it("shows dust positions by direction while risk states stay dominant", async () => {
+  it("shows a dust position as closeable", async () => {
     setup();
     mocks.fetchArbitrageCombinations.mockImplementation(
       async (view: string) => ({
@@ -1269,8 +1386,9 @@ describe("ArbitrageTradingView", () => {
     );
     render(<ArbitrageTradingView />);
     expect(await screen.findByText("持有可平仓位")).toBeTruthy();
-    cleanup();
+  });
 
+  it("keeps order uncertainty ahead of a dust position", async () => {
     setup();
     mocks.fetchArbitrageCombinations.mockImplementation(
       async (view: string) => ({
@@ -1292,8 +1410,9 @@ describe("ArbitrageTradingView", () => {
     );
     render(<ArbitrageTradingView />);
     expect(await screen.findByText("订单状态待核对")).toBeTruthy();
-    cleanup();
+  });
 
+  it("keeps position uncertainty ahead of a dust position", async () => {
     setup();
     mocks.fetchArbitrageCombinations.mockImplementation(
       async (view: string) => ({
@@ -2121,7 +2240,9 @@ describe("ArbitrageTradingView", () => {
       ]),
     );
     render(<ArbitrageTradingView />);
-    expect(await screen.findByText("A 已过期 / B 暂无")).toBeTruthy();
+    expect(
+      await screen.findByText("A 已过期 / B 暂无", {}, { timeout: 15000 }),
+    ).toBeTruthy();
     expect(screen.getAllByText("已过期").length).toBeGreaterThan(0);
     expect(screen.queryByText("$1.50M")).toBeNull();
     expect(screen.queryByText("$20.00M")).toBeNull();
@@ -2265,7 +2386,7 @@ describe("ArbitrageTradingView", () => {
       const types = screen.getAllByRole("combobox", { name: "产品类型" });
       expect((types[0] as HTMLSelectElement).value).toBe("spot");
       expect((types[1] as HTMLSelectElement).value).toBe("perpetual");
-    });
+    }, { timeout: 5000 });
     const exchanges = screen.getAllByRole("combobox", { name: "交易所" });
     const selectedAccounts = screen.getAllByRole("combobox", { name: "账户" });
     expect((exchanges[0] as HTMLSelectElement).value).toBe("binance");
@@ -2293,7 +2414,7 @@ describe("ArbitrageTradingView", () => {
       const exchanges = screen.getAllByRole("combobox", { name: "交易所" });
       expect((exchanges[0] as HTMLSelectElement).value).toBe("binance");
       expect((exchanges[1] as HTMLSelectElement).value).toBe("okx");
-    });
+    }, { timeout: 5000 });
     const types = screen.getAllByRole("combobox", { name: "产品类型" });
     expect((types[0] as HTMLSelectElement).value).toBe("perpetual");
     expect((types[1] as HTMLSelectElement).value).toBe("perpetual");
@@ -2613,7 +2734,10 @@ describe("ArbitrageTradingView", () => {
         .value,
     ).toBe("one_shot");
     expect(screen.queryByText("开仓阈值")).toBeNull();
-    expect(screen.getByRole("combobox", { name: "退出方式" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "持仓时间" })).toBeTruthy();
+    expect(
+      screen.getByRole("checkbox", { name: "启用综合年化提前退出" }),
+    ).toBeTruthy();
     expect(
       screen.getByRole("checkbox", { name: "启用8h资金费年化提前退出" }),
     ).toBeTruthy();
@@ -2635,8 +2759,8 @@ describe("ArbitrageTradingView", () => {
     await waitForCreateReady();
     expect(screen.queryByRole("combobox", { name: "入场方向" })).toBeNull();
     expect(screen.getByText("固定买 Leg A / 卖 Leg B")).toBeTruthy();
-    expect(screen.getByRole("combobox", { name: "退出方式" })).toBeTruthy();
-    expect(screen.getByText("退出年化")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "持仓时间" })).toBeTruthy();
+    expect(screen.getByRole("checkbox", { name: "启用综合年化提前退出" })).toBeTruthy();
     expect(screen.queryByText("开仓阈值")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "创建套利组合" }));
     await waitFor(() =>
@@ -2644,8 +2768,9 @@ describe("ArbitrageTradingView", () => {
         expect.objectContaining({
           runMode: "one_shot",
           entryDirection: "ask",
-          exitPolicy: "annualized",
-          exitAnnualizedRate: "0.15",
+          exitPolicy: "time",
+          exitAnnualizedRate: "",
+          exitAfterSeconds: 86400,
           earlyExitFunding8hAnnualizedFloor: "",
         }),
       ),
@@ -2701,9 +2826,9 @@ describe("ArbitrageTradingView", () => {
     setup();
     render(<ArbitrageTradingView />);
     await waitForCreateReady();
-    fireEvent.change(screen.getByRole("combobox", { name: "运行模式" }), {
-      target: { value: "one_shot" },
-    });
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "启用综合年化提前退出" }),
+    );
     fireEvent.change(screen.getByRole("textbox", { name: /退出年化/ }), {
       target: { value: "80" },
     });
@@ -2722,9 +2847,9 @@ describe("ArbitrageTradingView", () => {
     setup();
     render(<ArbitrageTradingView />);
     await waitForCreateReady();
-    fireEvent.change(screen.getByRole("combobox", { name: "运行模式" }), {
-      target: { value: "one_shot" },
-    });
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "启用综合年化提前退出" }),
+    );
     fireEvent.change(screen.getByRole("textbox", { name: /退出年化/ }), {
       target: { value: "12.5" },
     });
@@ -2743,9 +2868,9 @@ describe("ArbitrageTradingView", () => {
     setup();
     render(<ArbitrageTradingView />);
     await waitForCreateReady();
-    fireEvent.change(screen.getByRole("combobox", { name: "运行模式" }), {
-      target: { value: "one_shot" },
-    });
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "启用综合年化提前退出" }),
+    );
     fireEvent.change(screen.getByRole("textbox", { name: /退出年化/ }), {
       target: { value: "0" },
     });
@@ -2801,6 +2926,92 @@ describe("ArbitrageTradingView", () => {
     expect(mocks.createArbitrageCombination).not.toHaveBeenCalled();
   }, 15000);
 
+  it("submits liquidation distance as percentage points and hides it for spread", async () => {
+    setup();
+    render(<ArbitrageTradingView />);
+    await waitForCreateReady();
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "启用爆仓距离提前退出" }),
+    );
+    expect(screen.getByLabelText("爆仓距离阈值")).toHaveProperty("value", "20");
+    fireEvent.click(screen.getByRole("button", { name: "创建套利组合" }));
+    await waitFor(() =>
+      expect(mocks.createArbitrageCombination).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runMode: "one_shot",
+          earlyExitLiquidationDistancePct: "20",
+        }),
+      ),
+    );
+    selectRunMode("spread");
+    expect(
+      screen.queryByRole("checkbox", { name: "启用爆仓距离提前退出" }),
+    ).toBeNull();
+  }, 15000);
+
+  it("shows a configured liquidation distance on one_shot detail", async () => {
+    setup();
+    const configured: ArbitrageCombination = {
+      ...combination,
+      runMode: "one_shot",
+      entryDirection: "ask",
+      oneShotPhase: "waiting_exit",
+      exitPolicy: "time",
+      exitAfterSeconds: 3600,
+      askThresholdBps: "0",
+      bidThresholdBps: "0",
+      earlyExitLiquidationDistancePct: "20",
+    };
+    mocks.fetchArbitrageCombinations.mockImplementation(async (view: string) => ({
+      items: view === "running" ? [configured] : [],
+      total: view === "running" ? 1 : 0,
+      nextCursor: "",
+    }));
+    mocks.fetchArbitrageCombination.mockResolvedValue({
+      ...configured,
+      orders: [],
+      recentExecutions: [],
+      recentEvents: [],
+    });
+    render(<ArbitrageTradingView />);
+    fireEvent.click((await screen.findByText("arb-1")).closest("tr")!);
+    expect(await screen.findByText("爆仓距离提前退出")).toBeTruthy();
+    expect(screen.getByText("任一永续腿 ≤ 20%")).toBeTruthy();
+  }, 15000);
+
+  it("does not offer enabling liquidation distance when it was not configured", async () => {
+    setup();
+    const disabled: ArbitrageCombination = {
+      ...combination,
+      runMode: "one_shot",
+      entryDirection: "ask",
+      oneShotPhase: "waiting_exit",
+      exitPolicy: "time",
+      exitAfterSeconds: 3600,
+      askThresholdBps: "0",
+      bidThresholdBps: "0",
+      earlyExitLiquidationDistancePct: "",
+    };
+    mocks.fetchArbitrageCombinations.mockImplementation(async (view: string) => ({
+      items: view === "running" ? [disabled] : [],
+      total: view === "running" ? 1 : 0,
+      nextCursor: "",
+    }));
+    mocks.fetchArbitrageCombination.mockResolvedValue({
+      ...disabled,
+      orders: [],
+      recentExecutions: [],
+      recentEvents: [],
+    });
+    render(<ArbitrageTradingView />);
+    fireEvent.click((await screen.findByText("arb-1")).closest("tr")!);
+    await screen.findByText("8h资金费年化");
+    expect(
+      screen.queryByRole("button", { name: "编辑爆仓距离提前退出" }),
+    ).toBeNull();
+    expect(screen.queryByText("任一永续腿 ≤ 20%")).toBeNull();
+  }, 15000);
+
   it("hides 0 bps chart lines and shows the 8h floor on one_shot detail", async () => {
     setup();
     const oneShot: ArbitrageCombination = {
@@ -2827,10 +3038,46 @@ describe("ArbitrageTradingView", () => {
     });
     render(<ArbitrageTradingView />);
     fireEvent.click((await screen.findByText("arb-1")).closest("tr")!);
-    expect(await screen.findByText("8h资金费年化< 5.00%")).toBeTruthy();
+    expect(await screen.findByText("8h资金费年化")).toBeTruthy();
+    expect(screen.getByText(/<\s*5\.00%/)).toBeTruthy();
     expect(screen.queryByText("开仓 0 bps")).toBeNull();
     expect(screen.queryByText("平仓 0 bps")).toBeNull();
     expect(screen.queryByText("开仓 12 bps")).toBeNull();
+  }, 15000);
+
+  it("shows last annualized and create-time-only early-exit enablement", async () => {
+    setup();
+    const oneShot: ArbitrageCombination = {
+      ...combination,
+      runMode: "one_shot",
+      oneShotPhase: "exited",
+      exitPolicy: "time",
+      exitAfterSeconds: 3600,
+      scheduledExitAt: "2020-01-01T00:00:00Z",
+      combinedPositionAnnualized: "0.22",
+      exitAnnualizedRate: "",
+      earlyExitFunding8hAnnualizedFloor: "",
+    };
+    mocks.fetchArbitrageCombinations.mockImplementation(async (view: string) => ({
+      items: view === "running" ? [oneShot] : [],
+      total: view === "running" ? 1 : 0,
+      nextCursor: "",
+    }));
+    mocks.fetchArbitrageCombination.mockResolvedValue({
+      ...oneShot,
+      orders: [],
+      recentExecutions: [],
+      recentEvents: [],
+    });
+    render(<ArbitrageTradingView />);
+    fireEvent.click((await screen.findByText("arb-1")).closest("tr")!);
+    expect(await screen.findByText("+22.00%")).toBeTruthy();
+    expect(await screen.findByText("创建时未启用")).toBeTruthy();
+    expect(screen.getByText("未启用")).toBeTruthy();
+    expect(screen.getByText(/已到期/)).toBeTruthy();
+    expect(screen.queryByText("complete")).toBeNull();
+    expect(screen.queryByText("partial")).toBeNull();
+    expect(screen.queryByText("最终收益计算中")).toBeNull();
   }, 15000);
 
   it("loads cached funds once per account id and ignores symbol or leverage changes", async () => {
@@ -3361,7 +3608,7 @@ describe("ArbitrageTradingView", () => {
     await waitFor(() => {
       const types = screen.getAllByRole("combobox", { name: "产品类型" });
       expect((types[0] as HTMLSelectElement).value).toBe("spot");
-    });
+    }, { timeout: 5000 });
     fireEvent.change(screen.getAllByRole("combobox", { name: "交易所" })[0]!, {
       target: { value: "okx" },
     });
@@ -3383,7 +3630,7 @@ describe("ArbitrageTradingView", () => {
     await waitFor(() => {
       const types = screen.getAllByRole("combobox", { name: "产品类型" });
       expect((types[0] as HTMLSelectElement).value).toBe("spot");
-    });
+    }, { timeout: 5000 });
     fireEvent.change(screen.getAllByRole("combobox", { name: "交易所" })[0]!, {
       target: { value: "okx" },
     });

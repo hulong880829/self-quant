@@ -13,9 +13,6 @@ import {
 } from "@tanstack/react-table/legacy";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
-  ArrowDown,
-  ArrowDownUp,
-  ArrowUp,
   CalendarClock,
   ChevronRight,
   Info,
@@ -24,6 +21,7 @@ import {
 } from "lucide-react";
 
 import { BasisSpreadPanel } from "@/components/funding/basis-spread-chart";
+import { SortHeader } from "@/components/funding/funding-sort-header";
 import { WorkspacePanel } from "@/components/layout/responsive";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -79,33 +77,6 @@ const exchangeDot: Record<Exchange, string> = {
   Entropy: "bg-fuchsia-500",
   Polymarket: "bg-violet-500",
 };
-
-function SortHeader({
-  label,
-  sorted,
-  align = "left",
-  onClick,
-}: {
-  label: string;
-  sorted: false | "asc" | "desc";
-  align?: "left" | "right";
-  onClick: () => void;
-}) {
-  const Icon = sorted === "asc" ? ArrowUp : sorted === "desc" ? ArrowDown : ArrowDownUp;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground",
-        align === "right" && "w-full justify-end",
-      )}
-    >
-      {label}
-      <Icon className={cn("size-3", !sorted && "opacity-35")} />
-    </button>
-  );
-}
 
 function SettlementCountdown({ value }: { value: string }) {
   const [now, setNow] = React.useState(() => Date.now());
@@ -357,9 +328,7 @@ export function FundingSpreadView({
             spread24hAnnualized: row.spread24hAnnualized,
             stale: row.stale,
           }).paybackMinutes ?? Number.POSITIVE_INFINITY,
-        header: () => (
-          <span title={FUNDING_PAYBACK_TOOLTIP}>预计回本时间</span>
-        ),
+        header: "预计回本时间",
         cell: ({ row }) => {
           const estimate = estimateCrossFundingPayback({
             spread24hAnnualized: row.original.spread24hAnnualized,

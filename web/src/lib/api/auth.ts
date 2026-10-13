@@ -22,6 +22,7 @@ export const AUTH_REQUIRED_PATHS = [
   "/accounts",
   "/reports",
   "/ai-settings",
+  "/admin",
 ] as const;
 
 export function isAuthRequiredPath(pathname: string | null | undefined): boolean {

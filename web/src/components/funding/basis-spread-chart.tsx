@@ -5,6 +5,7 @@ import { LoaderCircle, RefreshCw } from "lucide-react";
 
 import type {
   BasisSpreadHistory,
+  BasisSpreadIdentityQuery,
   BasisSpreadRange,
 } from "@/lib/api/spread";
 import { fetchBasisSpreadHistory } from "@/lib/api/spread";
@@ -34,7 +35,7 @@ export function resetBasisSpreadCacheForTests() {
   historyCache.clear();
 }
 
-function cacheKey(
+export function cacheKey(
   venue: string,
   baseAsset: string,
   quoteAsset: string,
@@ -42,8 +43,23 @@ function cacheKey(
   compareVenue?: string,
   venueSymbol?: string,
   compareVenueSymbol?: string,
+  identity?: BasisSpreadIdentityQuery,
 ) {
-  return `${venue.toLowerCase()}|${(compareVenue ?? "").toLowerCase()}|${baseAsset.toUpperCase()}|${quoteAsset.toUpperCase()}|${(venueSymbol ?? "").toUpperCase()}|${(compareVenueSymbol ?? "").toUpperCase()}|${range}`;
+  return [
+    identity?.identityMode ?? "",
+    venue.toLowerCase(),
+    (compareVenue ?? "").toLowerCase(),
+    identity?.venueProduct ?? "",
+    identity?.compareVenueProduct ?? "",
+    baseAsset.toUpperCase(),
+    quoteAsset.toUpperCase(),
+    (venueSymbol ?? "").toUpperCase(),
+    (compareVenueSymbol ?? "").toUpperCase(),
+    identity?.venueExchangeSymbol ?? "",
+    identity?.compareExchangeSymbol ?? "",
+    identity?.priceMultiplier ?? "",
+    range,
+  ].join("|");
 }
 
 function formatBps(value: number) {
@@ -76,6 +92,7 @@ export function BasisSpreadPanel({
   compareVenue,
   venueSymbol,
   compareVenueSymbol,
+  identity,
 }: {
   venue: string;
   baseAsset: string;
@@ -83,6 +100,7 @@ export function BasisSpreadPanel({
   compareVenue?: string;
   venueSymbol?: string;
   compareVenueSymbol?: string;
+  identity?: BasisSpreadIdentityQuery;
 }) {
   const [range, setRange] = React.useState<BasisSpreadRange>("24h");
   const [history, setHistory] = React.useState<BasisSpreadHistory | null>(null);
@@ -99,7 +117,7 @@ export function BasisSpreadPanel({
     async (signal: AbortSignal) => {
       await Promise.resolve();
       const key = cacheKey(
-        venue, baseAsset, quoteAsset, range, compareVenue, venueSymbol, compareVenueSymbol,
+        venue, baseAsset, quoteAsset, range, compareVenue, venueSymbol, compareVenueSymbol, identity,
       );
       const existing = historyCache.get(key);
       if (existing && Date.now() - existing.loadedAt < CACHE_TTL_MS) {
@@ -119,6 +137,7 @@ export function BasisSpreadPanel({
           compareVenue,
           venueSymbol,
           compareVenueSymbol,
+          identity,
         );
         if (signal.aborted) return;
         if (result.status === "unchanged") {
@@ -141,7 +160,7 @@ export function BasisSpreadPanel({
         setError(reason instanceof Error ? reason.message : "期现价差加载失败");
       }
     },
-    [venue, baseAsset, quoteAsset, range, compareVenue, venueSymbol, compareVenueSymbol],
+    [venue, baseAsset, quoteAsset, range, compareVenue, venueSymbol, compareVenueSymbol, identity],
   );
 
   React.useEffect(() => {
@@ -149,7 +168,7 @@ export function BasisSpreadPanel({
     etagRef.current =
       historyCache.get(
         cacheKey(
-          venue, baseAsset, quoteAsset, range, compareVenue, venueSymbol, compareVenueSymbol,
+          venue, baseAsset, quoteAsset, range, compareVenue, venueSymbol, compareVenueSymbol, identity,
         ),
       )?.etag ?? null;
     const immediate = window.setTimeout(() => {
@@ -165,7 +184,7 @@ export function BasisSpreadPanel({
       window.clearInterval(timer);
     };
   }, [
-    load, venue, baseAsset, quoteAsset, range, compareVenue, venueSymbol, compareVenueSymbol,
+    load, venue, baseAsset, quoteAsset, range, compareVenue, venueSymbol, compareVenueSymbol, identity,
   ]);
 
   return (

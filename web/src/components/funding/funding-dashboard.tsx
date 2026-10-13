@@ -13,10 +13,8 @@ import {
 } from "@tanstack/react-table/legacy";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Activity } from "react";
+import Link from "next/link";
 import {
-  ArrowDown,
-  ArrowDownUp,
-  ArrowUp,
   CalendarClock,
   ChevronRight,
   Clock3,
@@ -28,9 +26,15 @@ import {
   Sparkles,
 } from "lucide-react";
 
+import { SortHeader } from "@/components/funding/funding-sort-header";
 import { useFundingSnapshot } from "@/components/funding/funding-provider";
 import { FundingOpportunityRanking } from "@/components/funding/funding-opportunity-ranking";
 import { FundingSpreadView } from "@/components/funding/funding-spread-view";
+import { filterTradefiRows, TradefiPerpsView } from "@/components/funding/tradefi-perps-view";
+import {
+  fundingMetricColumns,
+  SettlementCountdown,
+} from "@/components/funding/funding-metric-columns";
 import { WorkspacePanel } from "@/components/layout/responsive";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -38,12 +42,10 @@ import { Input } from "@/components/ui/input";
 import {
   annualize24h,
   annualize7d,
-  formatCompactNumber,
   formatCurrency,
   formatDateTime,
   formatFundingRate,
   formatPercent,
-  formatSettlementCountdown,
   rateColor,
   resolveFundingRate,
 } from "@/lib/market-format";
@@ -73,7 +75,7 @@ import type {
   ContractKind,
 } from "@/types/market";
 
-type FundingViewMode = "single" | "spread" | "ranking";
+type FundingViewMode = "single" | "spread" | "ranking" | "tradefi";
 type FundingListItem =
   | { kind: "row"; key: string; opportunity: FundingOpportunity }
   | { kind: "detail"; key: string; opportunity: FundingOpportunity };
@@ -126,6 +128,7 @@ const fundingHeaderDescriptions: Record<string, string> = {
   annualizedRate: "根据历史已结算资金费线性外推的年化值",
   annualized24h: "将过去 24 小时已结算资金费累计线性外推至一年",
   annualized7d: "将过去 7 天已结算资金费累计线性外推至一年",
+  fundingPayback: FUNDING_PAYBACK_TOOLTIP,
 };
 
 interface HistoryState {
@@ -135,53 +138,6 @@ interface HistoryState {
 }
 
 const HISTORY_CACHE_TTL_MS = 5 * 60_000;
-
-function SortHeader({
-  label,
-  description,
-  sorted,
-  onClick,
-  align = "left",
-}: {
-  label: string;
-  description?: string;
-  sorted: false | "asc" | "desc";
-  onClick: () => void;
-  align?: "left" | "right";
-}) {
-  const Icon = sorted === "asc" ? ArrowUp : sorted === "desc" ? ArrowDown : ArrowDownUp;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-medium uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground",
-        align === "right" && "w-full justify-end",
-      )}
-      title={description}
-      aria-label={description ? `${label}：${description}` : label}
-    >
-      {label}
-      {description && <Info className="size-3 opacity-55" />}
-      <Icon className={cn("size-3", !sorted && "opacity-35")} />
-    </button>
-  );
-}
-
-const SettlementCountdown = React.memo(function SettlementCountdown({
-  value,
-}: {
-  value: string;
-}) {
-  const [now, setNow] = React.useState(() => Date.now());
-
-  React.useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  return <>{formatSettlementCountdown(value, now)}</>;
-});
 
 function RangeFilter({
   label,
@@ -334,6 +290,7 @@ function Filters({
               [
                 ["single", "单所"],
                 ["spread", "跨所"],
+                ["tradefi", "TradeFi-Perps"],
                 ["ranking", "机会排名"],
               ] as const
             ).map(([value, label]) => (
@@ -351,6 +308,12 @@ function Filters({
                 {label}
               </button>
             ))}
+            <Link
+              href="/funding/jev-arb"
+              className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground transition-all hover:text-foreground"
+            >
+              JEV 纸面套利
+            </Link>
           </div>
           {mode !== "ranking" && <span className="mr-1 text-xs text-muted-foreground">交易所</span>}
           {mode !== "ranking" && exchanges.map((exchange) => {
@@ -643,6 +606,8 @@ export function FundingDashboard() {
   const {
     snapshot,
     spreadSnapshot,
+    tradefiSnapshot,
+    tradefiError,
     loading,
     refreshing,
     error,
@@ -672,6 +637,10 @@ export function FundingDashboard() {
   }, []);
   const [rankingResultCount, setRankingResultCount] = React.useState(0);
   const [filters, setFilters] = React.useState<FundingFilters>(defaultFilters);
+  const tradefiRows = React.useMemo(
+    () => filterTradefiRows(tradefiSnapshot?.data ?? [], filters),
+    [filters, tradefiSnapshot],
+  );
   const [sorting, setSorting] = React.useState<SortingState>([
     { id: "annualizedRate", desc: true },
   ]);
@@ -875,150 +844,7 @@ export function FundingDashboard() {
           </div>
         ),
       },
-      {
-        accessorKey: "positionNotional",
-        header: "持仓市值 (USDT)",
-        cell: ({ row }) => (
-          <div
-            className="text-right"
-            title={`${formatCompactNumber(row.original.positionQuantity)} ${row.original.baseAsset}`}
-          >
-            <div className="font-mono text-xs">
-              {formatCurrency(row.original.positionNotional, true)}
-            </div>
-            <div className="mt-0.5 text-[10px] text-muted-foreground">
-              USDT
-            </div>
-          </div>
-        ),
-      },
-      {
-        accessorKey: "dailyVolume",
-        header: "日成交额",
-        cell: ({ row }) => (
-          <div className="text-right font-mono text-xs">
-            {formatCurrency(row.original.dailyVolume, true)}
-          </div>
-        ),
-      },
-      {
-        accessorKey: "annualizedRate",
-        header: "历史年化费率",
-        cell: ({ row }) => (
-          <div
-            className={cn(
-              "text-right font-mono text-xs font-semibold",
-              rateColor(row.original.annualizedRate),
-            )}
-          >
-            {formatHistoryWindow(
-              row.original.history7dComplete,
-              row.original.annualizedRate,
-              (value) => formatPercent(value, 1),
-            )}
-          </div>
-        ),
-      },
-      {
-        id: "settlementCountdown",
-        accessorFn: (row) => Date.parse(row.nextSettlementAt),
-        header: "距离结算",
-        cell: ({ row }) => (
-          <div className="text-right">
-            <div className="font-mono text-xs">
-              <SettlementCountdown value={row.original.nextSettlementAt} />
-            </div>
-            <div className="mt-0.5 text-[10px] text-muted-foreground">
-              {row.original.settlementIntervalHours}H 周期
-            </div>
-          </div>
-        ),
-      },
-      {
-        id: "displayedFundingRate",
-        accessorFn: (row) =>
-          resolveFundingRate(row.nextFundingRate, row.currentFundingRate),
-        header: "资金费率",
-        cell: ({ row }) => {
-          const displayedRate = resolveFundingRate(
-            row.original.nextFundingRate,
-            row.original.currentFundingRate,
-          );
-          return (
-            <div
-              className={cn(
-                "text-right font-mono text-xs font-semibold",
-                rateColor(displayedRate),
-              )}
-            >
-              {formatFundingRate(displayedRate)}
-            </div>
-          );
-        },
-      },
-      {
-        id: "annualized24h",
-        accessorFn: (row) => annualize24h(row.cumulative24h),
-        header: "24H 窗口年化",
-        cell: ({ row }) => (
-          <div
-            className={cn(
-              "text-right font-mono text-xs",
-              rateColor(annualize24h(row.original.cumulative24h)),
-            )}
-          >
-            {formatHistoryWindow(
-              row.original.history24hComplete,
-              annualize24h(row.original.cumulative24h),
-              (value) => formatPercent(value, 1),
-            )}
-          </div>
-        ),
-      },
-      {
-        id: "annualized7d",
-        accessorFn: (row) => annualize7d(row.cumulative7d),
-        header: "7D 窗口年化",
-        cell: ({ row }) => (
-          <div
-            className={cn(
-              "text-right font-mono text-xs",
-              rateColor(annualize7d(row.original.cumulative7d)),
-            )}
-          >
-            {formatHistoryWindow(
-              row.original.history7dComplete,
-              annualize7d(row.original.cumulative7d),
-              (value) => formatPercent(value, 1),
-            )}
-          </div>
-        ),
-      },
-      {
-        id: "fundingPayback",
-        accessorFn: (row) =>
-          estimateSingleFundingPayback({
-            cumulative24h: row.cumulative24h,
-            stale: row.stale,
-          }).paybackMinutes ?? Number.POSITIVE_INFINITY,
-        header: () => (
-          <span title={FUNDING_PAYBACK_TOOLTIP}>预计回本时间</span>
-        ),
-        cell: ({ row }) => {
-          const estimate = estimateSingleFundingPayback({
-            cumulative24h: row.original.cumulative24h,
-            stale: row.original.stale,
-          });
-          return (
-            <div
-              className="text-right font-mono text-xs"
-              title={fundingPaybackTitle(estimate)}
-            >
-              {formatFundingPayback(estimate)}
-            </div>
-          );
-        },
-      },
+      ...fundingMetricColumns<FundingOpportunity>(),
       {
         id: "open",
         enableSorting: false,
@@ -1096,7 +922,9 @@ export function FundingDashboard() {
             ? filteredData.length
             : mode === "spread"
               ? filteredSpreads.length
-              : rankingResultCount
+              : mode === "tradefi"
+                ? tradefiRows.length
+                : rankingResultCount
         }
         mode={mode}
         onModeChange={selectMode}
@@ -1302,6 +1130,16 @@ export function FundingDashboard() {
       {visitedModes.has("spread") ? (
         <Activity mode={mode === "spread" ? "visible" : "hidden"}>
           <FundingSpreadView data={filteredSpreads} loading={loading} />
+        </Activity>
+      ) : null}
+      {visitedModes.has("tradefi") ? (
+        <Activity mode={mode === "tradefi" ? "visible" : "hidden"}>
+          <TradefiPerpsView
+            data={tradefiRows}
+            loading={loading}
+            error={tradefiError}
+            hasSnapshot={tradefiSnapshot !== null}
+          />
         </Activity>
       ) : null}
       {visitedModes.has("ranking") ? (

@@ -34,18 +34,20 @@ import {
 import {
   ArbitrageCreateFailure,
   annualizedPercentToRatio,
+  annualizedRatioToPercent,
   closeArbitrageCombination,
   createArbitrageCombination,
   fetchArbitrageCombination,
   fetchArbitrageCombinations,
   formatAnnualizedRatioAsPercent,
+  formatLiquidationDistance,
+  formatRunningDuration,
   formatSignedAnnualizedRatioAsPercent,
   signedAnnualizedPercentToRatio,
   updateArbitrageCombination,
   type ArbitrageCombination,
   type ArbitrageCombinationDetail,
   type ArbitrageExecutionMode,
-  type ArbitrageExitPolicy,
   type ArbitragePreferredLeg,
   type ArbitrageRunMode,
   type ArbitrageView,
@@ -922,14 +924,18 @@ export function ArbitrageTradingView({
   const [runMode, setRunMode] = React.useState<ArbitrageRunMode>("one_shot");
   const [legALeverage, setLegALeverage] = React.useState("4");
   const [legBLeverage, setLegBLeverage] = React.useState("4");
-  const [exitPolicy, setExitPolicy] =
-    React.useState<ArbitrageExitPolicy>("annualized");
   const [exitAnnualizedRate, setExitAnnualizedRate] = React.useState("15");
+  const [exitAnnualizedEnabled, setExitAnnualizedEnabled] =
+    React.useState(false);
   const [exitAfterSeconds, setExitAfterSeconds] = React.useState(86400);
   const [earlyExitFunding8hEnabled, setEarlyExitFunding8hEnabled] =
     React.useState(false);
   const [earlyExitFunding8hPercent, setEarlyExitFunding8hPercent] =
     React.useState("");
+  const [earlyExitLiquidationEnabled, setEarlyExitLiquidationEnabled] =
+    React.useState(false);
+  const [earlyExitLiquidationPercent, setEarlyExitLiquidationPercent] =
+    React.useState("20");
   const [createLegErrors, setCreateLegErrors] = React.useState<{
     a?: string;
     b?: string;
@@ -1714,10 +1720,9 @@ export function ArbitrageTradingView({
       : leverageBValue >= 1);
   const oneShotValid =
     runMode !== "one_shot" ||
-    (exitPolicy === "annualized"
-      ? annualizedPercentToRatio(exitAnnualizedRate) != null
-      : exitPolicy === "time" &&
-        [3600, 14400, 28800, 86400, 604800].includes(exitAfterSeconds));
+    ([3600, 14400, 28800, 86400, 604800].includes(exitAfterSeconds) &&
+      (!exitAnnualizedEnabled ||
+        annualizedPercentToRatio(exitAnnualizedRate) != null));
   const funding8hFloorRatio = signedAnnualizedPercentToRatio(
     earlyExitFunding8hPercent,
   );
@@ -1725,6 +1730,10 @@ export function ArbitrageTradingView({
     runMode !== "one_shot" ||
     !earlyExitFunding8hEnabled ||
     funding8hFloorRatio != null;
+  const liquidationDistanceValid =
+    runMode !== "one_shot" ||
+    !earlyExitLiquidationEnabled ||
+    validLiquidationDistancePercent(earlyExitLiquidationPercent);
   const spreadThresholdsValid =
     runMode !== "spread" ||
     [askThreshold, bidThreshold].every((value) => {
@@ -1736,6 +1745,7 @@ export function ArbitrageTradingView({
     leverageValid &&
     oneShotValid &&
     funding8hFloorValid &&
+    liquidationDistanceValid &&
     spreadThresholdsValid;
   const canCreate =
     !busy &&
@@ -1873,18 +1883,19 @@ export function ArbitrageTradingView({
         entryDirection: runMode === "one_shot" ? "ask" : "",
         legALeverage: legALeverage.trim(),
         legBLeverage: legBLeverage.trim(),
-        exitPolicy: runMode === "one_shot" ? exitPolicy : "",
+        exitPolicy: runMode === "one_shot" ? "time" : "",
         exitAnnualizedRate:
-          runMode === "one_shot" && exitPolicy === "annualized"
+          runMode === "one_shot" && exitAnnualizedEnabled
             ? (annualizedPercentToRatio(exitAnnualizedRate) ?? "")
             : "",
-        exitAfterSeconds:
-          runMode === "one_shot" && exitPolicy === "time"
-            ? exitAfterSeconds
-            : 0,
+        exitAfterSeconds: runMode === "one_shot" ? exitAfterSeconds : 0,
         earlyExitFunding8hAnnualizedFloor:
           runMode === "one_shot" && earlyExitFunding8hEnabled
             ? (funding8hFloorRatio ?? "")
+            : "",
+        earlyExitLiquidationDistancePct:
+          runMode === "one_shot" && earlyExitLiquidationEnabled
+            ? earlyExitLiquidationPercent.trim()
             : "",
       });
       showToast(`套利组合 ${created.id} 已创建`, "success");
@@ -2141,9 +2152,14 @@ export function ArbitrageTradingView({
               <Field label="运行模式">
                 <select
                   value={runMode}
-                  onChange={(event) =>
-                    setRunMode(event.target.value as ArbitrageRunMode)
-                  }
+                  onChange={(event) => {
+                    const next = event.target.value as ArbitrageRunMode;
+                    setRunMode(next);
+                    if (next !== "one_shot") {
+                      setEarlyExitLiquidationEnabled(false);
+                      setEarlyExitLiquidationPercent("20");
+                    }
+                  }}
                   className={selectClassName}
                 >
                   <option value="spread">价差触发</option>
@@ -2182,44 +2198,49 @@ export function ArbitrageTradingView({
               </>
             ) : (
               <>
-                <Field label="退出方式">
+                <Field label="持仓时间">
                   <select
-                    value={exitPolicy}
+                    value={exitAfterSeconds}
                     onChange={(event) =>
-                      setExitPolicy(event.target.value as ArbitrageExitPolicy)
+                      setExitAfterSeconds(Number(event.target.value))
                     }
                     className={selectClassName}
                   >
-                    <option value="annualized">年化达标退出</option>
-                    <option value="time">固定持仓时间</option>
+                    {EXIT_AFTER_OPTIONS.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
                   </select>
                 </Field>
-                {exitPolicy === "annualized" ? (
-                  <Field label="退出年化">
-                    <UnitInput
-                      value={exitAnnualizedRate}
-                      onChange={setExitAnnualizedRate}
-                      unit="%"
-                      placeholder="15"
-                    />
-                  </Field>
-                ) : (
-                  <Field label="持仓时间">
-                    <select
-                      value={exitAfterSeconds}
-                      onChange={(event) =>
-                        setExitAfterSeconds(Number(event.target.value))
-                      }
-                      className={selectClassName}
-                    >
-                      {EXIT_AFTER_OPTIONS.map((item) => (
-                        <option key={item.value} value={item.value}>
-                          {item.label}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                )}
+                <label className="flex flex-wrap items-center gap-2 sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={exitAnnualizedEnabled}
+                    onChange={(event) =>
+                      setExitAnnualizedEnabled(event.target.checked)
+                    }
+                    aria-label="启用综合年化提前退出"
+                  />
+                  {exitAnnualizedEnabled ? (
+                    <>
+                      <span className="text-sm">综合年化≥</span>
+                      <input
+                        value={exitAnnualizedRate}
+                        onChange={(event) =>
+                          setExitAnnualizedRate(event.target.value)
+                        }
+                        aria-label="退出年化"
+                        inputMode="decimal"
+                        className="h-8 w-20 rounded-md border bg-background px-2 font-mono text-sm"
+                        placeholder="15"
+                      />
+                      <span className="text-sm">%</span>
+                    </>
+                  ) : (
+                    <span className="text-sm">综合年化提前退出</span>
+                  )}
+                </label>
                 <label className="flex flex-wrap items-center gap-2 sm:col-span-2">
                   <input
                     type="checkbox"
@@ -2251,6 +2272,42 @@ export function ArbitrageTradingView({
                     </>
                   ) : (
                     <span className="text-sm">8h资金费年化提前退出</span>
+                  )}
+                </label>
+                <label className="flex flex-wrap items-center gap-2 sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={earlyExitLiquidationEnabled}
+                    onChange={(event) =>
+                      setEarlyExitLiquidationEnabled(event.target.checked)
+                    }
+                    aria-label="启用爆仓距离提前退出"
+                  />
+                  {earlyExitLiquidationEnabled ? (
+                    <>
+                      <span className="text-sm">爆仓距离 ≤</span>
+                      <input
+                        value={earlyExitLiquidationPercent}
+                        onChange={(event) =>
+                          setEarlyExitLiquidationPercent(event.target.value)
+                        }
+                        aria-label="爆仓距离阈值"
+                        inputMode="decimal"
+                        className="h-8 w-20 rounded-md border bg-background px-2 font-mono text-sm"
+                        placeholder="20"
+                      />
+                      <span className="text-sm">%</span>
+                      <span className="text-xs text-muted-foreground">
+                        建议 10–30%，百分号无需输入
+                      </span>
+                      {!liquidationDistanceValid ? (
+                        <span className="text-xs text-destructive">
+                          请填写大于 0 且小于 100 的百分点
+                        </span>
+                      ) : null}
+                    </>
+                  ) : (
+                    <span className="text-sm">爆仓距离提前退出</span>
                   )}
                 </label>
               </>
@@ -2640,7 +2697,7 @@ function LegCard({
   );
 }
 
-const COMBINATION_TABLE_COLUMNS = 11;
+const COMBINATION_TABLE_COLUMNS = 13;
 
 function ArbitrageCombinationList({
   view,
@@ -2675,6 +2732,11 @@ function ArbitrageCombinationList({
   closingID: string | null;
   onClose: (id: string) => void;
 }) {
+  const [now, setNow] = React.useState(() => new Date());
+  React.useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
   return (
     <section className="overflow-hidden rounded-xl border bg-card">
       <div className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
@@ -2709,7 +2771,7 @@ function ArbitrageCombinationList({
       </div>
 
       <div className="min-w-0 overflow-x-auto">
-        <table className="w-full min-w-[1760px] table-fixed text-left text-xs">
+        <table className="w-full min-w-[2060px] table-fixed text-left text-xs">
           <colgroup>
             <col className="w-[180px]" />
             <col className="w-[110px]" />
@@ -2719,6 +2781,8 @@ function ArbitrageCombinationList({
             <col className="w-[120px]" />
             <col className="w-[160px]" />
             <col className="w-[150px]" />
+            <col className="w-[140px]" />
+            <col className="w-[160px]" />
             <col className="w-[260px]" />
             <col className="w-[150px]" />
             <col className="w-[120px]" />
@@ -2747,6 +2811,8 @@ function ArbitrageCombinationList({
               >
                 已实现净年化
               </th>
+              <th className="px-3 py-2.5 text-right font-medium">已运行时间</th>
+              <th className="px-3 py-2.5 font-medium">爆仓距离</th>
               <th className="px-3 py-2.5 text-right font-medium">
                 目标仓位/当前仓位
               </th>
@@ -2858,6 +2924,17 @@ function ArbitrageCombinationList({
                       }
                     >
                       {formatAnnualized(item.combinedPositionAnnualized)}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-3 text-right font-mono tabular-nums">
+                      {formatRunningDuration(
+                        item.createdAt,
+                        item.closedAt,
+                        item.status,
+                        now,
+                      )}
+                    </td>
+                    <td className="px-3 py-3">
+                      <LiquidationDistanceCell item={item} />
                     </td>
                     <td className="px-3 py-3 text-right">
                       <div className="whitespace-nowrap font-mono tabular-nums">
@@ -2974,6 +3051,43 @@ function ArbitrageCombinationList({
   );
 }
 
+function LiquidationDistanceCell({ item }: { item: ArbitrageCombination }) {
+  const lines = [
+    formatLiquidationDistance({
+      label: "A",
+      exchange: item.legA.exchange,
+      contractType: item.legA.contractType,
+      venueBasePosition: item.legAVenueBasePosition,
+      distancePct: item.legALiquidationDistancePct,
+    }),
+    formatLiquidationDistance({
+      label: "B",
+      exchange: item.legB.exchange,
+      contractType: item.legB.contractType,
+      venueBasePosition: item.legBVenueBasePosition,
+      distancePct: item.legBLiquidationDistancePct,
+    }),
+  ].flatMap((line) => (line === null ? [] : [line]));
+  if (lines.length === 0) {
+    return <span className="text-muted-foreground">-</span>;
+  }
+  return (
+    <div className="space-y-0.5 font-mono tabular-nums">
+      {lines.map((line) => (
+        <div
+          key={line.label}
+          className={cn(
+            "whitespace-nowrap",
+            line.negative && "text-destructive",
+          )}
+        >
+          {line.text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function CombinationStatus({ item }: { item: ArbitrageCombination }) {
   const label = combinationRuntimeLabel(item);
   return (
@@ -3008,6 +3122,9 @@ function combinationRuntimeLabel(item: ArbitrageCombination): string {
       : "仓位待核对";
   if (item.runtimeState === "manual_intervention") return "需人工处理";
   if (item.runMode === "one_shot" && item.oneShotPhase === "exiting") {
+    if (oneShotExitSettling(item)) {
+      return "收益结算中";
+    }
     return "退出平仓中";
   }
   if (item.runMode === "one_shot" && item.oneShotPhase === "exited") {
@@ -3060,6 +3177,21 @@ function combinationRuntimeLabel(item: ArbitrageCombination): string {
       : "旧反向仓位";
   }
   return "运行中";
+}
+
+function ledgerQuantityZero(value: string | null | undefined): boolean {
+  const amount = Number(value ?? 0);
+  return Number.isFinite(amount) && amount === 0;
+}
+
+function oneShotExitSettling(item: ArbitrageCombination): boolean {
+  return (
+    item.oneShotPhase === "exiting" &&
+    ledgerQuantityZero(item.legABasePosition) &&
+    ledgerQuantityZero(item.legBBasePosition) &&
+    ledgerQuantityZero(item.carryBaseQuantity) &&
+    item.combinedPositionAnnualized === null
+  );
 }
 
 function oneShotPhaseLabel(
@@ -3202,13 +3334,6 @@ function currentVenuePositionNotional(
   return Math.abs(valueA) >= Math.abs(valueB) ? legA : legB;
 }
 
-function formatSignedNotional(value: string): string {
-  const amount = Number(value);
-  if (!Number.isFinite(amount)) return `${value} USDT`;
-  const prefix = amount > 0 ? "+" : "";
-  return `${prefix}${formatDecimal(value, " USDT")}`;
-}
-
 function formatBeijingChartTime(timestamp: number): string {
   return beijingChartTimeFormatter.format(new Date(timestamp));
 }
@@ -3272,7 +3397,13 @@ function formatFundingIncome(value: string | null, quoteAsset: string): string {
 }
 
 type EditableArbitrageField =
-  "targetNotional" | "askThresholdBps" | "bidThresholdBps";
+  | "targetNotional"
+  | "askThresholdBps"
+  | "bidThresholdBps"
+  | "exitAfterSeconds"
+  | "exitAnnualizedRate"
+  | "earlyExitFunding8hAnnualizedFloor"
+  | "earlyExitLiquidationDistancePct";
 
 function editableArbitrageValues(
   detail: ArbitrageCombination | ArbitrageCombinationDetail,
@@ -3281,7 +3412,27 @@ function editableArbitrageValues(
     targetNotional: detail.targetNotional,
     askThresholdBps: detail.askThresholdBps,
     bidThresholdBps: detail.bidThresholdBps,
+    exitAfterSeconds: String(detail.exitAfterSeconds || ""),
+    exitAnnualizedRate:
+      annualizedRatioToPercent(detail.exitAnnualizedRate) ?? "",
+    earlyExitFunding8hAnnualizedFloor: (() => {
+      const raw = detail.earlyExitFunding8hAnnualizedFloor.trim();
+      if (!raw) return "";
+      const negative = raw.startsWith("-");
+      const percent = annualizedRatioToPercent(negative ? raw.slice(1) : raw);
+      if (percent == null) return raw;
+      return negative ? `-${percent}` : percent;
+    })(),
+    earlyExitLiquidationDistancePct:
+      detail.earlyExitLiquidationDistancePct.trim(),
   };
+}
+
+function validLiquidationDistancePercent(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes("%")) return false;
+  const amount = Number(trimmed);
+  return Number.isFinite(amount) && amount > 0 && amount < 100;
 }
 
 function CombinationDetail({
@@ -3304,6 +3455,13 @@ function CombinationDetail({
     detail.legAVenueBaselineBasePosition !== null &&
     detail.legBVenueBaselineBasePosition !== null;
   const expectedExposure = combinationExpectedExposure(detail);
+  const oneShotConfigEditable =
+    detail.status === "running" &&
+    (detail.oneShotPhase === "building_target" ||
+      detail.oneShotPhase === "waiting_exit");
+  const scheduledDue =
+    Boolean(detail.scheduledExitAt) &&
+    Date.parse(detail.scheduledExitAt) <= Date.now();
   const expectedLegAPosition =
     detail.legAExpectedBasePosition ??
     formatDecimal(String(expectedExposure.expectedA));
@@ -3326,15 +3484,17 @@ function CombinationDetail({
   }, [detail, editingField]);
 
   const beginEdit = (field: EditableArbitrageField) => {
-    setDrafts((current) => ({ ...current, [field]: detail[field] }));
+    const values = editableArbitrageValues(detail);
+    setDrafts((current) => ({ ...current, [field]: values[field] }));
     setFieldErrors((current) => ({ ...current, [field]: undefined }));
     setEditingField(field);
   };
   const cancelEdit = () => {
     if (editingField) {
+      const values = editableArbitrageValues(detail);
       setDrafts((current) => ({
         ...current,
-        [editingField]: detail[editingField],
+        [editingField]: values[editingField],
       }));
       setFieldErrors((current) => ({ ...current, [editingField]: undefined }));
     }
@@ -3351,7 +3511,21 @@ function CombinationDetail({
           ? { targetNotional: value }
           : field === "askThresholdBps"
             ? { askThresholdBps: value }
-            : { bidThresholdBps: value };
+            : field === "bidThresholdBps"
+              ? { bidThresholdBps: value }
+              : field === "exitAfterSeconds"
+                ? { exitAfterSeconds: Number(value) }
+                : field === "exitAnnualizedRate"
+                  ? {
+                      exitAnnualizedRate:
+                        annualizedPercentToRatio(value) ?? value,
+                    }
+                  : field === "earlyExitLiquidationDistancePct"
+                    ? { earlyExitLiquidationDistancePct: value.trim() }
+                    : {
+                        earlyExitFunding8hAnnualizedFloor:
+                          signedAnnualizedPercentToRatio(value) ?? value,
+                      };
       const updated = await updateArbitrageCombination(detail.id, input);
       onUpdated(updated);
       setDrafts(editableArbitrageValues(updated));
@@ -3398,31 +3572,105 @@ function CombinationDetail({
               label="阶段"
               value={oneShotPhaseLabel(detail.oneShotPhase)}
             />
-            <DetailItem
-              label="退出条件"
-              value={
-                detail.exitPolicy === "annualized"
-                  ? `年化达到 ≥ ${formatAnnualizedRatioAsPercent(detail.exitAnnualizedRate)}`
-                  : detail.exitPolicy === "time"
-                    ? formatHoldDuration(detail.exitAfterSeconds)
-                    : "—"
+            <EditableMetric
+              label="持仓时间"
+              value={formatHoldDuration(detail.exitAfterSeconds)}
+              unit=""
+              editable={
+                oneShotConfigEditable && detail.exitPolicy === "time"
               }
+              editing={editingField === "exitAfterSeconds"}
+              loading={loadingField === "exitAfterSeconds"}
+              draft={drafts.exitAfterSeconds}
+              error={fieldErrors.exitAfterSeconds}
+              onStart={() => beginEdit("exitAfterSeconds")}
+              onDraft={(value) =>
+                setDrafts((current) => ({
+                  ...current,
+                  exitAfterSeconds: value,
+                }))
+              }
+              onSave={() => void saveField("exitAfterSeconds")}
+              onCancel={cancelEdit}
             />
+            {detail.exitAnnualizedRate ? (
+              <EditableMetric
+                label="综合年化提前退出"
+                value={formatAnnualizedRatioAsPercent(detail.exitAnnualizedRate)}
+                unit=""
+                editable={oneShotConfigEditable}
+                editing={editingField === "exitAnnualizedRate"}
+                loading={loadingField === "exitAnnualizedRate"}
+                draft={drafts.exitAnnualizedRate}
+                error={fieldErrors.exitAnnualizedRate}
+                onStart={() => beginEdit("exitAnnualizedRate")}
+                onDraft={(value) =>
+                  setDrafts((current) => ({
+                    ...current,
+                    exitAnnualizedRate: value,
+                  }))
+                }
+                onSave={() => void saveField("exitAnnualizedRate")}
+                onCancel={cancelEdit}
+              />
+            ) : (
+              <DetailItem label="综合年化提前退出" value="创建时未启用" />
+            )}
             <DetailItem
               label="预计退出时间"
               value={
                 detail.scheduledExitAt
-                  ? formatTime(detail.scheduledExitAt)
+                  ? `${formatTime(detail.scheduledExitAt)}${scheduledDue ? " · 已到期" : ""}`
                   : "—"
               }
             />
+            {detail.earlyExitFunding8hAnnualizedFloor ? (
+              <EditableMetric
+                label="8h资金费年化"
+                value={`< ${formatSignedAnnualizedRatioAsPercent(detail.earlyExitFunding8hAnnualizedFloor)}`}
+                unit=""
+                editable={oneShotConfigEditable}
+                editing={editingField === "earlyExitFunding8hAnnualizedFloor"}
+                loading={loadingField === "earlyExitFunding8hAnnualizedFloor"}
+                draft={drafts.earlyExitFunding8hAnnualizedFloor}
+                error={fieldErrors.earlyExitFunding8hAnnualizedFloor}
+                onStart={() => beginEdit("earlyExitFunding8hAnnualizedFloor")}
+                onDraft={(value) =>
+                  setDrafts((current) => ({
+                    ...current,
+                    earlyExitFunding8hAnnualizedFloor: value,
+                  }))
+                }
+                onSave={() => void saveField("earlyExitFunding8hAnnualizedFloor")}
+                onCancel={cancelEdit}
+              />
+            ) : (
+              <DetailItem label="8h资金费年化" value="未启用" />
+            )}
+            {detail.earlyExitLiquidationDistancePct ? (
+              <EditableMetric
+                label="爆仓距离提前退出"
+                value={`任一永续腿 ≤ ${detail.earlyExitLiquidationDistancePct}%`}
+                unit=""
+                editable={oneShotConfigEditable}
+                editing={editingField === "earlyExitLiquidationDistancePct"}
+                loading={loadingField === "earlyExitLiquidationDistancePct"}
+                draft={drafts.earlyExitLiquidationDistancePct}
+                error={fieldErrors.earlyExitLiquidationDistancePct}
+                onStart={() => beginEdit("earlyExitLiquidationDistancePct")}
+                onDraft={(value) =>
+                  setDrafts((current) => ({
+                    ...current,
+                    earlyExitLiquidationDistancePct: value,
+                  }))
+                }
+                onSave={() => void saveField("earlyExitLiquidationDistancePct")}
+                onCancel={cancelEdit}
+              />
+            ) : null}
             <DetailItem
-              label="8h资金费年化"
-              value={
-                detail.earlyExitFunding8hAnnualizedFloor
-                  ? `8h资金费年化< ${formatSignedAnnualizedRatioAsPercent(detail.earlyExitFunding8hAnnualizedFloor)}`
-                  : "未启用"
-              }
+              label="综合年化"
+              value={formatAnnualized(detail.combinedPositionAnnualized)}
             />
           </>
         ) : null}
@@ -3435,7 +3683,10 @@ function CombinationDetail({
           value={detail.targetNotional}
           unit="USDT"
           secondary={`当前 ${detail.positionNotional} USDT`}
-          editable={detail.status === "running" && detail.runMode !== "one_shot"}
+          editable={
+            detail.status === "running" &&
+            (detail.runMode !== "one_shot" || oneShotConfigEditable)
+          }
           editing={editingField === "targetNotional"}
           loading={loadingField === "targetNotional"}
           draft={drafts.targetNotional}
@@ -3870,7 +4121,7 @@ function VenueNotionalDetailItem({
     <div>
       <div className="flex items-center gap-1.5">
         <div className="text-[10px] tracking-wide text-muted-foreground uppercase">
-          交易所实际市值
+          按实时中间价估值
         </div>
         <div className="text-[10px] tracking-wide text-muted-foreground uppercase">
           {quoteAsset}

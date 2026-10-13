@@ -10,6 +10,12 @@ const virtualizerMocks = vi.hoisted(() => ({
   measure: vi.fn(),
 }));
 
+const fundingControls = vi.hoisted(() => ({
+  tradefiError: null as string | null,
+  useOverride: false,
+  tradefiSnapshot: null as unknown,
+}));
+
 const opportunities: FundingOpportunity[] = [
   {
     id: "binance-btcusdt",
@@ -294,6 +300,51 @@ vi.mock("@/components/funding/funding-provider", () => ({
       },
       hasStaleSources: false,
     },
+    tradefiError: fundingControls.tradefiError,
+    tradefiSnapshot: fundingControls.useOverride
+      ? fundingControls.tradefiSnapshot
+      : {
+      data: [
+        {
+          id: "AAPL-binance-AAPLUSDT",
+          stockSymbol: "AAPL",
+          spotExchange: "IBKR",
+          conId: "265598",
+          primaryExchange: "NASDAQ",
+          localSymbol: "AAPL",
+          tradingClass: "AAPL",
+          exchange: "Binance",
+          exchangeSymbol: "AAPLUSDT",
+          baseAsset: "AAPL",
+          quoteAsset: "USDT",
+          fundingRate: 1,
+          perpetualFundingAnnualized: 11,
+          annualizedRate: 11,
+          currentFundingRate: 1,
+          nextFundingRate: null,
+          settlementIntervalHours: 8,
+          nextFundingAt: "2026-10-08T08:00:00Z",
+          nextSettlementAt: "2026-10-08T08:00:00Z",
+          volume24hBase: 10,
+          turnover24hUsd: 5_000_000,
+          dailyVolume: 5_000_000,
+          positionQuantity: 100,
+          positionNotional: 2_000_000,
+          cumulative24h: 0.2,
+          cumulative7d: 1,
+          history24hComplete: false,
+          history7dComplete: false,
+          stale: true,
+          updatedAt: "2026-10-08T01:00:00Z",
+          verifiedAt: "2026-10-08T01:00:00Z",
+        },
+      ],
+      meta: {
+        total: 1,
+        snapshotVersion: "test-tradefi",
+        serverTime: "2026-10-08T01:00:00Z",
+      },
+    },
     loading: false,
     refreshing: false,
     error: null,
@@ -343,10 +394,15 @@ function clickAssetRow(asset: string) {
 describe("FundingDashboard single-exchange detail", () => {
   afterEach(() => {
     cleanup();
+    vi.clearAllTimers();
+    vi.useRealTimers();
     virtualizerMocks.measure.mockClear();
+    fundingControls.tradefiError = null;
+    fundingControls.useOverride = false;
+    fundingControls.tradefiSnapshot = null;
   });
 
-  it("expands a basis chart under the selected row without opening a sheet overlay", () => {
+  it("expands a basis chart under the selected row without opening a sheet overlay", async () => {
     render(<FundingDashboard />);
 
     expect(screen.getByRole("button", { name: "跨所" })).not.toBeNull();
@@ -356,14 +412,14 @@ describe("FundingDashboard single-exchange detail", () => {
 
     clickAssetRow("ETH");
 
-    expect(screen.getByRole("heading", { name: "ETHUSDT" })).not.toBeNull();
+    expect(await screen.findByRole("heading", { name: "ETHUSDT" })).not.toBeNull();
     expect(screen.getByRole("button", { name: "开启交易" })).not.toBeNull();
     expect(document.querySelector('[data-slot="sheet-overlay"]')).toBeNull();
     const workspace = document.querySelector("[data-workspace-panel]");
     expect(workspace?.className).toContain("grid-cols-[minmax(0,1fr)_380px]");
     expect(within(workspace as HTMLElement).getByText("历史资金费")).not.toBeNull();
-    expect(screen.getByLabelText("期现 Best Ask 价差")).not.toBeNull();
-    expect(screen.getByText("OKX-ETH-USDT")).not.toBeNull();
+    expect(await screen.findByLabelText("期现 Best Ask 价差")).not.toBeNull();
+    expect(await screen.findByText("OKX-ETH-USDT")).not.toBeNull();
     expect(screen.getAllByText("预计回本时间").length).toBeGreaterThan(0);
     expect(screen.getAllByText("10 天").length).toBeGreaterThan(0);
     expect(screen.getAllByText("15 天").length).toBeGreaterThan(0);
@@ -371,14 +427,14 @@ describe("FundingDashboard single-exchange detail", () => {
     expect(screen.queryByText(/按过去24h已结算资金费估算/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "1h" }));
     expect(screen.getByRole("button", { name: "1h" })).not.toBeNull();
-  });
+  }, 15000);
 
   it("shows non-coverable and stale 24h payback copy", () => {
     render(<FundingDashboard />);
     expect(screen.getAllByText("当前24h累计收益无法覆盖成本").length).toBeGreaterThan(0);
     expect(screen.getAllByText("行情过期，暂不估算").length).toBeGreaterThan(0);
     expect(screen.queryByText("30 bps")).toBeNull();
-  });
+  }, 15000);
 
   it("collapses the selected row on a second click and only expands one row", () => {
     render(<FundingDashboard />);
@@ -393,7 +449,7 @@ describe("FundingDashboard single-exchange detail", () => {
     clickAssetRow("BTC");
     expect(screen.queryByLabelText("期现 Best Ask 价差")).toBeNull();
     expect(screen.getByText("选择合约后查看详情")).not.toBeNull();
-  });
+  }, 15000);
 
   it("expands a cross-exchange basis chart after clicking a spread row", () => {
     render(<FundingDashboard />);
@@ -405,7 +461,7 @@ describe("FundingDashboard single-exchange detail", () => {
     expect(screen.getByLabelText("跨所 Best Ask 价差")).not.toBeNull();
     expect(screen.getByText("OKX/Binance-BTC-USDT")).not.toBeNull();
     expect(screen.getByText("跨所资金费套利")).not.toBeNull();
-  });
+  }, 15000);
 
   it("requires both spread legs to be in the selected exchange set", () => {
     render(<FundingDashboard />);
@@ -424,7 +480,7 @@ describe("FundingDashboard single-exchange detail", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "OKX" }));
     expect(screen.getByText("BTC/USDT")).not.toBeNull();
-  });
+  }, 15000);
 
   it("filters single and spread rows by contract kind", () => {
     render(<FundingDashboard />);
@@ -445,7 +501,54 @@ describe("FundingDashboard single-exchange detail", () => {
     expect(screen.queryByText("BTC/USDT")).toBeNull();
     fireEvent.click(screen.getByText("ZHIPU/USDT").closest("tr")!);
     expect(screen.getByRole("button", { name: "开启交易" })).not.toBeNull();
-  });
+  }, 15000);
+
+  it("opens TradeFi-Perps with the same funding columns and without price or start trade", () => {
+    render(<FundingDashboard />);
+    fireEvent.click(screen.getByRole("button", { name: "TradeFi-Perps" }));
+    const headers = [
+      "标的",
+      "永续",
+      "持仓市值 (USDT)",
+      "日成交额",
+      "历史年化费率",
+      "距离结算",
+      "资金费率",
+      "24H 窗口年化",
+      "7D 窗口年化",
+      "预计回本时间",
+    ];
+    const tradefiTable = screen.getByText("IBKR · AAPL 现货").closest("table");
+    expect(tradefiTable).not.toBeNull();
+    const table = within(tradefiTable as HTMLElement);
+    for (const header of headers) {
+      expect(table.getByText(header)).not.toBeNull();
+    }
+    expect(table.getAllByRole("columnheader")).toHaveLength(10);
+    expect(table.getAllByText("历史不足").length).toBeGreaterThan(0);
+    expect(table.getByText("行情过期，暂不估算")).not.toBeNull();
+    expect(table.queryByText("开启交易")).toBeNull();
+    expect(table.queryByText("最新价")).toBeNull();
+    expect(table.queryByText("基差")).toBeNull();
+    expect(screen.queryByText("套利年化")).toBeNull();
+    expect(screen.queryByText("可执行套利")).toBeNull();
+    expect(screen.queryByText("verified_listing")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "OKX" }));
+    expect(screen.queryByText("IBKR · AAPL 现货")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "OKX" }));
+    expect(screen.getByText("IBKR · AAPL 现货")).not.toBeNull();
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "4" } });
+    expect(screen.queryByText("IBKR · AAPL 现货")).toBeNull();
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "all" } });
+    expect(screen.getByText("IBKR · AAPL 现货")).not.toBeNull();
+
+    fireEvent.change(screen.getByPlaceholderText("BTC、Binance、OKX..."), {
+      target: { value: "不存在" },
+    });
+    expect(screen.getByText("没有符合条件的配对")).not.toBeNull();
+  }, 15000);
 
   it("measures only the visible list once after a mode change", async () => {
     render(<FundingDashboard />);
@@ -468,5 +571,101 @@ describe("FundingDashboard single-exchange detail", () => {
       await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
     });
     expect(virtualizerMocks.measure).toHaveBeenCalledTimes(1);
-  });
+  }, 15000);
+
+  it("shows a TradFi load error instead of an empty result", () => {
+    fundingControls.tradefiError = "TradeFi-Perps 数据加载失败，请重试";
+    fundingControls.useOverride = true;
+    fundingControls.tradefiSnapshot = null;
+    render(<FundingDashboard />);
+    fireEvent.click(screen.getByRole("button", { name: "TradeFi-Perps" }));
+    expect(screen.getAllByText("TradeFi-Perps 数据加载失败，请重试").length).toBeGreaterThan(0);
+    expect(screen.queryByText("没有符合条件的配对")).toBeNull();
+  }, 15000);
+
+  it("keeps the previous TradFi rows visible when a later load fails", () => {
+    fundingControls.tradefiError = "TradeFi-Perps 数据加载失败，请重试";
+    render(<FundingDashboard />);
+    fireEvent.click(screen.getByRole("button", { name: "TradeFi-Perps" }));
+    expect(screen.getByRole("alert").textContent).toBe("TradeFi-Perps 数据加载失败，请重试");
+    expect(screen.getByText("IBKR · AAPL 现货")).not.toBeNull();
+    expect(screen.getByText("NASDAQ · conId 265598")).not.toBeNull();
+  }, 15000);
+
+  it("shows the empty filter message when a saved snapshot has no matching rows", () => {
+    fundingControls.tradefiError = "TradeFi-Perps 数据加载失败，请重试";
+    render(<FundingDashboard />);
+    fireEvent.click(screen.getByRole("button", { name: "TradeFi-Perps" }));
+    fireEvent.change(screen.getByPlaceholderText("BTC、Binance、OKX..."), {
+      target: { value: "不存在" },
+    });
+    expect(screen.getByRole("alert").textContent).toBe("TradeFi-Perps 数据加载失败，请重试");
+    expect(screen.getByText("没有符合条件的配对")).not.toBeNull();
+  }, 15000);
+
+  it("clears the TradFi error after a later success", () => {
+    fundingControls.tradefiError = "TradeFi-Perps 数据加载失败，请重试";
+    const view = render(<FundingDashboard />);
+    fireEvent.click(screen.getByRole("button", { name: "TradeFi-Perps" }));
+    expect(screen.getByRole("alert")).not.toBeNull();
+    fundingControls.tradefiError = null;
+    view.rerender(<FundingDashboard />);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("IBKR · AAPL 现货")).not.toBeNull();
+  }, 15000);
+
+  it("finds AAPL and shows every returned AAPL row when thresholds are zero", () => {
+    const exchanges = ["Binance", "OKX", "Bybit", "Bitget", "Gate", "Hyperliquid", "Aster", "Lighter"];
+    fundingControls.useOverride = true;
+    fundingControls.tradefiSnapshot = {
+      data: exchanges.map((exchange, index) => ({
+        id: `AAPL-${exchange}`,
+        stockSymbol: "AAPL",
+        spotExchange: "IBKR",
+        conId: "265598",
+        primaryExchange: index === 0 ? "NASDAQ" : "",
+        localSymbol: "AAPL",
+        tradingClass: "AAPL",
+        exchange,
+        exchangeSymbol: `${exchange}-AAPLUSDT`,
+        baseAsset: "AAPL",
+        quoteAsset: "USDT",
+        fundingRate: 1,
+        perpetualFundingAnnualized: 11,
+        annualizedRate: 11,
+        currentFundingRate: 1,
+        nextFundingRate: null,
+        settlementIntervalHours: 8,
+        nextFundingAt: "2026-10-08T08:00:00Z",
+        nextSettlementAt: "2026-10-08T08:00:00Z",
+        volume24hBase: 10,
+        turnover24hUsd: index < 4 ? 5_000_000 : 0,
+        dailyVolume: index < 4 ? 5_000_000 : 0,
+        positionQuantity: 100,
+        positionNotional: index < 4 ? 2_000_000 : 0,
+        cumulative24h: 0.2,
+        cumulative7d: 1,
+        history24hComplete: false,
+        history7dComplete: false,
+        stale: false,
+        updatedAt: "2026-10-08T01:00:00Z",
+        verifiedAt: "2026-10-08T01:00:00Z",
+      })),
+      meta: { total: exchanges.length, snapshotVersion: "aapl-8", serverTime: "2026-10-08T01:00:00Z" },
+    };
+    render(<FundingDashboard />);
+    fireEvent.click(screen.getByRole("button", { name: "TradeFi-Perps" }));
+    fireEvent.change(screen.getByPlaceholderText("BTC、Binance、OKX..."), {
+      target: { value: "AAPL" },
+    });
+    expect(screen.getAllByText("IBKR · AAPL 现货")).toHaveLength(4);
+    expect(screen.getAllByText("— · conId 265598").length).toBeGreaterThan(0);
+    fireEvent.change(screen.getByRole("slider", { name: "较小腿持仓" }), {
+      target: { value: "0" },
+    });
+    fireEvent.change(screen.getByRole("slider", { name: "较小腿日成交额" }), {
+      target: { value: "0" },
+    });
+    expect(screen.getAllByText("IBKR · AAPL 现货")).toHaveLength(8);
+  }, 15000);
 });

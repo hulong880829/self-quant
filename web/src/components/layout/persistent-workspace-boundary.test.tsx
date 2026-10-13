@@ -111,6 +111,18 @@ describe("PersistentWorkspaceBoundary", () => {
     expect(fundingFetches).toBe(2);
   });
 
+  it("keeps funding filters after a round trip through JEV paper arb", () => {
+    const view = render(<Harness />);
+    fireEvent.change(screen.getByLabelText("资金费搜索"), { target: { value: "SOL" } });
+    nav.pathname = "/funding/jev-arb";
+    view.rerender(<Harness />);
+    expect(screen.getByText("其他页面")).toBeTruthy();
+    nav.pathname = "/funding";
+    view.rerender(<Harness />);
+    expect((screen.getByLabelText("资金费搜索") as HTMLInputElement).value).toBe("SOL");
+    expect(fundingMounts).toBe(1);
+  });
+
   it("keeps trading drafts and does not reset them on a bare /trading visit", () => {
     nav.pathname = "/trading";
     const view = render(<Harness />);

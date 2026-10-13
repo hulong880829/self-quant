@@ -597,7 +597,7 @@ function readCompactLevel(
 }
 
 /*
- * Browser compact wire v1, aligned with backend/internal/aggdata/browser.go:
+ * Browser compact wire v1, aligned with core/fairprice/src/sqab.cpp:
  * little-endian "SQAB", 42-byte header, full snapshots (not deltas), frame-level
  * scales, symbol and venue IDs, then compact levels with int64 mantissas and
  * per-venue quantities. This boundary intentionally owns all wire assumptions.

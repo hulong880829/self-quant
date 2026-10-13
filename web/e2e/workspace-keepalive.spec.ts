@@ -323,7 +323,7 @@ test.describe("workspace keepalive", () => {
   test("keeps funding filters after a round trip through trading", async ({ page }) => {
     const { writes } = await mockWorkspace(page);
     await page.goto("/funding", { waitUntil: "domcontentloaded" });
-    await expect(page.getByRole("link", { name: "Crypto 资金费" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "套利机会" })).toBeVisible();
     await expect(fundingSlot(page).getByText("搜索币种")).toBeVisible();
     const search = fundingSlot(page).getByPlaceholder("BTC、ETH、USDT...");
     await search.click();
@@ -339,7 +339,7 @@ test.describe("workspace keepalive", () => {
     await expect(page.getByRole("heading", { name: "实盘交易" })).toBeVisible();
     await tradingSlot(page).getByPlaceholder("输入委托数量").fill("0.001");
 
-    await page.getByRole("link", { name: "Crypto 资金费" }).click();
+    await page.getByRole("link", { name: "套利机会" }).click();
     await expect(page.locator("[data-workspace-epoch]")).toHaveAttribute(
       "data-workspace-epoch",
       "0",
@@ -353,7 +353,7 @@ test.describe("workspace keepalive", () => {
     await page.goto("/trading", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("heading", { name: "实盘交易" })).toBeVisible();
     await tradingSlot(page).getByPlaceholder("输入委托数量").fill("0.123");
-    await page.getByRole("link", { name: "Crypto 资金费" }).click();
+    await page.getByRole("link", { name: "套利机会" }).click();
     await expect(fundingSlot(page).getByText("搜索币种")).toBeVisible();
     await page.getByRole("link", { name: "实盘交易" }).click();
     await expect(tradingSlot(page).getByPlaceholder("输入委托数量")).toHaveValue("0.123");
@@ -399,7 +399,7 @@ test.describe("workspace keepalive", () => {
     await tradingSlot(page).getByRole("combobox", { name: "交易所" }).nth(0).selectOption("okx");
     await expect(tradingSlot(page).getByRole("combobox", { name: "交易所" }).nth(0)).toHaveValue("okx");
 
-    await page.getByRole("link", { name: "Crypto 资金费" }).click();
+    await page.getByRole("link", { name: "套利机会" }).click();
     await expect(fundingSlot(page).getByText("搜索币种")).toBeVisible();
     await page.getByRole("button", { name: "单所" }).click();
     await fundingSlot(page).locator("tr", { hasText: "BTC" }).first().click();
@@ -433,7 +433,7 @@ test.describe("workspace keepalive", () => {
     await tradingSlot(page).getByPlaceholder("输入委托数量").fill("0.001");
     await page.getByRole("button", { name: /e2e-user/ }).click();
     await page.getByText("退出登录").click();
-    await expect(page.getByRole("link", { name: "Crypto 资金费" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "套利机会" })).toBeVisible();
     await page.getByRole("button", { name: "登录", exact: true }).click();
     await page.getByPlaceholder("请输入账户名").fill("e2e-user");
     await page.getByPlaceholder("请输入密码").fill("password");

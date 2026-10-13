@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { FundingDashboard } from "@/components/funding/funding-dashboard";
 
 export const metadata: Metadata = {
-  title: "Crypto 资金费",
+  title: "套利机会",
 };
 
 export default function FundingPage() {
