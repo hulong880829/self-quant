@@ -1,0 +1,140 @@
+{
+  "name": "quality_degraded",
+  "config": {
+    "depth_k": 1,
+    "lambda_per_bp": 0.1,
+    "imbalance_alpha": 1,
+    "ewma_tau_ns": 500000000,
+    "impact_notional": 0,
+    "venue_dominance_ratio": 0.8
+  },
+  "profile": "agg",
+  "symbol": "BTCUSDT",
+  "snapshot": {
+    "ready": true,
+    "ring_epoch": 7,
+    "ring_sequence": 1,
+    "generation": 1,
+    "wall_ns": 1,
+    "book": {
+      "exchange_ts_ns": 0,
+      "price_scale": 0,
+      "quantity_scale": 0,
+      "member_count": 2,
+      "member_mask": 3,
+      "active_mask": 1,
+      "bids": [
+        {
+          "price": 99,
+          "quantity": 10,
+          "venue_quantity": [
+            9,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "asks": [
+        {
+          "price": 101,
+          "quantity": 10,
+          "venue_quantity": [
+            9,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ]
+    }
+  },
+  "previous": null,
+  "expect": {
+    "model_id": "fp-v1:3ce495f266c2cf53",
+    "ready": true,
+    "reset_reason": "",
+    "price_mantissa": 100000,
+    "price_raw_mantissa": 100000,
+    "mid_mantissa": 100000,
+    "effective_bid_mantissa": 99000,
+    "effective_ask_mantissa": 101000,
+    "crossed_quantity_mantissa": null,
+    "imbalance": 0.5,
+    "crossed": false,
+    "degraded": true,
+    "degraded_reasons": [
+      "inactive_venues",
+      "single_venue_dominant"
+    ],
+    "json": {
+      "type": "data",
+      "channel": "fairprice",
+      "profile": "agg",
+      "symbol": "BTCUSDT",
+      "model_id": "fp-v1:3ce495f266c2cf53",
+      "ring_epoch": "7",
+      "seq": "1",
+      "generation": "1",
+      "wall_ns": "1",
+      "exchange_ts_ns": "0",
+      "price": {
+        "mantissa": "100000",
+        "scale": 3
+      },
+      "price_raw": {
+        "mantissa": "100000",
+        "scale": 3
+      },
+      "mid": {
+        "mantissa": "100000",
+        "scale": 3
+      },
+      "microprice": {
+        "mantissa": "100000",
+        "scale": 3
+      },
+      "best_bid": {
+        "mantissa": "99000",
+        "scale": 3
+      },
+      "best_ask": {
+        "mantissa": "101000",
+        "scale": 3
+      },
+      "effective_bid": {
+        "mantissa": "99000",
+        "scale": 3
+      },
+      "effective_ask": {
+        "mantissa": "101000",
+        "scale": 3
+      },
+      "impact_bid": null,
+      "impact_ask": null,
+      "crossed_quantity": null,
+      "imbalance": 0.5,
+      "spread_bps": 200,
+      "cross_bps": null,
+      "weighted_bid_depth": 0.00045399929762484856,
+      "weighted_ask_depth": 0.00045399929762484856,
+      "depth_bid_notional": 990,
+      "depth_ask_notional": 1010,
+      "active_venue_mask": 1,
+      "crossed": false,
+      "degraded": true,
+      "degraded_reasons": [
+        "inactive_venues",
+        "single_venue_dominant"
+      ]
+    }
+  }
+}

@@ -1,0 +1,162 @@
+{
+  "name": "imbalanced",
+  "config": {
+    "depth_k": 2,
+    "lambda_per_bp": 0,
+    "imbalance_alpha": 1,
+    "ewma_tau_ns": 500000000,
+    "impact_notional": 0,
+    "venue_dominance_ratio": 0.9
+  },
+  "profile": "agg",
+  "symbol": "BTCUSDT",
+  "snapshot": {
+    "ready": true,
+    "ring_epoch": 7,
+    "ring_sequence": 2,
+    "generation": 2,
+    "wall_ns": 2,
+    "book": {
+      "exchange_ts_ns": 1,
+      "price_scale": 0,
+      "quantity_scale": 0,
+      "member_count": 2,
+      "member_mask": 3,
+      "active_mask": 3,
+      "bids": [
+        {
+          "price": 99,
+          "quantity": 30,
+          "venue_quantity": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "price": 98,
+          "quantity": 30,
+          "venue_quantity": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "asks": [
+        {
+          "price": 101,
+          "quantity": 10,
+          "venue_quantity": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "price": 102,
+          "quantity": 10,
+          "venue_quantity": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ]
+    }
+  },
+  "previous": null,
+  "expect": {
+    "model_id": "fp-v1:ef8439cf7eaf0e72",
+    "ready": true,
+    "reset_reason": "",
+    "price_mantissa": 100500,
+    "price_raw_mantissa": 100500,
+    "mid_mantissa": 100000,
+    "effective_bid_mantissa": 99000,
+    "effective_ask_mantissa": 101000,
+    "crossed_quantity_mantissa": null,
+    "imbalance": 0.75,
+    "crossed": false,
+    "degraded": false,
+    "degraded_reasons": [],
+    "json": {
+      "type": "data",
+      "channel": "fairprice",
+      "profile": "agg",
+      "symbol": "BTCUSDT",
+      "model_id": "fp-v1:ef8439cf7eaf0e72",
+      "ring_epoch": "7",
+      "seq": "2",
+      "generation": "2",
+      "wall_ns": "2",
+      "exchange_ts_ns": "1",
+      "price": {
+        "mantissa": "100500",
+        "scale": 3
+      },
+      "price_raw": {
+        "mantissa": "100500",
+        "scale": 3
+      },
+      "mid": {
+        "mantissa": "100000",
+        "scale": 3
+      },
+      "microprice": {
+        "mantissa": "100500",
+        "scale": 3
+      },
+      "best_bid": {
+        "mantissa": "99000",
+        "scale": 3
+      },
+      "best_ask": {
+        "mantissa": "101000",
+        "scale": 3
+      },
+      "effective_bid": {
+        "mantissa": "99000",
+        "scale": 3
+      },
+      "effective_ask": {
+        "mantissa": "101000",
+        "scale": 3
+      },
+      "impact_bid": null,
+      "impact_ask": null,
+      "crossed_quantity": null,
+      "imbalance": 0.75,
+      "spread_bps": 200,
+      "cross_bps": null,
+      "weighted_bid_depth": 60,
+      "weighted_ask_depth": 20,
+      "depth_bid_notional": 5910,
+      "depth_ask_notional": 2030,
+      "active_venue_mask": 3,
+      "crossed": false,
+      "degraded": false,
+      "degraded_reasons": null
+    }
+  }
+}
