@@ -7,6 +7,8 @@
 #include <cstring>
 #include <limits>
 
+#include <openssl/crypto.h>
+
 namespace oms::exchange::polymarket {
 namespace {
 
@@ -55,6 +57,47 @@ class Writer {
       if (static_cast<unsigned char>(item) < 0x20U) return false;
       if ((item == '"' || item == '\\') && !append('\\')) return false;
       if (!append(item)) return false;
+    }
+    return append('"');
+  }
+
+  bool json_escaped(std::string_view value) noexcept {
+    static constexpr char hex[] = "0123456789abcdef";
+    if (!append('"')) return false;
+    for (const char raw : value) {
+      const unsigned char item = static_cast<unsigned char>(raw);
+      switch (item) {
+        case '"':
+          if (!append("\\\"")) return false;
+          break;
+        case '\\':
+          if (!append("\\\\")) return false;
+          break;
+        case '\b':
+          if (!append("\\b")) return false;
+          break;
+        case '\f':
+          if (!append("\\f")) return false;
+          break;
+        case '\n':
+          if (!append("\\n")) return false;
+          break;
+        case '\r':
+          if (!append("\\r")) return false;
+          break;
+        case '\t':
+          if (!append("\\t")) return false;
+          break;
+        default:
+          if (item < 0x20U) {
+            if (!append("\\u00") || !append(hex[item >> 4U]) ||
+                !append(hex[item & 0x0fU]))
+              return false;
+          } else if (!append(raw)) {
+            return false;
+          }
+          break;
+      }
     }
     return append('"');
   }
@@ -473,7 +516,8 @@ ProtocolResult OrderAmounts(api::Side side, api::FixedPoint quantity,
 ProtocolResult BuildPlaceOrder(const PlaceOrderInput& input,
                                WireRequest& request) noexcept {
   request = {};
-  if ((input.order.signature_type != 0 && input.order.signature_type != 3) ||
+  if ((input.order.signature_type != 0 && input.order.signature_type != 1 &&
+       input.order.signature_type != 3) ||
       input.signature.size == 0 || input.owner.empty() ||
       input.order.salt == 0 ||
       input.order.salt >= (std::uint64_t{1} << 53U) ||
@@ -483,8 +527,7 @@ ProtocolResult BuildPlaceOrder(const PlaceOrderInput& input,
        input.expiration_seconds == 0) ||
       (input.time_in_force != api::TimeInForce::GTD &&
        input.expiration_seconds != 0))
-    return input.order.signature_type == 1 ? ProtocolResult::Unsupported
-                                           : ProtocolResult::InvalidArgument;
+    return ProtocolResult::InvalidArgument;
   std::string_view order_type;
   switch (input.time_in_force) {
     case api::TimeInForce::GTC:
@@ -971,6 +1014,112 @@ ProtocolResult ParseUserMessageEvents(std::string_view json,
       !ParseTimeNs(created, event.event_time_ns))
     return ProtocolResult::Malformed;
   event_count = 1;
+  return ProtocolResult::Ok;
+}
+
+ProtocolResult BuildDeriveApiKey(WireRequest& request) noexcept {
+  request = {};
+  if (!SetMethodPath(request, "GET", "/auth/derive-api-key"))
+    return ProtocolResult::InvalidArgument;
+  return ProtocolResult::Ok;
+}
+
+ProtocolResult BuildCreateApiKey(WireRequest& request) noexcept {
+  request = {};
+  if (!SetMethodPath(request, "POST", "/auth/api-key"))
+    return ProtocolResult::InvalidArgument;
+  return ProtocolResult::Ok;
+}
+
+bool CredentialHttpSuccess(std::uint16_t status) noexcept {
+  return status >= 200 && status < 300;
+}
+
+bool CredentialHttpTemporary(std::uint16_t status) noexcept {
+  return status == 0 || status == 408 || status == 429 || status >= 500;
+}
+
+static bool ContainsIgnoreCase(std::string_view haystack,
+                               std::string_view needle) noexcept {
+  if (needle.empty() || haystack.size() < needle.size()) return false;
+  for (std::size_t begin = 0; begin + needle.size() <= haystack.size();
+       ++begin) {
+    bool match = true;
+    for (std::size_t index = 0; index < needle.size(); ++index) {
+      const unsigned char left =
+          static_cast<unsigned char>(haystack[begin + index]);
+      const unsigned char right = static_cast<unsigned char>(needle[index]);
+      if (std::tolower(left) != std::tolower(right)) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return true;
+  }
+  return false;
+}
+
+bool DeriveExplicitlyMissing(std::uint16_t status,
+                             std::string_view body) noexcept {
+  if (status == 404) return true;
+  return status == 400 &&
+         ContainsIgnoreCase(body, "could not derive api key");
+}
+
+bool CreateConflictStatus(std::uint16_t status) noexcept {
+  return status == 400 || status == 409;
+}
+
+ProtocolResult ParseApiKeyCredentials(std::string_view json,
+                                      ApiKeyCredentials& credentials) noexcept {
+  credentials = {};
+  std::string_view api_key;
+  std::string_view secret;
+  std::string_view passphrase;
+  if (!JsonString(json, "apiKey", api_key) ||
+      !JsonString(json, "secret", secret) ||
+      !JsonString(json, "passphrase", passphrase))
+    return ProtocolResult::Malformed;
+  const auto valid_field = [](std::string_view value, std::size_t maximum) {
+    if (value.empty() || value.size() > maximum) return false;
+    return std::none_of(value.begin(), value.end(), [](char item) {
+      return static_cast<unsigned char>(item) < 0x20U;
+    });
+  };
+  if (!valid_field(api_key, 128) || !valid_field(secret, 256) ||
+      !valid_field(passphrase, 128))
+    return ProtocolResult::Malformed;
+  credentials.api_key = api_key;
+  credentials.secret = secret;
+  credentials.passphrase = passphrase;
+  return ProtocolResult::Ok;
+}
+
+ProtocolResult BuildUserSubscribe(std::string_view api_key,
+                                  std::string_view secret,
+                                  std::string_view passphrase, char* output,
+                                  std::size_t capacity,
+                                  std::size_t& size) noexcept {
+  size = 0;
+  if (output == nullptr) return ProtocolResult::InvalidArgument;
+  std::array<char, kMaximumWireBytes> buffer{};
+  Writer<kMaximumWireBytes> writer(buffer);
+  const bool built =
+      writer.append("{\"auth\":{\"apiKey\":") && writer.json_escaped(api_key) &&
+      writer.append(",\"secret\":") && writer.json_escaped(secret) &&
+      writer.append(",\"passphrase\":") && writer.json_escaped(passphrase) &&
+      writer.append("},\"type\":\"user\"}");
+  if (!built) {
+    OPENSSL_cleanse(buffer.data(), buffer.size());
+    return ProtocolResult::BoundsExceeded;
+  }
+  if (writer.size() > capacity) {
+    OPENSSL_cleanse(buffer.data(), buffer.size());
+    return ProtocolResult::BoundsExceeded;
+  }
+  std::copy_n(buffer.begin(), writer.size(), output);
+  OPENSSL_cleanse(buffer.data(), buffer.size());
+  size = writer.size();
   return ProtocolResult::Ok;
 }
 

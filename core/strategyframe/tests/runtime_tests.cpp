@@ -1,7 +1,10 @@
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <stdexcept>
+#include <string>
 #include <thread>
+#include <unistd.h>
 
 #include "strategyframe/strategyframe.h"
 
@@ -100,6 +103,65 @@ strategyframe::StrategyFrameConfig Config() {
   return result;
 }
 
+class StderrCapture {
+ public:
+  StderrCapture() {
+    Require(::pipe(pipefd_) == 0);
+    saved_ = ::dup(STDERR_FILENO);
+    Require(saved_ >= 0);
+    Require(::dup2(pipefd_[1], STDERR_FILENO) == STDERR_FILENO);
+  }
+
+  StderrCapture(const StderrCapture&) = delete;
+  StderrCapture& operator=(const StderrCapture&) = delete;
+
+  ~StderrCapture() { close_all(); }
+
+  std::string finish() {
+    std::fflush(stderr);
+    if (saved_ >= 0) {
+      Require(::dup2(saved_, STDERR_FILENO) == STDERR_FILENO);
+      ::close(saved_);
+      saved_ = -1;
+    }
+    if (pipefd_[1] >= 0) {
+      ::close(pipefd_[1]);
+      pipefd_[1] = -1;
+    }
+    std::string out;
+    char buffer[4096];
+    ssize_t n = 0;
+    while ((n = ::read(pipefd_[0], buffer, sizeof(buffer))) > 0) {
+      out.append(buffer, static_cast<std::size_t>(n));
+    }
+    if (pipefd_[0] >= 0) {
+      ::close(pipefd_[0]);
+      pipefd_[0] = -1;
+    }
+    return out;
+  }
+
+ private:
+  void close_all() {
+    if (saved_ >= 0) {
+      ::dup2(saved_, STDERR_FILENO);
+      ::close(saved_);
+      saved_ = -1;
+    }
+    if (pipefd_[0] >= 0) {
+      ::close(pipefd_[0]);
+      pipefd_[0] = -1;
+    }
+    if (pipefd_[1] >= 0) {
+      ::close(pipefd_[1]);
+      pipefd_[1] = -1;
+    }
+  }
+
+  int pipefd_[2]{-1, -1};
+  int saved_{-1};
+};
+
 }  // namespace
 
 int main() {
@@ -158,5 +220,25 @@ int main() {
   Require(first_result == strategyframe::Error::Ok);
   Require(second_result == strategyframe::Error::Ok);
   Require(first_state.timers == 1 && second_state.timers == 1);
+
+  auto missing_catalogs = Config();
+  missing_catalogs.startup_timeout_ns = 5'000'000ULL;
+  missing_catalogs.mds.required_instruments = {
+      {strategyframe::Venue::Polymarket,
+       strategyframe::ProductType::BinaryOption, "UP"},
+      {strategyframe::Venue::Polymarket,
+       strategyframe::ProductType::BinaryOption, "DOWN"},
+  };
+  State unused;
+  StderrCapture capture;
+  strategyframe::StrategyRunner<TimerStrategy> missing_runner(
+      std::move(missing_catalogs), TimerStrategy{&unused});
+  const auto missing_result = missing_runner.run();
+  const auto log = capture.finish();
+  Require(missing_result == strategyframe::Error::NotReady);
+  Require(log.find("strategyframe startup timeout: required MDS catalog missing") !=
+          std::string::npos);
+  Require(log.find("symbol=UP") != std::string::npos);
+  Require(log.find("symbol=DOWN") != std::string::npos);
   return 0;
 }

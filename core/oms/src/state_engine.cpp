@@ -145,7 +145,6 @@ api::Error StateEngine::Submit(const api::SubmitOrderRequest& prepared,
        request.quantity.value < routing.minimum_order_size ||
        (routing.outcome != api::PolymarketOutcome::Yes &&
         routing.outcome != api::PolymarketOutcome::No) ||
-       (routing.signature_type != 0 && routing.signature_type != 3) ||
        !HasAnyByte(routing.polymarket.condition_id) ||
        !HasAnyByte(routing.polymarket.token_id)))
     return api::Error::InvalidArgument;

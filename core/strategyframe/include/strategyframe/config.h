@@ -72,9 +72,9 @@ struct VenueExecutionConfig {
   std::string api_key_env{};
   std::string secret_env{};
   std::string passphrase_env{};
-  std::string signer_address_env{};
   std::string funder_address_env{};
   std::string private_key_env{};
+  std::uint8_t signature_type{0xff};
 };
 
 struct CapacityConfig {

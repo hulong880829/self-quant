@@ -7,12 +7,12 @@
 #include <iostream>
 #include <string_view>
 
-#include "polymm/catalog_rollover.h"
 #include "polymm/halt_policy.h"
 #include "polymm/market_window.h"
 #include "polymm/order_lifecycle.h"
 #include "polymm/pnl_ledger.h"
 #include "polymm/risk.h"
+#include "polymm/rolling_pair_binding.h"
 #include "polymm/signal.h"
 #include "polymm/startup_reconcile.h"
 
@@ -138,40 +138,99 @@ strategyframe::InstrumentCatalogInfo Catalog(
   result.product = strategyframe::ProductType::BinaryOption;
   result.generation = generation;
   result.expiry_time_ns = expiry;
+  result.tick_size = 1;
+  result.lot_size = 5;
+  result.price_scale = 2;
+  result.quantity_scale = 0;
   std::memcpy(result.canonical_symbol.value, symbol.data(), symbol.size());
   result.canonical_symbol.length =
       static_cast<std::uint16_t>(symbol.size());
   return result;
 }
 
-void TestCatalogRollover() {
-  constexpr strategyframe::InstrumentId up_id = 0x1'0000'0011ULL;
-  constexpr strategyframe::InstrumentId down_id = 0x1'0000'0022ULL;
+void TestRollingPairBinding() {
+  strategyframe::InstrumentSymbol up_symbol{};
+  strategyframe::InstrumentSymbol down_symbol{};
+  std::memcpy(up_symbol.value, "btc5mup", 7);
+  up_symbol.length = 7;
+  std::memcpy(down_symbol.value, "btc5mdown", 9);
+  down_symbol.length = 9;
+  constexpr std::uint64_t kWindowNs = 300'000'000'000ULL;
+  polymm::RollingPairBinding binding({
+      strategyframe::Venue::Polymarket,
+      strategyframe::ProductType::BinaryOption, up_symbol, down_symbol,
+      kWindowNs});
   const auto current_up =
-      Catalog(up_id, 7, 300'000'000'000ULL, "btc5mup");
+      Catalog(11, 1, 300'000'000'000ULL, "btc5mup");
+  const auto current_down =
+      Catalog(12, 1, 300'000'000'000ULL, "btc5mdown");
   const auto next_up =
-      Catalog(up_id + 1, 1, 600'000'000'000ULL, "btc5mup");
+      Catalog(21, 1, 600'000'000'000ULL, "btc5mup");
   const auto next_down =
-      Catalog(down_id + 1, 1, 600'000'000'000ULL, "btc5mdown");
-  Require(polymm::is_next_physical_catalog(current_up, next_up),
-          "new physical catalog");
-  Require(!polymm::is_next_physical_catalog(current_up, current_up),
-          "duplicate physical catalog ignored");
-  auto stale_expiry = next_up;
-  stale_expiry.expiry_time_ns = current_up.expiry_time_ns;
-  Require(!polymm::is_next_physical_catalog(current_up, stale_expiry),
-          "physical catalog cannot reuse expiry");
+      Catalog(22, 1, 600'000'000'000ULL, "btc5mdown");
+  Require(binding.on_catalog(current_up, 1) == polymm::CatalogAdmit::Cached,
+          "cache up");
+  Require(binding.dirty(), "catalog sets dirty");
+  Require(!binding.active().valid, "catalog does not activate");
+  Require(binding.on_catalog(current_down, 1) == polymm::CatalogAdmit::Cached,
+          "cache down");
+  const auto not_ready = binding.propose_live_window(
+      1, [](strategyframe::InstrumentId) { return false; });
+  Require(!not_ready.valid, "not ready does not propose");
+  Require(binding.dirty(), "not ready keeps dirty");
+  const auto ready = binding.propose_live_window(
+      1, [](strategyframe::InstrumentId) { return true; });
+  Require(ready.valid && ready.up.instrument_id == 11, "ready proposes live");
+  binding.commit_activation(ready);
+  Require(binding.active().valid, "commit activates");
+  Require(!binding.dirty(), "commit clears dirty");
+  Require(binding.on_catalog(next_up, 1) == polymm::CatalogAdmit::Cached,
+          "cache next up");
+  Require(binding.on_catalog(next_down, 1) == polymm::CatalogAdmit::Cached,
+          "cache next down");
+  Require(binding.dirty(), "next catalog dirties");
+  Require(binding.active().valid, "current stays valid before expiry");
+  Require(!binding.propose_expiry(1), "not expired");
+  Require(binding.propose_expiry(300'000'000'000ULL), "expired");
+  const auto kept = binding.active();
+  Require(kept.valid, "binding does not clear active itself");
+  binding.commit_deactivation();
+  Require(!binding.active().valid, "commit_deactivation clears");
+  Require(binding.dirty(), "deactivation dirties");
 
-  std::array pair{next_up, next_down};
-  Require(polymm::catalog_rollover_ready(pair),
-          "matching catalog pair rolls over");
-  pair[1].generation = 9;
-  Require(polymm::catalog_rollover_ready(pair),
-          "generation is only a book recovery epoch");
-  pair[1] = next_down;
-  pair[1].expiry_time_ns += 1;
-  Require(!polymm::catalog_rollover_ready(pair),
-          "mixed expiries do not roll over");
+  auto rejected = current_up;
+  rejected.lot_size = 0;
+  Require(binding.on_catalog(rejected, 1) == polymm::CatalogAdmit::Rejected,
+          "illegal catalog rejected");
+}
+
+strategyframe::TradeId TradeN(int value);
+
+void TestPnlRetiredCapacity() {
+  polymm::PnlLedger ledger(7);
+  strategyframe::ExecutionUpdate fill;
+  fill.kind = strategyframe::ExecutionUpdate::Kind::Fill;
+  fill.account_id = 7;
+  fill.fill_quantity = {1, 0, {}};
+  fill.fill_price = {40, 2, {}};
+  for (int round = 0; round < 17; ++round) {
+    const strategyframe::InstrumentId up =
+        100 + static_cast<strategyframe::InstrumentId>(round) * 2;
+    const strategyframe::InstrumentId down = up + 1;
+    Require(ledger.commit_active_window(up, down), "commit window");
+    const strategyframe::OrderToken buy{
+        1, 1, static_cast<std::uint64_t>(round + 1)};
+    Require(ledger.remember_order(buy, up, strategyframe::Side::Buy,
+                                  polymm::OrderPurpose::Open, 1),
+            "remember capacity buy");
+    fill.token = buy;
+    fill.instrument_id = up;
+    fill.trade_id = TradeN(round + 1);
+    Require(ledger.apply_fill(fill), "capacity fill");
+  }
+  Require(!ledger.commit_active_window(200, 201), "retired rows full");
+  Require(ledger.quantity(100 + 16 * 2) == 1.0, "old active retained");
+  Require(!ledger.can_archive_active(), "archive blocked");
 }
 
 strategyframe::TradeId TradeN(int value) {
@@ -385,8 +444,8 @@ void TestStartupReconcile() {
   polymm::inspect_local_account(state, orders, {}, 7, 10, 11);
   Require(state.saw_open_order, "historical order");
   Require(polymm::reconcile_verdict(state, 5) ==
-              polymm::ReconcileVerdict::Reject,
-          "open order reject");
+              polymm::ReconcileVerdict::Ready,
+          "open order does not reject reconcile");
 
   polymm::StartupReconcile positions_state;
   positions_state.oms_reconcile_seen = true;
@@ -398,8 +457,19 @@ void TestStartupReconcile() {
   polymm::inspect_local_account(positions_state, {}, positions, 7, 10, 11);
   Require(positions_state.saw_position, "historical position");
   Require(polymm::reconcile_verdict(positions_state, 5) ==
-              polymm::ReconcileVerdict::Reject,
-          "position reject");
+              polymm::ReconcileVerdict::Ready,
+          "position does not reject reconcile");
+
+  polymm::StartupReconcile window;
+  strategyframe::PositionView old_window{};
+  old_window.account_id = 7;
+  old_window.instrument_id = 99;
+  old_window.quantity = {3, 0, {}};
+  std::array<strategyframe::PositionView, 1> old_positions{old_window};
+  polymm::inspect_window_inventory(window, {}, old_positions, 7, 10, 11);
+  Require(!window.saw_position, "old window does not block");
+  polymm::inspect_window_inventory(window, {}, positions, 7, 10, 11);
+  Require(window.saw_position, "current window inventory blocks start");
 
   polymm::StartupReconcile failed;
   strategyframe::OmsStatusUpdate error_status;
@@ -409,6 +479,82 @@ void TestStartupReconcile() {
   Require(polymm::reconcile_verdict(failed, 1) ==
               polymm::ReconcileVerdict::Reject,
           "query error reject");
+
+  strategyframe::OmsStatusUpdate connecting{};
+  connecting.kind = strategyframe::OmsStatusUpdate::Kind::VenueStatus;
+  connecting.adapter_status = 1;
+  connecting.error = 0;
+  Require(polymm::classify_startup_oms_status(connecting) ==
+              polymm::StartupOmsClass::Continue,
+          "connecting continue");
+
+  strategyframe::OmsStatusUpdate transient{};
+  transient.kind = strategyframe::OmsStatusUpdate::Kind::VenueStatus;
+  transient.adapter_status = polymm::kAdapterReconnecting;
+  transient.error = polymm::kOmsNotReady;
+  Require(polymm::classify_startup_oms_status(transient) ==
+              polymm::StartupOmsClass::Transient,
+          "reconnecting not-ready transient");
+
+  strategyframe::OmsStatusUpdate reconnecting_other{};
+  reconnecting_other.kind = strategyframe::OmsStatusUpdate::Kind::VenueStatus;
+  reconnecting_other.adapter_status = polymm::kAdapterReconnecting;
+  reconnecting_other.error = 1;
+  Require(polymm::classify_startup_oms_status(reconnecting_other) ==
+              polymm::StartupOmsClass::Fatal,
+          "reconnecting other error fatal");
+
+  strategyframe::OmsStatusUpdate connecting_not_ready{};
+  connecting_not_ready.kind = strategyframe::OmsStatusUpdate::Kind::VenueStatus;
+  connecting_not_ready.adapter_status = 1;
+  connecting_not_ready.error = polymm::kOmsNotReady;
+  Require(polymm::classify_startup_oms_status(connecting_not_ready) ==
+              polymm::StartupOmsClass::Fatal,
+          "connecting not-ready fatal");
+
+  strategyframe::OmsStatusUpdate ready_not_ready{};
+  ready_not_ready.kind = strategyframe::OmsStatusUpdate::Kind::VenueStatus;
+  ready_not_ready.adapter_status = 3;
+  ready_not_ready.error = polymm::kOmsNotReady;
+  Require(polymm::classify_startup_oms_status(ready_not_ready) ==
+              polymm::StartupOmsClass::Fatal,
+          "ready not-ready fatal");
+
+  strategyframe::OmsStatusUpdate failed_status{};
+  failed_status.kind = strategyframe::OmsStatusUpdate::Kind::VenueStatus;
+  failed_status.adapter_status = polymm::kAdapterFailed;
+  failed_status.error = polymm::kOmsNotReady;
+  Require(polymm::classify_startup_oms_status(failed_status) ==
+              polymm::StartupOmsClass::Fatal,
+          "failed not-ready fatal");
+
+  polymm::StartupReconcile sequence;
+  polymm::note_oms_reconcile(sequence, connecting);
+  Require(polymm::classify_startup_oms_status(transient) ==
+              polymm::StartupOmsClass::Transient,
+          "sequence reconnecting stays transient");
+  Require(!sequence.oms_reconcile_failed, "transient did not fail reconcile");
+  strategyframe::OmsStatusUpdate complete{};
+  complete.kind = strategyframe::OmsStatusUpdate::Kind::ReconcileComplete;
+  complete.error = 0;
+  polymm::note_oms_reconcile(sequence, complete);
+  strategyframe::OmsStatusUpdate ready{};
+  ready.kind = strategyframe::OmsStatusUpdate::Kind::VenueStatus;
+  ready.adapter_status = 3;
+  ready.error = 0;
+  Require(polymm::classify_startup_oms_status(ready) ==
+              polymm::StartupOmsClass::Continue,
+          "ready continue");
+  Require(!sequence.oms_reconcile_failed, "sequence stayed healthy");
+  Require(polymm::reconcile_verdict(sequence, 1) ==
+              polymm::ReconcileVerdict::Ready,
+          "sequence ready");
+
+  polymm::StartupReconcile reject;
+  reject.oms_reconcile_failed = true;
+  Require(polymm::reconcile_verdict(reject, 1) ==
+              polymm::ReconcileVerdict::Reject,
+          "failed status reject");
 }
 
 void TestDustAndHalt() {
@@ -432,6 +578,21 @@ void TestDustAndHalt() {
   Require(polymm::begin_stop_opening(polymm::HaltPhase::Running) ==
               polymm::HaltPhase::StopOpening,
           "enter stop opening");
+  Require(polymm::resume_after_fairprice(polymm::HaltPhase::StopOpening,
+                                         true) ==
+              polymm::HaltPhase::Running,
+          "fairprice pause resumes opening");
+  Require(polymm::resume_after_fairprice(polymm::HaltPhase::StopOpening,
+                                         false) ==
+              polymm::HaltPhase::StopOpening,
+          "non-fairprice stop remains stopped");
+  Require(polymm::resume_after_fairprice(polymm::HaltPhase::Flattening,
+                                         true) ==
+              polymm::HaltPhase::Flattening,
+          "fairprice cannot cancel flattening");
+  Require(polymm::resume_after_fairprice(polymm::HaltPhase::Halted, true) ==
+              polymm::HaltPhase::Halted,
+          "fairprice cannot resume halted strategy");
   Require(polymm::book_tradable(0.4, 0.41), "sane book");
   Require(!polymm::book_tradable(0.41, 0.40), "crossed book");
   Require(polymm::bbo_fresh(2'000'000ULL, 1'000'000ULL, 2), "fresh bbo");
@@ -492,8 +653,9 @@ int main() {
   TestSignal();
   TestPnl();
   TestPnlSlots();
+  TestPnlRetiredCapacity();
   TestRisk();
-  TestCatalogRollover();
+  TestRollingPairBinding();
   TestLifecycle();
   TestCommandResults();
   TestStartupReconcile();

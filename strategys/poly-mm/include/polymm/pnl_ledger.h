@@ -3,7 +3,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
+#include "polymm/rolling_pair_binding.h"
 #include "polymm/types.h"
 #include "strategyframe/types.h"
 
@@ -20,6 +22,7 @@ struct PnlView {
 
 class PnlLedger {
  public:
+  explicit PnlLedger(strategyframe::AccountId account_id) noexcept;
   PnlLedger(strategyframe::AccountId account_id,
             strategyframe::InstrumentId up_instrument,
             strategyframe::InstrumentId down_instrument) noexcept;
@@ -35,13 +38,29 @@ class PnlLedger {
   [[nodiscard]] double quantity(
       strategyframe::InstrumentId instrument_id) const noexcept;
   [[nodiscard]] bool flat() const noexcept;
+  [[nodiscard]] bool active_flat() const noexcept;
   void clear_terminal_order(strategyframe::OrderToken token) noexcept;
+  [[nodiscard]] bool commit_active_window(
+      strategyframe::InstrumentId up_instrument,
+      strategyframe::InstrumentId down_instrument) noexcept;
   [[nodiscard]] bool activate_window(
       strategyframe::InstrumentId up_instrument,
       strategyframe::InstrumentId down_instrument) noexcept;
+  [[nodiscard]] bool can_archive_active() const noexcept;
+  [[nodiscard]] bool archive_active() noexcept;
+  [[nodiscard]] bool retired_nonzero() const noexcept;
+  [[nodiscard]] bool has_instrument(
+      strategyframe::InstrumentId instrument_id) const noexcept;
+  void confirm_zero(strategyframe::InstrumentId instrument_id) noexcept;
+  void recycle_instrument(
+      strategyframe::InstrumentId instrument_id) noexcept;
+  void confirm_snapshot_zeros(
+      std::span<const strategyframe::QueriedPositionView> positions) noexcept;
   [[nodiscard]] std::uint64_t duplicate_fills() const noexcept;
   [[nodiscard]] std::uint64_t orphan_fills() const noexcept;
   [[nodiscard]] std::size_t used_order_slots() const noexcept;
+  [[nodiscard]] bool has_live_order(
+      strategyframe::InstrumentId instrument_id) const noexcept;
 
  private:
   struct Row {
@@ -51,6 +70,7 @@ class PnlLedger {
     double realized{};
     double bid{};
     double ask{};
+    bool retired{};
   };
   struct OrderRef {
     bool used{};
@@ -77,9 +97,11 @@ class PnlLedger {
       strategyframe::AccountId account_id,
       strategyframe::InstrumentId instrument_id,
       const strategyframe::TradeId& trade_id) noexcept;
+  [[nodiscard]] bool archive_active_rows() noexcept;
 
   strategyframe::AccountId account_id_{};
-  std::array<Row, 2> rows_{};
+  std::array<Row, 2> active_{};
+  std::array<Row, kPnlRetiredRows> retired_{};
   std::array<OrderRef, 64> orders_{};
   std::array<OrderRef, 128> tombstones_{};
   std::size_t tombstone_cursor_{};

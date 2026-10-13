@@ -54,8 +54,12 @@ class OrderSigningContext final {
   OrderSigningContext& operator=(OrderSigningContext&&) = delete;
 
   [[nodiscard]] CryptoResult status() const noexcept;
+  [[nodiscard]] const Address& signer_address() const noexcept;
   [[nodiscard]] CryptoResult Sign(const Order& order,
                                   Signature& output) noexcept;
+  [[nodiscard]] CryptoResult SignClobAuth(
+      std::string_view timestamp, std::uint64_t nonce, char* output,
+      std::size_t capacity, std::size_t& size) noexcept;
 
  private:
   [[nodiscard]] CryptoResult SignDigest(
@@ -64,11 +68,15 @@ class OrderSigningContext final {
 
   struct Impl;
   Impl* impl_{};
+  Address signer_address_{};
   CryptoResult status_{CryptoResult::CryptoFailure};
 };
 
 [[nodiscard]] CryptoResult DecodeAddress(std::string_view text,
                                          Address& output) noexcept;
+[[nodiscard]] CryptoResult EncodeEip55Address(
+    const Address& address, char* output, std::size_t capacity,
+    std::size_t& size) noexcept;
 [[nodiscard]] CryptoResult DecodeHex32(std::string_view text,
                                        Bytes32& output) noexcept;
 [[nodiscard]] CryptoResult ValidatePrivateKey(
@@ -90,8 +98,8 @@ class OrderSigningContext final {
 [[nodiscard]] Bytes32 OrderStructHash(const Order& order) noexcept;
 [[nodiscard]] Bytes32 OrderSigningHash(const Order& order) noexcept;
 
-// Signature type 1 is intentionally an explicit unsupported legacy path.
-// It is never encoded or signed as deposit-wallet type 3.
+// Signature type 1 (POLY_PROXY) uses the same EIP-712 digest as type 0.
+// Type 3 keeps the Deposit Wallet / ERC-7739 wrapper.
 [[nodiscard]] CryptoResult SignOrder(
     const Order& order, std::string_view private_key_hex,
     Signature& output) noexcept;

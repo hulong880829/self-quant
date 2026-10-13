@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 
 #include "oms/exchange/polymarket/crypto.h"
@@ -37,6 +38,22 @@ constexpr std::string_view kSigner =
     "0x90F8bf6A479f320ead074411a4B0e7944Ea8c9C1";
 constexpr std::string_view kToken =
     "102936000000000000000000000000000000000000000000000000000000000000000000";
+constexpr std::string_view kClobAuthPrivateKey =
+    "0000000000000000000000000000000000000000000000000000000000000001";
+constexpr std::string_view kClobAuthTimestamp = "1786186200";
+constexpr std::string_view kClobAuthAddress =
+    "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf";
+constexpr std::string_view kClobAuthSignature =
+    "0x25c2c4ae6e0cf49450d82e78426929f4ddc2ef8b159b43a3c0229ba7d02121e57503ff9e543acbe45d6ae20fd7d607c1f76660e49f09d2b5c38c857439b1cef51c";
+constexpr std::string_view kDeriveCredentialsJson =
+    R"({"apiKey":"key","secret":"c2VjcmV0LWtleQ","passphrase":"passphrase"})";
+constexpr std::string_view kEmptyOpenOrders =
+    R"({"next_cursor":"LTE=","data":[]})";
+
+static_assert(std::tuple_size_v<decltype(TransportRequest{}.poly_signature.value)> ==
+              45);
+static_assert(std::tuple_size_v<decltype(ClobAuthRequest{}.poly_signature.value)> ==
+              132);
 
 static_assert(!std::is_copy_constructible_v<OrderSigningContext>);
 static_assert(!std::is_move_constructible_v<OrderSigningContext>);
@@ -182,14 +199,32 @@ void TestSigningVectors() {
   REQUIRE(context_signature.size == signature.size);
   REQUIRE(context_signature.bytes == signature.bytes);
 
-  order = VectorOrder(1, kSigner);
+  const std::string_view proxy_vector =
+      Vector(fixture, "polymarket.signing.poly_proxy.v1");
+  order.signature_type =
+      static_cast<std::uint8_t>(UintField(proxy_vector, "signatureType"));
+  REQUIRE(DecodeAddress(StringField(proxy_vector, "maker"), order.maker) ==
+          CryptoResult::Ok);
+  REQUIRE(DecodeAddress(StringField(proxy_vector, "signer"), order.signer) ==
+          CryptoResult::Ok);
+  REQUIRE(SignOrder(order, StringField(proxy_vector, "private_key_hex"),
+                    signature) == CryptoResult::Ok);
+  REQUIRE(signature.size == 65);
+  REQUIRE(Hex(signature.bytes.data(), signature.size) ==
+          StringField(proxy_vector, "signature_hex"));
+  REQUIRE(SignOrder(order, signing_context, context_signature) ==
+          CryptoResult::Ok);
+  REQUIRE(context_signature.size == signature.size);
+  REQUIRE(context_signature.bytes == signature.bytes);
+
+  order = VectorOrder(2, kSigner);
   signature.size = 99;
   REQUIRE(SignOrder(order, kPrivateKey, signature) ==
-          CryptoResult::UnsupportedSignatureType);
+          CryptoResult::InvalidArgument);
   REQUIRE(signature.size == 0);
   REQUIRE(OrderSigningHash(order) == Bytes32{});
   REQUIRE(SignOrder(order, signing_context, signature) ==
-          CryptoResult::UnsupportedSignatureType);
+          CryptoResult::InvalidArgument);
   REQUIRE(signature.size == 0);
   REQUIRE(ValidatePrivateKey(std::string(64, '0')) ==
           CryptoResult::InvalidArgument);
@@ -200,6 +235,38 @@ void TestSigningVectors() {
   REQUIRE(SignOrder(order, invalid_context, signature) ==
           CryptoResult::InvalidArgument);
   REQUIRE(signature.size == 0);
+
+  OrderSigningContext derived_context(kPrivateKey);
+  REQUIRE(derived_context.status() == CryptoResult::Ok);
+  const Address derived = derived_context.signer_address();
+  REQUIRE(derived != Address{});
+  OrderSigningContext prefixed("0x" + std::string(kPrivateKey));
+  REQUIRE(prefixed.status() == CryptoResult::Ok);
+  REQUIRE(prefixed.signer_address() == derived);
+  OrderSigningContext upper_prefixed("0X" + std::string(kPrivateKey));
+  REQUIRE(upper_prefixed.status() == CryptoResult::Ok);
+  REQUIRE(upper_prefixed.signer_address() == derived);
+  REQUIRE(ValidatePrivateKey("not-hex") == CryptoResult::InvalidArgument);
+  REQUIRE(ValidatePrivateKey(std::string(63, 'a')) ==
+          CryptoResult::InvalidArgument);
+  REQUIRE(ValidatePrivateKey(std::string(64, 'f')) ==
+          CryptoResult::InvalidArgument);
+
+  OrderSigningContext clob_context(kClobAuthPrivateKey);
+  REQUIRE(clob_context.status() == CryptoResult::Ok);
+  std::array<char, 42> eip55{};
+  std::size_t eip55_size = 0;
+  REQUIRE(EncodeEip55Address(clob_context.signer_address(), eip55.data(),
+                             eip55.size(), eip55_size) == CryptoResult::Ok);
+  REQUIRE(std::string_view(eip55.data(), eip55_size) == kClobAuthAddress);
+  std::array<char, 132> clob_signature{};
+  std::size_t clob_signature_size = 0;
+  REQUIRE(clob_context.SignClobAuth(kClobAuthTimestamp, 0, clob_signature.data(),
+                                    clob_signature.size(),
+                                    clob_signature_size) == CryptoResult::Ok);
+  REQUIRE(clob_signature_size == 132);
+  REQUIRE(std::string_view(clob_signature.data(), clob_signature_size) ==
+          kClobAuthSignature);
 }
 
 void TestProtocolFixtures() {
@@ -358,21 +425,97 @@ void TestProtocolFixtures() {
                               empty_middle, events.data(), events.size(),
                               count) == ProtocolResult::Ok);
   REQUIRE(empty_middle.complete);
+
+  REQUIRE(BuildDeriveApiKey(request) == ProtocolResult::Ok);
+  REQUIRE(std::string_view(request.method.data(), request.method_size) == "GET");
+  REQUIRE(std::string_view(request.path.data(), request.path_size) ==
+          "/auth/derive-api-key");
+  REQUIRE(request.body_size == 0);
+  REQUIRE(BuildCreateApiKey(request) == ProtocolResult::Ok);
+  REQUIRE(std::string_view(request.method.data(), request.method_size) ==
+          "POST");
+  REQUIRE(std::string_view(request.path.data(), request.path_size) ==
+          "/auth/api-key");
+  REQUIRE(request.body_size == 0);
+  REQUIRE(CredentialHttpSuccess(200));
+  REQUIRE(CredentialHttpSuccess(201));
+  REQUIRE(!CredentialHttpSuccess(199));
+  REQUIRE(CredentialHttpTemporary(0));
+  REQUIRE(CredentialHttpTemporary(408));
+  REQUIRE(CredentialHttpTemporary(429));
+  REQUIRE(CredentialHttpTemporary(503));
+  REQUIRE(!CredentialHttpTemporary(400));
+  REQUIRE(DeriveExplicitlyMissing(404, {}));
+  REQUIRE(DeriveExplicitlyMissing(400, "Could not derive api key"));
+  REQUIRE(!DeriveExplicitlyMissing(400, "bad request"));
+  REQUIRE(!DeriveExplicitlyMissing(401, "could not derive api key"));
+  REQUIRE(CreateConflictStatus(400));
+  REQUIRE(CreateConflictStatus(409));
+  REQUIRE(!CreateConflictStatus(401));
+  REQUIRE(!CreateConflictStatus(422));
+  order = VectorOrder(1, kSigner);
+  REQUIRE(SignOrder(order, kPrivateKey, signature) == CryptoResult::Ok);
+  REQUIRE(BuildPlaceOrder({order, signature, "key", api::TimeInForce::GTC,
+                           false},
+                          request) == ProtocolResult::Ok);
+  REQUIRE(std::string_view(request.body.data(), request.body_size)
+              .find("\"signatureType\":1") != std::string_view::npos);
+  ApiKeyCredentials credentials{};
+  REQUIRE(ParseApiKeyCredentials(kDeriveCredentialsJson, credentials) ==
+          ProtocolResult::Ok);
+  REQUIRE(credentials.api_key == "key");
+  REQUIRE(credentials.secret == "c2VjcmV0LWtleQ");
+  REQUIRE(credentials.passphrase == "passphrase");
+  REQUIRE(ParseApiKeyCredentials(R"({"apiKey":"key"})", credentials) ==
+          ProtocolResult::Malformed);
+  REQUIRE(ParseApiKeyCredentials(
+              R"({"apiKey":"","secret":"c2VjcmV0LWtleQ","passphrase":"p"})",
+              credentials) == ProtocolResult::Malformed);
+  const std::string too_long_key(129, 'a');
+  const std::string long_json =
+      std::string(R"({"apiKey":")") + too_long_key +
+      R"(","secret":"c2VjcmV0LWtleQ","passphrase":"p"})";
+  REQUIRE(ParseApiKeyCredentials(long_json, credentials) ==
+          ProtocolResult::Malformed);
+  std::array<char, 256> subscribe{};
+  std::size_t subscribe_size = 0;
+  REQUIRE(BuildUserSubscribe("test-key", "test-secret", "test-pass",
+                             subscribe.data(), subscribe.size(),
+                             subscribe_size) == ProtocolResult::Ok);
+  REQUIRE(std::string_view(subscribe.data(), subscribe_size) ==
+          "{\"auth\":{\"apiKey\":\"test-key\",\"secret\":\"test-secret\","
+          "\"passphrase\":\"test-pass\"},\"type\":\"user\"}");
 }
 
 struct MockTransport final : Transport {
   std::array<TransportRequest, 24> submitted{};
   std::size_t submitted_count{};
+  std::array<ClobAuthRequest, 16> clob_auths{};
+  std::size_t clob_auth_count{};
   std::array<TransportEvent, 24> events{};
   std::size_t event_begin{};
   std::size_t event_count{};
+  std::string subscription;
   bool closed{};
   std::size_t reconnects{};
   std::size_t heartbeats{};
+  AdapterResult reconnect_result{AdapterResult::Ok};
+  AdapterResult clob_auth_result{AdapterResult::Ok};
 
   AdapterResult submit(const TransportRequest& request) noexcept override {
     if (submitted_count == submitted.size()) return AdapterResult::WouldBlock;
     submitted[submitted_count++] = request;
+    return AdapterResult::Ok;
+  }
+
+  AdapterResult submit_clob_auth(const ClobAuthRequest& request) noexcept override {
+    if (clob_auth_count == clob_auths.size()) return AdapterResult::WouldBlock;
+    clob_auths[clob_auth_count++] = request;
+    return clob_auth_result;
+  }
+
+  AdapterResult set_user_subscription(std::string_view message) noexcept override {
+    subscription.assign(message.begin(), message.end());
     return AdapterResult::Ok;
   }
 
@@ -386,7 +529,7 @@ struct MockTransport final : Transport {
 
   AdapterResult request_reconnect() noexcept override {
     ++reconnects;
-    return AdapterResult::Ok;
+    return reconnect_result;
   }
 
   AdapterResult send_heartbeat() noexcept override {
@@ -430,21 +573,30 @@ api::InstrumentId ResolveToken(
   return directory.token_id == token_id ? directory.instrument_id : 0;
 }
 
-AdapterConfig Config(TestDirectory& registry,
-                     MockTransport& transport,
-                     std::string_view funder = kSigner) {
+AdapterConfig Config(TestDirectory& registry, MockTransport& transport,
+                     api::PolymarketSignatureType signature_type =
+                         api::PolymarketSignatureType::Eoa,
+                     std::string_view funder = {}) {
   AdapterConfig config{};
   config.instrument_context = &registry;
   config.resolve_polymarket_token = &ResolveToken;
   config.transport = &transport;
-  REQUIRE(config.credentials.signer_address.assign(kSigner));
-  REQUIRE(config.credentials.funder_address.assign(funder));
+  config.signature_type = signature_type;
+  if (!funder.empty()) {
+    REQUIRE(config.credentials.funder_address.assign(funder));
+  }
   REQUIRE(config.credentials.private_key.assign(kPrivateKey));
   REQUIRE(config.credentials.api_key.assign("key"));
   REQUIRE(config.credentials.api_secret.assign("c2VjcmV0LWtleQ"));
   REQUIRE(config.credentials.passphrase.assign("passphrase"));
   config.now_ms = &Now;
   return config;
+}
+
+std::string DerivedSignerHex() {
+  OrderSigningContext context(kPrivateKey);
+  REQUIRE(context.status() == CryptoResult::Ok);
+  return Hex(context.signer_address().data(), context.signer_address().size());
 }
 
 TestDirectory Registry(std::uint8_t signature_type = 0) {
@@ -475,15 +627,56 @@ api::ResolvedInstrument Route(std::uint8_t signature_type = 0) {
   return routing;
 }
 
-void Drain(PolymarketTradeAdapter& adapter, EventLog& log) {
+void Drain(PolymarketTradeAdapter& adapter, EventLog& log,
+           std::uint64_t now_ns = 1786186200000000000ULL) {
   const AdapterEventSink sink{&log, &EventLog::OnEvent};
   for (unsigned attempt = 0; attempt < 32; ++attempt) {
     const AdapterServiceResult result =
-        adapter.service_io(1786186200000000000ULL, 96, sink);
-    REQUIRE(result.result == AdapterResult::Ok);
+        adapter.service_io(now_ns, 96, sink);
+    REQUIRE(result.result == AdapterResult::Ok ||
+            ((adapter.status() == AdapterStatus::Failed ||
+              adapter.status() == AdapterStatus::Stopped) &&
+             result.result == AdapterResult::NotReady));
     if (result.events_processed == 0) return;
   }
   REQUIRE(false);
+}
+
+void CompleteDerive(PolymarketTradeAdapter& adapter, MockTransport& transport,
+                    EventLog& log,
+                    std::uint64_t now_ns = 1786186200000000000ULL) {
+  REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+  REQUIRE(adapter.start_initial_session() == AdapterResult::Ok);
+  REQUIRE(transport.clob_auth_count >= 1);
+  REQUIRE(transport.reconnects == 0);
+  const ClobAuthRequest& auth = transport.clob_auths[transport.clob_auth_count - 1];
+  REQUIRE(std::string_view(auth.wire.method.data(), auth.wire.method_size) ==
+          "GET");
+  REQUIRE(std::string_view(auth.wire.path.data(), auth.wire.path_size) ==
+          "/auth/derive-api-key");
+  REQUIRE(auth.poly_signature.view().size() == 132);
+  REQUIRE(auth.poly_nonce.view() == "0");
+  transport.push({TransportEventKind::HttpResponse, auth.id, 200,
+                  kDeriveCredentialsJson});
+  Drain(adapter, log, now_ns);
+  REQUIRE(adapter.status() == AdapterStatus::Connecting);
+  REQUIRE(transport.reconnects == 1);
+  REQUIRE(transport.subscription.find("\"type\":\"user\"") != std::string::npos);
+}
+
+void CompleteStartup(PolymarketTradeAdapter& adapter, MockTransport& transport,
+                     EventLog& log,
+                     std::uint64_t now_ns = 1786186200000000000ULL) {
+  CompleteDerive(adapter, transport, log, now_ns);
+  transport.push({TransportEventKind::SessionReady, 0, 0, {}});
+  Drain(adapter, log, now_ns);
+  REQUIRE(adapter.status() == AdapterStatus::Reconciling);
+  REQUIRE(transport.submitted_count >= 1);
+  transport.push({TransportEventKind::HttpResponse,
+                  transport.submitted[transport.submitted_count - 1].id, 200,
+                  kEmptyOpenOrders});
+  Drain(adapter, log, now_ns);
+  REQUIRE(adapter.status() == AdapterStatus::Ready);
 }
 
 void TestAdapterSessionAndReconcile() {
@@ -491,11 +684,10 @@ void TestAdapterSessionAndReconcile() {
   MockTransport transport;
   PolymarketTradeAdapter adapter(Config(registry, transport));
   EventLog log;
-  REQUIRE(adapter.status() == AdapterStatus::Connecting);
-  transport.push({TransportEventKind::SessionReady, 0, 0, {}});
-  Drain(adapter, log);
-  REQUIRE(adapter.status() == AdapterStatus::Ready);
+  REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+  CompleteStartup(adapter, transport, log);
   REQUIRE(log.events[0].status.event_time_ns == 1786186200000000000ULL);
+  const std::size_t after_startup = transport.submitted_count;
 
   std::array<AdapterReservation, PolymarketTradeAdapter::kCommandCapacity>
       reservations{};
@@ -524,10 +716,21 @@ void TestAdapterSessionAndReconcile() {
   place.request.quantity = {100, 1, {}};
   place.request.price = {52, 2, {}};
   REQUIRE(adapter.commit_place(reservation, place) == AdapterResult::Ok);
-  REQUIRE(transport.submitted_count == 1);
-  REQUIRE(transport.submitted[0].poly_signature.view().size() == 44);
-  REQUIRE(transport.submitted[0].poly_signature.view().back() == '=');
-  const std::uint32_t place_id = transport.submitted[0].id;
+  REQUIRE(transport.submitted_count == after_startup + 1);
+  REQUIRE(transport.submitted[after_startup].poly_address.view() ==
+          DerivedSignerHex());
+  REQUIRE(transport.submitted[after_startup].poly_signature.view().size() == 44);
+  REQUIRE(transport.submitted[after_startup].poly_signature.view().back() == '=');
+  const std::string_view first_body(
+      transport.submitted[after_startup].wire.body.data(),
+      transport.submitted[after_startup].wire.body_size);
+  const std::string derived = DerivedSignerHex();
+  REQUIRE(first_body.find("\"maker\":\"" + derived + "\"") !=
+          std::string_view::npos);
+  REQUIRE(first_body.find("\"signer\":\"" + derived + "\"") !=
+          std::string_view::npos);
+  REQUIRE(first_body.find("\"signatureType\":0") != std::string_view::npos);
+  const std::uint32_t place_id = transport.submitted[after_startup].id;
   transport.push({TransportEventKind::HttpResponse, place_id, 200,
                   R"({"success":true,"orderID":"order-2","status":"live"})"});
   Drain(adapter, log);
@@ -562,7 +765,8 @@ void TestAdapterSessionAndReconcile() {
   cancel.request.target_token = place.request.token;
   cancel.request.handle = place.handle;
   REQUIRE(adapter.commit_cancel(reservation, cancel) == AdapterResult::Ok);
-  const TransportRequest& cancel_wire = transport.submitted[1];
+  const TransportRequest& cancel_wire =
+      transport.submitted[transport.submitted_count - 1];
   REQUIRE(std::string_view(cancel_wire.wire.body.data(),
                            cancel_wire.wire.body_size) ==
           "{\"orderID\":\"order-2\"}");
@@ -580,8 +784,9 @@ void TestAdapterSessionAndReconcile() {
   transport.push({TransportEventKind::HttpResponse, first_page.id, 200,
                   R"({"next_cursor":"MTAw","data":[{"id":"open-1","status":"LIVE","original_size":"5","size_matched":"0","price":"0.55"}]})"});
   Drain(adapter, log);
-  REQUIRE(transport.submitted_count == 4);
-  const TransportRequest second_page = transport.submitted[3];
+  REQUIRE(transport.submitted_count == after_startup + 4);
+  const TransportRequest second_page =
+      transport.submitted[transport.submitted_count - 1];
   REQUIRE(std::string_view(second_page.wire.path.data(),
                            second_page.wire.path_size) ==
           "/data/orders?next_cursor=MTAw");
@@ -613,18 +818,19 @@ void TestAdapterSessionAndReconcile() {
   transport.push({TransportEventKind::SessionReady, 0, 0, {}});
   Drain(adapter, log);
   REQUIRE(adapter.status() == AdapterStatus::Reconciling);
-  REQUIRE(transport.submitted_count == 5);
+  REQUIRE(transport.submitted_count == after_startup + 5);
   REQUIRE(adapter.reserve_command(AdapterCommandKind::Place, reservation) ==
           AdapterResult::NotReady);
-  const TransportRequest reconnect_page = transport.submitted[4];
+  const TransportRequest reconnect_page =
+      transport.submitted[transport.submitted_count - 1];
   transport.push({TransportEventKind::HttpResponse, reconnect_page.id, 200,
                   R"({"next_cursor":"LTE=","data":[]})"});
   Drain(adapter, log);
   REQUIRE(adapter.status() == AdapterStatus::Ready);
   REQUIRE(log.events[log.size - 1].kind ==
           AdapterEventKind::ReconcileComplete);
-  REQUIRE(log.events[log.size - 1].reconcile.generation ==
-          std::numeric_limits<std::uint64_t>::max());
+  REQUIRE(log.events[log.size - 1].reconcile.generation != 0);
+  REQUIRE(log.events[log.size - 1].reconcile.generation != 44);
 
   REQUIRE(adapter.shutdown(1786186200000000000ULL,
                            {&log, &EventLog::OnEvent}) ==
@@ -637,10 +843,10 @@ void TestDepositWalletSignerAndValidation() {
       "0x1111111111111111111111111111111111111111";
   TestDirectory registry = Registry(3);
   MockTransport transport;
-  PolymarketTradeAdapter adapter(Config(registry, transport, funder));
+  PolymarketTradeAdapter adapter(Config(
+      registry, transport, api::PolymarketSignatureType::Poly1271, funder));
   EventLog log;
-  transport.push({TransportEventKind::SessionReady, 0, 0, {}});
-  Drain(adapter, log);
+  CompleteStartup(adapter, transport, log);
 
   AdapterPlaceCommand place{};
   place.routing = Route(3);
@@ -657,16 +863,18 @@ void TestDepositWalletSignerAndValidation() {
   REQUIRE(adapter.reserve_command(AdapterCommandKind::Place, reservation) ==
           AdapterResult::Ok);
   REQUIRE(adapter.commit_place(reservation, place) == AdapterResult::Ok);
-  REQUIRE(transport.submitted_count == 1);
-  const std::string_view body(transport.submitted[0].wire.body.data(),
-                              transport.submitted[0].wire.body_size);
+  REQUIRE(transport.submitted[transport.submitted_count - 1].poly_address.view() ==
+          DerivedSignerHex());
+  const std::string_view body(
+      transport.submitted[transport.submitted_count - 1].wire.body.data(),
+      transport.submitted[transport.submitted_count - 1].wire.body_size);
   REQUIRE(body.find("\"maker\":\"0x1111111111111111111111111111111111111111\"") !=
           std::string_view::npos);
   REQUIRE(body.find("\"signer\":\"0x1111111111111111111111111111111111111111\"") !=
           std::string_view::npos);
   REQUIRE(body.find("\"signatureType\":3") != std::string_view::npos);
   transport.push({TransportEventKind::HttpResponse,
-                  transport.submitted[0].id, 400,
+                  transport.submitted[transport.submitted_count - 1].id, 400,
                   R"({"success":false,"errorMsg":"invalid order"})"});
   Drain(adapter, log);
   REQUIRE(log.events[log.size - 2].kind ==
@@ -736,8 +944,7 @@ void TestRequestDeadline() {
   config.request_timeout_ns = 100;
   PolymarketTradeAdapter adapter(config);
   EventLog log;
-  transport.push({TransportEventKind::SessionReady, 0, 0, {}});
-  Drain(adapter, log);
+  CompleteStartup(adapter, transport, log);
 
   AdapterPlaceCommand place{};
   place.routing = Route();
@@ -774,8 +981,7 @@ void TestReconcileMissingLocalIsAuditable() {
   MockTransport transport;
   PolymarketTradeAdapter adapter(Config(registry, transport));
   EventLog log;
-  transport.push({TransportEventKind::SessionReady, 0, 0, {}});
-  Drain(adapter, log);
+  CompleteStartup(adapter, transport, log);
 
   AdapterPlaceCommand place{};
   place.routing = Route();
@@ -792,7 +998,8 @@ void TestReconcileMissingLocalIsAuditable() {
   REQUIRE(adapter.reserve_command(AdapterCommandKind::Place, reservation) ==
           AdapterResult::Ok);
   REQUIRE(adapter.commit_place(reservation, place) == AdapterResult::Ok);
-  const std::uint32_t place_request = transport.submitted[0].id;
+  const std::uint32_t place_request =
+      transport.submitted[transport.submitted_count - 1].id;
   transport.push(
       {TransportEventKind::HttpResponse, place_request, 200,
        R"({"success":true,"orderID":"local-open","status":"live"})"});
@@ -842,8 +1049,8 @@ void TestSessionDeadlineActions() {
   PolymarketTradeAdapter adapter(config);
   EventLog log;
   constexpr std::uint64_t now = 1786186200000000000ULL;
-  transport.push({TransportEventKind::SessionReady, 0, 0, {}});
-  Drain(adapter, log);
+  CompleteStartup(adapter, transport, log, now);
+  const std::size_t base_reconnects = transport.reconnects;
   const AdapterEventSink sink{&log, &EventLog::OnEvent};
 
   AdapterDeadline heartbeat{};
@@ -865,21 +1072,21 @@ void TestSessionDeadlineActions() {
   reconnect.due_time_ns = now + 100;
   REQUIRE(adapter.on_deadline(reconnect, now + 100, sink) ==
           AdapterResult::Ok);
-  REQUIRE(transport.reconnects == 1);
+  REQUIRE(transport.reconnects == base_reconnects + 1);
   reconnect.due_time_ns = now + 299;
   REQUIRE(adapter.on_deadline(reconnect, now + 299, sink) ==
           AdapterResult::WouldBlock);
   reconnect.due_time_ns = now + 300;
   REQUIRE(adapter.on_deadline(reconnect, now + 300, sink) ==
           AdapterResult::Ok);
-  REQUIRE(transport.reconnects == 2);
+  REQUIRE(transport.reconnects == base_reconnects + 2);
   reconnect.due_time_ns = now + 700;
   REQUIRE(adapter.on_deadline(reconnect, now + 700, sink) ==
           AdapterResult::Ok);
   reconnect.due_time_ns = now + 1'100;
   REQUIRE(adapter.on_deadline(reconnect, now + 1'100, sink) ==
           AdapterResult::Ok);
-  REQUIRE(transport.reconnects == 4);
+  REQUIRE(transport.reconnects == base_reconnects + 4);
 }
 
 void TestReconcileRequestDeadline() {
@@ -889,8 +1096,7 @@ void TestReconcileRequestDeadline() {
   config.request_timeout_ns = 100;
   PolymarketTradeAdapter adapter(config);
   EventLog log;
-  transport.push({TransportEventKind::SessionReady, 0, 0, {}});
-  Drain(adapter, log);
+  CompleteStartup(adapter, transport, log);
   REQUIRE(adapter.begin_reconcile(701, 1'000, {&log, &EventLog::OnEvent}) ==
           AdapterResult::Ok);
   const AdapterEventSink sink{&log, &EventLog::OnEvent};
@@ -918,8 +1124,7 @@ void TestSessionLivenessTimeout() {
   PolymarketTradeAdapter adapter(config);
   EventLog log;
   constexpr std::uint64_t now = 1786186200000000000ULL;
-  transport.push({TransportEventKind::SessionReady, 0, 0, {}});
-  Drain(adapter, log);
+  CompleteStartup(adapter, transport, log, now);
   const AdapterServiceResult result =
       adapter.service_io(now + 250, 8, {&log, &EventLog::OnEvent});
   REQUIRE(result.result == AdapterResult::Ok);
@@ -964,7 +1169,7 @@ void TestAuthoritativeQueriesStaySeparateFromReconcile() {
   REQUIRE(log.events[log.size - 2].open_order.remaining_quantity.value == 75);
   REQUIRE(log.events[log.size - 1].kind == AdapterEventKind::QueryComplete);
   REQUIRE(log.events[log.size - 1].query_complete.error == api::Error::Ok);
-  REQUIRE(adapter.status() == AdapterStatus::Connecting);
+  REQUIRE(adapter.status() == AdapterStatus::Authenticating);
 
   AdapterQueryRequest positions_request{};
   positions_request.token = {4, 9, 2};
@@ -977,6 +1182,7 @@ void TestAuthoritativeQueriesStaySeparateFromReconcile() {
   const std::string_view path(positions_wire.wire.path.data(),
                               positions_wire.wire.path_size);
   REQUIRE(path.starts_with("/positions?user="));
+  REQUIRE(path.find(DerivedSignerHex()) != std::string_view::npos);
   REQUIRE(path.find("sizeThreshold=0.0001&limit=500") !=
           std::string_view::npos);
   REQUIRE(positions_wire.poly_signature.size == 0);
@@ -1064,6 +1270,537 @@ void TestScopedQueriesCarryNativeReference() {
   REQUIRE(position_path.find("&market=0x01") != std::string_view::npos);
 }
 
+void TestType0RejectsConfiguredFunder() {
+  TestDirectory registry = Registry();
+  MockTransport transport;
+  AdapterConfig with_funder = Config(registry, transport);
+  REQUIRE(with_funder.credentials.funder_address.assign(
+      "0x1111111111111111111111111111111111111111"));
+  PolymarketTradeAdapter type0_with_funder(with_funder);
+  REQUIRE(type0_with_funder.status() == AdapterStatus::Failed);
+
+  AdapterConfig unspecified = Config(registry, transport);
+  unspecified.signature_type = api::PolymarketSignatureType::Unspecified;
+  PolymarketTradeAdapter missing_type(unspecified);
+  REQUIRE(missing_type.status() == AdapterStatus::Failed);
+
+  PolymarketTradeAdapter type3_without_funder(Config(
+      registry, transport, api::PolymarketSignatureType::Poly1271));
+  REQUIRE(type3_without_funder.status() == AdapterStatus::Failed);
+
+  PolymarketTradeAdapter type1_without_funder(Config(
+      registry, transport, api::PolymarketSignatureType::PolyProxy));
+  REQUIRE(type1_without_funder.status() == AdapterStatus::Failed);
+
+  PolymarketTradeAdapter type1_with_funder(Config(
+      registry, transport, api::PolymarketSignatureType::PolyProxy,
+      "0x1111111111111111111111111111111111111111"));
+  REQUIRE(type1_with_funder.status() == AdapterStatus::Authenticating);
+}
+
+void TestAccountSignatureTypeIgnoresRoute() {
+  TestDirectory registry = Registry();
+  MockTransport transport;
+  EventLog log;
+  const std::string derived = DerivedSignerHex();
+  constexpr std::string_view funder =
+      "0x1111111111111111111111111111111111111111";
+
+  PolymarketTradeAdapter eoa(Config(registry, transport));
+  CompleteStartup(eoa, transport, log);
+  AdapterPlaceCommand place{};
+  place.routing = Route(3);
+  place.command_id = 801;
+  place.handle = {11, 0, 12};
+  place.request.token = {13, 14, 15};
+  place.request.instrument_id = 7;
+  place.request.side = api::Side::Buy;
+  place.request.type = api::OrderType::Limit;
+  place.request.time_in_force = api::TimeInForce::GTC;
+  place.request.quantity = {100, 1, {}};
+  place.request.price = {52, 2, {}};
+  AdapterReservation reservation{};
+  REQUIRE(eoa.reserve_command(AdapterCommandKind::Place, reservation) ==
+          AdapterResult::Ok);
+  REQUIRE(eoa.commit_place(reservation, place) == AdapterResult::Ok);
+  const std::string_view eoa_body(
+      transport.submitted[transport.submitted_count - 1].wire.body.data(),
+      transport.submitted[transport.submitted_count - 1].wire.body_size);
+  REQUIRE(eoa_body.find("\"maker\":\"" + derived + "\"") !=
+          std::string_view::npos);
+  REQUIRE(eoa_body.find("\"signer\":\"" + derived + "\"") !=
+          std::string_view::npos);
+  REQUIRE(eoa_body.find("\"signatureType\":0") != std::string_view::npos);
+  REQUIRE(eoa_body.find("\"signatureType\":3") == std::string_view::npos);
+
+  MockTransport type3_transport;
+  PolymarketTradeAdapter type3(Config(
+      registry, type3_transport, api::PolymarketSignatureType::Poly1271,
+      funder));
+  CompleteStartup(type3, type3_transport, log);
+  place.routing = Route(0);
+  place.command_id = 802;
+  REQUIRE(type3.reserve_command(AdapterCommandKind::Place, reservation) ==
+          AdapterResult::Ok);
+  REQUIRE(type3.commit_place(reservation, place) == AdapterResult::Ok);
+  REQUIRE(type3_transport.submitted[type3_transport.submitted_count - 1]
+              .poly_address.view() == derived);
+  const std::string_view type3_body(
+      type3_transport.submitted[type3_transport.submitted_count - 1]
+          .wire.body.data(),
+      type3_transport.submitted[type3_transport.submitted_count - 1]
+          .wire.body_size);
+  REQUIRE(type3_body.find("\"maker\":\"0x1111111111111111111111111111111111111111\"") !=
+          std::string_view::npos);
+  REQUIRE(type3_body.find("\"signatureType\":3") != std::string_view::npos);
+  REQUIRE(type3_body.find("\"signatureType\":0") == std::string_view::npos);
+
+  MockTransport type1_transport;
+  PolymarketTradeAdapter type1(Config(
+      registry, type1_transport, api::PolymarketSignatureType::PolyProxy,
+      funder));
+  CompleteStartup(type1, type1_transport, log);
+  place.routing = Route(3);
+  place.command_id = 803;
+  REQUIRE(type1.reserve_command(AdapterCommandKind::Place, reservation) ==
+          AdapterResult::Ok);
+  REQUIRE(type1.commit_place(reservation, place) == AdapterResult::Ok);
+  const std::string_view type1_body(
+      type1_transport.submitted[type1_transport.submitted_count - 1]
+          .wire.body.data(),
+      type1_transport.submitted[type1_transport.submitted_count - 1]
+          .wire.body_size);
+  REQUIRE(type1_body.find("\"maker\":\"0x1111111111111111111111111111111111111111\"") !=
+          std::string_view::npos);
+  REQUIRE(type1_body.find("\"signer\":\"" + derived + "\"") !=
+          std::string_view::npos);
+  REQUIRE(type1_body.find("\"signatureType\":1") != std::string_view::npos);
+}
+
+void TestInitialSessionStartsOnce() {
+  TestDirectory registry = Registry();
+  MockTransport transport;
+  PolymarketTradeAdapter adapter(Config(registry, transport));
+  REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+  REQUIRE(adapter.start_initial_session() == AdapterResult::Ok);
+  REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+  REQUIRE(transport.reconnects == 0);
+  REQUIRE(transport.clob_auth_count == 1);
+  REQUIRE(adapter.start_initial_session() == AdapterResult::InvalidArgument);
+  REQUIRE(transport.clob_auth_count == 1);
+  REQUIRE(transport.reconnects == 0);
+}
+
+void TestInitialSessionReadyReconciles() {
+  TestDirectory registry = Registry();
+  MockTransport transport;
+  PolymarketTradeAdapter adapter(Config(registry, transport));
+  EventLog log;
+  CompleteStartup(adapter, transport, log);
+  REQUIRE(adapter.status() == AdapterStatus::Ready);
+  REQUIRE(transport.submitted_count == 1);
+  REQUIRE(transport.reconnects == 1);
+}
+
+void TestInitialSessionLostThenReconciles() {
+  TestDirectory registry = Registry();
+  MockTransport transport;
+  AdapterConfig config = Config(registry, transport);
+  config.reconnect_initial_ns = 100;
+  config.reconnect_max_ns = 400;
+  PolymarketTradeAdapter adapter(config);
+  EventLog log;
+  constexpr std::uint64_t now = 1786186200000000000ULL;
+  CompleteDerive(adapter, transport, log, now);
+  transport.push({TransportEventKind::SessionLost, 0, 0, {}});
+  Drain(adapter, log, now);
+  REQUIRE(adapter.status() == AdapterStatus::Reconnecting);
+  REQUIRE(log.events[log.size - 1].kind == AdapterEventKind::Status);
+  REQUIRE(log.events[log.size - 1].status.status ==
+          AdapterStatus::Reconnecting);
+  REQUIRE(log.events[log.size - 1].status.reason == AdapterResult::NotReady);
+  const AdapterEventSink sink{&log, &EventLog::OnEvent};
+  AdapterDeadline reconnect{};
+  reconnect.kind = AdapterDeadlineKind::Reconnect;
+  reconnect.due_time_ns = now + 100;
+  REQUIRE(adapter.on_deadline(reconnect, now + 100, sink) ==
+          AdapterResult::Ok);
+  REQUIRE(transport.reconnects == 2);
+  transport.push({TransportEventKind::SessionReady, 0, 0, {}});
+  Drain(adapter, log, now);
+  REQUIRE(adapter.status() == AdapterStatus::Reconciling);
+  REQUIRE(transport.submitted_count == 1);
+  transport.push({TransportEventKind::HttpResponse,
+                  transport.submitted[0].id, 200, kEmptyOpenOrders});
+  Drain(adapter, log, now);
+  REQUIRE(adapter.status() == AdapterStatus::Ready);
+}
+
+void TestInitialSessionImmediateFailure() {
+  TestDirectory registry = Registry();
+  MockTransport transport;
+  transport.clob_auth_result = AdapterResult::Failed;
+  PolymarketTradeAdapter adapter(Config(registry, transport));
+  REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+  REQUIRE(adapter.start_initial_session() == AdapterResult::Failed);
+  REQUIRE(adapter.status() == AdapterStatus::Failed);
+  REQUIRE(transport.reconnects == 0);
+  REQUIRE(transport.clob_auth_count == 1);
+}
+
+void TestSecureCredentialWipe() {
+  FixedText<8> text{};
+  REQUIRE(text.assign("abcdef"));
+  REQUIRE(text.assign("xy"));
+  REQUIRE(text.size == 2);
+  REQUIRE(text.value[2] == 'c');
+  REQUIRE(text.secure_assign("z"));
+  REQUIRE(text.size == 1);
+  REQUIRE(text.value[0] == 'z');
+  for (std::size_t index = 1; index < text.value.size(); ++index)
+    REQUIRE(text.value[index] == 0);
+  text.secure_clear();
+  REQUIRE(text.size == 0);
+  for (char byte : text.value) REQUIRE(byte == 0);
+}
+
+void TestCredentialDeriveRetryAndLatch() {
+  TestDirectory registry = Registry();
+  MockTransport transport;
+  AdapterConfig config = Config(registry, transport);
+  config.reconnect_initial_ns = 100;
+  config.reconnect_max_ns = 400;
+  PolymarketTradeAdapter adapter(config);
+  EventLog log;
+  constexpr std::uint64_t now = 1786186200000000000ULL;
+  REQUIRE(adapter.start_initial_session() == AdapterResult::Ok);
+  REQUIRE(transport.clob_auth_count == 1);
+  REQUIRE(transport.reconnects == 0);
+  transport.push({TransportEventKind::HttpResponse,
+                  transport.clob_auths[0].id, 429, {}});
+  Drain(adapter, log, now);
+  REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+  REQUIRE(transport.reconnects == 0);
+  const AdapterServiceResult retry =
+      adapter.service_io(now + 100, 8, {&log, &EventLog::OnEvent});
+  REQUIRE(retry.result == AdapterResult::Ok);
+  REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+  REQUIRE(transport.clob_auth_count == 2);
+  REQUIRE(transport.reconnects == 0);
+  transport.push({TransportEventKind::HttpResponse,
+                  transport.clob_auths[1].id, 408, {}});
+  Drain(adapter, log, now + 100);
+  REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+  REQUIRE(transport.reconnects == 0);
+  REQUIRE(adapter.service_io(now + 300, 8, {&log, &EventLog::OnEvent}).result ==
+          AdapterResult::Ok);
+  REQUIRE(transport.clob_auth_count == 3);
+  transport.push({TransportEventKind::HttpResponse,
+                  transport.clob_auths[2].id, 200, kDeriveCredentialsJson});
+  Drain(adapter, log, now + 300);
+  REQUIRE(adapter.status() == AdapterStatus::Connecting);
+  transport.push({TransportEventKind::SessionReady, 0, 0, {}});
+  Drain(adapter, log, now + 300);
+  REQUIRE(adapter.status() == AdapterStatus::Reconciling);
+  transport.push({TransportEventKind::HttpResponse,
+                  transport.submitted[transport.submitted_count - 1].id, 200,
+                  kEmptyOpenOrders});
+  Drain(adapter, log, now + 300);
+  REQUIRE(adapter.status() == AdapterStatus::Ready);
+
+  MockTransport rejected;
+  PolymarketTradeAdapter fail_401(Config(registry, rejected));
+  EventLog rejected_log;
+  REQUIRE(fail_401.start_initial_session() == AdapterResult::Ok);
+  rejected.push({TransportEventKind::HttpResponse, rejected.clob_auths[0].id,
+                 401, {}});
+  Drain(fail_401, rejected_log);
+  REQUIRE(fail_401.status() == AdapterStatus::Failed);
+  REQUIRE(rejected.reconnects == 0);
+
+  MockTransport missing;
+  PolymarketTradeAdapter create_404(Config(registry, missing));
+  EventLog missing_log;
+  REQUIRE(create_404.start_initial_session() == AdapterResult::Ok);
+  missing.push({TransportEventKind::HttpResponse, missing.clob_auths[0].id,
+                404, {}});
+  Drain(create_404, missing_log);
+  REQUIRE(create_404.status() == AdapterStatus::Authenticating);
+  REQUIRE(missing.clob_auth_count == 2);
+  REQUIRE(std::string_view(missing.clob_auths[1].wire.method.data(),
+                           missing.clob_auths[1].wire.method_size) == "POST");
+  REQUIRE(std::string_view(missing.clob_auths[1].wire.path.data(),
+                           missing.clob_auths[1].wire.path_size) ==
+          "/auth/api-key");
+  missing.push({TransportEventKind::HttpResponse, missing.clob_auths[1].id, 201,
+                kDeriveCredentialsJson});
+  Drain(create_404, missing_log);
+  REQUIRE(create_404.status() == AdapterStatus::Connecting);
+  REQUIRE(missing.reconnects == 1);
+
+  MockTransport bad_json;
+  PolymarketTradeAdapter fail_json(Config(registry, bad_json));
+  EventLog json_log;
+  REQUIRE(fail_json.start_initial_session() == AdapterResult::Ok);
+  bad_json.push({TransportEventKind::HttpResponse, bad_json.clob_auths[0].id,
+                 200, R"({"apiKey":"only"})"});
+  Drain(fail_json, json_log);
+  REQUIRE(fail_json.status() == AdapterStatus::Failed);
+  REQUIRE(bad_json.reconnects == 0);
+
+  MockTransport latch_transport;
+  PolymarketTradeAdapter latch(Config(registry, latch_transport));
+  EventLog latch_log;
+  CompleteStartup(latch, latch_transport, latch_log, now);
+  const std::size_t derives_after_ready = latch_transport.clob_auth_count;
+  latch_transport.push({TransportEventKind::SessionLost, 0, 0, {}, true});
+  Drain(latch, latch_log, now);
+  REQUIRE(latch.status() == AdapterStatus::Authenticating);
+  REQUIRE(latch_transport.clob_auth_count == derives_after_ready + 1);
+  REQUIRE(latch_transport.closed);
+  latch_transport.push(
+      {TransportEventKind::HttpResponse,
+       latch_transport.clob_auths[latch_transport.clob_auth_count - 1].id, 200,
+       kDeriveCredentialsJson});
+  Drain(latch, latch_log, now);
+  REQUIRE(latch.status() == AdapterStatus::Connecting);
+  latch_transport.push({TransportEventKind::SessionReady, 0, 0, {}});
+  Drain(latch, latch_log, now);
+  REQUIRE(latch.status() == AdapterStatus::Reconciling);
+  latch_transport.push(
+      {TransportEventKind::HttpResponse,
+       latch_transport.submitted[latch_transport.submitted_count - 1].id, 200,
+       kEmptyOpenOrders});
+  Drain(latch, latch_log, now);
+  REQUIRE(latch.status() == AdapterStatus::Ready);
+  REQUIRE(latch_transport.clob_auth_count == derives_after_ready + 1);
+  latch_transport.push({TransportEventKind::SessionLost, 0, 0, {}, true});
+  Drain(latch, latch_log, now);
+  REQUIRE(latch.status() == AdapterStatus::Failed);
+  REQUIRE(latch_transport.clob_auth_count == derives_after_ready + 1);
+}
+
+std::string_view AuthMethod(const ClobAuthRequest& auth) {
+  return {auth.wire.method.data(), auth.wire.method_size};
+}
+
+std::string_view AuthPath(const ClobAuthRequest& auth) {
+  return {auth.wire.path.data(), auth.wire.path_size};
+}
+
+void RequireLastAuth(const MockTransport& transport, std::string_view method,
+                     std::string_view path) {
+  REQUIRE(transport.clob_auth_count > 0);
+  const ClobAuthRequest& auth =
+      transport.clob_auths[transport.clob_auth_count - 1];
+  REQUIRE(AuthMethod(auth) == method);
+  REQUIRE(AuthPath(auth) == path);
+  REQUIRE(auth.wire.body_size == 0);
+}
+
+void TestCredentialCreateOrDeriveFlows() {
+  TestDirectory registry = Registry();
+  constexpr std::uint64_t now = 1786186200000000000ULL;
+  constexpr std::string_view kCouldNotDerive =
+      R"({"error":"Could not derive api key"})";
+
+  {
+    MockTransport transport;
+    PolymarketTradeAdapter adapter(Config(registry, transport));
+    EventLog log;
+    REQUIRE(adapter.start_initial_session() == AdapterResult::Ok);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[0].id, 200, kDeriveCredentialsJson});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Connecting);
+    REQUIRE(transport.clob_auth_count == 1);
+    RequireLastAuth(transport, "GET", "/auth/derive-api-key");
+  }
+
+  {
+    MockTransport transport;
+    PolymarketTradeAdapter adapter(Config(registry, transport));
+    EventLog log;
+    REQUIRE(adapter.start_initial_session() == AdapterResult::Ok);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[0].id, 400, kCouldNotDerive});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+    REQUIRE(transport.clob_auth_count == 2);
+    RequireLastAuth(transport, "POST", "/auth/api-key");
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[1].id, 200, kDeriveCredentialsJson});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Connecting);
+  }
+
+  {
+    MockTransport transport;
+    PolymarketTradeAdapter adapter(Config(registry, transport));
+    EventLog log;
+    REQUIRE(adapter.start_initial_session() == AdapterResult::Ok);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[0].id, 400, "generic bad request"});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Failed);
+    REQUIRE(transport.clob_auth_count == 1);
+    REQUIRE(log.events[log.size - 1].status.reason == AdapterResult::Failed);
+  }
+
+  {
+    MockTransport transport;
+    PolymarketTradeAdapter adapter(Config(registry, transport));
+    EventLog log;
+    REQUIRE(adapter.start_initial_session() == AdapterResult::Ok);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[0].id, 422, {}});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Failed);
+    REQUIRE(transport.clob_auth_count == 1);
+  }
+
+  {
+    MockTransport transport;
+    PolymarketTradeAdapter adapter(Config(registry, transport));
+    EventLog log;
+    REQUIRE(adapter.start_initial_session() == AdapterResult::Ok);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[0].id, 404, {}});
+    Drain(adapter, log, now);
+    REQUIRE(transport.clob_auth_count == 2);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[1].id, 409, {}});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+    REQUIRE(transport.clob_auth_count == 3);
+    RequireLastAuth(transport, "GET", "/auth/derive-api-key");
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[2].id, 200, kDeriveCredentialsJson});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Connecting);
+  }
+
+  {
+    MockTransport transport;
+    AdapterConfig config = Config(registry, transport);
+    config.reconnect_initial_ns = 100;
+    config.reconnect_max_ns = 400;
+    PolymarketTradeAdapter adapter(config);
+    EventLog log;
+    REQUIRE(adapter.start_initial_session() == AdapterResult::Ok);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[0].id, 404, {}});
+    Drain(adapter, log, now);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[1].id, 409, {}});
+    Drain(adapter, log, now);
+    REQUIRE(transport.clob_auth_count == 3);
+    RequireLastAuth(transport, "GET", "/auth/derive-api-key");
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[2].id, 503, {}});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+    REQUIRE(adapter.service_io(now + 100, 8, {&log, &EventLog::OnEvent})
+                .result == AdapterResult::Ok);
+    REQUIRE(transport.clob_auth_count == 4);
+    RequireLastAuth(transport, "GET", "/auth/derive-api-key");
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[3].id, 200, kDeriveCredentialsJson});
+    Drain(adapter, log, now + 100);
+    REQUIRE(adapter.status() == AdapterStatus::Connecting);
+  }
+
+  {
+    MockTransport transport;
+    AdapterConfig config = Config(registry, transport);
+    config.request_timeout_ns = 1000;
+    config.reconnect_initial_ns = 100;
+    config.reconnect_max_ns = 400;
+    PolymarketTradeAdapter adapter(config);
+    EventLog log;
+    REQUIRE(adapter.start_initial_session() == AdapterResult::Ok);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[0].id, 404, {}});
+    Drain(adapter, log, now);
+    REQUIRE(transport.clob_auth_count == 2);
+    RequireLastAuth(transport, "POST", "/auth/api-key");
+    REQUIRE(adapter.service_io(now + 1000, 8, {&log, &EventLog::OnEvent})
+                .result == AdapterResult::Ok);
+    REQUIRE(transport.clob_auth_count == 3);
+    RequireLastAuth(transport, "GET", "/auth/derive-api-key");
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[2].id, 404, {}});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+    REQUIRE(adapter.service_io(now + 100, 8, {&log, &EventLog::OnEvent})
+                .result == AdapterResult::Ok);
+    REQUIRE(transport.clob_auth_count == 4);
+    RequireLastAuth(transport, "POST", "/auth/api-key");
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[3].id, 200, kDeriveCredentialsJson});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Connecting);
+  }
+
+  {
+    MockTransport transport;
+    PolymarketTradeAdapter adapter(Config(registry, transport));
+    EventLog log;
+    REQUIRE(adapter.start_initial_session() == AdapterResult::Ok);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[0].id, 404, {}});
+    Drain(adapter, log, now);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[1].id, 429, {}});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+    REQUIRE(transport.clob_auth_count == 3);
+    RequireLastAuth(transport, "GET", "/auth/derive-api-key");
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[2].id, 200, kDeriveCredentialsJson});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Connecting);
+    std::size_t posts = 0;
+    for (std::size_t index = 0; index < transport.clob_auth_count; ++index) {
+      if (AuthMethod(transport.clob_auths[index]) == "POST") ++posts;
+    }
+    REQUIRE(posts == 1);
+  }
+
+  {
+    MockTransport transport;
+    PolymarketTradeAdapter adapter(Config(registry, transport));
+    EventLog log;
+    REQUIRE(adapter.start_initial_session() == AdapterResult::Ok);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[0].id, 404, {}});
+    Drain(adapter, log, now);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[1].id, 422, {}});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Failed);
+    REQUIRE(transport.clob_auth_count == 2);
+    REQUIRE(log.events[log.size - 1].status.reason == AdapterResult::Failed);
+  }
+
+  {
+    MockTransport transport;
+    PolymarketTradeAdapter adapter(Config(registry, transport));
+    EventLog log;
+    CompleteStartup(adapter, transport, log, now);
+    const std::size_t after_ready = transport.clob_auth_count;
+    transport.push({TransportEventKind::SessionLost, 0, 0, {}, true});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Authenticating);
+    transport.push({TransportEventKind::HttpResponse,
+                    transport.clob_auths[transport.clob_auth_count - 1].id, 404,
+                    {}});
+    Drain(adapter, log, now);
+    REQUIRE(adapter.status() == AdapterStatus::Failed);
+    REQUIRE(transport.clob_auth_count == after_ready + 1);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1080,5 +1817,14 @@ int main() {
   TestAuthoritativeQueriesStaySeparateFromReconcile();
   TestUnknownQueryIdentityIsQuarantinable();
   TestScopedQueriesCarryNativeReference();
+  TestType0RejectsConfiguredFunder();
+  TestAccountSignatureTypeIgnoresRoute();
+  TestInitialSessionStartsOnce();
+  TestInitialSessionReadyReconciles();
+  TestInitialSessionLostThenReconciles();
+  TestInitialSessionImmediateFailure();
+  TestSecureCredentialWipe();
+  TestCredentialDeriveRetryAndLatch();
+  TestCredentialCreateOrDeriveFlows();
   return 0;
 }

@@ -1,0 +1,13 @@
+mds:
+  source: replay
+oms:
+  venues:
+    polymarket:
+      enabled: true
+      account_id: 1
+      api_key_env: POLY_API_KEY
+      secret_env: POLY_API_SECRET
+      passphrase_env: POLY_PASSPHRASE
+      private_key_env: POLY_PRIVATE_KEY
+      signature_type: 3
+strategy: {}

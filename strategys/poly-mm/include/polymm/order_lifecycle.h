@@ -8,6 +8,7 @@ namespace polymm {
 
 inline constexpr std::uint8_t kCommandPlace = 1;
 inline constexpr std::uint8_t kCommandCancel = 2;
+inline constexpr std::uint8_t kCommandRegisterInstrument = 3;
 inline constexpr std::uint8_t kOrderCancelRejected = 6;
 
 struct LegOrder {

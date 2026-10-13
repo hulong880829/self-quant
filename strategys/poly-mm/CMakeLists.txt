@@ -9,11 +9,11 @@ find_package(self_quant CONFIG REQUIRED)
 find_package(simdjson CONFIG REQUIRED)
 
 add_library(poly_mm_lib
-  src/catalog_rollover.cpp
   src/fairprice_client.cpp
   src/market_window.cpp
   src/order_lifecycle.cpp
   src/pnl_ledger.cpp
+  src/rolling_pair_binding.cpp
   src/signal.cpp
   src/strategy.cpp
 )

@@ -96,5 +96,40 @@ int main() {
   RequireInvalid("reject_binary_hyphen.yaml");
   RequireInvalid("reject_bbo_policy.yaml");
   RequireInvalid("reject_implicit_dual_bbo_policy.yaml");
+  RequireInvalid("reject_polymarket_type0_funder.yaml");
+  RequireInvalid("reject_polymarket_type3_missing_funder.yaml");
+  RequireInvalid("reject_polymarket_type1_missing_funder.yaml");
+  RequireInvalid("reject_polymarket_signature_type.yaml");
+  RequireInvalid("reject_polymarket_missing_signature_type.yaml");
+  RequireInvalid("reject_polymarket_signer_address_env.yaml");
+  RequireInvalid("reject_polymarket_missing_private_key.yaml");
+  RequireInvalid("reject_binance_signature_type.yaml");
+
+  const auto type0 =
+      strategyframe::load_config(Fixture("polymarket_type0.yaml"));
+  Require(static_cast<bool>(type0));
+  Require(type0.value.venues.size() == 1);
+  Require(type0.value.venues[0].kind ==
+          strategyframe::VenueExecutionConfig::Kind::Polymarket);
+  Require(type0.value.venues[0].signature_type == 0);
+  Require(type0.value.venues[0].funder_address_env.empty());
+
+  const auto type1 =
+      strategyframe::load_config(Fixture("polymarket_type1.yaml"));
+  Require(static_cast<bool>(type1));
+  Require(type1.value.venues[0].signature_type == 1);
+  Require(type1.value.venues[0].funder_address_env == "POLY_FUNDER_ADDRESS");
+
+  const auto type3 =
+      strategyframe::load_config(Fixture("polymarket_type3.yaml"));
+  Require(static_cast<bool>(type3));
+  Require(type3.value.venues[0].signature_type == 3);
+  Require(type3.value.venues[0].funder_address_env == "POLY_FUNDER_ADDRESS");
+
+  const auto disabled = strategyframe::load_config(
+      Fixture("polymarket_disabled_unspecified.yaml"));
+  Require(static_cast<bool>(disabled));
+  Require(disabled.value.venues[0].signature_type == 0xff);
+  Require(disabled.value.venues[0].funder_address_env.empty());
   return 0;
 }

@@ -53,6 +53,7 @@ static_assert(static_cast<std::uint16_t>(strategyframe::Venue::Aster) ==
               9);
 static_assert(static_cast<std::uint16_t>(strategyframe::Venue::Lighter) ==
               10);
+static_assert(static_cast<std::uint16_t>(strategyframe::Venue::Ibkr) == 11);
 static_assert(static_cast<std::uint8_t>(
                   strategyframe::ProductType::Unknown) == 0);
 static_assert(static_cast<std::uint8_t>(strategyframe::ProductType::Spot) ==

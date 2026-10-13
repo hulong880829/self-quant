@@ -39,6 +39,12 @@ class OrderManager {
   friend struct detail::ManagerAccess;
 };
 
+struct AccountPositionState {
+  AccountId account_id{};
+  std::uint64_t mutation_epoch{1};
+  std::uint64_t last_committed_snapshot_epoch{};
+};
+
 class PositionManager {
  public:
   explicit PositionManager(std::size_t capacity,
@@ -55,6 +61,11 @@ class PositionManager {
       PositionSide side = PositionSide::Net) const noexcept;
   [[nodiscard]] std::size_t size() const noexcept;
   [[nodiscard]] std::size_t capacity() const noexcept;
+  [[nodiscard]] std::uint64_t mutation_epoch(AccountId account_id) const noexcept;
+  [[nodiscard]] std::uint64_t last_committed_snapshot_epoch(
+      AccountId account_id) const noexcept;
+  [[nodiscard]] bool snapshot_confirms_zero(
+      AccountId account_id, InstrumentId instrument_id) const noexcept;
 
  private:
   [[nodiscard]] Error apply_fill(
@@ -63,6 +74,15 @@ class PositionManager {
       const TradeId& trade_id, std::uint64_t generation) noexcept;
   [[nodiscard]] Error replace_snapshot(
       std::span<const PositionView> positions) noexcept;
+  [[nodiscard]] Error update_account_snapshot(
+      AccountId account_id, std::span<const PositionView> positions) noexcept;
+  [[nodiscard]] Error update_instrument_snapshot(
+      AccountId account_id, InstrumentId instrument_id,
+      std::span<const PositionView> positions) noexcept;
+  [[nodiscard]] Error commit_query_snapshot(
+      AccountId account_id, std::uint64_t query_epoch) noexcept;
+  [[nodiscard]] std::uint64_t ensure_account_epoch(
+      AccountId account_id) noexcept;
   void retire_instrument(InstrumentId instrument_id) noexcept;
   struct Impl;
   std::unique_ptr<Impl> impl_;

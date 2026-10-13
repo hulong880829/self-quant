@@ -5,6 +5,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <mutex>
 #include <vector>
@@ -16,6 +17,12 @@
 #include <unistd.h>
 
 #include "oms/api/execution_channel.h"
+
+namespace oms::api::detail {
+std::string BuildPolymarketUserSubscription(
+    std::string_view api_key, std::string_view secret,
+    std::string_view passphrase);
+}
 
 namespace {
 
@@ -87,10 +94,10 @@ oms::api::InstrumentInit PolymarketInstrument(std::uint8_t signature_type = 0) {
   return result;
 }
 
-oms::api::PolymarketCredentialView PolymarketCredentials() {
+oms::api::PolymarketCredentialView PolymarketCredentials(
+    std::string_view funder = {}) {
   return {
-      "0x90F8bf6A479f320ead074411a4B0e7944Ea8c9C1",
-      "0x90F8bf6A479f320ead074411a4B0e7944Ea8c9C1",
+      funder,
       "4f3edf983ac63ad7c7a0f4a1c2e8b7f5f6f0f4f0a3a5b6c7d8e9f00112233445",
       "offline-key",
       "c2VjcmV0LWtleQ",
@@ -607,14 +614,10 @@ void TestAdapterCountAndSignatureValidation() {
               {&instrument, 1}, {}, too_many)
               .error == oms::api::Error::InvalidArgument);
 
-  auto polymarket = Instrument();
-  polymarket.instrument.venue = utils::md::Venue::Polymarket;
-  polymarket.instrument.product_type = utils::md::ProductType::BinaryOption;
-  polymarket.polymarket_signature_type = 1;
+  auto polymarket = PolymarketInstrument(1);
   REQUIRE(oms::api::OmsApi::Create(
               Config(oms::api::ExecutionMode::Inline, 8, 1),
-              {&polymarket, 1})
-              .error == oms::api::Error::InvalidArgument);
+              {&polymarket, 1}));
 }
 
 void TestExecutionChannelFacade() {
@@ -705,6 +708,7 @@ void TestExecutionChannelLiveMultiAdapterAndTeardown() {
   config.binance_usdm.enabled = true;
   config.binance_usdm.credentials = {"usdm-key", "usdm-secret"};
   config.polymarket.enabled = true;
+  config.polymarket.signature_type = oms::api::PolymarketSignatureType::Eoa;
   config.polymarket.credentials = PolymarketCredentials();
 
   auto created = oms::api::ExecutionChannel::Create(config, instruments);
@@ -713,14 +717,56 @@ void TestExecutionChannelLiveMultiAdapterAndTeardown() {
               oms::exchange::AdapterKind::BinanceSpot));
   REQUIRE(created.value->venue_status(
               oms::exchange::AdapterKind::BinanceUsdm));
-  REQUIRE(created.value->venue_status(
-              oms::exchange::AdapterKind::Polymarket));
+  const auto polymarket_status = created.value->venue_status(
+      oms::exchange::AdapterKind::Polymarket);
+  REQUIRE(polymarket_status);
+  REQUIRE(polymarket_status.value.status ==
+          oms::exchange::AdapterStatus::Authenticating);
   REQUIRE(created.value->shutdown() == oms::api::Error::Ok);
   created.value.reset();
 
   instruments[2] = PolymarketInstrument(1);
-  REQUIRE(oms::api::ExecutionChannel::Create(config, instruments).error ==
+  REQUIRE(oms::api::ExecutionChannel::Create(config, instruments));
+
+  auto missing_type = config;
+  missing_type.polymarket.signature_type =
+      oms::api::PolymarketSignatureType::Unspecified;
+  REQUIRE(oms::api::ExecutionChannel::Create(missing_type, instruments).error ==
           oms::api::Error::InvalidArgument);
+
+  auto type0_funder = config;
+  type0_funder.polymarket.credentials = PolymarketCredentials(
+      "0x1111111111111111111111111111111111111111");
+  REQUIRE(oms::api::ExecutionChannel::Create(type0_funder, instruments).error ==
+          oms::api::Error::InvalidArgument);
+
+  auto type3 = config;
+  type3.polymarket.signature_type =
+      oms::api::PolymarketSignatureType::Poly1271;
+  REQUIRE(oms::api::ExecutionChannel::Create(type3, instruments).error ==
+          oms::api::Error::InvalidArgument);
+  type3.polymarket.credentials = PolymarketCredentials(
+      "0x1111111111111111111111111111111111111111");
+  REQUIRE(oms::api::ExecutionChannel::Create(type3, instruments));
+
+  auto type1 = config;
+  type1.polymarket.signature_type =
+      oms::api::PolymarketSignatureType::PolyProxy;
+  REQUIRE(oms::api::ExecutionChannel::Create(type1, instruments).error ==
+          oms::api::Error::InvalidArgument);
+  type1.polymarket.credentials = PolymarketCredentials(
+      "0x1111111111111111111111111111111111111111");
+  REQUIRE(oms::api::ExecutionChannel::Create(type1, instruments));
+
+  auto derived_only = config;
+  derived_only.polymarket.credentials = {
+      {},
+      "4f3edf983ac63ad7c7a0f4a1c2e8b7f5f6f0f4f0a3a5b6c7d8e9f00112233445",
+      {},
+      {},
+      {},
+  };
+  REQUIRE(oms::api::ExecutionChannel::Create(derived_only, instruments));
 }
 
 void TestIntegratedAdapter(oms::api::ExecutionMode mode) {
@@ -809,7 +855,39 @@ void TestIntegratedAdapter(oms::api::ExecutionMode mode) {
 
 }  // namespace
 
+void TestPolymarketUserSubscription() {
+  const std::string simple = oms::api::detail::BuildPolymarketUserSubscription(
+      "test-key", "test-secret", "test-pass");
+  REQUIRE(simple ==
+          "{\"auth\":{\"apiKey\":\"test-key\",\"secret\":\"test-secret\","
+          "\"passphrase\":\"test-pass\"},\"type\":\"user\"}");
+  REQUIRE(simple.find("\"type\":\"user\"") != std::string::npos);
+  REQUIRE(simple.find("\"type\":\"USER\"") == std::string::npos);
+  REQUIRE(simple.find("\"apiKey\"") != std::string::npos);
+  REQUIRE(simple.find("\"secret\"") != std::string::npos);
+  REQUIRE(simple.find("\"passphrase\"") != std::string::npos);
+  REQUIRE(simple.find("privateKey") == std::string::npos);
+  REQUIRE(simple.find("funderAddress") == std::string::npos);
+  REQUIRE(simple.find("signer") == std::string::npos);
+
+  const char control[] = {'k', '"', '\\', 'e', 'y', '\0'};
+  const char secret[] = {'s', '\n', 'e', 'c', '\0'};
+  const char passphrase[] = {'p', '\t', 'a', '\x01', '\0'};
+  const std::string escaped =
+      oms::api::detail::BuildPolymarketUserSubscription(
+          std::string_view{control, 5}, std::string_view{secret, 3},
+          std::string_view{passphrase, 4});
+  REQUIRE(escaped ==
+          "{\"auth\":{\"apiKey\":\"k\\\"\\\\ey\",\"secret\":\"s\\ne\","
+          "\"passphrase\":\"p\\ta\\u0001\"},\"type\":\"user\"}");
+  REQUIRE(escaped.find("\"type\":\"USER\"") == std::string::npos);
+  REQUIRE(escaped.find("privateKey") == std::string::npos);
+  REQUIRE(escaped.find("funderAddress") == std::string::npos);
+  REQUIRE(escaped.find("signer") == std::string::npos);
+}
+
 int main() {
+  TestPolymarketUserSubscription();
   TestMode(oms::api::ExecutionMode::Inline);
   TestMode(oms::api::ExecutionMode::DedicatedIo);
   TestReserveBeforeMutate();

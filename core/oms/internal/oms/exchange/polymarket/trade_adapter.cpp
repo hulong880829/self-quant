@@ -1,11 +1,15 @@
 #include "oms/exchange/polymarket/trade_adapter.h"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <string_view>
+
+#include <openssl/crypto.h>
 
 namespace oms::exchange::polymarket {
 namespace {
@@ -83,16 +87,57 @@ bool AtScale(api::FixedPoint value, std::uint8_t scale,
   return true;
 }
 
+bool EncodeAddress(const Address& address, FixedText<42>& output) noexcept {
+  constexpr char kDigits[] = "0123456789abcdef";
+  std::array<char, 42> text{};
+  text[0] = '0';
+  text[1] = 'x';
+  for (std::size_t index = 0; index < address.size(); ++index) {
+    text[2 + index * 2] = kDigits[address[index] >> 4U];
+    text[3 + index * 2] = kDigits[address[index] & 0x0fU];
+  }
+  return output.assign({text.data(), text.size()});
+}
+
+void RedactHeadTail(std::string_view text, std::size_t head, std::size_t tail,
+                    char* output, std::size_t capacity,
+                    std::size_t& size) noexcept {
+  size = 0;
+  if (output == nullptr || capacity == 0) return;
+  if (text.size() < head + tail) {
+    constexpr std::string_view kMasked = "****";
+    const std::size_t copied = std::min(kMasked.size(), capacity);
+    std::copy_n(kMasked.begin(), copied, output);
+    size = copied;
+    return;
+  }
+  if (head + 3 + tail > capacity) return;
+  std::copy_n(text.begin(), head, output);
+  output[head] = '.';
+  output[head + 1] = '.';
+  output[head + 2] = '.';
+  std::copy(text.end() - static_cast<std::ptrdiff_t>(tail), text.end(),
+            output + head + 3);
+  size = head + 3 + tail;
+}
+
+std::uint64_t SaturatingAdd(std::uint64_t left, std::uint64_t right) noexcept {
+  return left > std::numeric_limits<std::uint64_t>::max() - right
+             ? std::numeric_limits<std::uint64_t>::max()
+             : left + right;
+}
+
 }  // namespace
+
+void SecureWipe(void* data, std::size_t size) noexcept {
+  if (data != nullptr && size != 0) OPENSSL_cleanse(data, size);
+}
 
 PolymarketTradeAdapter::PolymarketTradeAdapter(
     const AdapterConfig& config) noexcept
     : config_(config),
       signing_context_(config.credentials.private_key.view()) {
-  Address address{};
-  std::array<char, 45> signature{};
-  std::size_t signature_size = 0;
-  const bool valid =
+  bool valid =
       config_.resolve_polymarket_token != nullptr &&
       config_.transport != nullptr &&
       config_.now_ms != nullptr && config_.request_timeout_ns != 0 &&
@@ -100,22 +145,267 @@ PolymarketTradeAdapter::PolymarketTradeAdapter(
       config_.reconnect_initial_ns <= config_.reconnect_max_ns &&
       config_.heartbeat_interval_ns != 0 &&
       config_.liveness_timeout_ns > config_.heartbeat_interval_ns &&
-      !config_.credentials.signer_address.view().empty() &&
-      !config_.credentials.funder_address.view().empty() &&
       !config_.credentials.private_key.view().empty() &&
-      !config_.credentials.api_key.view().empty() &&
-      !config_.credentials.api_secret.view().empty() &&
-      !config_.credentials.passphrase.view().empty() &&
-      DecodeAddress(config_.credentials.signer_address.view(), address) ==
-          CryptoResult::Ok &&
-      DecodeAddress(config_.credentials.funder_address.view(), address) ==
-          CryptoResult::Ok &&
       signing_context_.status() == CryptoResult::Ok &&
-      L2Signature(config_.credentials.api_secret.view(), "1", "GET", "/",
-                  "", signature.data(), signature.size(), signature_size) ==
-          CryptoResult::Ok;
-  status_ = valid ? AdapterStatus::Connecting : AdapterStatus::Failed;
+      EncodeAddress(signing_context_.signer_address(), derived_signer_text_);
+  if (valid) {
+    if (config_.signature_type == api::PolymarketSignatureType::Eoa) {
+      if (!config_.credentials.funder_address.view().empty()) {
+        valid = false;
+      } else {
+        effective_funder_binary_ = signing_context_.signer_address();
+        effective_funder_text_ = derived_signer_text_;
+      }
+    } else if (config_.signature_type ==
+                   api::PolymarketSignatureType::PolyProxy ||
+               config_.signature_type ==
+                   api::PolymarketSignatureType::Poly1271) {
+      if (config_.credentials.funder_address.view().empty() ||
+          DecodeAddress(config_.credentials.funder_address.view(),
+                        effective_funder_binary_) != CryptoResult::Ok ||
+          !EncodeAddress(effective_funder_binary_, effective_funder_text_)) {
+        valid = false;
+      }
+    } else {
+      valid = false;
+    }
+  }
+  status_ = valid ? AdapterStatus::Authenticating : AdapterStatus::Failed;
   resume_status_ = status_;
+}
+
+PolymarketTradeAdapter::~PolymarketTradeAdapter() noexcept {
+  ClearDerivedCredentials();
+  WipeUserSubscription();
+}
+
+void PolymarketTradeAdapter::ClearDerivedCredentials() noexcept {
+  config_.credentials.api_key.secure_clear();
+  config_.credentials.api_secret.secure_clear();
+  config_.credentials.passphrase.secure_clear();
+}
+
+void PolymarketTradeAdapter::WipeUserSubscription() noexcept {
+  if (config_.transport != nullptr) {
+    (void)config_.transport->set_user_subscription({});
+  }
+}
+
+void PolymarketTradeAdapter::ScheduleCredentialRetry(
+    std::uint64_t now_ns) noexcept {
+  if (credential_retry_delay_ns_ == 0)
+    credential_retry_delay_ns_ = config_.reconnect_initial_ns;
+  const std::uint64_t delay = credential_retry_delay_ns_;
+  credential_retry_due_ns_ = SaturatingAdd(now_ns, delay);
+  const std::uint64_t next_delay =
+      delay >= config_.reconnect_max_ns - delay
+          ? config_.reconnect_max_ns
+          : std::min(delay * 2U, config_.reconnect_max_ns);
+  credential_retry_delay_ns_ = next_delay;
+  std::fprintf(stderr,
+               "OMS polymarket credential retry scheduled delay_ns=%llu\n",
+               static_cast<unsigned long long>(delay));
+}
+
+AdapterResult PolymarketTradeAdapter::SubmitCredentialRequest(
+    bool create) noexcept {
+  if (config_.transport == nullptr || credential_inflight_)
+    return AdapterResult::InvalidArgument;
+  ClearDerivedCredentials();
+  WipeUserSubscription();
+  ClobAuthRequest request{};
+  request.id = next_request_id_++;
+  if (request.id == 0) request.id = next_request_id_++;
+  const ProtocolResult built =
+      create ? BuildCreateApiKey(request.wire) : BuildDeriveApiKey(request.wire);
+  if (built != ProtocolResult::Ok) return AdapterResult::Failed;
+  std::array<char, 42> address{};
+  std::size_t address_size = 0;
+  if (EncodeEip55Address(signing_context_.signer_address(), address.data(),
+                         address.size(), address_size) != CryptoResult::Ok ||
+      !request.poly_address.assign({address.data(), address_size}) ||
+      !request.poly_nonce.assign("0"))
+    return AdapterResult::Failed;
+  const std::uint64_t timestamp_s =
+      config_.now_ms(config_.clock_context) / 1000U;
+  std::array<char, 24> timestamp{};
+  const auto converted = std::to_chars(
+      timestamp.data(), timestamp.data() + timestamp.size(), timestamp_s);
+  if (converted.ec != std::errc{} ||
+      !request.poly_timestamp.assign(
+          {timestamp.data(),
+           static_cast<std::size_t>(converted.ptr - timestamp.data())}))
+    return AdapterResult::Failed;
+  std::size_t signature_size = 0;
+  if (signing_context_.SignClobAuth(
+          request.poly_timestamp.view(), 0, request.poly_signature.value.data(),
+          request.poly_signature.value.size(), signature_size) !=
+          CryptoResult::Ok ||
+      signature_size != request.poly_signature.value.size())
+    return AdapterResult::Failed;
+  request.poly_signature.size = static_cast<std::uint16_t>(signature_size);
+  std::array<char, 24> signer_redacted{};
+  std::size_t signer_redacted_size = 0;
+  RedactHeadTail(request.poly_address.view(), 6, 4, signer_redacted.data(),
+                 signer_redacted.size(), signer_redacted_size);
+  std::fprintf(stderr,
+               "OMS polymarket credential stage=%s started signer=%.*s nonce=0\n",
+               create ? "create" : "derive",
+               static_cast<int>(signer_redacted_size), signer_redacted.data());
+  const AdapterResult submitted = config_.transport->submit_clob_auth(request);
+  OPENSSL_cleanse(request.poly_signature.value.data(),
+                  request.poly_signature.value.size());
+  request.poly_signature.size = 0;
+  if (submitted == AdapterResult::WouldBlock) {
+    ScheduleCredentialRetry(SaturatingAdd(
+        config_.now_ms(config_.clock_context) * 1'000'000ULL, 0));
+    return AdapterResult::Ok;
+  }
+  if (submitted != AdapterResult::Ok) return submitted;
+  credential_inflight_ = true;
+  credential_request_id_ = request.id;
+  credential_retry_due_ns_ = 0;
+  const std::uint64_t now_ns =
+      config_.now_ms(config_.clock_context) * 1'000'000ULL;
+  credential_deadline_ns_ = SaturatingAdd(now_ns, config_.request_timeout_ns);
+  return AdapterResult::Ok;
+}
+
+AdapterResult PolymarketTradeAdapter::BeginCredentialDerive() noexcept {
+  if (credential_phase_ != CredentialPhase::FinalDerivingAfterCreate)
+    credential_phase_ = CredentialPhase::Deriving;
+  return SubmitCredentialRequest(false);
+}
+
+AdapterResult PolymarketTradeAdapter::BeginCredentialCreate() noexcept {
+  credential_phase_ = CredentialPhase::Creating;
+  post_create_probe_reason_ = PostCreateProbeReason::None;
+  return SubmitCredentialRequest(true);
+}
+
+AdapterResult PolymarketTradeAdapter::RetryCurrentCredential() noexcept {
+  if (credential_phase_ == CredentialPhase::Creating)
+    return BeginCredentialCreate();
+  return BeginCredentialDerive();
+}
+
+AdapterResult PolymarketTradeAdapter::FailCredential(
+    const char* reason, std::uint16_t http_status,
+    std::uint64_t now_ns) noexcept {
+  std::fprintf(stderr,
+               "OMS polymarket credential failed http_status=%u error=%s\n",
+               static_cast<unsigned>(http_status), reason);
+  status_ = AdapterStatus::Failed;
+  resume_status_ = status_;
+  AdapterEvent status_event = Event(identity(), AdapterEventKind::Status);
+  status_event.status.identity = identity();
+  status_event.status.status = status_;
+  status_event.status.reason = AdapterResult::Failed;
+  status_event.status.event_time_ns = now_ns;
+  return queue(status_event);
+}
+
+AdapterResult PolymarketTradeAdapter::ApplyCredentialSuccess(
+    std::string_view payload, std::uint64_t now_ns) noexcept {
+  ApiKeyCredentials parsed{};
+  if (ParseApiKeyCredentials(payload, parsed) != ProtocolResult::Ok ||
+      !config_.credentials.api_key.secure_assign(parsed.api_key) ||
+      !config_.credentials.api_secret.secure_assign(parsed.secret) ||
+      !config_.credentials.passphrase.secure_assign(parsed.passphrase)) {
+    ClearDerivedCredentials();
+    return FailCredential("credential_response_malformed", 200, now_ns);
+  }
+  std::array<char, kMaximumWireBytes> subscribe{};
+  std::size_t subscribe_size = 0;
+  const ProtocolResult built = BuildUserSubscribe(
+      config_.credentials.api_key.view(),
+      config_.credentials.api_secret.view(),
+      config_.credentials.passphrase.view(), subscribe.data(), subscribe.size(),
+      subscribe_size);
+  AdapterResult subscribed = AdapterResult::Failed;
+  if (built == ProtocolResult::Ok) {
+    subscribed = config_.transport->set_user_subscription(
+        {subscribe.data(), subscribe_size});
+  }
+  OPENSSL_cleanse(subscribe.data(), subscribe.size());
+  if (built != ProtocolResult::Ok || subscribed != AdapterResult::Ok) {
+    ClearDerivedCredentials();
+    WipeUserSubscription();
+    return FailCredential("subscription_failed", 200, now_ns);
+  }
+  std::array<char, 24> signer_redacted{};
+  std::size_t signer_redacted_size = 0;
+  std::array<char, 42> eip55{};
+  std::size_t eip55_size = 0;
+  if (EncodeEip55Address(signing_context_.signer_address(), eip55.data(),
+                         eip55.size(), eip55_size) == CryptoResult::Ok) {
+    RedactHeadTail({eip55.data(), eip55_size}, 6, 4, signer_redacted.data(),
+                   signer_redacted.size(), signer_redacted_size);
+  }
+  std::array<char, 16> key_redacted{};
+  std::size_t key_redacted_size = 0;
+  RedactHeadTail(config_.credentials.api_key.view(), 4, 4, key_redacted.data(),
+                 key_redacted.size(), key_redacted_size);
+  std::fprintf(stderr,
+               "OMS polymarket credential stage=ready signer=%.*s api_key=%.*s\n",
+               static_cast<int>(signer_redacted_size), signer_redacted.data(),
+               static_cast<int>(key_redacted_size), key_redacted.data());
+  credential_retry_due_ns_ = 0;
+  credential_retry_delay_ns_ = 0;
+  credential_phase_ = CredentialPhase::None;
+  post_create_probe_reason_ = PostCreateProbeReason::None;
+  status_ = AdapterStatus::Connecting;
+  resume_status_ = status_;
+  const AdapterResult connected = config_.transport->request_reconnect();
+  if (connected != AdapterResult::Ok) {
+    status_ = AdapterStatus::Failed;
+    resume_status_ = status_;
+  }
+  AdapterEvent status_event = Event(identity(), AdapterEventKind::Status);
+  status_event.status.identity = identity();
+  status_event.status.status = status_;
+  status_event.status.reason = connected;
+  status_event.status.event_time_ns = now_ns;
+  return queue(status_event);
+}
+
+AdapterResult PolymarketTradeAdapter::StartInternalReconcile(
+    std::uint64_t now_ns) noexcept {
+  reconnect_due_ns_ = 0;
+  reconnect_delay_ns_ = config_.reconnect_initial_ns;
+  heartbeat_due_ns_ = SaturatingAdd(now_ns, config_.heartbeat_interval_ns);
+  pagination_ = {};
+  reconcile_uncertain_ = false;
+  for (OrderBinding& binding : orders_)
+    if (binding.used) binding.reconcile_seen = false;
+  reconcile_generation_ = next_reconnect_generation_--;
+  if (reconcile_generation_ == 0)
+    reconcile_generation_ = next_reconnect_generation_--;
+  status_ = AdapterStatus::Reconciling;
+  resume_status_ = status_;
+  const AdapterResult submitted = submit_reconcile_page();
+  if (submitted != AdapterResult::Ok) {
+    reconcile_generation_ = 0;
+    status_ = AdapterStatus::Failed;
+    resume_status_ = status_;
+    return submitted;
+  }
+  return AdapterResult::Ok;
+}
+
+AdapterResult PolymarketTradeAdapter::start_initial_session() noexcept {
+  if (status_ != AdapterStatus::Authenticating || initial_connect_started_ ||
+      config_.transport == nullptr) {
+    return AdapterResult::InvalidArgument;
+  }
+  initial_connect_started_ = true;
+  const AdapterResult result = BeginCredentialDerive();
+  if (result != AdapterResult::Ok) {
+    status_ = AdapterStatus::Failed;
+    resume_status_ = status_;
+    return result;
+  }
+  return AdapterResult::Ok;
 }
 
 AdapterIdentity PolymarketTradeAdapter::identity() const noexcept {
@@ -223,7 +513,7 @@ AdapterResult PolymarketTradeAdapter::authorize(
   if (converted.ec != std::errc{} ||
       !request.poly_timestamp.assign(
           {text.data(), static_cast<std::size_t>(converted.ptr - text.data())}) ||
-      !request.poly_address.assign(config_.credentials.signer_address.view()) ||
+      !request.poly_address.assign(derived_signer_text_.view()) ||
       !request.poly_api_key.assign(config_.credentials.api_key.view()) ||
       !request.poly_passphrase.assign(config_.credentials.passphrase.view()))
     return AdapterResult::InvalidArgument;
@@ -287,7 +577,8 @@ AdapterResult PolymarketTradeAdapter::commit_place(
       command.routing.venue !=
           static_cast<std::uint8_t>(utils::md::Venue::Polymarket))
     return finish(AdapterResult::InvalidArgument);
-  const std::uint8_t signature_type = command.routing.signature_type;
+  const std::uint8_t signature_type =
+      static_cast<std::uint8_t>(config_.signature_type);
   const bool negative_risk = command.routing.negative_risk;
   const std::int64_t minimum_order_size =
       command.routing.minimum_order_size;
@@ -296,8 +587,6 @@ AdapterResult PolymarketTradeAdapter::commit_place(
   const std::uint8_t quantity_scale = command.routing.quantity_scale;
   const std::int64_t tick_size = command.routing.tick_size;
   const std::int64_t lot_size = command.routing.lot_size;
-  if (signature_type == 1)
-    return finish(AdapterResult::Unsupported);
   if (command.routing.instrument_expiry_ns != 0 &&
       now_ms >= command.routing.instrument_expiry_ns / 1'000'000ULL)
     return finish(AdapterResult::InvalidArgument);
@@ -326,15 +615,11 @@ AdapterResult PolymarketTradeAdapter::commit_place(
   }
 
   Order order{};
-  if (DecodeAddress(config_.credentials.funder_address.view(), order.maker) !=
-      CryptoResult::Ok)
-    return finish(AdapterResult::InvalidArgument);
-  if (signature_type == 3) {
-    order.signer = order.maker;
-  } else if (DecodeAddress(config_.credentials.signer_address.view(),
-                           order.signer) != CryptoResult::Ok) {
-    return finish(AdapterResult::InvalidArgument);
-  }
+  order.maker = effective_funder_binary_;
+  order.signer =
+      config_.signature_type == api::PolymarketSignatureType::PolyProxy
+          ? signing_context_.signer_address()
+          : effective_funder_binary_;
   order.token_id = command.routing.polymarket.token_id;
   order.side = request.side == api::Side::Buy ? 0 : 1;
   if (request.side != api::Side::Buy && request.side != api::Side::Sell)
@@ -544,7 +829,7 @@ AdapterResult PolymarketTradeAdapter::submit_query_page() noexcept {
       if (authorized != AdapterResult::Ok) return authorized;
     }
   } else {
-    built = BuildPositions(config_.credentials.funder_address.view(),
+    built = BuildPositions(effective_funder_text_.view(),
                            request.wire, market);
     transport = config_.data_transport;
   }
@@ -606,6 +891,11 @@ AdapterServiceResult PolymarketTradeAdapter::service_io(
        resume_status_ == AdapterStatus::Ready);
   if (session_ready && last_session_activity_ns_ != 0 &&
       now_ns - last_session_activity_ns_ >= config_.liveness_timeout_ns) {
+    std::fprintf(stderr,
+                 "oms polymarket liveness timeout last_activity_ns=%llu "
+                 "now_ns=%llu\n",
+                 static_cast<unsigned long long>(last_session_activity_ns_),
+                 static_cast<unsigned long long>(now_ns));
     config_.transport->close();
     reconnect_reconcile_required_ = true;
     heartbeat_due_ns_ = 0;
@@ -689,6 +979,46 @@ AdapterServiceResult PolymarketTradeAdapter::service_io(
         query_.deadline_ns < result.next_deadline_ns)
       result.next_deadline_ns = query_.deadline_ns;
   }
+  if (status_ == AdapterStatus::Authenticating) {
+    if (credential_inflight_ && credential_deadline_ns_ != 0 &&
+        now_ns >= credential_deadline_ns_) {
+      credential_inflight_ = false;
+      credential_request_id_ = 0;
+      credential_deadline_ns_ = 0;
+      if (credential_phase_ == CredentialPhase::Creating) {
+        credential_phase_ = CredentialPhase::FinalDerivingAfterCreate;
+        post_create_probe_reason_ = PostCreateProbeReason::CreateAmbiguous;
+        const AdapterResult started = BeginCredentialDerive();
+        if (started != AdapterResult::Ok) {
+          status_ = AdapterStatus::Failed;
+          resume_status_ = status_;
+          result.result = started;
+          return result;
+        }
+      } else {
+        ScheduleCredentialRetry(now_ns);
+      }
+    }
+    if (!credential_inflight_ && credential_retry_due_ns_ != 0 &&
+        now_ns >= credential_retry_due_ns_) {
+      credential_retry_due_ns_ = 0;
+      const AdapterResult started = RetryCurrentCredential();
+      if (started != AdapterResult::Ok) {
+        status_ = AdapterStatus::Failed;
+        resume_status_ = status_;
+        result.result = started;
+        return result;
+      }
+    }
+    if (credential_retry_due_ns_ != 0 &&
+        (result.next_deadline_ns == 0 ||
+         credential_retry_due_ns_ < result.next_deadline_ns))
+      result.next_deadline_ns = credential_retry_due_ns_;
+    if (credential_inflight_ && credential_deadline_ns_ != 0 &&
+        (result.next_deadline_ns == 0 ||
+         credential_deadline_ns_ < result.next_deadline_ns))
+      result.next_deadline_ns = credential_deadline_ns_;
+  }
   while (result.events_processed < event_budget) {
     if (pending_size_ != 0) {
       if (sink.on_event == nullptr) {
@@ -721,23 +1051,135 @@ AdapterServiceResult PolymarketTradeAdapter::service_io(
     }
     last_session_activity_ns_ = now_ns;
 
+    if (credential_inflight_ &&
+        transport_event.kind == TransportEventKind::HttpResponse &&
+        transport_event.request_id == credential_request_id_) {
+      credential_inflight_ = false;
+      credential_request_id_ = 0;
+      credential_deadline_ns_ = 0;
+      const std::uint16_t http_status = transport_event.status_code;
+      const bool creating = credential_phase_ == CredentialPhase::Creating;
+      if (CredentialHttpSuccess(http_status)) {
+        if (ApplyCredentialSuccess(transport_event.payload, now_ns) !=
+            AdapterResult::Ok) {
+          result.result = AdapterResult::WouldBlock;
+          return result;
+        }
+        continue;
+      }
+      if (creating) {
+        if (CreateConflictStatus(http_status)) {
+          credential_phase_ = CredentialPhase::FinalDerivingAfterCreate;
+          post_create_probe_reason_ = PostCreateProbeReason::CreateRejected;
+          std::fprintf(stderr,
+                       "OMS polymarket credential stage=create conflict "
+                       "http_status=%u probing derive\n",
+                       static_cast<unsigned>(http_status));
+          const AdapterResult started = BeginCredentialDerive();
+          if (started != AdapterResult::Ok) {
+            if (FailCredential("credential_create_rejected", http_status,
+                               now_ns) != AdapterResult::Ok) {
+              result.result = AdapterResult::WouldBlock;
+              return result;
+            }
+          }
+          continue;
+        }
+        if (CredentialHttpTemporary(http_status)) {
+          credential_phase_ = CredentialPhase::FinalDerivingAfterCreate;
+          post_create_probe_reason_ = PostCreateProbeReason::CreateAmbiguous;
+          std::fprintf(stderr,
+                       "OMS polymarket credential stage=create ambiguous "
+                       "http_status=%u probing derive\n",
+                       static_cast<unsigned>(http_status));
+          const AdapterResult started = BeginCredentialDerive();
+          if (started != AdapterResult::Ok) {
+            if (FailCredential("credential_create_rejected", http_status,
+                               now_ns) != AdapterResult::Ok) {
+              result.result = AdapterResult::WouldBlock;
+              return result;
+            }
+          }
+          continue;
+        }
+        if (FailCredential("credential_create_rejected", http_status, now_ns) !=
+            AdapterResult::Ok) {
+          result.result = AdapterResult::WouldBlock;
+          return result;
+        }
+        continue;
+      }
+      if (CredentialHttpTemporary(http_status)) {
+        ScheduleCredentialRetry(now_ns);
+        continue;
+      }
+      if (DeriveExplicitlyMissing(http_status, transport_event.payload)) {
+        std::fprintf(stderr,
+                     "OMS polymarket credential stage=derive missing "
+                     "http_status=%u\n",
+                     static_cast<unsigned>(http_status));
+        if (auth_refresh_attempted_ &&
+            credential_phase_ == CredentialPhase::Deriving) {
+          if (FailCredential("credential_not_found", http_status, now_ns) !=
+              AdapterResult::Ok) {
+            result.result = AdapterResult::WouldBlock;
+            return result;
+          }
+          continue;
+        }
+        if (credential_phase_ == CredentialPhase::FinalDerivingAfterCreate) {
+          if (post_create_probe_reason_ ==
+              PostCreateProbeReason::CreateRejected) {
+            if (FailCredential("credential_not_found", http_status, now_ns) !=
+                AdapterResult::Ok) {
+              result.result = AdapterResult::WouldBlock;
+              return result;
+            }
+            continue;
+          }
+          credential_phase_ = CredentialPhase::Creating;
+          post_create_probe_reason_ = PostCreateProbeReason::None;
+          ScheduleCredentialRetry(now_ns);
+          continue;
+        }
+        const AdapterResult started = BeginCredentialCreate();
+        if (started != AdapterResult::Ok) {
+          if (FailCredential("credential_create_rejected", http_status,
+                             now_ns) != AdapterResult::Ok) {
+            result.result = AdapterResult::WouldBlock;
+            return result;
+          }
+        }
+        continue;
+      }
+      if (FailCredential("credential_invalid_l1_headers", http_status,
+                         now_ns) != AdapterResult::Ok) {
+        result.result = AdapterResult::WouldBlock;
+        return result;
+      }
+      continue;
+    }
+
+    if (status_ == AdapterStatus::Authenticating &&
+        (transport_event.kind == TransportEventKind::SessionReady ||
+         transport_event.kind == TransportEventKind::SessionLost))
+      continue;
+
     if (transport_event.kind == TransportEventKind::SessionReady ||
         transport_event.kind == TransportEventKind::SessionLost) {
       const bool ready =
           transport_event.kind == TransportEventKind::SessionReady;
       AdapterResult status_reason =
           ready ? AdapterResult::Ok : AdapterResult::NotReady;
+      if (ready) {
+        session_ever_ready_ = true;
+        std::fprintf(stderr, "OMS polymarket user websocket connected\n");
+      }
       if (!ready) {
-        reconnect_reconcile_required_ = true;
+        reconnect_reconcile_required_ = session_ever_ready_;
         reconcile_request_id_ = 0;
         reconcile_deadline_ns_ = 0;
         heartbeat_due_ns_ = 0;
-        reconnect_delay_ns_ = config_.reconnect_initial_ns;
-        reconnect_due_ns_ =
-            now_ns > std::numeric_limits<std::uint64_t>::max() -
-                         reconnect_delay_ns_
-                ? std::numeric_limits<std::uint64_t>::max()
-                : now_ns + reconnect_delay_ns_;
         if (reconcile_generation_ != 0) {
           AdapterEvent interrupted =
               Event(identity(), AdapterEventKind::ReconcileComplete);
@@ -749,39 +1191,43 @@ AdapterServiceResult PolymarketTradeAdapter::service_io(
             return result;
           }
         }
-        status_ = AdapterStatus::Reconnecting;
-      } else if (reconnect_reconcile_required_ &&
-                 reconcile_generation_ == 0) {
-        reconnect_due_ns_ = 0;
-        reconnect_delay_ns_ = config_.reconnect_initial_ns;
-        heartbeat_due_ns_ =
-            now_ns > std::numeric_limits<std::uint64_t>::max() -
-                         config_.heartbeat_interval_ns
-                ? std::numeric_limits<std::uint64_t>::max()
-                : now_ns + config_.heartbeat_interval_ns;
-        pagination_ = {};
-        reconcile_uncertain_ = false;
-        for (OrderBinding& binding : orders_)
-          if (binding.used) binding.reconcile_seen = false;
-        reconcile_generation_ = next_reconnect_generation_--;
-        if (reconcile_generation_ == 0)
-          reconcile_generation_ = next_reconnect_generation_--;
-        status_ = AdapterStatus::Reconciling;
-        const AdapterResult submitted = submit_reconcile_page();
-        if (submitted != AdapterResult::Ok) {
-          reconcile_generation_ = 0;
-          status_ = AdapterStatus::Failed;
-          status_reason = submitted;
+        if (transport_event.auth_rejected) {
+          std::fprintf(stderr,
+                       "OMS polymarket user websocket authentication failed "
+                       "close_code=1008\n");
+          if (auth_refresh_attempted_) {
+            if (FailCredential("user_websocket_auth_rejected", 1008, now_ns) !=
+                AdapterResult::Ok) {
+              result.result = AdapterResult::WouldBlock;
+              return result;
+            }
+            continue;
+          }
+          auth_refresh_attempted_ = true;
+          reconnect_due_ns_ = 0;
+          reconnect_delay_ns_ = config_.reconnect_initial_ns;
+          config_.transport->close();
+          ClearDerivedCredentials();
+          WipeUserSubscription();
+          status_ = AdapterStatus::Authenticating;
+          resume_status_ = status_;
+          const AdapterResult started = BeginCredentialDerive();
+          if (started != AdapterResult::Ok) {
+            status_ = AdapterStatus::Failed;
+            resume_status_ = status_;
+            status_reason = started;
+          }
+        } else {
+          reconnect_delay_ns_ = config_.reconnect_initial_ns;
+          reconnect_due_ns_ = SaturatingAdd(now_ns, reconnect_delay_ns_);
+          status_ = AdapterStatus::Reconnecting;
         }
-      } else if (!reconnect_reconcile_required_) {
-        status_ = AdapterStatus::Ready;
-        reconnect_due_ns_ = 0;
-        reconnect_delay_ns_ = config_.reconnect_initial_ns;
-        heartbeat_due_ns_ =
-            now_ns > std::numeric_limits<std::uint64_t>::max() -
-                         config_.heartbeat_interval_ns
-                ? std::numeric_limits<std::uint64_t>::max()
-                : now_ns + config_.heartbeat_interval_ns;
+      } else if (status_ == AdapterStatus::Connecting ||
+                 status_ == AdapterStatus::Reconnecting ||
+                 (status_ == AdapterStatus::Backpressured &&
+                  (resume_status_ == AdapterStatus::Connecting ||
+                   resume_status_ == AdapterStatus::Reconnecting))) {
+        status_reason = StartInternalReconcile(now_ns);
       }
       resume_status_ = status_;
       AdapterEvent status_event = Event(identity(), AdapterEventKind::Status);
@@ -966,6 +1412,10 @@ AdapterServiceResult PolymarketTradeAdapter::service_io(
       reconcile_deadline_ns_ = 0;
       AdapterResult reconcile_result = AdapterResult::Ok;
       if (transport_event.status_code >= 400) {
+        std::fprintf(stderr,
+                     "OMS polymarket open_orders_reconcile_http_failed "
+                     "http_status=%u\n",
+                     static_cast<unsigned>(transport_event.status_code));
         reconcile_result = AdapterResult::Failed;
       } else {
         std::array<api::VenueEvent, kOrderCapacity> parsed_events{};
@@ -974,6 +1424,8 @@ AdapterServiceResult PolymarketTradeAdapter::service_io(
             transport_event.payload, pagination_, parsed_events.data(),
             parsed_events.size(), parsed_count);
         if (parsed != ProtocolResult::Ok) {
+          std::fprintf(stderr,
+                       "OMS polymarket open_orders_reconcile_parse_failed\n");
           reconcile_result = AdapterResult::Failed;
         } else {
           for (std::size_t index = 0; index < parsed_count; ++index) {
@@ -1019,8 +1471,12 @@ AdapterServiceResult PolymarketTradeAdapter::service_io(
       status_ = reconcile_result == AdapterResult::Ok ? AdapterStatus::Ready
                                                        : AdapterStatus::Failed;
       resume_status_ = status_;
-      if (reconcile_result == AdapterResult::Ok)
+      if (reconcile_result == AdapterResult::Ok) {
         reconnect_reconcile_required_ = false;
+        if (status_ == AdapterStatus::Ready)
+          std::fprintf(stderr,
+                       "OMS polymarket initial reconcile completed\n");
+      }
       if (queue(complete) != AdapterResult::Ok) {
         result.result = AdapterResult::WouldBlock;
         return result;
@@ -1221,6 +1677,8 @@ AdapterResult PolymarketTradeAdapter::begin_reconcile(
 
 AdapterResult PolymarketTradeAdapter::shutdown(
     std::uint64_t now_ns, const AdapterEventSink& sink) noexcept {
+  ClearDerivedCredentials();
+  WipeUserSubscription();
   if (config_.transport != nullptr) config_.transport->close();
   if (config_.data_transport != nullptr) config_.data_transport->close();
   status_ = AdapterStatus::Stopped;
