@@ -79,8 +79,9 @@ export DEBIAN_FRONTEND=noninteractive
 "${SUDO[@]}" apt-get update
 "${SUDO[@]}" apt-get install -y --no-install-recommends \
   bash build-essential ca-certificates cmake coreutils curl git \
-  libsimdjson-dev libssl-dev libyaml-cpp-dev libzstd-dev ninja-build \
-  pkg-config python3
+  binutils libpq-dev libprotobuf-dev libsimdjson-dev libssl-dev \
+  libyaml-cpp-dev libzstd-dev ninja-build pkg-config protobuf-compiler \
+  python3 unzip
 
 version_ge() {
   [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]]

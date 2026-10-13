@@ -193,8 +193,9 @@ if [[ "${BUILD_BACKEND}" == true ]]; then
     go build -o build/bin/report-service ./cmd/report-service
     go build -o build/bin/trader-service ./cmd/trader-service
     go build -o build/bin/ai-service ./cmd/ai-service
-    go build -o build/bin/aggdata-service ./cmd/aggdata-service
     go build -o build/bin/spread-service ./cmd/spread-service
+    go build -o build/bin/jev-service ./cmd/jev-service
+    go build -o build/bin/admin-service ./cmd/admin-service
     go build -o build/bin/api-gateway ./cmd/api-gateway
     if [[ "${RUN_TESTS}" == true ]]; then
       go test ./...

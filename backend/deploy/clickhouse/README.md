@@ -20,7 +20,7 @@ sudo update-ca-certificates
 在仓库根目录：
 
 ```bash
-export CLICKHOUSE_BBO_PASSWORD='your-password'
+export CLICKHOUSE_PASSWORD='your-password'
 
 docker compose -f backend/deploy/docker-compose.yml up -d clickhouse
 ```
@@ -42,7 +42,7 @@ curl -sk https://127.0.0.1:8443/ping
 | HTTPS 端口 | `8443` |
 | 数据库 | `market_data` |
 | 用户 | `bbo_writer` |
-| 密码 | 环境变量 `CLICKHOUSE_BBO_PASSWORD`（未设置时 compose 默认 `changeme`） |
+| 密码 | 环境变量 `CLICKHOUSE_PASSWORD`（Compose 必填，不再使用单独的旧变量名） |
 
 `mds_shm_consumer` 会在首次写入时自动 `CREATE TABLE`（需 INSERT 权限）。
 
@@ -58,7 +58,7 @@ curl -sk https://127.0.0.1:8443/ping
 4. 启动录制：
 
 ```bash
-export CLICKHOUSE_BBO_PASSWORD='your-password'
+export CLICKHOUSE_PASSWORD='your-password'
 ./core/build/release-bootstrap/mds/mds_shm_consumer \
   --config core/mds/config/mds_clickhouse_bbo.example.yaml \
   --clickhouse-bbo

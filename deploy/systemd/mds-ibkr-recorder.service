@@ -1,0 +1,17 @@
+[Unit]
+Description=DEPRECATED independent IBKR ClickHouse BBO recorder
+After=network-online.target mds-ibkr-producer.service
+# Deprecated: do not enable. IBKR equity is recorded by the unified
+# mds_shm_consumer using mds_clickhouse_bbo (prefix /selfquant.mds.bbo).
+# Running this unit at the same time double-writes market_data.crypto_bbo.
+
+[Service]
+Type=simple
+RuntimeDirectory=selfquant
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 120); do compgen -G "/dev/shm/selfquant.mds.ibkr.ibkr.equity.ticker.shard0.*" >/dev/null && exit 0; sleep 1; done; echo "IBKR ring was not ready" >&2; exit 1'
+ExecStart=/usr/local/bin/mds_shm_consumer --config /etc/selfquant/mds_ibkr_clickhouse.yaml --clickhouse-bbo
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

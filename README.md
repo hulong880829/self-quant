@@ -62,7 +62,7 @@ Bootstrap 可重复执行，不会覆盖已有的 `backend/.env` 或
 默认验证包含：
 
 - Core：Werror Release build 和全部 CTest。
-- Backend：8 个服务二进制、`go test ./...`、`go vet ./...`。
+- Backend：10 个服务二进制（funding、account、polymarket、report、trader、ai、spread、jev、admin、api-gateway）、`go test ./...`、`go vet ./...`。
 - Web：ESLint、TypeScript typecheck 和 Next.js production build。
 
 生成物位于 `core/build/`、`backend/build/` 和 `web/.next/`，均不会进入
@@ -83,7 +83,7 @@ Compose 同时提供 Postgres（`5432`）与 Redis（`6379`）。Redis 为无持
 
 ```bash
 backend/deploy/clickhouse/generate-certs.sh
-export CLICKHOUSE_BBO_PASSWORD='your-password'
+export CLICKHOUSE_PASSWORD='your-password'
 docker compose -f backend/deploy/docker-compose.yml up -d clickhouse
 ```
 
@@ -103,8 +103,7 @@ cp backend/.env.example backend/.env
 - `REPORT_INTERNAL_TOKEN`
 - `TRADER_INTERNAL_TOKEN`
 
-使用 aggdata/MDS 时还需配置 `MDS_GATEWAY_TOKEN` 与
-`AGGDATA_RECORDING_DIR`。真实 `.env` 只保存在本机，不能提交。
+使用 MDS/Fairprice 时还需配置 `MDS_GATEWAY_TOKEN`。真实 `.env` 只保存在本机，不能提交。
 
 先执行 `./scripts/build.sh`。随后在不同终端中进入 `backend/`、加载同一份
 `.env`，并按以下顺序启动：
@@ -123,13 +122,12 @@ set -a; source .env; set +a
 ./build/bin/trader-service
 ./build/bin/ai-service
 
-# 3. aggdata-service 为可选；最后启动依赖上述服务的 Gateway。
-./build/bin/aggdata-service
+# 3. 最后启动依赖上述服务的 Gateway。
 ./build/bin/api-gateway
 ```
 
-以上每个长期运行命令应在独立终端执行。`aggdata-service` 仅在需要聚合行情、
-录制或订单簿功能时启动。最后启动 Web：
+以上每个长期运行命令应在独立终端执行。聚合行情由宿主机上的 C++ Fairprice
+提供。最后启动 Web：
 
 ```bash
 cd web
@@ -193,11 +191,15 @@ ctest --test-dir core/build/utils-release --output-on-failure
 - `backend/go.mod`、`backend/go.sum`。
 - `web/package.json`、`web/package-lock.json`。
 - `backend/gen/` 下生成的 protobuf Go 源码。
+- `third_party/intel-rdfp/` 下的 BSD-3 Intel decimal 源码、原始许可和
+  self-quant 来源说明；它是 IBKR 离线构建的许可兼容兜底。
 - 所有 `.env.example`，但不能提交真实 `.env`。
 
 禁止提交：
 
 - `core/.deps/`、任何 build 目录。
+- TWS API 源码或安装包；其许可禁止向第三方再分发，统一由
+  `scripts/bootstrap-ibkr-deps.sh` 从官方来源或用户的官方副本导入。
 - `web/node_modules/`、`.next/`。
 - 本地 `.env`、密钥、可执行文件、日志、coverage、IDE 和临时文件。
 
