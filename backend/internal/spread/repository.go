@@ -83,19 +83,33 @@ func (r *Repository) QueryHistory(ctx context.Context, request HistoryRequest) (
 		defer cancel()
 	}
 	from := normalized.Now.Add(-normalized.Range.Window())
-	query := historyQuery(
-		r.database, r.table, int(normalized.Range.Resolution().Seconds()),
-		normalized.CompareVenue,
-	)
+	resolutionSeconds := int(normalized.Range.Resolution().Seconds())
+	var query string
 	args := []any{
 		clickhouse.Named("venue", normalized.Venue),
-		clickhouse.Named("venue_symbol", normalized.VenueCanonicalSymbol),
-		clickhouse.Named("compare_symbol", normalized.CompareVenueCanonicalSymbol),
 		clickhouse.Named("from", from),
 		clickhouse.Named("to", normalized.Now),
 	}
-	if normalized.CompareVenue != "" {
-		args = append(args, clickhouse.Named("compare_venue", normalized.CompareVenue))
+	if normalized.IdentityMode == "venue_symbol" {
+		query = historyIdentityQuery(r.database, r.table, resolutionSeconds)
+		args = append(args,
+			clickhouse.Named("compare_venue", normalized.CompareVenue),
+			clickhouse.Named("venue_product", normalized.VenueProduct),
+			clickhouse.Named("compare_product", normalized.CompareVenueProduct),
+			clickhouse.Named("venue_canonical_symbol", normalized.VenueCanonicalSymbol),
+			clickhouse.Named("compare_canonical_symbol", normalized.CompareVenueCanonicalSymbol),
+			clickhouse.Named("venue_exchange_symbol", normalized.VenueExchangeSymbol),
+			clickhouse.Named("compare_exchange_symbol", normalized.CompareExchangeSymbol),
+		)
+	} else {
+		query = historyQuery(r.database, r.table, resolutionSeconds, normalized.CompareVenue)
+		args = append(args,
+			clickhouse.Named("venue_symbol", normalized.VenueCanonicalSymbol),
+			clickhouse.Named("compare_symbol", normalized.CompareVenueCanonicalSymbol),
+		)
+		if normalized.CompareVenue != "" {
+			args = append(args, clickhouse.Named("compare_venue", normalized.CompareVenue))
+		}
 	}
 	rows, err := r.conn.Query(queryCtx, query, args...)
 	if err != nil {
@@ -123,6 +137,31 @@ func (r *Repository) QueryHistory(ctx context.Context, request HistoryRequest) (
 		return History{}, fmt.Errorf("%w: %w", ErrQueryFailed, err)
 	}
 	return buildHistory(normalized, parsed), nil
+}
+
+func historyIdentityQuery(database, table string, resolutionSeconds int) string {
+	return fmt.Sprintf(`
+SELECT
+	toStartOfInterval(ts, INTERVAL %d SECOND) AS bucket,
+	argMaxIf(ask_price, ts, venue = @compare_venue AND product = @compare_product AND canonical_symbol = @compare_canonical_symbol AND venue_symbol = @compare_exchange_symbol) AS spot_ask_raw,
+	argMaxIf(price_scale, ts, venue = @compare_venue AND product = @compare_product AND canonical_symbol = @compare_canonical_symbol AND venue_symbol = @compare_exchange_symbol) AS spot_scale,
+	argMaxIf(ask_price, ts, venue = @venue AND product = @venue_product AND canonical_symbol = @venue_canonical_symbol AND venue_symbol = @venue_exchange_symbol) AS perp_ask_raw,
+	argMaxIf(price_scale, ts, venue = @venue AND product = @venue_product AND canonical_symbol = @venue_canonical_symbol AND venue_symbol = @venue_exchange_symbol) AS perp_scale,
+	toUInt32(countIf(
+		(venue = @venue AND product = @venue_product AND canonical_symbol = @venue_canonical_symbol AND venue_symbol = @venue_exchange_symbol)
+		OR (venue = @compare_venue AND product = @compare_product AND canonical_symbol = @compare_canonical_symbol AND venue_symbol = @compare_exchange_symbol)
+	)) AS samples
+FROM %s.%s
+PREWHERE venue IN (@venue, @compare_venue)
+	AND ts >= @from AND ts < @to
+	AND (
+		(venue = @venue AND product = @venue_product AND canonical_symbol = @venue_canonical_symbol AND venue_symbol = @venue_exchange_symbol)
+		OR (venue = @compare_venue AND product = @compare_product AND canonical_symbol = @compare_canonical_symbol AND venue_symbol = @compare_exchange_symbol)
+	)
+GROUP BY bucket
+HAVING bucket >= @from AND bucket < @to
+ORDER BY bucket
+`, resolutionSeconds, database, table)
 }
 
 func historyQuery(database, table string, resolutionSeconds int, compareVenue string) string {

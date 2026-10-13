@@ -23,6 +23,7 @@ import (
 	"selfquant/backend/internal/config"
 	"selfquant/backend/internal/database"
 	"selfquant/backend/internal/funding"
+	"selfquant/backend/internal/funding/ibkr"
 	"selfquant/backend/internal/funding/ranking"
 	fundingrpc "selfquant/backend/internal/rpc"
 )
@@ -50,6 +51,21 @@ func main() {
 	adapters := funding.EnabledFundingAdapters(cfg)
 	synchronizer := funding.NewSynchronizer(repository, adapters, snapshots, logger).
 		WithLock(funding.NewHistoryLock(pool))
+	var tradefiSnapshots *funding.TradefiSnapshotStore
+	if cfg.TradefiPerpsEnabled {
+		tradefiSnapshots = funding.NewTradefiSnapshotStore()
+		tradefi := funding.NewTradefiService(
+			repository, snapshots,
+			ibkr.NewClient(cfg.IBKRGatewayAddr, cfg.IBKRDiscoveryClientID),
+			tradefiSnapshots, logger,
+		)
+		tradefi.SetTradableVenues(cfg.ArbitrageEnabledExchanges)
+		if err := tradefi.Restore(ctx); err != nil {
+			logger.Warn("tradefi ib cache restore failed", "error", err)
+		}
+		tradefi.Start(ctx)
+		synchronizer.WithTradefi(tradefi)
+	}
 	if err := synchronizer.Hydrate(ctx); err != nil {
 		logger.Error("funding cache startup failed", "error", err)
 		os.Exit(1)
@@ -139,7 +155,8 @@ func main() {
 		server,
 		fundingrpc.NewFundingServer(
 			snapshots, repository, 2*cfg.SyncInterval, rankingSnapshots,
-		).WithPublication(cfg.PublishedExchanges, cfg.SpreadEnabledExchanges),
+		).WithPublication(cfg.PublishedExchanges, cfg.SpreadEnabledExchanges).
+			WithTradefi(tradefiSnapshots),
 	)
 	healthServer := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(server, healthServer)

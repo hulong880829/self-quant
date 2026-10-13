@@ -19,7 +19,9 @@ const (
 	lighterRequestInterval      = time.Second
 )
 
-type Lighter struct{ client client }
+type Lighter struct {
+	client client
+}
 
 func NewLighter(timeout time.Duration, baseURL string) *Lighter {
 	if strings.TrimSpace(baseURL) == "" {
@@ -39,23 +41,39 @@ func (l *Lighter) SupportedContractTypes() []string {
 type lighterOrderBookDetails struct {
 	Code             json.Number `json:"code"`
 	OrderBookDetails []struct {
-		Symbol                 string           `json:"symbol"`
-		MarketID               json.Number      `json:"market_id"`
-		MarketType             string           `json:"market_type"`
-		Status                 string           `json:"status"`
-		Multiplier             string           `json:"multiplier"`
-		SupportedSizeDecimals  int              `json:"supported_size_decimals"`
-		SupportedPriceDecimals int              `json:"supported_price_decimals"`
-		MarkPrice              string           `json:"mark_price"`
-		IndexPrice             string           `json:"index_price"`
-		LastTradePrice         lighterFlexFloat `json:"last_trade_price"`
-		DailyBaseTokenVolume   lighterFlexFloat `json:"daily_base_token_volume"`
-		DailyQuoteTokenVolume  lighterFlexFloat `json:"daily_quote_token_volume"`
-		DailyPriceChange       lighterFlexFloat `json:"daily_price_change"`
-		OpenInterest           lighterFlexFloat `json:"open_interest"`
-		MinBaseAmount          string           `json:"min_base_amount"`
-		MinQuoteAmount         string           `json:"min_quote_amount"`
+		Symbol                 string              `json:"symbol"`
+		MarketID               json.Number         `json:"market_id"`
+		MarketType             string              `json:"market_type"`
+		Status                 string              `json:"status"`
+		Multiplier             string              `json:"multiplier"`
+		SupportedSizeDecimals  int                 `json:"supported_size_decimals"`
+		SupportedPriceDecimals int                 `json:"supported_price_decimals"`
+		MarkPrice              string              `json:"mark_price"`
+		IndexPrice             string              `json:"index_price"`
+		LastTradePrice         lighterFlexFloat    `json:"last_trade_price"`
+		DailyBaseTokenVolume   lighterFlexFloat    `json:"daily_base_token_volume"`
+		DailyQuoteTokenVolume  lighterFlexFloat    `json:"daily_quote_token_volume"`
+		DailyPriceChange       lighterFlexFloat    `json:"daily_price_change"`
+		OpenInterest           lighterFlexFloat    `json:"open_interest"`
+		MinBaseAmount          string              `json:"min_base_amount"`
+		MinQuoteAmount         string              `json:"min_quote_amount"`
+		Hidden                 bool                `json:"hidden"`
+		ForceReduceOnly        bool                `json:"force_reduce_only"`
+		MarketConfig           lighterMarketConfig `json:"market_config"`
 	} `json:"order_book_details"`
+}
+
+type lighterMarketConfig struct {
+	Hidden          bool `json:"hidden"`
+	ForceReduceOnly bool `json:"force_reduce_only"`
+}
+
+type lighterToken struct {
+	Symbol         string   `json:"symbol"`
+	BackendSymbol  *string  `json:"backend_symbol"`
+	AssetType      string   `json:"asset_type"`
+	Categories     []string `json:"categories"`
+	AllowedMainnet bool     `json:"is_allowed_mainnet"`
 }
 
 type lighterFundingRates struct {
@@ -143,9 +161,13 @@ func nextHourBoundary(now time.Time) time.Time {
 }
 
 func parseLighterInstruments(payload lighterOrderBookDetails) []Instrument {
+	return TagCryptoPerpetuals(parseLighterOrderBooks(payload), "lighter.perpetual")
+}
+
+func parseLighterOrderBooks(payload lighterOrderBookDetails) []Instrument {
 	result := make([]Instrument, 0, len(payload.OrderBookDetails))
 	for _, item := range payload.OrderBookDetails {
-		if !strings.EqualFold(item.Status, "active") {
+		if lighterMarketExcluded(item.Status, item.Hidden || item.MarketConfig.Hidden, item.ForceReduceOnly || item.MarketConfig.ForceReduceOnly) {
 			continue
 		}
 		if item.MarketType != "" && !strings.EqualFold(item.MarketType, "perp") {
@@ -198,9 +220,119 @@ func parseLighterInstruments(payload lighterOrderBookDetails) []Instrument {
 	return result
 }
 
+func lighterMarketExcluded(status string, hidden, forceReduce bool) bool {
+	if hidden || forceReduce {
+		return true
+	}
+	return !strings.EqualFold(status, "active")
+}
+
+func decodeLighterTokens(raw json.RawMessage) ([]lighterToken, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, fmt.Errorf("empty tokenlist")
+	}
+	var wrapped struct {
+		Tokens []lighterToken `json:"tokens"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err == nil && len(wrapped.Tokens) > 0 {
+		return wrapped.Tokens, nil
+	}
+	var list []lighterToken
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return nil, fmt.Errorf("empty tokenlist")
+	}
+	return list, nil
+}
+
+func applyLighterDirectory(items []Instrument, tokens []lighterToken) []Instrument {
+	byBackend := map[string]lighterToken{}
+	bySymbol := map[string]lighterToken{}
+	for _, token := range tokens {
+		if token.BackendSymbol != nil {
+			if backend := strings.ToUpper(strings.TrimSpace(*token.BackendSymbol)); backend != "" {
+				byBackend[backend] = token
+			}
+		}
+		if symbol := strings.ToUpper(strings.TrimSpace(token.Symbol)); symbol != "" {
+			bySymbol[symbol] = token
+		}
+	}
+	result := make([]Instrument, 0, len(items))
+	for _, item := range items {
+		symbol := strings.ToUpper(strings.TrimSpace(item.ExchangeSymbol))
+		token, ok := byBackend[symbol]
+		if !ok {
+			token, ok = bySymbol[symbol]
+		}
+		if !ok {
+			item.SetUnderlying(CryptoReference(item.BaseAsset, item.QuoteAsset, "lighter.orderBookDetails"))
+			result = append(result, item)
+			continue
+		}
+		if !token.AllowedMainnet || lighterTokenExcluded(token) {
+			continue
+		}
+		item.SetUnderlying(lighterTokenReference(token, item.QuoteAsset))
+		result = append(result, item)
+	}
+	return result
+}
+
+func lighterTokenExcluded(token lighterToken) bool {
+	categories := strings.ToUpper(strings.Join(token.Categories, ","))
+	asset := strings.ToUpper(strings.TrimSpace(token.AssetType))
+	return strings.Contains(categories, "NEW") || asset == "NEW"
+}
+
+func lighterTokenReference(token lighterToken, quote string) UnderlyingReference {
+	symbol := ""
+	if token.BackendSymbol != nil {
+		symbol = strings.ToUpper(strings.TrimSpace(*token.BackendSymbol))
+	}
+	if symbol == "" {
+		symbol = strings.ToUpper(strings.TrimSpace(token.Symbol))
+	}
+	source := "lighter.tokenlist"
+	categories := strings.ToUpper(strings.Join(token.Categories, ","))
+	asset := strings.ToUpper(strings.TrimSpace(token.AssetType))
+	switch {
+	case strings.Contains(categories, "PRE_IPO"):
+		return PreMarketReference(symbol, source)
+	case strings.Contains(categories, "BOND"):
+		return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: symbol, Source: source + ".bond"}
+	case asset == "CRYPTO" || strings.Contains(categories, "CRYPTO"):
+		return CryptoReference(symbol, quote, source)
+	case strings.Contains(categories, "FX") || strings.Contains(categories, "FOREX"):
+		base, pairQuote, ok := SplitFXPair(symbol)
+		if !ok {
+			return UnderlyingReference{AssetClass: AssetClassFX, Symbol: symbol, Source: source}
+		}
+		return FXReference(base, pairQuote, quote, source)
+	case strings.Contains(categories, "COMMOD") || strings.Contains(categories, "METAL"):
+		return CommodityReference(symbol, "USD", source)
+	case asset == "RWA" && strings.Contains(categories, "ETF"):
+		return TradfiCandidate(AssetClassETF, symbol, quote, source)
+	case asset == "RWA" && strings.Contains(categories, "STOCK"):
+		return TradfiCandidate(AssetClassStock, symbol, quote, source)
+	default:
+		return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: symbol, Source: source}
+	}
+}
+
 func (l *Lighter) SyncInstruments(ctx context.Context, contractType string) ([]Instrument, error) {
 	if contractType != ContractTypePerpetual {
 		return nil, fmt.Errorf("lighter: unsupported contract type %q", contractType)
+	}
+	var tokenRaw json.RawMessage
+	if err := l.client.get(ctx, "/api/v1/tokenlist", nil, &tokenRaw); err != nil {
+		return nil, fmt.Errorf("lighter tokenlist: %w", err)
+	}
+	tokens, err := decodeLighterTokens(tokenRaw)
+	if err != nil {
+		return nil, fmt.Errorf("lighter tokenlist: %w", err)
 	}
 	var payload lighterOrderBookDetails
 	if err := l.client.get(ctx, "/api/v1/orderBookDetails", url.Values{
@@ -208,7 +340,7 @@ func (l *Lighter) SyncInstruments(ctx context.Context, contractType string) ([]I
 	}, &payload); err != nil {
 		return nil, err
 	}
-	return parseLighterInstruments(payload), nil
+	return applyLighterDirectory(parseLighterOrderBooks(payload), tokens), nil
 }
 
 func lighterMarketID(instrument Instrument) (int64, error) {

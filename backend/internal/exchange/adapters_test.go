@@ -165,6 +165,12 @@ func TestBinanceIncludesTradifiPerpetual(t *testing.T) {
 	if len(instruments) != 2 {
 		t.Fatalf("instruments=%+v", instruments)
 	}
+	if instruments[0].USEquityPerpetual || instruments[1].USEquityPerpetual ||
+		instruments[0].Underlying.AssetClass != AssetClassCrypto ||
+		instruments[1].Underlying.AssetClass != AssetClassTradfiUnclassified ||
+		instruments[1].Underlying.Routable() {
+		t.Fatalf("classes=%s %s flags=%v %v", instruments[0].Underlying.AssetClass, instruments[1].Underlying.AssetClass, instruments[0].USEquityPerpetual, instruments[1].USEquityPerpetual)
+	}
 	if instruments[0].ExchangeSymbol != "BTCUSDT" ||
 		instruments[0].ContractType != ContractTypePerpetual ||
 		instruments[1].ExchangeSymbol != "ZHIPUUSDT" ||
@@ -189,6 +195,9 @@ func TestHyperliquidHIP3QualifiesCoinAndBase(t *testing.T) {
 	instruments := parseHyperliquidInstruments(meta, "xyz")
 	if len(instruments) != 2 {
 		t.Fatalf("instruments=%+v", instruments)
+	}
+	if instruments[0].USEquityPerpetual || instruments[1].USEquityPerpetual {
+		t.Fatal("hip3 dex must not be marked as a us equity perpetual")
 	}
 	if instruments[0].ExchangeSymbol != "xyz:ZHIPU" ||
 		instruments[0].BaseAsset != "ZHIPU" ||
@@ -224,8 +233,21 @@ func TestHyperliquidMergesDefaultAndXYZ(t *testing.T) {
 			http.Error(writer, "bad", http.StatusBadRequest)
 			return
 		}
-		if payload.Type != "metaAndAssetCtxs" {
+		switch payload.Type {
+		case "perpDexs":
+			_, _ = writer.Write([]byte(`[null,{"name":"xyz"}]`))
+			return
+		case "perpCategories":
+			_, _ = writer.Write([]byte(`[]`))
+			return
+		case "perpConciseAnnotations", "perpAnnotation":
+			_, _ = writer.Write([]byte(`{}`))
+			return
+		case "metaAndAssetCtxs":
+		default:
 			t.Errorf("type=%q", payload.Type)
+			http.Error(writer, "bad", http.StatusBadRequest)
+			return
 		}
 		switch payload.Dex {
 		case "":

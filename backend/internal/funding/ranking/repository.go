@@ -12,6 +12,8 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
+const historyPairBatchSize = 128
+
 type RepositoryConfig struct {
 	Address        string
 	Database       string
@@ -58,10 +60,27 @@ type historyQueryBinding struct {
 
 func rankingClickHouseSettings() clickhouse.Settings {
 	return clickhouse.Settings{
-		"readonly":    1,
-		"max_threads": 2,
+		"readonly":         1,
+		"max_threads":      2,
+		"max_memory_usage": uint64(1 << 30),
 	}
 }
+
+type historyBatchError struct {
+	index int
+	count int
+	pairs int
+	err   error
+}
+
+func (e *historyBatchError) Error() string {
+	return fmt.Sprintf(
+		"history pair batch_index=%d batch_count=%d batch_pairs=%d: %v",
+		e.index, e.count, e.pairs, e.err,
+	)
+}
+
+func (e *historyBatchError) Unwrap() error { return e.err }
 
 func rankingClickHouseOptions(cfg RepositoryConfig) *clickhouse.Options {
 	options := &clickhouse.Options{
@@ -144,11 +163,33 @@ func (r *Repository) queryPairs(
 		return nil
 	}
 	pairs = uniqueHistoryPairs(pairs)
+	if len(pairs) == 0 {
+		return nil
+	}
 	batch := r.queryBatch
 	if batch == nil {
 		batch = r.queryPairBatch
 	}
-	return batch(ctx, from, to, pairs, timeout, consume)
+	batchCount := (len(pairs) + historyPairBatchSize - 1) / historyPairBatchSize
+	for offset := 0; offset < len(pairs); offset += historyPairBatchSize {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		end := offset + historyPairBatchSize
+		if end > len(pairs) {
+			end = len(pairs)
+		}
+		chunk := pairs[offset:end]
+		if err := batch(ctx, from, to, chunk, timeout, consume); err != nil {
+			return &historyBatchError{
+				index: offset/historyPairBatchSize + 1,
+				count: batchCount,
+				pairs: len(chunk),
+				err:   err,
+			}
+		}
+	}
+	return nil
 }
 
 func historyQueryBindings(pairs []HistoryPair) historyQueryBinding {

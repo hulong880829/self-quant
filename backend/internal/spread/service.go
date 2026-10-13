@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,9 +75,19 @@ func (s *Service) GetHistory(ctx context.Context, request HistoryRequest) (Histo
 }
 
 func cacheKey(request HistoryRequest) string {
-	return request.Venue + "|" + request.CompareVenue + "|" +
-		request.VenueCanonicalSymbol + "|" + request.CompareVenueCanonicalSymbol +
-		"|" + string(request.Range)
+	return strings.Join([]string{
+		request.IdentityMode,
+		request.Venue,
+		request.CompareVenue,
+		request.VenueProduct,
+		request.CompareVenueProduct,
+		request.VenueCanonicalSymbol,
+		request.CompareVenueCanonicalSymbol,
+		request.VenueExchangeSymbol,
+		request.CompareExchangeSymbol,
+		request.PriceMultiplier.String(),
+		string(request.Range),
+	}, "|")
 }
 
 func (s *Service) cached(key string) (History, bool) {

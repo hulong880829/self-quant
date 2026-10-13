@@ -2,7 +2,9 @@ package exchange
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/url"
 	"strconv"
@@ -43,7 +45,9 @@ func (a *Aster) SupportedContractTypes() []string {
 type asterExchangeInfo struct {
 	Symbols []struct {
 		Symbol, BaseAsset, QuoteAsset, MarginAsset, Status, ContractType string
-		ContractSize                                                     float64 `json:"contractSize"`
+		UnderlyingType                                                   string   `json:"underlyingType"`
+		UnderlyingSubType                                                []string `json:"underlyingSubType"`
+		ContractSize                                                     float64  `json:"contractSize"`
 		Filters                                                          []struct {
 			FilterType  string `json:"filterType"`
 			TickSize    string `json:"tickSize"`
@@ -95,7 +99,7 @@ func parseAsterInstruments(payload asterExchangeInfo) []Instrument {
 			contractSize = 1
 		}
 		metadata := instrumentMetadata(item, "linear", "base")
-		result = append(result, Instrument{
+		parsed := Instrument{
 			Exchange: "aster", ExchangeSymbol: item.Symbol,
 			BaseAsset: item.BaseAsset, QuoteAsset: item.QuoteAsset,
 			GlobalSymbol:  GlobalSymbol(item.BaseAsset, item.QuoteAsset),
@@ -110,9 +114,40 @@ func parseAsterInstruments(payload asterExchangeInfo) []Instrument {
 			MarketMaxQuantity: marketMaxQuantity, MarketMaxQuantityStatus: marketMaxQuantityStatus,
 			MarketMinNotional: marketMinNotional, MarketMinNotionalStatus: marketMinNotionalStatus,
 			Metadata: metadata, SourceUpdatedAt: time.Now().UTC(),
-		})
+		}
+		switch {
+		case asterPrelaunch(item.UnderlyingSubType):
+			parsed.SetUnderlying(PreMarketReference(item.BaseAsset, "aster.exchangeInfo.underlyingSubType=pre-launch"))
+		case asterSubtype(item.UnderlyingSubType, "STOCK"):
+			parsed.SetUnderlying(TradfiCandidate(AssetClassStock, item.BaseAsset, item.QuoteAsset, "aster.exchangeInfo.underlyingSubType=STOCK"))
+		case asterSubtype(item.UnderlyingSubType, "ETF"):
+			parsed.SetUnderlying(TradfiCandidate(AssetClassETF, item.BaseAsset, item.QuoteAsset, "aster.exchangeInfo.underlyingSubType=ETF"))
+		case asterSubtype(item.UnderlyingSubType, "Commodities"):
+			parsed.SetUnderlying(CommodityReference(item.BaseAsset, "USD", "aster.exchangeInfo.underlyingSubType=Commodities"))
+		default:
+			parsed.SetUnderlying(CryptoReference(item.BaseAsset, item.QuoteAsset, "aster.perpetual"))
+		}
+		result = append(result, parsed)
 	}
 	return result
+}
+
+func asterPrelaunch(values []string) bool {
+	for _, value := range values {
+		if strings.Contains(strings.ToLower(value), "pre-launch") || strings.Contains(strings.ToLower(value), "prelaunch") {
+			return true
+		}
+	}
+	return false
+}
+
+func asterSubtype(values []string, wanted string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), wanted) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Aster) SyncInstruments(ctx context.Context, contractType string) ([]Instrument, error) {
@@ -260,16 +295,26 @@ func (a *Aster) FetchCurrent(ctx context.Context, instruments []Instrument) ([]F
 	if len(instruments) == 0 {
 		return rates, nil
 	}
-	if err := a.applyOpenInterest(ctx, rates); err != nil {
+	rates, err = a.applyOpenInterest(ctx, rates)
+	if err != nil {
 		return nil, err
 	}
 	return rates, nil
 }
 
-func (a *Aster) applyOpenInterest(ctx context.Context, rates []FundingRate) error {
-	if len(rates) == 0 {
-		return nil
+func isAsterInactiveInstrumentError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
 	}
+	text := err.Error()
+	return strings.Contains(text, "HTTP 400") && strings.Contains(text, `"code":-4108`)
+}
+
+func (a *Aster) applyOpenInterest(ctx context.Context, rates []FundingRate) ([]FundingRate, error) {
+	if len(rates) == 0 {
+		return nil, nil
+	}
+	inactive := make([]bool, len(rates))
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.SetLimit(asterOpenInterestWorkers)
 	for i := range rates {
@@ -279,12 +324,45 @@ func (a *Aster) applyOpenInterest(ctx context.Context, rates []FundingRate) erro
 			if err := a.oiClient.get(groupCtx, "/fapi/v3/openInterest", url.Values{
 				"symbol": {rates[i].ExchangeSymbol},
 			}, &response); err != nil {
+				if isAsterInactiveInstrumentError(err) {
+					inactive[i] = true
+					return nil
+				}
 				return fmt.Errorf("aster %s openInterest: %w", rates[i].ExchangeSymbol, err)
 			}
 			return applyAsterOpenInterest(&rates[i], response)
 		})
 	}
-	return group.Wait()
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	total := len(rates)
+	kept := make([]FundingRate, 0, total)
+	skippedSymbols := make([]string, 0, 8)
+	skipped := 0
+	for i := range rates {
+		if !inactive[i] {
+			kept = append(kept, rates[i])
+			continue
+		}
+		skipped++
+		if len(skippedSymbols) < 8 {
+			skippedSymbols = append(skippedSymbols, rates[i].ExchangeSymbol)
+		}
+	}
+	if skipped == 0 {
+		return kept, nil
+	}
+	if len(kept) == 0 {
+		return nil, fmt.Errorf("aster openInterest: all %d instruments inactive", total)
+	}
+	slog.Default().Warn("aster current funding skipped inactive instruments",
+		"skipped", skipped,
+		"symbols", skippedSymbols,
+		"code", -4108,
+		"total", total,
+	)
+	return kept, nil
 }
 
 type asterHistory struct {

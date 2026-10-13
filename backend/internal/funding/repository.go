@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"selfquant/backend/internal/exchange"
 )
@@ -113,6 +115,8 @@ type Rate struct {
 	History24hComplete  *bool
 	History7dComplete   *bool
 	VenueContractType   string
+	USEquityPerpetual   bool
+	Underlying          exchange.UnderlyingReference
 }
 
 type HistoryPoint struct {
@@ -137,10 +141,7 @@ func (r *Repository) UpsertInstruments(ctx context.Context, instruments []exchan
 	itemsByKey := make(map[string]exchange.Instrument, len(instruments))
 	keys := make([]string, 0, len(instruments))
 	for _, item := range instruments {
-		metadata := item.Metadata
-		if len(metadata) == 0 {
-			metadata = []byte(`{}`)
-		}
+		metadata := exchange.StoreMetadata(item.Metadata, item.USEquityPerpetual, item.TradefiClassificationSource)
 		key := item.Exchange + "\x00" + item.ContractType + "\x00" + item.ExchangeSymbol
 		if _, exists := rowsByKey[key]; !exists {
 			keys = append(keys, key)
@@ -377,9 +378,22 @@ func (r *Repository) ListInstruments(ctx context.Context) ([]exchange.Instrument
 			return nil, err
 		}
 		item.IntervalHours = float64(intervalSeconds) / 3600
+		item.USEquityPerpetual = exchange.IsUSEquityPerpetual(item.Metadata)
+		restoreInstrumentUnderlying(&item)
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+func restoreInstrumentUnderlying(item *exchange.Instrument) {
+	if len(item.Metadata) == 0 {
+		return
+	}
+	ref := exchange.UnderlyingFromMetadata(item.Metadata)
+	if ref.AssetClass == "" && ref.Symbol == "" && ref.Source == "" {
+		return
+	}
+	item.SetUnderlying(ref)
 }
 
 func (r *Repository) ListActivePerpetualInstruments(
@@ -431,6 +445,8 @@ func (r *Repository) ListActivePerpetualInstruments(
 			return nil, err
 		}
 		item.IntervalHours = float64(intervalSeconds) / 3600
+		item.USEquityPerpetual = exchange.IsUSEquityPerpetual(item.Metadata)
+		restoreInstrumentUnderlying(&item.Instrument)
 		result = append(result, item)
 	}
 	return result, rows.Err()
@@ -876,6 +892,8 @@ func (r *Repository) List(ctx context.Context, query Query) ([]Rate, int, error)
 		}
 		item.ContractMultiplier = NormalizeContractMultiplier(item.ContractMultiplier)
 		item.VenueContractType = DeriveVenueContractType(item.Exchange, item.ExchangeSymbol, metadata)
+		item.USEquityPerpetual = exchange.IsUSEquityPerpetual(metadata)
+		item.Underlying = exchange.UnderlyingFromMetadata(metadata)
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -979,6 +997,8 @@ func (r *Repository) ListCurrentByKeys(
 		}
 		item.ContractMultiplier = NormalizeContractMultiplier(item.ContractMultiplier)
 		item.VenueContractType = DeriveVenueContractType(item.Exchange, item.ExchangeSymbol, metadata)
+		item.USEquityPerpetual = exchange.IsUSEquityPerpetual(metadata)
+		item.Underlying = exchange.UnderlyingFromMetadata(metadata)
 		copied := item
 		result[ord-1] = &copied
 	}
@@ -1095,4 +1115,320 @@ func (r *Repository) ListSettledHistoryRange(
 		return nil, err
 	}
 	return result, nil
+}
+
+type IBResolution struct {
+	Symbol             string
+	UnderlyingSymbol   string
+	AssetClass         string
+	UnderlyingCurrency string
+	Region             string
+	SecType            string
+	Active             bool
+	Status             string
+	ConID              *int64
+	PrimaryExchange    string
+	LocalSymbol        string
+	TradingClass       string
+	LongName           string
+	LastVerified       time.Time
+	NextVerify         time.Time
+	PairMatches        map[string]PairMatch
+	Aliases            []string
+}
+
+func (r *Repository) ListIBInstrumentResolutions(ctx context.Context) ([]IBResolution, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT exchange_symbol, active, status, ib_con_id,
+		       COALESCE(primary_exchange, ''),
+		       COALESCE(local_symbol, ''),
+		       COALESCE(trading_class, ''),
+		       last_verified_at, next_verify_at,
+		       COALESCE(metadata, '{}'::jsonb)
+		FROM instruments
+		WHERE exchange='ibkr' AND contract_type='spot'
+		ORDER BY exchange_symbol`)
+	if err != nil {
+		return nil, fmt.Errorf("list ib instrument resolutions: %w", err)
+	}
+	defer rows.Close()
+	var result []IBResolution
+	for rows.Next() {
+		var item IBResolution
+		var lastVerified, nextVerify *time.Time
+		var metadata json.RawMessage
+		if err := rows.Scan(
+			&item.Symbol, &item.Active, &item.Status, &item.ConID,
+			&item.PrimaryExchange, &item.LocalSymbol, &item.TradingClass,
+			&lastVerified, &nextVerify, &metadata,
+		); err != nil {
+			return nil, fmt.Errorf("list ib instrument resolutions: %w", err)
+		}
+		if lastVerified != nil {
+			item.LastVerified = lastVerified.UTC()
+		}
+		if nextVerify != nil {
+			item.NextVerify = nextVerify.UTC()
+		}
+		resolutionFromMetadata(&item, metadata)
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list ib instrument resolutions: %w", err)
+	}
+	return result, nil
+}
+
+const canonicalIBLockSQL = `SELECT pg_advisory_xact_lock($1)`
+
+func (r *Repository) UpsertIBInstrumentResolution(ctx context.Context, item IBResolution) (IBResolution, error) {
+	if item.ConID != nil && *item.ConID > 0 {
+		return r.upsertCanonicalIBResolution(ctx, item)
+	}
+	symbol := strings.TrimSpace(item.Symbol)
+	if symbol == "" {
+		return IBResolution{}, fmt.Errorf("ib instrument symbol is required")
+	}
+	base := item.UnderlyingSymbol
+	if base == "" {
+		base = symbol
+	}
+	quote := item.UnderlyingCurrency
+	if quote == "" {
+		quote = "USD"
+	}
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO instruments (
+			exchange, exchange_symbol, base_asset, quote_asset, global_symbol,
+			active, settle_asset, contract_type, status, funding_interval_seconds,
+			metadata, ib_con_id, primary_exchange, local_symbol, trading_class,
+			last_verified_at, next_verify_at
+		) VALUES (
+			'ibkr', $1, $2, $3, 'IBKR:' || $1,
+			$4, $3, 'spot', $5, 0,
+			$6, $7, NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''),
+			$11, $12
+		)
+		ON CONFLICT (exchange, contract_type, exchange_symbol) DO UPDATE SET
+			base_asset=EXCLUDED.base_asset,
+			quote_asset=EXCLUDED.quote_asset,
+			global_symbol=EXCLUDED.global_symbol,
+			active=EXCLUDED.active,
+			settle_asset=EXCLUDED.settle_asset,
+			status=EXCLUDED.status,
+			metadata=EXCLUDED.metadata,
+			ib_con_id=EXCLUDED.ib_con_id,
+			primary_exchange=EXCLUDED.primary_exchange,
+			local_symbol=EXCLUDED.local_symbol,
+			trading_class=EXCLUDED.trading_class,
+			last_verified_at=EXCLUDED.last_verified_at,
+			next_verify_at=EXCLUDED.next_verify_at,
+			updated_at=now()`,
+		symbol, base, quote, item.Active, item.Status, item.metadataJSON(), item.ConID,
+		item.PrimaryExchange, item.LocalSymbol, item.TradingClass,
+		item.LastVerified, item.NextVerify,
+	); err != nil {
+		return IBResolution{}, fmt.Errorf("upsert ib instrument resolution: %w", err)
+	}
+	item.Symbol = symbol
+	return item, nil
+}
+
+func (r *Repository) upsertCanonicalIBResolution(ctx context.Context, item IBResolution) (IBResolution, error) {
+	if item.ConID == nil || *item.ConID <= 0 {
+		return IBResolution{}, fmt.Errorf("ib conid is required")
+	}
+	item.Symbol = "conid:" + strconv.FormatInt(*item.ConID, 10)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return IBResolution{}, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, canonicalIBLockSQL, *item.ConID); err != nil {
+		return IBResolution{}, fmt.Errorf("lock ib conid: %w", err)
+	}
+	var existingID int64
+	var metadata json.RawMessage
+	err = tx.QueryRow(ctx, `
+		SELECT id, COALESCE(metadata, '{}'::jsonb)
+		FROM instruments
+		WHERE exchange='ibkr' AND ib_con_id=$1`, *item.ConID).Scan(&existingID, &metadata)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return IBResolution{}, fmt.Errorf("load ib conid: %w", err)
+	}
+	if err == nil {
+		var existing IBResolution
+		resolutionFromMetadata(&existing, metadata)
+		item.PairMatches = mergePairMatches(existing.PairMatches, item.PairMatches)
+		item.Aliases = mergeAliases(existing.Aliases, item.Aliases)
+		if _, err := tx.Exec(ctx, `
+			UPDATE instruments SET
+				exchange_symbol=$2, base_asset=$3, quote_asset=$4, global_symbol='IBKR:' || $2,
+				active=$5, settle_asset=$4, status=$6, metadata=$7,
+				primary_exchange=NULLIF($8, ''), local_symbol=NULLIF($9, ''),
+				trading_class=NULLIF($10, ''), last_verified_at=$11, next_verify_at=$12,
+				updated_at=now()
+			WHERE id=$1`,
+			existingID, item.Symbol, item.UnderlyingSymbol, item.UnderlyingCurrency,
+			item.Active, item.Status, item.metadataJSON(), item.PrimaryExchange,
+			item.LocalSymbol, item.TradingClass, item.LastVerified, item.NextVerify,
+		); err != nil {
+			return IBResolution{}, fmt.Errorf("update ib conid: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return IBResolution{}, err
+		}
+		return item, nil
+	}
+	base := item.UnderlyingSymbol
+	if base == "" {
+		base = item.Symbol
+	}
+	quote := item.UnderlyingCurrency
+	if quote == "" {
+		quote = "USD"
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO instruments (
+			exchange, exchange_symbol, base_asset, quote_asset, global_symbol,
+			active, settle_asset, contract_type, status, funding_interval_seconds,
+			metadata, ib_con_id, primary_exchange, local_symbol, trading_class,
+			last_verified_at, next_verify_at
+		) VALUES (
+			'ibkr', $1, $2, $3, 'IBKR:' || $1,
+			$4, $3, 'spot', $5, 0,
+			$6, $7, NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''),
+			$11, $12
+		)`,
+		item.Symbol, base, quote, item.Active, item.Status, item.metadataJSON(), *item.ConID,
+		item.PrimaryExchange, item.LocalSymbol, item.TradingClass, item.LastVerified, item.NextVerify,
+	); err != nil {
+		return IBResolution{}, fmt.Errorf("insert ib conid: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return IBResolution{}, err
+	}
+	return item, nil
+}
+
+func mergePairMatches(current, extra map[string]PairMatch) map[string]PairMatch {
+	if current == nil {
+		current = map[string]PairMatch{}
+	}
+	for key, match := range extra {
+		current[key] = match
+	}
+	return current
+}
+
+func mergeAliases(current, extra []string) []string {
+	seen := map[string]struct{}{}
+	var result []string
+	for _, alias := range append(append([]string{}, current...), extra...) {
+		if alias == "" {
+			continue
+		}
+		if _, ok := seen[alias]; ok {
+			continue
+		}
+		seen[alias] = struct{}{}
+		result = append(result, alias)
+	}
+	return result
+}
+
+type IBNegativeCacheExpiry struct {
+	Symbol             string
+	Status             string
+	PreviousNextVerify time.Time
+	NextVerify         time.Time
+}
+
+func (r *Repository) ExpireIBNegativeResolutions(ctx context.Context, expiredAt time.Time) ([]IBNegativeCacheExpiry, error) {
+	rows, err := r.pool.Query(ctx, `
+		WITH targets AS (
+			SELECT exchange, contract_type, exchange_symbol, status, next_verify_at
+			FROM instruments
+			WHERE exchange='ibkr'
+			  AND contract_type='spot'
+			  AND (
+			    status IN ('not_found', 'ambiguous')
+			    OR exchange_symbol NOT LIKE '%|%'
+			  )
+		)
+		UPDATE instruments AS current
+		SET next_verify_at=$1, updated_at=now()
+		FROM targets
+		WHERE current.exchange=targets.exchange
+		  AND current.contract_type=targets.contract_type
+		  AND current.exchange_symbol=targets.exchange_symbol
+		RETURNING current.exchange_symbol, current.status, targets.next_verify_at, current.next_verify_at`,
+		expiredAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("expire ib negative resolutions: %w", err)
+	}
+	defer rows.Close()
+	var result []IBNegativeCacheExpiry
+	for rows.Next() {
+		var item IBNegativeCacheExpiry
+		var previous, next *time.Time
+		if err := rows.Scan(&item.Symbol, &item.Status, &previous, &next); err != nil {
+			return nil, fmt.Errorf("scan expired ib negative resolution: %w", err)
+		}
+		if previous != nil {
+			item.PreviousNextVerify = previous.UTC()
+		}
+		if next != nil {
+			item.NextVerify = next.UTC()
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (r *Repository) MigrateIBCanonical(ctx context.Context, dryRun bool) ([]IBCanonicalAction, error) {
+	rows, err := r.ListIBInstrumentResolutions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	actions := PlanIBCanonical(rows)
+	if dryRun {
+		return actions, nil
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	for _, action := range actions {
+		switch action.Kind {
+		case "clear":
+			if _, err := tx.Exec(ctx, `
+				UPDATE instruments
+				SET ib_con_id=NULL, active=false, status='inactive', next_verify_at=now()-interval '1 second', updated_at=now()
+				WHERE exchange='ibkr' AND contract_type='spot' AND exchange_symbol=$1
+				  AND NOT (exchange_symbol LIKE 'crypto|%' AND status='not_found')`, action.Symbol); err != nil {
+				return nil, fmt.Errorf("clear ib resolution %s: %w", action.Symbol, err)
+			}
+		case "save":
+			item := action.Resolution
+			if _, err := tx.Exec(ctx, `
+				UPDATE instruments SET
+					exchange_symbol=$2, metadata=$3, active=$4, status=$5,
+					ib_con_id=$6, updated_at=now()
+				WHERE exchange='ibkr' AND contract_type='spot' AND exchange_symbol=$1`,
+				action.Symbol, item.Symbol, item.metadataJSON(), item.Active, item.Status, action.ConID,
+			); err != nil {
+				return nil, fmt.Errorf("save ib canonical %s: %w", action.Symbol, err)
+			}
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return actions, nil
 }

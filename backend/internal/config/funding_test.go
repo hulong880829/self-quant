@@ -1,6 +1,8 @@
 package config
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestFundingFromEnvDefaultsCollectNewVenuesWithoutPublishing(t *testing.T) {
 	t.Setenv("ENABLED_EXCHANGES", "")
@@ -62,5 +64,30 @@ func TestFundingCollectOnlyAllowsNewVenuesWithoutPublish(t *testing.T) {
 	}
 	if !cfg.EnabledExchanges["aster"] || cfg.PublishedExchanges["aster"] {
 		t.Fatalf("collect-only aster=%v published=%v", cfg.EnabledExchanges["aster"], cfg.PublishedExchanges["aster"])
+	}
+}
+
+func TestTradefiDiscoveryDefaultsOff(t *testing.T) {
+	t.Setenv("TRADEFI_PERPS_ENABLED", "")
+	t.Setenv("IBKR_GATEWAY_ADDR", "")
+	t.Setenv("IBKR_DISCOVERY_CLIENT_ID", "")
+	cfg, err := FundingFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TradefiPerpsEnabled || cfg.IBKRGatewayAddr != "ib-gateway:4003" || cfg.IBKRDiscoveryClientID != 30 {
+		t.Fatalf("tradefi config=%+v", cfg)
+	}
+	if !cfg.ArbitrageEnabledExchanges["binance"] || cfg.ArbitrageEnabledExchanges["entropy"] {
+		t.Fatalf("arbitrage venues=%v", cfg.ArbitrageEnabledExchanges)
+	}
+}
+
+func TestTradefiDiscoveryRejectsCPPClientID(t *testing.T) {
+	t.Setenv("TRADEFI_PERPS_ENABLED", "true")
+	t.Setenv("IBKR_GATEWAY_ADDR", "ib-gateway:4003")
+	t.Setenv("IBKR_DISCOVERY_CLIENT_ID", "31")
+	if _, err := FundingFromEnv(); err == nil {
+		t.Fatal("client id 31 must be rejected")
 	}
 }

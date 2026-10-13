@@ -3,6 +3,7 @@ package ranking
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -100,45 +101,192 @@ func TestRankingClickHouseSettingsLimitThreads(t *testing.T) {
 	if settings["max_threads"] != 2 {
 		t.Fatalf("max_threads=%v", settings["max_threads"])
 	}
+	if settings["max_memory_usage"] != uint64(1<<30) {
+		t.Fatalf("max_memory_usage=%v", settings["max_memory_usage"])
+	}
 	options := rankingClickHouseOptions(RepositoryConfig{
 		Address: "127.0.0.1:9000", Database: "market_data", PoolSize: 2,
 	})
-	if options.Settings["readonly"] != 1 || options.Settings["max_threads"] != 2 {
+	if options.Settings["readonly"] != 1 || options.Settings["max_threads"] != 2 ||
+		options.Settings["max_memory_usage"] != uint64(1<<30) {
 		t.Fatalf("open options settings=%v", options.Settings)
 	}
 }
 
-func TestQueryPairsInvokesSingleBatchForAllVenues(t *testing.T) {
-	var calls int
-	var got []HistoryPair
-	repository := &Repository{
-		queryBatch: func(
-			_ context.Context, _, _ time.Time, pairs []HistoryPair, _ time.Duration,
-			_ func(HistoryQuote) error,
-		) error {
-			calls++
-			got = append([]HistoryPair(nil), pairs...)
-			return nil
-		},
-	}
+func TestQueryPairsBatchesHistoryAfterDedup(t *testing.T) {
 	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	err := repository.QueryPairs(
-		context.Background(), now.Add(-time.Hour), now,
-		[]HistoryPair{
-			{Venue: "binance", SourceSymbol: "BTCUSDT", CanonicalSymbol: "BTCUSDT"},
-			{Venue: "okx", SourceSymbol: "BTCUSDT", CanonicalSymbol: "BTCUSDT"},
-			{Venue: "bybit", SourceSymbol: "BTCUSDT", CanonicalSymbol: "BTCUSDT"},
-		},
-		func(HistoryQuote) error { return nil },
-	)
-	if err != nil {
+	from := now.Add(-time.Hour)
+	repository := &Repository{}
+	if err := repository.QueryPairs(
+		context.Background(), from, now, nil, func(HistoryQuote) error { return nil },
+	); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 {
-		t.Fatalf("queryPairBatch calls=%d, want 1", calls)
+
+	var calls []recordedHistoryBatch
+	repository.queryBatch = func(
+		_ context.Context, batchFrom, batchTo time.Time, pairs []HistoryPair,
+		timeout time.Duration, consume func(HistoryQuote) error,
+	) error {
+		calls = append(calls, recordedHistoryBatch{
+			from: batchFrom, to: batchTo, pairs: append([]HistoryPair(nil), pairs...),
+			timeout: timeout,
+		})
+		return consume(HistoryQuote{Pair: pairs[0]})
 	}
-	if len(got) != 3 {
-		t.Fatalf("batch pairs=%d, want 3", len(got))
+	pairs := []HistoryPair{
+		{Venue: "okx", SourceSymbol: "BTCUSDT", CanonicalSymbol: "BTCUSDT"},
+		{Venue: "binance", SourceSymbol: "BTCUSDT", CanonicalSymbol: "BTCUSDT"},
+		{Venue: "binance", SourceSymbol: "BTCUSDT", CanonicalSymbol: "BTCUSDT"},
+	}
+	if err := repository.QueryPairs(
+		context.Background(), from, now, pairs, func(HistoryQuote) error { return nil },
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || len(calls[0].pairs) != 2 {
+		t.Fatalf("calls=%d pairs=%d", len(calls), len(calls[0].pairs))
+	}
+	if calls[0].pairs[0].Venue != "binance" || calls[0].pairs[1].Venue != "okx" {
+		t.Fatalf("batch order=%v", calls[0].pairs)
+	}
+	if !calls[0].from.Equal(from) || !calls[0].to.Equal(now) {
+		t.Fatalf("window=%s..%s", calls[0].from, calls[0].to)
+	}
+
+	calls = nil
+	wide := sequencedHistoryPairs(129)
+	if err := repository.QueryPairs(
+		context.Background(), from, now, wide, func(HistoryQuote) error { return nil },
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || len(calls[0].pairs) != 128 || len(calls[1].pairs) != 1 {
+		t.Fatalf("129 pairs calls=%d sizes=%d,%d", len(calls), len(calls[0].pairs), len(calls[1].pairs))
+	}
+	assertHistoryBatchesSorted(t, calls, from, now)
+
+	calls = nil
+	production := sequencedHistoryPairs(4673)
+	if err := repository.QueryPairs(
+		context.Background(), from, now, production, func(HistoryQuote) error { return nil },
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 37 || len(calls[0].pairs) != 128 || len(calls[36].pairs) != 65 {
+		t.Fatalf("4673 pairs calls=%d last=%d", len(calls), len(calls[len(calls)-1].pairs))
+	}
+	assertHistoryBatchesSorted(t, calls, from, now)
+
+	calls = nil
+	batchErr := errors.New("second batch failed")
+	repository.queryBatch = func(
+		_ context.Context, batchFrom, batchTo time.Time, pairs []HistoryPair,
+		timeout time.Duration, consume func(HistoryQuote) error,
+	) error {
+		calls = append(calls, recordedHistoryBatch{
+			from: batchFrom, to: batchTo, pairs: append([]HistoryPair(nil), pairs...),
+			timeout: timeout,
+		})
+		if len(calls) == 2 {
+			return batchErr
+		}
+		return consume(HistoryQuote{Pair: pairs[0]})
+	}
+	err := repository.QueryPairs(
+		context.Background(), from, now, sequencedHistoryPairs(257),
+		func(HistoryQuote) error { return nil },
+	)
+	if !errors.Is(err, batchErr) || !strings.Contains(err.Error(), "batch_index=2") ||
+		!strings.Contains(err.Error(), "batch_count=3") ||
+		!strings.Contains(err.Error(), "batch_pairs=128") {
+		t.Fatalf("err=%v calls=%d", err, len(calls))
+	}
+	if len(calls) != 2 {
+		t.Fatalf("failed query continued, calls=%d", len(calls))
+	}
+
+	calls = nil
+	ctx, cancel := context.WithCancel(context.Background())
+	repository.queryBatch = func(
+		_ context.Context, batchFrom, batchTo time.Time, pairs []HistoryPair,
+		timeout time.Duration, _ func(HistoryQuote) error,
+	) error {
+		calls = append(calls, recordedHistoryBatch{
+			from: batchFrom, to: batchTo, pairs: append([]HistoryPair(nil), pairs...),
+			timeout: timeout,
+		})
+		cancel()
+		return nil
+	}
+	err = repository.QueryPairs(ctx, from, now, wide, func(HistoryQuote) error { return nil })
+	if !errors.Is(err, context.Canceled) || len(calls) != 1 {
+		t.Fatalf("err=%v calls=%d", err, len(calls))
+	}
+
+	calls = nil
+	repository.timeout = 5 * time.Minute
+	repository.queryBatch = func(
+		_ context.Context, batchFrom, batchTo time.Time, pairs []HistoryPair,
+		timeout time.Duration, _ func(HistoryQuote) error,
+	) error {
+		calls = append(calls, recordedHistoryBatch{
+			from: batchFrom, to: batchTo, pairs: append([]HistoryPair(nil), pairs...),
+			timeout: timeout,
+		})
+		return nil
+	}
+	if err := repository.QueryWarmPairs(
+		context.Background(), from, now, wide, func(HistoryQuote) error { return nil },
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || calls[0].timeout != 5*time.Minute || calls[1].timeout != 5*time.Minute {
+		t.Fatalf("warm calls=%d timeout=%s", len(calls), calls[0].timeout)
+	}
+	repository.timeout = time.Minute
+	calls = nil
+	if err := repository.QueryWarmPairs(
+		context.Background(), from, now, pairs, func(HistoryQuote) error { return nil },
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].timeout != 2*time.Minute {
+		t.Fatalf("warm floor timeout=%s", calls[0].timeout)
+	}
+}
+
+type recordedHistoryBatch struct {
+	from, to time.Time
+	pairs    []HistoryPair
+	timeout  time.Duration
+}
+
+func sequencedHistoryPairs(count int) []HistoryPair {
+	pairs := make([]HistoryPair, count)
+	for index := range pairs {
+		symbol := fmt.Sprintf("P%04dUSDT", index)
+		pairs[index] = HistoryPair{
+			Venue: "binance", SourceSymbol: symbol, CanonicalSymbol: symbol,
+		}
+	}
+	return pairs
+}
+
+func assertHistoryBatchesSorted(t *testing.T, calls []recordedHistoryBatch, from, to time.Time) {
+	t.Helper()
+	var previous string
+	for _, call := range calls {
+		if !call.from.Equal(from) || !call.to.Equal(to) {
+			t.Fatalf("window=%s..%s", call.from, call.to)
+		}
+		for _, pair := range call.pairs {
+			key := pair.Venue + "\x00" + pair.SourceSymbol
+			if key < previous {
+				t.Fatalf("pair %s follows %s", key, previous)
+			}
+			previous = key
+		}
 	}
 }
 

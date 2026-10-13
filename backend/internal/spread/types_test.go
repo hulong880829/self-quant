@@ -185,3 +185,88 @@ func TestBuildHistoryUnavailableWithoutSpot(t *testing.T) {
 		t.Fatalf("history=%+v", history)
 	}
 }
+
+func TestBuildHistoryAvailableWhenLegsDoNotOverlap(t *testing.T) {
+	now := time.Date(2026, 8, 22, 7, 0, 0, 0, time.UTC)
+	history := buildHistory(HistoryRequest{
+		Venue: "binance", CompareVenue: "ibkr", BaseAsset: "AAPL", QuoteAsset: "USDT",
+		Range: Range1h, Now: now,
+	}, []bucketRow{{
+		Bucket: now, SpotAskRaw: 19000, SpotScale: 2, PerpAskRaw: 0, PerpScale: 2,
+	}})
+	if history.Availability != AvailabilityAvailable || len(history.Points) != 0 ||
+		!history.Summary.Coverage.IsZero() {
+		t.Fatalf("history=%+v", history)
+	}
+}
+
+func TestNormalizeIdentityRequestRejectsBadMultiplierAndAcceptsExchangeSymbol(t *testing.T) {
+	_, err := NormalizeRequest(HistoryRequest{
+		Venue: "binance", CompareVenue: "ibkr", BaseAsset: "AAPL", QuoteAsset: "USDT",
+		VenueCanonicalSymbol: "AAPLUSDT", CompareVenueCanonicalSymbol: "AAPL",
+		VenueExchangeSymbol: "AAPLUSDT", CompareExchangeSymbol: "265598",
+		VenueProduct: "perpetual", CompareVenueProduct: "equity",
+		IdentityMode: "venue_symbol", PriceMultiplier: decimal.RequireFromString("-1"),
+		Range: Range1h,
+	})
+	if err == nil {
+		t.Fatal("negative multiplier was accepted")
+	}
+	request, err := NormalizeRequest(HistoryRequest{
+		Venue: "okx", CompareVenue: "ibkr", BaseAsset: "AAPL", QuoteAsset: "USDT",
+		VenueCanonicalSymbol: "AAPLUSDT", CompareVenueCanonicalSymbol: "USDJPY",
+		VenueExchangeSymbol: "AAPL-USDT-SWAP", CompareExchangeSymbol: "15016062",
+		VenueProduct: "perpetual", CompareVenueProduct: "equity",
+		IdentityMode: "venue_symbol", Range: Range24h,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.VenueExchangeSymbol != "AAPL-USDT-SWAP" || request.PriceMultiplier.String() != "1" {
+		t.Fatalf("request=%+v", request)
+	}
+	if _, err := NormalizeRequest(HistoryRequest{
+		Venue: "okx", CompareVenue: "binance", BaseAsset: "AAPL", QuoteAsset: "USDT",
+		VenueCanonicalSymbol: "AAPL-USDT-SWAP", Range: Range1h,
+	}); err == nil {
+		t.Fatal("default mode accepted a dashed canonical symbol")
+	}
+}
+
+func TestNormalizeRequestPreservesExchangeSymbolCase(t *testing.T) {
+	if !ValidIdentitySymbol("xyz:GME") {
+		t.Fatal("xyz:GME was rejected as an identity symbol")
+	}
+	request, err := NormalizeRequest(HistoryRequest{
+		Venue: "hyperliquid", CompareVenue: "ibkr", BaseAsset: "GME", QuoteAsset: "USDC",
+		VenueCanonicalSymbol: "XYZGMEUSDC", CompareVenueCanonicalSymbol: "GME",
+		VenueExchangeSymbol: "  xyz:GME  ", CompareExchangeSymbol: "36285627",
+		VenueProduct: "perpetual", CompareVenueProduct: "equity",
+		IdentityMode: "venue_symbol", Range: Range24h,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.VenueExchangeSymbol != "xyz:GME" || request.CompareExchangeSymbol != "36285627" {
+		t.Fatalf("exchange symbols=%q %q", request.VenueExchangeSymbol, request.CompareExchangeSymbol)
+	}
+	if request.VenueCanonicalSymbol != "XYZGMEUSDC" || request.CompareVenueCanonicalSymbol != "GME" {
+		t.Fatalf("canonical symbols=%q %q", request.VenueCanonicalSymbol, request.CompareVenueCanonicalSymbol)
+	}
+
+	t.Run("mixed case compare symbol", func(t *testing.T) {
+		mixed, err := NormalizeRequest(HistoryRequest{
+			Venue: "hyperliquid", CompareVenue: "ibkr", BaseAsset: "GME", QuoteAsset: "USDC",
+			VenueCanonicalSymbol: "XYZGMEUSDC", CompareVenueCanonicalSymbol: "GME",
+			VenueExchangeSymbol: "xyz:GME", CompareExchangeSymbol: "abc:TsLa",
+			VenueProduct: "perpetual", CompareVenueProduct: "equity",
+			IdentityMode: "venue_symbol", Range: Range24h,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mixed.VenueExchangeSymbol != "xyz:GME" || mixed.CompareExchangeSymbol != "abc:TsLa" {
+			t.Fatalf("exchange symbols=%q %q", mixed.VenueExchangeSymbol, mixed.CompareExchangeSymbol)
+		}
+	})
+}

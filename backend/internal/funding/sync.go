@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,7 +19,9 @@ type Synchronizer struct {
 	lock              instrumentLocker
 	adapters          []exchange.Adapter
 	snapshots         *SnapshotStore
+	tradefi           *TradefiService
 	logger            *slog.Logger
+	instrumentWrites  instrumentWriter
 	instrumentMu      sync.Mutex
 	currentMu         sync.Mutex
 	historyMu         sync.Mutex
@@ -47,11 +50,29 @@ func NewSynchronizer(
 	}
 }
 
+type instrumentWriter interface {
+	HasExchangeInstruments(context.Context, string) (bool, error)
+	UpsertInstruments(context.Context, []exchange.Instrument) ([]FundingInstrument, error)
+	DeactivateMissingInstruments(context.Context, string, string, []exchange.Instrument) error
+}
+
 func (s *Synchronizer) WithLock(lock instrumentLocker) *Synchronizer {
 	if lock != nil {
 		s.lock = lock
 	}
 	return s
+}
+
+func (s *Synchronizer) WithTradefi(service *TradefiService) *Synchronizer {
+	s.tradefi = service
+	return s
+}
+
+func (s *Synchronizer) writer() instrumentWriter {
+	if s.instrumentWrites != nil {
+		return s.instrumentWrites
+	}
+	return s.repository
 }
 
 func instrumentBucket(exchangeName, contractType string) string {
@@ -97,8 +118,16 @@ func (s *Synchronizer) SyncInstruments(ctx context.Context) ([]FundingInstrument
 	defer s.instrumentMu.Unlock()
 	var errs []error
 	var newPerpetuals []FundingInstrument
+	writer := s.writer()
+	type stagedCatalog struct {
+		name, contractType string
+		hadCatalog         bool
+		items              []exchange.Instrument
+	}
+	var staged []stagedCatalog
+	refreshedPerpetual := map[string]bool{}
 	for _, adapter := range s.adapters {
-		hadCatalog, err := s.repository.HasExchangeInstruments(ctx, adapter.Name())
+		hadCatalog, err := writer.HasExchangeInstruments(ctx, adapter.Name())
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -119,32 +148,94 @@ func (s *Synchronizer) SyncInstruments(ctx context.Context) ([]FundingInstrument
 				}
 				continue
 			}
-			inserted, err := s.repository.UpsertInstruments(ctx, refreshed)
-			if err != nil {
-				errs = append(errs, err)
-				continue
-			}
+			staged = append(staged, stagedCatalog{
+				name: adapter.Name(), contractType: contractType, hadCatalog: hadCatalog, items: refreshed,
+			})
 			if contractType == exchange.ContractTypePerpetual {
-				newPerpetuals = append(newPerpetuals, qualifyNewPerpetuals(hadCatalog, inserted)...)
+				refreshedPerpetual[adapter.Name()] = true
 			}
-			if err := s.repository.DeactivateMissingInstruments(
-				ctx, adapter.Name(), contractType, refreshed,
-			); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			s.dataMu.Lock()
-			s.instruments[instrumentBucket(adapter.Name(), contractType)] = refreshed
-			s.dataMu.Unlock()
-			s.logger.Info("instrument market synchronized",
-				"exchange", adapter.Name(), "contract_type", contractType,
-				"instruments", len(refreshed), "inserted", len(inserted))
 		}
 	}
-	if err := s.RefreshSnapshot(ctx); err != nil {
-		errs = append(errs, err)
+	previous := s.cachedPerpetuals()
+	var targets, sources []exchange.Instrument
+	for _, stage := range staged {
+		if stage.contractType != exchange.ContractTypePerpetual {
+			continue
+		}
+		targets = append(targets, stage.items...)
+		sources = append(sources, stage.items...)
+	}
+	for _, item := range previous {
+		if !refreshedPerpetual[item.Exchange] {
+			sources = append(sources, item)
+		}
+	}
+	identified := exchange.ApplyTradfiIdentities(targets, sources, previous)
+	offset := 0
+	for index := range staged {
+		if staged[index].contractType != exchange.ContractTypePerpetual {
+			continue
+		}
+		count := len(staged[index].items)
+		staged[index].items = identified[offset : offset+count]
+		offset += count
+	}
+	for _, stage := range staged {
+		inserted, err := writer.UpsertInstruments(ctx, stage.items)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if stage.contractType == exchange.ContractTypePerpetual {
+			newPerpetuals = append(newPerpetuals, qualifyNewPerpetuals(stage.hadCatalog, inserted)...)
+		}
+		if err := writer.DeactivateMissingInstruments(
+			ctx, stage.name, stage.contractType, stage.items,
+		); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		s.dataMu.Lock()
+		s.instruments[instrumentBucket(stage.name, stage.contractType)] = stage.items
+		s.dataMu.Unlock()
+		s.logger.Info("instrument market synchronized",
+			"exchange", stage.name, "contract_type", stage.contractType,
+			"instruments", len(stage.items), "inserted", len(inserted))
+	}
+	if s.repository != nil {
+		if err := s.RefreshSnapshot(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if s.tradefi != nil {
+		if err := s.tradefi.Reconcile(ctx, s.allPerpetuals()); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return newPerpetuals, errors.Join(errs...)
+}
+
+func (s *Synchronizer) cachedPerpetuals() []exchange.Instrument {
+	s.dataMu.RLock()
+	defer s.dataMu.RUnlock()
+	var result []exchange.Instrument
+	for key, items := range s.instruments {
+		if !strings.HasSuffix(key, "\x00"+exchange.ContractTypePerpetual) {
+			continue
+		}
+		result = append(result, items...)
+	}
+	return result
+}
+
+func (s *Synchronizer) allPerpetuals() []exchange.Instrument {
+	s.dataMu.RLock()
+	defer s.dataMu.RUnlock()
+	var result []exchange.Instrument
+	for _, adapter := range s.adapters {
+		result = append(result, s.instruments[instrumentBucket(adapter.Name(), exchange.ContractTypePerpetual)]...)
+	}
+	return result
 }
 
 func authoritativeInstrumentRefresh(instruments []exchange.Instrument, err error) bool {
@@ -211,6 +302,9 @@ func (s *Synchronizer) SyncCurrent(ctx context.Context) error {
 	}
 	if err := s.RefreshSnapshot(ctx); err != nil {
 		errs = append(errs, err)
+	}
+	if s.tradefi != nil {
+		s.tradefi.PublishFunding(s.snapshots.View().Rates)
 	}
 	return errors.Join(errs...)
 }

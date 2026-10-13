@@ -161,6 +161,87 @@ func TestHistoryCacheBuildsImmutableBlocksAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestHistoryCacheKeepsLastGoodWhenLaterBatchFails(t *testing.T) {
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	binance, okx := testHistoryPairs()
+	source := &recordingPairHistorySource{quotes: []HistoryQuote{
+		historyQuote(binance, now.Add(-2*time.Minute), 1, 2),
+		historyQuote(okx, now.Add(-2*time.Minute), 3, 4),
+	}}
+	partial := &partialBatchFailureSource{inner: source}
+	cache := NewHistoryCache(partial, time.Hour, 12_288)
+	if err := cache.Update(context.Background(), cacheTestRates(now), now, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	published := cache.Generation()
+	if published.ID != 1 {
+		t.Fatalf("generation=%d", published.ID)
+	}
+	before, _, err := cache.SnapshotRange(now.Add(-time.Hour), now, []HistoryPair{binance, okx})
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial.fail = true
+	err = cache.Update(context.Background(), cacheTestRates(now), now.Add(time.Minute), time.Hour)
+	if err == nil || !strings.Contains(err.Error(), "later batch failed") {
+		t.Fatalf("err=%v", err)
+	}
+	if cache.Generation() != published || cache.Generation().ID != 1 {
+		t.Fatal("failed batch published a new generation")
+	}
+	after, generation, err := cache.SnapshotRange(
+		now.Add(-time.Hour), now, []HistoryPair{binance, okx},
+	)
+	if err != nil || generation != published {
+		t.Fatalf("snapshot generation=%v err=%v", generation, err)
+	}
+	quote, ok := after[binance].AtOrBefore(now.Add(-2*time.Minute).Unix()/60, 0)
+	previous, previousOK := before[binance].AtOrBefore(now.Add(-2*time.Minute).Unix()/60, 0)
+	if !ok || !previousOK || quote.Bid != previous.Bid {
+		t.Fatalf("last-good quote=%+v previous=%+v", quote, previous)
+	}
+	partial.fail = false
+	source.quotes = append(source.quotes,
+		historyQuote(binance, now.Add(time.Minute), 6, 7),
+		historyQuote(okx, now.Add(time.Minute), 8, 9),
+	)
+	if err := cache.Update(
+		context.Background(), cacheTestRates(now), now.Add(2*time.Minute), time.Hour,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if cache.Generation().ID != 2 {
+		t.Fatalf("generation id=%d", cache.Generation().ID)
+	}
+}
+
+type partialBatchFailureSource struct {
+	inner *recordingPairHistorySource
+	fail  bool
+}
+
+func (s *partialBatchFailureSource) QueryPairs(
+	ctx context.Context, from, to time.Time, pairs []HistoryPair,
+	consume func(HistoryQuote) error,
+) error {
+	if err := s.inner.QueryPairs(ctx, from, to, pairs, consume); err != nil {
+		return err
+	}
+	if s.fail {
+		return errors.New("later batch failed")
+	}
+	return nil
+}
+
+func (s *partialBatchFailureSource) QueryWarmPairs(
+	ctx context.Context, from, to time.Time, pairs []HistoryPair,
+	consume func(HistoryQuote) error,
+) error {
+	return s.inner.QueryWarmPairs(ctx, from, to, pairs, consume)
+}
+
+func (s *partialBatchFailureSource) Close() error { return nil }
+
 func TestTailProjectionFitsObservedProductionUniverse(t *testing.T) {
 	const observedTailLegs = 4_134
 	pairs := make([]HistoryPair, observedTailLegs)

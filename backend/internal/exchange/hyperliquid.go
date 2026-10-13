@@ -50,10 +50,7 @@ type hyperliquidSpotMeta struct {
 const (
 	hyperliquidPerpMaxDecimals = 6
 	hyperliquidMinNotional     = 10
-	hyperliquidHIP3Dex         = "xyz"
 )
-
-var hyperliquidPerpDexes = []string{"", hyperliquidHIP3Dex}
 
 func hyperliquidMetaBody(dex string) string {
 	if dex == "" {
@@ -83,6 +80,67 @@ func hyperliquidInstrumentMetadata(item any, dex string) json.RawMessage {
 	return result
 }
 
+func (h *Hyperliquid) perpDexes(ctx context.Context) ([]string, error) {
+	return fetchHyperliquidPerpDexes(h.client, ctx)
+}
+
+func fetchHyperliquidPerpDexes(c client, ctx context.Context) ([]string, error) {
+	var raw []json.RawMessage
+	if err := c.post(ctx, "/info", `{"type":"perpDexs"}`, &raw); err != nil {
+		return nil, err
+	}
+	return hyperliquidDexNames(raw)
+}
+
+func hyperliquidDexNames(raw []json.RawMessage) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("hyperliquid perpDexs: empty response")
+	}
+	var dexes []string
+	for index, item := range raw {
+		if len(item) == 0 || string(item) == "null" {
+			if index == 0 {
+				dexes = append(dexes, "")
+			}
+			continue
+		}
+		var dex struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(item, &dex); err != nil {
+			return nil, fmt.Errorf("hyperliquid perpDexs: %w", err)
+		}
+		name := strings.TrimSpace(dex.Name)
+		if name == "" || strings.EqualFold(name, "io") {
+			continue
+		}
+		dexes = append(dexes, name)
+	}
+	if len(dexes) == 0 {
+		return nil, fmt.Errorf("hyperliquid perpDexs: no dexes")
+	}
+	return dexes, nil
+}
+
+func fetchHyperliquidCategories(c client, ctx context.Context) (map[string]string, error) {
+	var rows [][]string
+	if err := c.post(ctx, "/info", `{"type":"perpCategories"}`, &rows); err != nil {
+		return nil, err
+	}
+	categories := make(map[string]string, len(rows))
+	for _, row := range rows {
+		if len(row) < 2 {
+			continue
+		}
+		coin := strings.TrimSpace(row[0])
+		if coin == "" {
+			continue
+		}
+		categories[coin] = strings.TrimSpace(row[1])
+	}
+	return categories, nil
+}
+
 func (h *Hyperliquid) metaAndContexts(ctx context.Context, dex string) (hyperliquidMeta, []hyperliquidContext, error) {
 	return hyperliquidMetaAndContexts(h.client, ctx, dex)
 }
@@ -107,6 +165,10 @@ func hyperliquidMetaAndContexts(c client, ctx context.Context, dex string) (hype
 }
 
 func parseHyperliquidInstruments(meta hyperliquidMeta, dex string) []Instrument {
+	return parseHyperliquidPerps(meta, dex, nil, nil)
+}
+
+func parseHyperliquidPerps(meta hyperliquidMeta, dex string, categories map[string]string, annotations map[string]hyperliquidAnnotation) []Instrument {
 	result := make([]Instrument, 0, len(meta.Universe))
 	for _, item := range meta.Universe {
 		if item.IsDelisted {
@@ -115,7 +177,7 @@ func parseHyperliquidInstruments(meta hyperliquidMeta, dex string) []Instrument 
 		exchangeSymbol, baseAsset := hyperliquidCoin(dex, item.Name)
 		step, stepText := hyperliquidDecimalStep(item.SzDecimals)
 		tick := hyperliquidPerpPriceTick(item.SzDecimals)
-		result = append(result, Instrument{
+		parsed := Instrument{
 			Exchange: "hyperliquid", ExchangeSymbol: exchangeSymbol,
 			BaseAsset: baseAsset, QuoteAsset: "USDC",
 			GlobalSymbol: GlobalSymbol(baseAsset, "USDC"), IntervalHours: 1,
@@ -129,10 +191,130 @@ func parseHyperliquidInstruments(meta hyperliquidMeta, dex string) []Instrument 
 			MarketMaxQuantityStatus: ConstraintNotApplicable,
 			MarketMinNotional:       strconv.Itoa(hyperliquidMinNotional),
 			MarketMinNotionalStatus: ConstraintKnown,
-			Metadata:                hyperliquidInstrumentMetadata(item, dex), SourceUpdatedAt: time.Now().UTC(),
-		})
+			Metadata:                hyperliquidMetadataWithAnnotation(hyperliquidInstrumentMetadata(item, dex), annotations[exchangeSymbol]), SourceUpdatedAt: time.Now().UTC(),
+		}
+		parsed.SetUnderlying(hyperliquidUnderlying(exchangeSymbol, baseAsset, dex, categories, annotations))
+		result = append(result, parsed)
 	}
 	return result
+}
+
+type hyperliquidAnnotation struct {
+	Category    string   `json:"category"`
+	DisplayName string   `json:"displayName"`
+	Keywords    []string `json:"keywords"`
+}
+
+func fetchHyperliquidAnnotations(c client, ctx context.Context) map[string]hyperliquidAnnotation {
+	var raw json.RawMessage
+	if err := c.post(ctx, "/info", `{"type":"perpConciseAnnotations"}`, &raw); err != nil {
+		raw = nil
+		if err := c.post(ctx, "/info", `{"type":"perpAnnotation"}`, &raw); err != nil {
+			return map[string]hyperliquidAnnotation{}
+		}
+	}
+	return decodeHyperliquidAnnotations(raw)
+}
+
+func decodeHyperliquidAnnotations(raw json.RawMessage) map[string]hyperliquidAnnotation {
+	result := map[string]hyperliquidAnnotation{}
+	if len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" || string(raw) == "[]" {
+		return result
+	}
+	var pairs [][]json.RawMessage
+	if err := json.Unmarshal(raw, &pairs); err == nil {
+		for _, pair := range pairs {
+			if len(pair) < 2 {
+				continue
+			}
+			var coin string
+			if err := json.Unmarshal(pair[0], &coin); err != nil {
+				continue
+			}
+			var body hyperliquidAnnotation
+			if err := json.Unmarshal(pair[1], &body); err != nil {
+				var text string
+				if err := json.Unmarshal(pair[1], &text); err != nil {
+					continue
+				}
+				body.DisplayName = text
+			}
+			result[strings.TrimSpace(coin)] = body
+		}
+		return result
+	}
+	var legacy map[string]string
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		return result
+	}
+	for coin, text := range legacy {
+		result[strings.TrimSpace(coin)] = hyperliquidAnnotation{DisplayName: text}
+	}
+	return result
+}
+
+func hyperliquidMetadataWithAnnotation(raw json.RawMessage, ann hyperliquidAnnotation) json.RawMessage {
+	if ann.Category == "" && ann.DisplayName == "" && len(ann.Keywords) == 0 {
+		return raw
+	}
+	doc := map[string]any{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &doc)
+	}
+	doc["annotation"] = ann
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
+func hyperliquidUnderlying(exchangeSymbol, baseAsset, dex string, categories map[string]string, annotations map[string]hyperliquidAnnotation) UnderlyingReference {
+	ann := hyperliquidAnnotation{}
+	if annotations != nil {
+		ann = annotations[exchangeSymbol]
+	}
+	if categories == nil && ann.Category == "" && ann.DisplayName == "" && len(ann.Keywords) == 0 {
+		if dex == "" {
+			return CryptoReference(baseAsset, "USDC", "hyperliquid.perpetual")
+		}
+		return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: baseAsset}
+	}
+	category := ""
+	if categories != nil {
+		category = categories[exchangeSymbol]
+	}
+	if category == "" {
+		category = ann.Category
+	}
+	text := strings.ToLower(category + " " + ann.DisplayName + " " + strings.Join(ann.Keywords, " "))
+	if strings.Contains(text, "bond") {
+		return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: baseAsset, Source: "hyperliquid.annotation.bond"}
+	}
+	if category == "" {
+		return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: baseAsset, Source: "hyperliquid.info.perpCategories"}
+	}
+	source := "hyperliquid.info.perpCategories=" + strings.ToLower(strings.TrimSpace(category))
+	switch strings.ToLower(strings.TrimSpace(category)) {
+	case "stock", "stocks", "etf":
+		class := AssetClassStock
+		if strings.EqualFold(strings.TrimSpace(category), "etf") {
+			class = AssetClassETF
+		}
+		return TradfiCandidate(class, baseAsset, "USDC", source)
+	case "crypto":
+		return CryptoReference(baseAsset, "USDC", source)
+	case "commodities", "commodity":
+		return CommodityReference(baseAsset, "USD", source)
+	case "indices", "index":
+		return UnderlyingReference{AssetClass: AssetClassIndex, Symbol: baseAsset, PerpQuoteCurrency: "USDC", Source: source}
+	case "preipo", "pre-ipo":
+		return UnderlyingReference{AssetClass: AssetClassPreIPO, Symbol: baseAsset, PerpQuoteCurrency: "USDC", Source: source}
+	case "fx":
+		return UnderlyingReference{AssetClass: AssetClassFX, Symbol: baseAsset, PerpQuoteCurrency: "USDC", UnderlyingCurrency: "USD", Source: source}
+	default:
+		return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: baseAsset, Source: source}
+	}
 }
 
 func hyperliquidDecimalStep(decimals int) (float64, string) {
@@ -215,21 +397,24 @@ func (h *Hyperliquid) SyncInstruments(ctx context.Context, contractType string) 
 	if contractType != ContractTypePerpetual {
 		return nil, fmt.Errorf("hyperliquid: unsupported contract type %q", contractType)
 	}
+	dexes, err := h.perpDexes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	categories, err := fetchHyperliquidCategories(h.client, ctx)
+	if err != nil {
+		return nil, err
+	}
+	annotations := fetchHyperliquidAnnotations(h.client, ctx)
 	var result []Instrument
-	var errs []error
-	for _, dex := range hyperliquidPerpDexes {
+	for _, dex := range dexes {
 		meta, _, err := h.metaAndContexts(ctx, dex)
 		if err != nil {
-			slog.Default().Warn("hyperliquid metaAndAssetCtxs failed", "dex", dex, "error", err)
-			errs = append(errs, err)
-			continue
+			return nil, fmt.Errorf("hyperliquid metaAndAssetCtxs dex %q: %w", dex, err)
 		}
-		result = append(result, parseHyperliquidInstruments(meta, dex)...)
+		result = append(result, parseHyperliquidPerps(meta, dex, categories, annotations)...)
 	}
 	if len(result) == 0 {
-		if err := errors.Join(errs...); err != nil {
-			return nil, err
-		}
 		return nil, fmt.Errorf("hyperliquid: empty perpetual catalog")
 	}
 	return result, nil
@@ -269,9 +454,13 @@ func parseHyperliquidCurrent(meta hyperliquidMeta, contexts []hyperliquidContext
 }
 
 func (h *Hyperliquid) FetchCurrent(ctx context.Context, _ []Instrument) ([]FundingRate, error) {
+	dexes, err := h.perpDexes(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var result []FundingRate
 	var errs []error
-	for _, dex := range hyperliquidPerpDexes {
+	for _, dex := range dexes {
 		meta, contexts, err := h.metaAndContexts(ctx, dex)
 		if err != nil {
 			slog.Default().Warn("hyperliquid current funding failed", "dex", dex, "error", err)

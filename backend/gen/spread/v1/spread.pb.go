@@ -138,6 +138,12 @@ type GetBasisSpreadHistoryRequest struct {
 	CompareVenue                string                 `protobuf:"bytes,5,opt,name=compare_venue,json=compareVenue,proto3" json:"compare_venue,omitempty"`
 	VenueCanonicalSymbol        string                 `protobuf:"bytes,6,opt,name=venue_canonical_symbol,json=venueCanonicalSymbol,proto3" json:"venue_canonical_symbol,omitempty"`
 	CompareVenueCanonicalSymbol string                 `protobuf:"bytes,7,opt,name=compare_venue_canonical_symbol,json=compareVenueCanonicalSymbol,proto3" json:"compare_venue_canonical_symbol,omitempty"`
+	IdentityMode                string                 `protobuf:"bytes,8,opt,name=identity_mode,json=identityMode,proto3" json:"identity_mode,omitempty"`
+	VenueProduct                string                 `protobuf:"bytes,9,opt,name=venue_product,json=venueProduct,proto3" json:"venue_product,omitempty"`
+	CompareVenueProduct         string                 `protobuf:"bytes,10,opt,name=compare_venue_product,json=compareVenueProduct,proto3" json:"compare_venue_product,omitempty"`
+	VenueExchangeSymbol         string                 `protobuf:"bytes,11,opt,name=venue_exchange_symbol,json=venueExchangeSymbol,proto3" json:"venue_exchange_symbol,omitempty"`
+	CompareExchangeSymbol       string                 `protobuf:"bytes,12,opt,name=compare_exchange_symbol,json=compareExchangeSymbol,proto3" json:"compare_exchange_symbol,omitempty"`
+	PriceMultiplier             string                 `protobuf:"bytes,13,opt,name=price_multiplier,json=priceMultiplier,proto3" json:"price_multiplier,omitempty"`
 	unknownFields               protoimpl.UnknownFields
 	sizeCache                   protoimpl.SizeCache
 }
@@ -217,6 +223,48 @@ func (x *GetBasisSpreadHistoryRequest) GetVenueCanonicalSymbol() string {
 func (x *GetBasisSpreadHistoryRequest) GetCompareVenueCanonicalSymbol() string {
 	if x != nil {
 		return x.CompareVenueCanonicalSymbol
+	}
+	return ""
+}
+
+func (x *GetBasisSpreadHistoryRequest) GetIdentityMode() string {
+	if x != nil {
+		return x.IdentityMode
+	}
+	return ""
+}
+
+func (x *GetBasisSpreadHistoryRequest) GetVenueProduct() string {
+	if x != nil {
+		return x.VenueProduct
+	}
+	return ""
+}
+
+func (x *GetBasisSpreadHistoryRequest) GetCompareVenueProduct() string {
+	if x != nil {
+		return x.CompareVenueProduct
+	}
+	return ""
+}
+
+func (x *GetBasisSpreadHistoryRequest) GetVenueExchangeSymbol() string {
+	if x != nil {
+		return x.VenueExchangeSymbol
+	}
+	return ""
+}
+
+func (x *GetBasisSpreadHistoryRequest) GetCompareExchangeSymbol() string {
+	if x != nil {
+		return x.CompareExchangeSymbol
+	}
+	return ""
+}
+
+func (x *GetBasisSpreadHistoryRequest) GetPriceMultiplier() string {
+	if x != nil {
+		return x.PriceMultiplier
 	}
 	return ""
 }
@@ -501,7 +549,7 @@ var File_spread_v1_spread_proto protoreflect.FileDescriptor
 
 const file_spread_v1_spread_proto_rawDesc = "" +
 	"\n" +
-	"\x16spread/v1/spread.proto\x12\tspread.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc7\x02\n" +
+	"\x16spread/v1/spread.proto\x12\tspread.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdc\x04\n" +
 	"\x1cGetBasisSpreadHistoryRequest\x12\x14\n" +
 	"\x05venue\x18\x01 \x01(\tR\x05venue\x12\x1d\n" +
 	"\n" +
@@ -511,7 +559,14 @@ const file_spread_v1_spread_proto_rawDesc = "" +
 	"\x05range\x18\x04 \x01(\x0e2\x1b.spread.v1.BasisSpreadRangeR\x05range\x12#\n" +
 	"\rcompare_venue\x18\x05 \x01(\tR\fcompareVenue\x124\n" +
 	"\x16venue_canonical_symbol\x18\x06 \x01(\tR\x14venueCanonicalSymbol\x12C\n" +
-	"\x1ecompare_venue_canonical_symbol\x18\a \x01(\tR\x1bcompareVenueCanonicalSymbol\"\xb7\x01\n" +
+	"\x1ecompare_venue_canonical_symbol\x18\a \x01(\tR\x1bcompareVenueCanonicalSymbol\x12#\n" +
+	"\ridentity_mode\x18\b \x01(\tR\fidentityMode\x12#\n" +
+	"\rvenue_product\x18\t \x01(\tR\fvenueProduct\x122\n" +
+	"\x15compare_venue_product\x18\n" +
+	" \x01(\tR\x13compareVenueProduct\x122\n" +
+	"\x15venue_exchange_symbol\x18\v \x01(\tR\x13venueExchangeSymbol\x126\n" +
+	"\x17compare_exchange_symbol\x18\f \x01(\tR\x15compareExchangeSymbol\x12)\n" +
+	"\x10price_multiplier\x18\r \x01(\tR\x0fpriceMultiplier\"\xb7\x01\n" +
 	"\x10BasisSpreadPoint\x12*\n" +
 	"\x02ts\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x12\x1d\n" +
 	"\n" +

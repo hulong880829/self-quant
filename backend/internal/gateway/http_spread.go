@@ -27,11 +27,24 @@ func (h *Handler) getBasisSpreadHistory(writer http.ResponseWriter, request *htt
 	compareVenue := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("compareVenue")))
 	venueSymbol := strings.ToUpper(strings.TrimSpace(request.URL.Query().Get("venueSymbol")))
 	compareSymbol := strings.ToUpper(strings.TrimSpace(request.URL.Query().Get("compareVenueSymbol")))
+	identityMode := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("identityMode")))
+	venueProduct := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("venueProduct")))
+	compareProduct := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("compareVenueProduct")))
+	venueExchange := strings.TrimSpace(request.URL.Query().Get("venueExchangeSymbol"))
+	compareExchange := strings.TrimSpace(request.URL.Query().Get("compareExchangeSymbol"))
+	priceMultiplier := strings.TrimSpace(request.URL.Query().Get("priceMultiplier"))
+	symbolOK := spread.ValidCanonicalSymbol
+	if identityMode == "venue_symbol" {
+		symbolOK = spread.ValidIdentitySymbol
+	}
 	protoRange, ok := basisSpreadRange(rangeValue)
 	if !ok || !spread.ValidVenue(venue) || !spread.ValidAsset(baseAsset) || !spread.ValidAsset(quoteAsset) ||
 		(compareVenue != "" && (!spread.ValidVenue(compareVenue) || compareVenue == venue)) ||
-		(venueSymbol != "" && !spread.ValidCanonicalSymbol(venueSymbol)) ||
-		(compareSymbol != "" && !spread.ValidCanonicalSymbol(compareSymbol)) {
+		(identityMode != "" && identityMode != "venue_symbol") ||
+		(venueSymbol != "" && !symbolOK(venueSymbol)) ||
+		(compareSymbol != "" && !symbolOK(compareSymbol)) ||
+		(identityMode == "venue_symbol" && (venueExchange == "" || compareExchange == "" ||
+			!spread.ValidIdentitySymbol(venueExchange) || !spread.ValidIdentitySymbol(compareExchange))) {
 		writeJSON(writer, http.StatusBadRequest, map[string]string{
 			"error": "venue, assets and range are invalid",
 		})
@@ -43,6 +56,9 @@ func (h *Handler) getBasisSpreadHistory(writer http.ResponseWriter, request *htt
 		Venue: venue, CompareVenue: compareVenue, BaseAsset: baseAsset,
 		QuoteAsset: quoteAsset, Range: protoRange,
 		VenueCanonicalSymbol: venueSymbol, CompareVenueCanonicalSymbol: compareSymbol,
+		IdentityMode: identityMode, VenueProduct: venueProduct,
+		CompareVenueProduct: compareProduct, VenueExchangeSymbol: venueExchange,
+		CompareExchangeSymbol: compareExchange, PriceMultiplier: priceMultiplier,
 	})
 	if err != nil {
 		h.writeSpreadError(writer, request, err)
@@ -51,7 +67,8 @@ func (h *Handler) getBasisSpreadHistory(writer http.ResponseWriter, request *htt
 	payload := basisSpreadHistoryJSON(response, rangeValue)
 	etag := basisSpreadETag(
 		venue, compareVenue, baseAsset, quoteAsset, venueSymbol, compareSymbol,
-		rangeValue, response.GetAsOf().AsTime(),
+		identityMode, venueProduct, compareProduct, venueExchange, compareExchange,
+		priceMultiplier, rangeValue, response.GetAsOf().AsTime(),
 	)
 	writer.Header().Set("ETag", etag)
 	writer.Header().Set("Cache-Control", "public, max-age=15")
@@ -140,12 +157,15 @@ func basisSpreadAvailabilityJSON(value spreadv1.BasisSpreadAvailability) string 
 }
 
 func basisSpreadETag(
-	venue, compareVenue, baseAsset, quoteAsset, venueSymbol, compareSymbol, rangeValue string,
+	venue, compareVenue, baseAsset, quoteAsset, venueSymbol, compareSymbol,
+	identityMode, venueProduct, compareProduct, venueExchange, compareExchange,
+	priceMultiplier, rangeValue string,
 	asOf time.Time,
 ) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		venue, compareVenue, baseAsset, quoteAsset, venueSymbol, compareSymbol,
-		rangeValue, asOf.UTC().Format(time.RFC3339Nano),
+		identityMode, venueProduct, compareProduct, venueExchange, compareExchange,
+		priceMultiplier, rangeValue, asOf.UTC().Format(time.RFC3339Nano),
 	}, "|")))
 	return `"` + hex.EncodeToString(sum[:8]) + `"`
 }

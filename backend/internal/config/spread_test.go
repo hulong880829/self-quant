@@ -15,6 +15,18 @@ func TestSpreadFromEnvDefaults(t *testing.T) {
 	}
 }
 
+func TestSpreadFromEnvFallsBackToDeprecatedClickHousePassword(t *testing.T) {
+	t.Setenv("CLICKHOUSE_PASSWORD", "")
+	t.Setenv("CLICKHOUSE_BBO_PASSWORD", "legacy-secret")
+	config, err := SpreadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.ClickHousePassword != "legacy-secret" {
+		t.Fatalf("deprecated password fallback = %q", config.ClickHousePassword)
+	}
+}
+
 func TestSpreadFromEnvRejectsInvalidTable(t *testing.T) {
 	t.Setenv("CLICKHOUSE_TABLE", "crypto bbo")
 	if _, err := SpreadFromEnv(); err == nil {

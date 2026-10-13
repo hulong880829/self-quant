@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -86,6 +87,8 @@ func (b *Binance) Name() string { return "binance" }
 type binanceExchangeInfo struct {
 	Symbols []struct {
 		Symbol, BaseAsset, QuoteAsset, MarginAsset, Status, ContractType string
+		UnderlyingType                                                   string
+		UnderlyingSubType                                                []string
 		ContractSize                                                     float64 `json:"contractSize"`
 		Filters                                                          []struct {
 			FilterType  string `json:"filterType"`
@@ -140,7 +143,7 @@ func parseBinanceInstruments(payload binanceExchangeInfo) []Instrument {
 		}
 		marketMinNotional, marketMinNotionalStatus := knownDecimalConstraint(minNotionalRaw)
 		metadata := instrumentMetadata(item, "linear", "base")
-		result = append(result, Instrument{
+		parsed := Instrument{
 			Exchange: "binance", ExchangeSymbol: item.Symbol,
 			BaseAsset: item.BaseAsset, QuoteAsset: item.QuoteAsset,
 			GlobalSymbol:  GlobalSymbol(item.BaseAsset, item.QuoteAsset),
@@ -155,9 +158,95 @@ func parseBinanceInstruments(payload binanceExchangeInfo) []Instrument {
 			MarketMaxQuantity: marketMaxQuantity, MarketMaxQuantityStatus: marketMaxQuantityStatus,
 			MarketMinNotional: marketMinNotional, MarketMinNotionalStatus: marketMinNotionalStatus,
 			Metadata: metadata, SourceUpdatedAt: time.Now().UTC(),
-		})
+		}
+		if item.ContractType == "TRADIFI_PERPETUAL" {
+			parsed.SetUnderlying(binanceTradfiReference(item.UnderlyingType, item.BaseAsset, item.QuoteAsset))
+		} else {
+			parsed.SetUnderlying(CryptoReference(item.BaseAsset, item.QuoteAsset, "binance.perpetual"))
+		}
+		result = append(result, parsed)
 	}
 	return result
+}
+
+func binanceTradfiReference(underlyingType, base, quote string) UnderlyingReference {
+	kind := strings.ToUpper(strings.TrimSpace(underlyingType))
+	source := TradefiClassificationSourceBinance
+	if kind != "" {
+		source = "binance.exchangeInfo.underlyingType=" + kind
+	}
+	switch kind {
+	case "EQUITY":
+		return USDStockReference(base, quote, "", source)
+	case "COMMODITY":
+		return CommodityReference(base, "USD", source)
+	case "FX":
+		pairBase, pairQuote, ok := SplitFXPair(base)
+		if !ok {
+			return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: base, Source: source}
+		}
+		return FXReference(pairBase, pairQuote, quote, source)
+	case "HK_EQUITY":
+		code, ok := NormalizeEquityTicker("HK", base)
+		if !ok {
+			return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: base, Source: source}
+		}
+		return RegionalStock(code, "HK", "HKD", quote, "", source)
+	case "KR_EQUITY":
+		code, ok := NormalizeEquityTicker("KR", base)
+		if !ok {
+			return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: base, Source: source}
+		}
+		return RegionalStock(code, "KR", "KRW", quote, "", source)
+	case "CN_EQUITY":
+		code, ok := NormalizeEquityTicker("CN", base)
+		if !ok {
+			return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: base, Source: source}
+		}
+		return RegionalStock(code, "CN", "CNY", quote, "", source)
+	case "PREMARKET":
+		return PreMarketReference(base, source)
+	default:
+		return UnderlyingReference{
+			AssetClass: AssetClassTradfiUnclassified, Symbol: base,
+			PerpQuoteCurrency: quote, Source: source,
+		}
+	}
+}
+
+func (b *Binance) attachBinanceConstituents(ctx context.Context, items []Instrument) []Instrument {
+	for index := range items {
+		if !binanceNeedsConstituents(items[index]) {
+			continue
+		}
+		var payload struct {
+			Constituents []ConstituentRow `json:"constituents"`
+		}
+		err := b.client.get(ctx, "/fapi/v1/constituents", url.Values{
+			"symbol": {items[index].ExchangeSymbol},
+		}, &payload)
+		items[index].Metadata = attachConstituentEvidence(items[index].Metadata, err, payload.Constituents)
+	}
+	return items
+}
+
+func binanceNeedsConstituents(item Instrument) bool {
+	if item.Underlying.PreMarket || item.Underlying.Routable() {
+		return false
+	}
+	return strings.Contains(item.Underlying.Source, "underlyingType") ||
+		item.Underlying.AssetClass == AssetClassTradfiUnclassified
+}
+
+func attachConstituentEvidence(raw json.RawMessage, err error, rows []ConstituentRow) json.RawMessage {
+	evidence := ConstituentEvidence{Status: constituentStatusEmpty}
+	if err != nil {
+		evidence.Status = constituentStatusError
+	} else if len(rows) > 0 {
+		evidence.Status = constituentStatusOK
+		evidence.Rows = rows
+	}
+	return writeConstituents(raw, evidence)
 }
 
 func parseBinanceCoinInstruments(payload binanceExchangeInfo) []Instrument {
@@ -211,7 +300,7 @@ func (b *Binance) SyncInstruments(ctx context.Context, contractType string) ([]I
 	if err := b.client.get(ctx, "/fapi/v1/exchangeInfo", nil, &payload); err != nil {
 		return nil, err
 	}
-	result := parseBinanceInstruments(payload)
+	result := b.attachBinanceConstituents(ctx, parseBinanceInstruments(payload))
 	var coinPayload binanceExchangeInfo
 	if err := b.coinClient.get(ctx, "/dapi/v1/exchangeInfo", nil, &coinPayload); err != nil {
 		return nil, err

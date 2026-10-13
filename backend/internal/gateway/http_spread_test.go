@@ -147,6 +147,26 @@ func TestBasisSpreadHistoryForwardsCompareVenue(t *testing.T) {
 	}
 }
 
+func TestBasisSpreadHistoryPreservesExchangeSymbolCase(t *testing.T) {
+	server := &testSpreadServer{}
+	router := spreadRouter(t, server)
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/basis-spreads/hyperliquid/GME/USDC/history?range=24h&compareVenue=ibkr&venueSymbol=XYZGMEUSDC&compareVenueSymbol=GME&identityMode=venue_symbol&venueProduct=perpetual&compareVenueProduct=equity&venueExchangeSymbol=xyz%3AGME&compareExchangeSymbol=36285627",
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if server.last == nil ||
+		server.last.GetVenueExchangeSymbol() != "xyz:GME" ||
+		server.last.GetCompareExchangeSymbol() != "36285627" {
+		t.Fatalf("forwarded=%+v", server.last)
+	}
+}
+
 func TestBasisSpreadHistoryAcceptsEncodedChineseAsset(t *testing.T) {
 	server := &testSpreadServer{}
 	router := spreadRouter(t, server)

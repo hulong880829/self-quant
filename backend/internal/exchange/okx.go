@@ -22,10 +22,10 @@ type okxEnvelope[T any] struct {
 	Data []T    `json:"data"`
 }
 type okxInstrument struct {
-	InstID, InstType, InstFamily, State, CtType string
-	BaseCcy, QuoteCcy, SettleCcy, CtValCcy      string
-	CtVal, CtMult, TickSz, LotSz, MinSz         string
-	MaxLmtSz, MaxMktSz                          string
+	InstID, InstType, InstFamily, State, CtType, InstCategory, RuleType string
+	BaseCcy, QuoteCcy, SettleCcy, CtValCcy                              string
+	CtVal, CtMult, TickSz, LotSz, MinSz                                 string
+	MaxLmtSz, MaxMktSz                                                  string
 }
 
 func parseOKXInstruments(items []okxInstrument, contractType string) []Instrument {
@@ -63,7 +63,7 @@ func parseOKXInstruments(items []okxInstrument, contractType string) []Instrumen
 			model = "linear"
 		}
 		metadata := instrumentMetadata(item, model, "contracts")
-		result = append(result, Instrument{
+		parsed := Instrument{
 			Exchange: "okx", ExchangeSymbol: item.InstID,
 			BaseAsset: baseAsset, QuoteAsset: quoteAsset,
 			GlobalSymbol:  GlobalSymbol(baseAsset, quoteAsset),
@@ -78,9 +78,42 @@ func parseOKXInstruments(items []okxInstrument, contractType string) []Instrumen
 			MarketMaxQuantity: marketMaxQuantity, MarketMaxQuantityStatus: marketMaxQuantityStatus,
 			MarketMinNotionalStatus: ConstraintNotApplicable,
 			Metadata:                metadata, SourceUpdatedAt: time.Now().UTC(),
-		})
+		}
+		if contractType == ContractTypePerpetual {
+			parsed.SetUnderlying(okxUnderlying(item, baseAsset, quoteAsset))
+		}
+		result = append(result, parsed)
 	}
 	return result
+}
+
+func okxUnderlying(item okxInstrument, symbol, perpQuote string) UnderlyingReference {
+	source := "okx.instruments.instCategory=" + strings.TrimSpace(item.InstCategory)
+	if strings.EqualFold(strings.TrimSpace(item.RuleType), "pre_market") {
+		return PreMarketReference(symbol, source)
+	}
+	switch strings.ToLower(strings.TrimSpace(item.InstCategory)) {
+	case "1":
+		return CryptoReference(symbol, perpQuote, source)
+	case "3", "stock", "stocks", "equity", "stk":
+		return TradfiCandidate(AssetClassStock, symbol, perpQuote, source)
+	case "4", "commodity", "commodities":
+		return CommodityReference(symbol, "USD", source)
+	case "5", "fx", "forex":
+		base, quote, ok := SplitFXPair(symbol)
+		if !ok {
+			return UnderlyingReference{AssetClass: AssetClassFX, Symbol: symbol, Source: source}
+		}
+		return FXReference(base, quote, perpQuote, source)
+	case "etf":
+		return TradfiCandidate(AssetClassETF, symbol, perpQuote, source)
+	case "index", "indices":
+		return UnderlyingReference{AssetClass: AssetClassIndex, Symbol: symbol, PerpQuoteCurrency: perpQuote, Source: source}
+	case "preipo", "pre-ipo":
+		return UnderlyingReference{AssetClass: AssetClassPreIPO, Symbol: symbol, PerpQuoteCurrency: perpQuote, Source: source}
+	default:
+		return CryptoReference(symbol, perpQuote, "okx.perpetual")
+	}
 }
 
 func okxInstrumentAssets(item okxInstrument, contractType string) (string, string, bool) {

@@ -33,6 +33,12 @@ message GetBasisSpreadHistoryRequest {
   string compare_venue = 5;
   string venue_canonical_symbol = 6;
   string compare_venue_canonical_symbol = 7;
+  string identity_mode = 8;
+  string venue_product = 9;
+  string compare_venue_product = 10;
+  string venue_exchange_symbol = 11;
+  string compare_exchange_symbol = 12;
+  string price_multiplier = 13;
 }
 
 message BasisSpreadPoint {

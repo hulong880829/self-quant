@@ -21,35 +21,40 @@ import (
 var ErrNoSettledHistory = errors.New("no settled funding history")
 
 type Instrument struct {
-	Exchange                 string
-	ExchangeSymbol           string
-	BaseAsset                string
-	QuoteAsset               string
-	GlobalSymbol             string
-	IntervalHours            float64
-	SettleAsset              string
-	ContractType             string
-	Status                   string
-	ContractSize             float64
-	PriceTick                float64
-	QuantityStep             float64
-	MinQuantity              float64
-	MinNotional              float64
-	MinQuantityStatus        string
-	MinNotionalStatus        string
-	MaxQuantity              string
-	MarketQuantityStep       string
-	MarketMinQuantity        string
-	MarketMaxQuantity        string
-	MarketMinNotional        string
-	MaxQuantityStatus        string
-	MarketQuantityStepStatus string
-	MarketMinQuantityStatus  string
-	MarketMaxQuantityStatus  string
-	MarketMinNotionalStatus  string
-	Metadata                 json.RawMessage
-	SourceUpdatedAt          time.Time
+	Exchange                    string
+	ExchangeSymbol              string
+	BaseAsset                   string
+	QuoteAsset                  string
+	GlobalSymbol                string
+	IntervalHours               float64
+	SettleAsset                 string
+	ContractType                string
+	Status                      string
+	ContractSize                float64
+	PriceTick                   float64
+	QuantityStep                float64
+	MinQuantity                 float64
+	MinNotional                 float64
+	MinQuantityStatus           string
+	MinNotionalStatus           string
+	MaxQuantity                 string
+	MarketQuantityStep          string
+	MarketMinQuantity           string
+	MarketMaxQuantity           string
+	MarketMinNotional           string
+	MaxQuantityStatus           string
+	MarketQuantityStepStatus    string
+	MarketMinQuantityStatus     string
+	MarketMaxQuantityStatus     string
+	MarketMinNotionalStatus     string
+	Metadata                    json.RawMessage
+	SourceUpdatedAt             time.Time
+	USEquityPerpetual           bool
+	TradefiClassificationSource string
+	Underlying                  UnderlyingReference
 }
+
+const TradefiClassificationSourceBinance = "binance.exchangeInfo.contractType=TRADIFI_PERPETUAL"
 
 const (
 	ContractTypeSpot        = "spot"
@@ -255,6 +260,44 @@ func GlobalSymbol(base, quote string) string {
 		return strings.ToUpper(r.Replace(value))
 	}
 	return clean(base) + clean(quote)
+}
+
+func RecognizedTradefiClassification(source string) bool {
+	return source == TradefiClassificationSourceBinance
+}
+
+func StoreMetadata(metadata json.RawMessage, usEquityPerpetual bool, source string) json.RawMessage {
+	fields := map[string]any{}
+	if len(metadata) > 0 {
+		_ = json.Unmarshal(metadata, &fields)
+	}
+	delete(fields, "usEquityPerpetual")
+	delete(fields, "tradefiClassificationSource")
+	if usEquityPerpetual && RecognizedTradefiClassification(source) {
+		fields["usEquityPerpetual"] = true
+		fields["tradefiClassificationSource"] = source
+	}
+	if len(fields) == 0 {
+		return []byte(`{}`)
+	}
+	result, err := json.Marshal(fields)
+	if err != nil {
+		return metadata
+	}
+	return result
+}
+
+func IsUSEquityPerpetual(metadata json.RawMessage) bool {
+	fields := map[string]any{}
+	if err := json.Unmarshal(metadata, &fields); err != nil {
+		return false
+	}
+	value, ok := fields["usEquityPerpetual"].(bool)
+	if !ok || !value {
+		return false
+	}
+	source, _ := fields["tradefiClassificationSource"].(string)
+	return RecognizedTradefiClassification(source)
 }
 
 func instrumentMetadata(value any, model, sizeUnit string) json.RawMessage {

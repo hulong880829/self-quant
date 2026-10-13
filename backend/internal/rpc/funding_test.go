@@ -407,6 +407,42 @@ func TestBatchGetFundingRatesRejectsEmptyAndOversizedKeys(t *testing.T) {
 	}
 }
 
+func TestListTradefiReadsSnapshotWithoutRepository(t *testing.T) {
+	store := funding.NewSnapshotStore()
+	now := time.Now().UTC()
+	store.Replace([]funding.Rate{{
+		Exchange: "binance", ExchangeSymbol: "BTCUSDT", GlobalSymbol: "BTCUSDT",
+		BaseAsset: "BTC", QuoteAsset: "USDT", SourceUpdatedAt: now, IntervalHours: 8,
+	}}, 1, now)
+	tradefi := funding.NewTradefiSnapshotStore()
+	conID := int64(265598)
+	tradefi.Replace([]funding.TradefiRow{{
+		StockSymbol: "AAPL", ConID: conID, PrimaryExchange: "NASDAQ",
+		Exchange: "binance", ExchangeSymbol: "AAPLUSDT", BaseAsset: "AAPL", QuoteAsset: "USDT",
+		FundingRate: 0.0001, AnnualizedRate: 0.11, IntervalHours: 8, NextFundingAt: now,
+		VerifiedAt: now,
+	}}, now)
+	repo := &recordingCurrentRates{}
+	server := NewFundingServer(store, repo, time.Minute).WithTradefi(tradefi)
+	rates, err := server.ListFundingRates(context.Background(), &fundingv1.ListFundingRatesRequest{})
+	if err != nil || len(rates.GetItems()) != 1 || rates.GetItems()[0].GetExchangeSymbol() != "BTCUSDT" {
+		t.Fatalf("rates=%v err=%v", rates, err)
+	}
+	response, err := server.ListTradefiPerpsOpportunities(
+		context.Background(), &fundingv1.ListTradefiPerpsOpportunitiesRequest{},
+	)
+	if err != nil || len(response.GetItems()) != 1 {
+		t.Fatalf("tradefi=%v err=%v", response, err)
+	}
+	item := response.GetItems()[0]
+	if item.GetStockSymbol() != "AAPL" || item.GetPerpetual().GetPerpetualFundingAnnualized() == "" {
+		t.Fatalf("item=%+v", item)
+	}
+	if repo.calls != 0 {
+		t.Fatalf("repository calls=%d", repo.calls)
+	}
+}
+
 func TestBatchGetFundingRatesDBErrorIsNotMissing(t *testing.T) {
 	store := funding.NewSnapshotStore()
 	repo := &recordingCurrentRates{err: context.DeadlineExceeded}
@@ -421,4 +457,3 @@ func TestBatchGetFundingRatesDBErrorIsNotMissing(t *testing.T) {
 		t.Fatalf("db calls=%d", repo.calls)
 	}
 }
-
