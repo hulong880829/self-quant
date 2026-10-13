@@ -4,6 +4,7 @@ find_package(Threads REQUIRED)
 add_library(self_quant_net STATIC
   src/epoll_loop.cpp
   src/http_client.cpp
+  src/http_parser.cpp
   src/tcp_acceptor.cpp
   src/tcp_connector.cpp
   src/tls_websocket.cpp
@@ -22,4 +23,10 @@ target_link_libraries(self_quant_net
     Threads::Threads)
 if(TARGET self_quant_warnings)
   target_link_libraries(self_quant_net PRIVATE self_quant_warnings)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(net_http_parser_tests tests/http_parser_tests.cpp)
+  target_link_libraries(net_http_parser_tests PRIVATE self_quant_net)
+  add_test(NAME net_http_parser_tests COMMAND net_http_parser_tests)
 endif()

@@ -24,6 +24,30 @@ struct SegmentRecord {
   }
 };
 
+// Zero-copy view of a leased SHM record. payload() is valid until commit(),
+// release via destruction, or move. Callers that reject a record must commit()
+// before resetting local sequence state so the same payload is not reread.
+class BorrowedSegmentRecord {
+ public:
+  BorrowedSegmentRecord() = default;
+  explicit BorrowedSegmentRecord(transport::ReadLease &&lease) noexcept;
+  BorrowedSegmentRecord(const BorrowedSegmentRecord &) = delete;
+  BorrowedSegmentRecord &operator=(const BorrowedSegmentRecord &) = delete;
+  BorrowedSegmentRecord(BorrowedSegmentRecord &&other) noexcept;
+  BorrowedSegmentRecord &operator=(BorrowedSegmentRecord &&other) noexcept;
+  ~BorrowedSegmentRecord();
+
+  [[nodiscard]] std::uint32_t type() const noexcept;
+  [[nodiscard]] std::uint64_t sequence() const noexcept;
+  [[nodiscard]] std::uint64_t epoch() const noexcept;
+  [[nodiscard]] std::span<const std::byte> payload() const noexcept;
+  [[nodiscard]] explicit operator bool() const noexcept;
+  api::Result<void> commit() noexcept;
+
+ private:
+  transport::ReadLease lease_{};
+};
+
 struct SegmentReaderOptions {
   api::ShmBackend backend{api::ShmBackend::PosixShm};
   std::string hugetlbfs_mount{"/dev/hugepages"};
@@ -47,12 +71,16 @@ class SegmentReader {
   // A successful empty optional means that no record is currently available.
   // Returned records own their payload and remain valid across later reads.
   [[nodiscard]] api::Result<std::optional<SegmentRecord>> try_read();
+  // Same availability rules as try_read(), but the payload is a SHM view.
+  [[nodiscard]] api::Result<std::optional<BorrowedSegmentRecord>>
+  try_read_view();
   [[nodiscard]] std::string_view segment_name() const noexcept;
   [[nodiscard]] std::uint64_t epoch() const noexcept { return epoch_; }
   [[nodiscard]] bool valid() const noexcept { return bool(reader_); }
   api::Result<void> resync_to_latest() noexcept;
 
  private:
+  api::Result<transport::ReadLease> acquire_lease();
   api::Result<void> register_reader() noexcept;
   void close() noexcept;
 

@@ -1,4 +1,5 @@
 #include "mds/exchange/capabilities.h"
+#include "mds/record/clickhouse_bbo_support.h"
 
 #include <cassert>
 #include <optional>
@@ -132,5 +133,29 @@ int main() {
   assert(mds::exchange::segment_profile(Venue::Polymarket,
                                         ProductType::BinaryOption) ==
          "polymarket_binary_option");
+  assert(static_cast<unsigned>(Venue::Ibkr) == 11);
+  assert(mds::exchange::parse_venue("ibkr") == Venue::Ibkr);
+  assert(mds::exchange::parse_venue("IBKR") == Venue::Ibkr);
+  assert(mds::exchange::venue_name(Venue::Ibkr) == "ibkr");
+  assert(mds::exchange::parse_product("equity") == ProductType::Equity);
+  assert(mds::exchange::product_name(ProductType::Equity) == "equity");
+  assert(mds::exchange::capabilities(Venue::Ibkr, ProductType::Equity) ==
+         nullptr);
+  assert(mds::record::is_clickhouse_bbo_supported(Venue::Ibkr,
+                                                  ProductType::Equity));
+  assert(mds::record::is_clickhouse_bbo_supported(Venue::Binance,
+                                                  ProductType::Spot));
+  assert(mds::record::is_clickhouse_bbo_supported(Venue::Lighter,
+                                                  ProductType::Perpetual));
+  assert(!mds::record::is_clickhouse_bbo_supported(Venue::Ibkr,
+                                                   ProductType::Spot));
+  assert(!mds::record::is_clickhouse_bbo_supported(Venue::Ibkr,
+                                                   ProductType::Perpetual));
+  assert(!mds::record::is_clickhouse_bbo_supported(Venue::Binance,
+                                                   ProductType::Equity));
+  assert(!mds::record::is_clickhouse_bbo_supported(
+      Venue::Polymarket, ProductType::BinaryOption));
+  assert(!mds::record::is_clickhouse_bbo_supported(Venue::Unknown,
+                                                   ProductType::Spot));
   return 0;
 }

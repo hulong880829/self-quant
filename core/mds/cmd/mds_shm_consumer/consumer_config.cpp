@@ -2,18 +2,17 @@
 
 #include "mds/exchange/capabilities.h"
 #include "mds/publish/wire_publisher.h"
+#include "mds/record/clickhouse_bbo_support.h"
 
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
-#include <cerrno>
-#include <filesystem>
+#include <cctype>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
-#include <unistd.h>
 
 namespace mds::consumer {
 namespace {
@@ -21,9 +20,23 @@ namespace {
 constexpr std::uint64_t kMinimumGatewayPublishIntervalMs = 10;
 constexpr std::uint64_t kMinimumServiceIntervalMs = 200;
 constexpr std::size_t kMaximumDepth = 50;
-constexpr std::uint32_t kMaximumRetentionHours = 24;
 constexpr std::size_t kMaximumMultiplexShards = 256;
 constexpr std::size_t kMaximumDrainRecords = 65'536;
+constexpr std::size_t kMaximumOrderBookQueueRows = 4096;
+
+bool identifier(std::string_view value) {
+  return !value.empty() &&
+         std::all_of(value.begin(), value.end(), [](unsigned char c) {
+           return std::isalnum(c) != 0 || c == '_';
+         });
+}
+
+bool valid_catalog_scope(std::string_view value) {
+  return !value.empty() &&
+         std::all_of(value.begin(), value.end(), [](unsigned char c) {
+           return std::isalnum(c) != 0 || c == '_' || c == '-';
+         });
+}
 
 template <typename T>
 T value_or(const YAML::Node &node, std::string_view key, T fallback) {
@@ -144,23 +157,6 @@ std::vector<std::string> parse_segment_names(const YAML::Node &node) {
   return names;
 }
 
-std::uint32_t parse_retention(const YAML::Node &node) {
-  if (!node) {
-    return kMaximumRetentionHours;
-  }
-  const auto value = node.as<std::string>();
-  if (value.size() < 2 || value.back() != 'h') {
-    throw std::runtime_error("recording.retention must use hours, for example 24h");
-  }
-  std::size_t consumed{};
-  const auto hours = std::stoul(value.substr(0, value.size() - 1), &consumed);
-  if (consumed != value.size() - 1 || hours == 0 ||
-      hours > kMaximumRetentionHours) {
-    throw std::runtime_error("recording.retention must be within 1h..24h");
-  }
-  return static_cast<std::uint32_t>(hours);
-}
-
 enum class AggregateStream { Bbo, OrderBook, Invalid };
 
 struct SegmentIdentity {
@@ -198,7 +194,7 @@ void validate_aggregate_segments(const ConsumerConfig &config) {
     const auto parsed = aggregate_identity(segment.name);
     if (parsed.stream == AggregateStream::Invalid) {
       throw std::runtime_error(
-          "gateway/recording segments must be aggbbo or aggorderbook streams");
+          "gateway/clickhouse_aggregate segments must be aggbbo or aggorderbook streams");
     }
     const std::uint8_t stream_bit =
         parsed.stream == AggregateStream::Bbo ? 1U : 2U;
@@ -252,41 +248,6 @@ void parse_ingestion(const YAML::Node &node, ConsumerConfig &config) {
   }
 }
 
-std::filesystem::path existing_directory(std::filesystem::path path) {
-  while (!path.empty() && !std::filesystem::exists(path)) {
-    path = path.parent_path();
-  }
-  if (path.empty() || !std::filesystem::is_directory(path)) {
-    throw std::runtime_error(
-        "recording.output_directory has no existing parent");
-  }
-  return path;
-}
-
-void validate_recording(const RecordingConfig &recording) {
-  if (recording.output_directory.empty()) {
-    throw std::runtime_error("recording.output_directory is required");
-  }
-  if (recording.sample_interval_ms < kMinimumServiceIntervalMs ||
-      recording.retention_hours == 0 ||
-      recording.retention_hours > kMaximumRetentionHours ||
-      recording.depth == 0 || recording.depth > kMaximumDepth ||
-      recording.shard_hours != 1 || recording.zstd_level < -7 ||
-      recording.zstd_level > 22 || recording.writer_queue_slots == 0 ||
-      recording.topic_slots == 0) {
-    throw std::runtime_error("recording bounds are invalid");
-  }
-  const auto parent = existing_directory(recording.output_directory);
-  if (access(parent.c_str(), W_OK) != 0) {
-    throw std::runtime_error("recording output directory is not writable");
-  }
-  const auto available = std::filesystem::space(parent).available;
-  if (available < recording.min_free_disk_bytes) {
-    throw std::runtime_error(
-        "recording output has less than min_free_disk_bytes available");
-  }
-}
-
 void parse_clickhouse_bbo(const YAML::Node &node, ConsumerConfig &config) {
   reject_unknown(
       node,
@@ -334,11 +295,11 @@ void parse_clickhouse_bbo(const YAML::Node &node, ConsumerConfig &config) {
         exchange::parse_venue(value_or<std::string>(selector_node, "venue", ""));
     const auto product = exchange::parse_product(
         value_or<std::string>(selector_node, "product", ""));
-    if (!venue || !product || *venue == utils::md::Venue::Polymarket ||
-        *product == utils::md::ProductType::BinaryOption) {
+    if (!venue || !product ||
+        !record::is_clickhouse_bbo_supported(*venue, *product)) {
       throw std::runtime_error(
-          "clickhouse_bbo selectors must name an explicit crypto "
-          "venue/product (all and polymarket are forbidden)");
+          "clickhouse_bbo selectors must name an explicit supported "
+          "venue/product");
     }
     const auto shard = value_or<std::size_t>(
         selector_node, "shard", std::numeric_limits<std::size_t>::max());
@@ -362,6 +323,65 @@ void parse_clickhouse_bbo(const YAML::Node &node, ConsumerConfig &config) {
       options.request_timeout_ms == 0 || options.batch_rows == 0 ||
       options.queue_rows == 0 || options.unresolved_rows == 0) {
     throw std::runtime_error("clickhouse_bbo bounds are invalid");
+  }
+}
+
+void parse_clickhouse_aggregate(const YAML::Node &node, ConsumerConfig &config) {
+  reject_unknown(
+      node,
+      {"host", "service", "database", "user", "password_env", "bbo_table",
+       "orderbook_table", "catalog_table", "catalog_scope",
+       "sample_interval_ms", "depth", "flush_interval_ms",
+       "request_timeout_ms", "batch_rows", "bbo_queue_rows",
+       "orderbook_queue_rows", "catalog_queue_rows", "max_queued_bytes"},
+      "clickhouse_aggregate");
+  auto &output = config.clickhouse_aggregate;
+  auto &options = output.options;
+  options.host = value_or<std::string>(node, "host", options.host);
+  options.service = value_or<std::string>(node, "service", options.service);
+  options.database =
+      value_or<std::string>(node, "database", options.database);
+  options.user = value_or<std::string>(node, "user", options.user);
+  output.password_env =
+      value_or<std::string>(node, "password_env", output.password_env);
+  options.bbo_table =
+      value_or<std::string>(node, "bbo_table", options.bbo_table);
+  options.orderbook_table = value_or<std::string>(
+      node, "orderbook_table", options.orderbook_table);
+  options.catalog_table = value_or<std::string>(
+      node, "catalog_table", options.catalog_table);
+  options.catalog_scope = value_or<std::string>(
+      node, "catalog_scope", options.catalog_scope);
+  options.sample_interval_ms = value_or<std::uint64_t>(
+      node, "sample_interval_ms", options.sample_interval_ms);
+  options.depth = value_or<std::size_t>(node, "depth", options.depth);
+  options.flush_interval_ms = value_or<std::uint64_t>(
+      node, "flush_interval_ms", options.flush_interval_ms);
+  options.request_timeout_ms = value_or<std::uint64_t>(
+      node, "request_timeout_ms", options.request_timeout_ms);
+  options.batch_rows =
+      value_or<std::size_t>(node, "batch_rows", options.batch_rows);
+  options.bbo_queue_rows = value_or<std::size_t>(
+      node, "bbo_queue_rows", options.bbo_queue_rows);
+  options.orderbook_queue_rows = value_or<std::size_t>(
+      node, "orderbook_queue_rows", options.orderbook_queue_rows);
+  options.catalog_queue_rows = value_or<std::size_t>(
+      node, "catalog_queue_rows", options.catalog_queue_rows);
+  options.max_queued_bytes = value_or<std::size_t>(
+      node, "max_queued_bytes", options.max_queued_bytes);
+  if (options.host.empty() || output.password_env.empty() ||
+      !identifier(options.database) || !identifier(options.user) ||
+      !identifier(options.bbo_table) || !identifier(options.orderbook_table) ||
+      !identifier(options.catalog_table) ||
+      !valid_catalog_scope(options.catalog_scope) ||
+      options.sample_interval_ms < kMinimumServiceIntervalMs ||
+      options.depth == 0 || options.depth > kMaximumDepth ||
+      options.flush_interval_ms == 0 || options.request_timeout_ms == 0 ||
+      options.batch_rows == 0 || options.bbo_queue_rows == 0 ||
+      options.orderbook_queue_rows == 0 ||
+      options.orderbook_queue_rows > kMaximumOrderBookQueueRows ||
+      options.catalog_queue_rows == 0 || options.max_queued_bytes == 0) {
+    throw std::runtime_error("clickhouse_aggregate bounds are invalid");
   }
 }
 
@@ -397,22 +417,14 @@ bool Selector::matches(const utils::md::InstrumentCatalog &catalog) const
   return false;
 }
 
-bool recording_available() noexcept {
-#if defined(MDS_HAS_ZSTD)
-  return true;
-#else
-  return false;
-#endif
-}
-
 api::Result<ConsumerConfig> load_config(const std::string &path,
                                         bool gateway_requested,
-                                        bool recording_requested,
-                                        bool clickhouse_bbo_requested) noexcept {
+                                        bool clickhouse_bbo_requested,
+                                        bool clickhouse_aggregate_requested) noexcept {
   try {
     const auto root = YAML::LoadFile(path);
-    reject_unknown(root, {"segments", "ingestion", "gateway", "recording",
-                          "clickhouse_bbo"}, "root");
+    reject_unknown(root, {"segments", "ingestion", "gateway",
+                          "clickhouse_bbo", "clickhouse_aggregate"}, "root");
     ConsumerConfig config;
     parse_ingestion(root["ingestion"], config);
 
@@ -480,36 +492,6 @@ api::Result<ConsumerConfig> load_config(const std::string &path,
           value_or<bool>(gateway, "reuse_port", config.gateway.reuse_port);
     }
 
-    const auto recording = root["recording"];
-    if (recording) {
-      reject_unknown(
-          recording,
-          {"output_directory", "sample_interval_ms", "retention", "depth",
-           "shard_hours", "zstd_level", "writer_queue_slots", "topic_slots",
-           "min_free_disk_bytes"},
-          "recording");
-      config.recording.output_directory = value_or<std::string>(
-          recording, "output_directory", config.recording.output_directory);
-      config.recording.sample_interval_ms = value_or<std::uint64_t>(
-          recording, "sample_interval_ms",
-          config.recording.sample_interval_ms);
-      config.recording.retention_hours = parse_retention(recording["retention"]);
-      config.recording.depth = value_or<std::size_t>(
-          recording, "depth", config.recording.depth);
-      config.recording.shard_hours = value_or<std::uint32_t>(
-          recording, "shard_hours", config.recording.shard_hours);
-      config.recording.zstd_level = value_or<int>(
-          recording, "zstd_level", config.recording.zstd_level);
-      config.recording.writer_queue_slots = value_or<std::size_t>(
-          recording, "writer_queue_slots",
-          config.recording.writer_queue_slots);
-      config.recording.topic_slots = value_or<std::size_t>(
-          recording, "topic_slots", config.recording.topic_slots);
-      config.recording.min_free_disk_bytes = value_or<std::uint64_t>(
-          recording, "min_free_disk_bytes",
-          config.recording.min_free_disk_bytes);
-    }
-
     const auto clickhouse_bbo = root["clickhouse_bbo"];
     if (clickhouse_bbo) {
       parse_clickhouse_bbo(clickhouse_bbo, config);
@@ -518,30 +500,23 @@ api::Result<ConsumerConfig> load_config(const std::string &path,
           "clickhouse_bbo configuration is required with --clickhouse-bbo");
     }
 
+    const auto clickhouse_aggregate = root["clickhouse_aggregate"];
+    if (clickhouse_aggregate) {
+      parse_clickhouse_aggregate(clickhouse_aggregate, config);
+    } else if (clickhouse_aggregate_requested) {
+      throw std::runtime_error(
+          "clickhouse_aggregate configuration is required with "
+          "--clickhouse-aggregate");
+    }
+
     if (gateway) {
       validate_gateway(config.gateway, gateway_requested);
     } else if (gateway_requested) {
       throw std::runtime_error(
           "gateway configuration is required with --gateway");
     }
-    if (recording) {
-      validate_recording(config.recording);
-    }
-    if (gateway_requested || recording_requested) {
+    if (gateway_requested || clickhouse_aggregate_requested) {
       validate_aggregate_segments(config);
-    }
-    if (recording_requested) {
-      if (!recording) {
-        throw std::runtime_error(
-            "recording configuration is required with --record");
-      }
-      if (!recording_available()) {
-        return {
-            .error = api::ErrorCode::InvalidConfig,
-            .message =
-                "recording is unavailable: install libzstd-dev and rebuild "
-                "with -DMDS_ENABLE_RECORDING=ON"};
-      }
     }
     return {.value = std::move(config)};
   } catch (const std::exception &error) {

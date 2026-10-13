@@ -31,7 +31,7 @@ gateway:
   max_clients: 128
   max_subscriptions_per_client: 32
   send_queue_slots: 1
-  # 实时发布允许 10ms 及以上，与下面的录制采样周期相互独立。
+  # 实时发布允许 10ms 及以上，与 ClickHouse 聚合采样周期相互独立。
   publish_interval_ms: 50
   ping_interval_ms: 15000
   pong_timeout_ms: 5000
@@ -39,14 +39,23 @@ gateway:
   depth: 50
   reuse_port: false
 
-recording:
-  output_directory: /tmp/selfquant-recordings
+# History table TTL is fixed at 24h in DDL.
+clickhouse_aggregate:
+  host: 127.0.0.1
+  service: "8443"
+  database: market_data
+  user: bbo_writer
+  password_env: CLICKHOUSE_PASSWORD
+  bbo_table: aggregate_bbo_history
+  orderbook_table: aggregate_orderbook_history
+  catalog_table: aggregate_topic_catalog
+  catalog_scope: prod-agg
   sample_interval_ms: 200
-  retention: 24h
   depth: 50
-  # The first format uses fixed UTC hourly shards.
-  shard_hours: 1
-  zstd_level: 1
-  writer_queue_slots: 1024
-  topic_slots: 64
-  min_free_disk_bytes: 0
+  flush_interval_ms: 1000
+  request_timeout_ms: 5000
+  batch_rows: 1000
+  bbo_queue_rows: 4096
+  orderbook_queue_rows: 2048
+  catalog_queue_rows: 256
+  max_queued_bytes: 67108864

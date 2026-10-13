@@ -7,7 +7,7 @@ shared_memory:
   max_readers: 16
   reader_lease_timeout_ns: 5000000000
   allow_hugepage_fallback: false
-  unlink_on_shutdown: false
+  unlink_on_shutdown: true
 
 order_book:
   default_ladder_ticks_per_side: 1024

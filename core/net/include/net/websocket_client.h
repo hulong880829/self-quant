@@ -77,6 +77,9 @@ public:
   }
   [[nodiscard]] std::uint32_t wanted_events() const noexcept;
   [[nodiscard]] WebSocketClientState state() const noexcept { return state_; }
+  [[nodiscard]] WebSocketClientState timeout_origin_state() const noexcept {
+    return timeout_origin_state_;
+  }
   [[nodiscard]] bool can_send_data() const noexcept {
     return state_ == WebSocketClientState::Open && writer_.empty();
   }
@@ -124,6 +127,7 @@ private:
   char client_key_[25]{};
   Clock::time_point deadline_{};
   WebSocketClientState state_{WebSocketClientState::Idle};
+  WebSocketClientState timeout_origin_state_{WebSocketClientState::Idle};
   std::uint32_t wanted_events_{};
   std::string_view error_{};
   std::string parser_error_;

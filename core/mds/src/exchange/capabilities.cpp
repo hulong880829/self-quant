@@ -188,6 +188,8 @@ std::string_view venue_name(Venue venue) noexcept {
     return "lighter";
   case Venue::Polymarket:
     return "polymarket";
+  case Venue::Ibkr:
+    return "ibkr";
   default:
     return "unknown";
   }
@@ -203,6 +205,8 @@ std::string_view product_name(Product product) noexcept {
     return "future";
   case Product::BinaryOption:
     return "binary-option";
+  case Product::Equity:
+    return "equity";
   default:
     return "unknown";
   }
@@ -226,7 +230,7 @@ std::optional<Venue> parse_venue(std::string_view value) noexcept {
   for (const auto venue : {Venue::Binance, Venue::Okx, Venue::Bybit,
                            Venue::Bitget, Venue::Gate,
                            Venue::Hyperliquid, Venue::Aster, Venue::Lighter,
-                           Venue::Polymarket}) {
+                           Venue::Polymarket, Venue::Ibkr}) {
     if (iequals(value, venue_name(venue))) {
       return venue;
     }
@@ -248,6 +252,9 @@ std::optional<Product> parse_product(std::string_view value) noexcept {
       iequals(value, "binary_option") ||
       iequals(value, "binaryoption")) {
     return Product::BinaryOption;
+  }
+  if (iequals(value, "equity")) {
+    return Product::Equity;
   }
   return std::nullopt;
 }

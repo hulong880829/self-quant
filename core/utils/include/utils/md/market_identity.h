@@ -39,6 +39,9 @@ parse_canonical_venue(std::string_view value) noexcept {
   if (value == "lighter") {
     return Venue::Lighter;
   }
+  if (value == "ibkr") {
+    return Venue::Ibkr;
+  }
   return std::nullopt;
 }
 

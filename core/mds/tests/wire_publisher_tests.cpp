@@ -442,6 +442,9 @@ void test_dual_segment_factory() {
                   "/selfquant.mds", "spot", "BTCUSDT", "depth")
                   .empty() &&
               publish::make_publisher_segment_name(
+                  "/selfquant.mds", "spot", "BTCUSDT", "fairprice") ==
+                  "/selfquant.mds.spot.btcusdt.fairprice.2" &&
+              publish::make_publisher_segment_name(
                   "/" + std::string(230, 'x'), "spot", "BTCUSDT", "ticker")
                   .empty(),
           "invalid publisher segment name was accepted");
@@ -585,6 +588,38 @@ void test_aster_lighter_segment_names_are_isolated() {
   }
 }
 
+void test_fair_price_v2_publish_roundtrip() {
+  using namespace mds;
+  auto options = ring_options(
+      "/mds.publisher-fairprice-v2." + std::to_string(::getpid()), 4096);
+  auto opened = transport::SharedRing::open(options);
+  require(bool(opened), opened.message.c_str());
+  auto ring = std::move(opened.value);
+  auto registered = ring.register_reader(
+      transport::process_start_marker(::getpid()), now_ns());
+  require(bool(registered), registered.message.c_str());
+  auto reader = registered.value;
+  publish::WirePublisher publisher(ring);
+  utils::md::wire::FairPriceRecordV2 record{};
+  const char profile[] = "agg_spot_usdt_binance-bitget-bybit-gate-okx";
+  std::memcpy(record.profile.data(), profile, sizeof(profile));
+  require(bool(publisher.publish_fair_price_v2(event_header(), record)),
+          "publish FairPriceV2 failed");
+  auto read = ring.read(reader);
+  require(bool(read), read.message.c_str());
+  utils::md::wire::FairPriceRecordV2 decoded{};
+  require(utils::md::wire::DecodeFairPriceV2(read.value->payload, decoded) ==
+              utils::md::wire::CodecError::Ok,
+          "FairPriceV2 decode failed");
+  require(decoded.header.message_type ==
+              static_cast<std::uint16_t>(utils::md::MessageType::FairPriceV2),
+          "FairPriceV2 message type mismatch");
+  utils::md::wire::FairPriceRecordV1 rejected{};
+  require(utils::md::wire::DecodeFairPrice(read.value->payload, rejected) !=
+              utils::md::wire::CodecError::Ok,
+          "V1 decoder accepted a V2 frame");
+}
+
 } // namespace
 
 int main() {
@@ -597,6 +632,7 @@ int main() {
     test_aggregate_orderbook_preallocated_publish();
     test_segment_names_preserve_ascii_and_hash_non_ascii();
     test_aster_lighter_segment_names_are_isolated();
+    test_fair_price_v2_publish_roundtrip();
     std::cout << "all wire publisher tests passed\n";
     return 0;
   } catch (const std::exception &exception) {

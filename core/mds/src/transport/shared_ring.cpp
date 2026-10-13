@@ -226,7 +226,8 @@ api::Result<SharedRing> SharedRing::open(const RingOptions &options) {
   }
   result.header_ = static_cast<SegmentHeader *>(result.mapping_);
   if (options.create) {
-    std::memset(result.mapping_, 0, result.mapping_bytes_);
+    // Publish magic last. Zero the ring payload after the header is filled so a
+    // concurrent attacher never observes a partially-memset header as corrupt.
     new (result.header_) SegmentHeader();
     if (!lock_free_atomics(*result.header_)) {
       return open_error(api::ErrorCode::InvalidConfig,
@@ -240,6 +241,9 @@ api::Result<SharedRing> SharedRing::open(const RingOptions &options) {
         static_cast<std::uint32_t>(options.max_readers);
     result.header_->control.mode =
         static_cast<std::uint32_t>(options.mode);
+    std::memset(static_cast<std::byte *>(result.mapping_) +
+                    result.header_->header_bytes,
+                0, options.ring_bytes);
     result.header_->epoch = new_token();
     result.header_->magic.store(kRingMagic, std::memory_order_release);
   } else {

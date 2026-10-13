@@ -49,6 +49,8 @@ std::string_view venue_name(utils::md::Venue venue) noexcept {
       return "aster";
     case utils::md::Venue::Lighter:
       return "lighter";
+    case utils::md::Venue::Ibkr:
+      return "ibkr";
     case utils::md::Venue::Unknown:
       return "unknown";
   }

@@ -133,6 +133,11 @@ Venue parse_required_venue(const YAML::Node &node) {
     throw std::runtime_error("unsupported venue '" +
                              node.as<std::string>() + "'");
   }
+  if (*parsed == Venue::Ibkr) {
+    throw std::runtime_error(
+        "venue 'ibkr' is reserved for mds_ibkr_producer and cannot be "
+        "started by mds_producer");
+  }
   return *parsed;
 }
 

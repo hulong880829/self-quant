@@ -115,6 +115,7 @@ void WebSocketClient::reset() noexcept {
   request_offset_ = 0;
   client_key_[0] = '\0';
   state_ = WebSocketClientState::Idle;
+  timeout_origin_state_ = WebSocketClientState::Idle;
   wanted_events_ = 0;
   error_ = {};
   parser_error_.clear();
@@ -540,7 +541,9 @@ WebSocketClient::check_timeout(Clock::time_point now) noexcept {
       state_ != WebSocketClientState::Open &&
       state_ != WebSocketClientState::Closing &&
       state_ != WebSocketClientState::Closed &&
+      state_ != WebSocketClientState::TimedOut &&
       state_ != WebSocketClientState::Failed && now >= deadline_) {
+    timeout_origin_state_ = state_;
     state_ = WebSocketClientState::TimedOut;
     wanted_events_ = 0;
     error_ = "WebSocket operation timed out";

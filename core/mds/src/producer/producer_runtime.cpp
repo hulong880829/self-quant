@@ -12,9 +12,11 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cstdint>
 #include <chrono>
 #include <cstdlib>
 #include <deque>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <numeric>
@@ -28,6 +30,10 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 namespace mds::producer {
 namespace {
@@ -758,13 +764,78 @@ struct RuntimeConnectionSlot {
 
 struct PendingReplacement {
   std::size_t connection_id{};
-  ProducerConfig candidate_config;
-  std::vector<ResolvedSegment> candidate_segments;
+  ConnectionSpec candidate_connection;
   ConnectionSpec old_connection;
+  std::vector<ResolvedSegment> candidate_segments;
+  std::size_t candidate_instrument_count{};
+  std::size_t candidate_ring_count{};
   service::VenueConnection *managed_connection{};
   service::MarketDataSession::Clock::time_point deadline{};
   RuntimeConnectionState state{RuntimeConnectionState::Replacing};
 };
+
+struct ProcStatusSnapshot {
+  bool ok{};
+  std::uint64_t vm_rss_kb{};
+  std::uint64_t rss_anon_kb{};
+  std::uint64_t rss_shmem_kb{};
+};
+
+struct HeapSnapshot {
+  bool ok{};
+  std::uint64_t uordblks{};
+  std::uint64_t fordblks{};
+  std::uint64_t hblkhd{};
+};
+
+ProcStatusSnapshot read_proc_status() noexcept {
+  ProcStatusSnapshot snapshot;
+  try {
+    std::ifstream in("/proc/self/status");
+    if (!in) {
+      return snapshot;
+    }
+    std::string line;
+    while (std::getline(in, line)) {
+      auto parse_kb = [&](std::string_view key, std::uint64_t &out) {
+        if (line.rfind(key, 0) != 0) {
+          return;
+        }
+        const auto colon = line.find(':');
+        if (colon == std::string::npos) {
+          return;
+        }
+        out = static_cast<std::uint64_t>(
+            std::strtoull(line.c_str() + colon + 1, nullptr, 10));
+      };
+      parse_kb("VmRSS:", snapshot.vm_rss_kb);
+      parse_kb("RssAnon:", snapshot.rss_anon_kb);
+      parse_kb("RssShmem:", snapshot.rss_shmem_kb);
+    }
+    snapshot.ok = true;
+  } catch (...) {
+  }
+  return snapshot;
+}
+
+HeapSnapshot read_heap_snapshot() noexcept {
+  HeapSnapshot snapshot;
+#if defined(__GLIBC__)
+  try {
+#if defined(__GLIBC_PREREQ) && __GLIBC_PREREQ(2, 33)
+    const auto info = mallinfo2();
+#else
+    const auto info = mallinfo();
+#endif
+    snapshot.uordblks = static_cast<std::uint64_t>(info.uordblks);
+    snapshot.fordblks = static_cast<std::uint64_t>(info.fordblks);
+    snapshot.hblkhd = static_cast<std::uint64_t>(info.hblkhd);
+    snapshot.ok = true;
+  } catch (...) {
+  }
+#endif
+  return snapshot;
+}
 
 }  // namespace
 
@@ -814,6 +885,8 @@ class ProducerRuntime::Impl {
     }
     failed_ = false;
     error_.clear();
+    discovery_batch_active_ = false;
+    discovery_batch_had_replacement_ = false;
     auto loaded = load_config(options_.config_path);
     if (!loaded) {
       return fail(loaded.error, loaded.message);
@@ -927,6 +1000,10 @@ class ProducerRuntime::Impl {
       set_failure("producer runtime iteration failed");
       return -1;
     }
+    try {
+      finish_discovery_batch_if_idle();
+    } catch (...) {
+    }
     if (result < 0) {
       set_failure("epoll wait failed");
       return result;
@@ -962,6 +1039,8 @@ class ProducerRuntime::Impl {
 
   void stop() noexcept {
     stop_discovery_worker();
+    discovery_batch_active_ = false;
+    discovery_batch_had_replacement_ = false;
     if (!started_) {
       return;
     }
@@ -1096,6 +1175,8 @@ class ProducerRuntime::Impl {
     replacement_.reset();
     manager_.reset();
     discovery_enabled_ = false;
+    discovery_batch_active_ = false;
+    discovery_batch_had_replacement_ = false;
     started_ = false;
   }
 
@@ -1105,6 +1186,22 @@ class ProducerRuntime::Impl {
 
   bool failed() const noexcept { return failed_; }
   std::string_view error() const noexcept { return error_; }
+
+  void request_discovery_now_for_test() noexcept {
+    next_discovery_at_ = service::MarketDataSession::Clock::now();
+  }
+
+  std::size_t instrument_count_for_test() const noexcept {
+    return config_.instrument_count;
+  }
+
+  std::size_t ring_count_for_test() const noexcept {
+    return config_.ring_count;
+  }
+
+  bool discovery_batch_active_for_test() const noexcept {
+    return discovery_batch_active_;
+  }
 
  private:
   using RuntimeClock = service::MarketDataSession::Clock;
@@ -1126,7 +1223,8 @@ class ProducerRuntime::Impl {
   }
 
   void maybe_start_discovery() {
-    if (!discovery_enabled_ || discovery_running_.load() ||
+    if (!discovery_enabled_ || discovery_batch_active_ ||
+        discovery_running_.load() ||
         RuntimeClock::now() < next_discovery_at_) {
       return;
     }
@@ -1134,6 +1232,9 @@ class ProducerRuntime::Impl {
       discovery_worker_.join();
     }
     schedule_next_discovery();
+    discovery_batch_active_ = true;
+    discovery_batch_had_replacement_ = false;
+    ++discovery_batch_id_;
     discovery_running_.store(true);
     std::vector<std::pair<std::size_t, ConnectionSpec>> templates;
     for (std::size_t index = 0;
@@ -1229,31 +1330,41 @@ class ProducerRuntime::Impl {
       return;
     }
 
-    ProducerConfig candidate_config = config_;
-    candidate_config.connections[connection_id] = std::move(connection);
-    std::string validation_error;
-    if (!validate_resolved_config(candidate_config, validation_error)) {
-      report_discovery(
-          "candidate rejected connection_id=" +
-              std::to_string(connection_id) +
-              " reason=" + validation_error,
-          true);
-      return;
-    }
-    auto candidate_segments = build_resolved_segments(candidate_config);
-    const auto total_ring_bytes = std::accumulate(
-        candidate_segments.begin(), candidate_segments.end(),
-        std::uint64_t{},
-        [](std::uint64_t total, const ResolvedSegment &segment) {
-          return total + segment.ring_bytes;
-        });
-    if (candidate_segments.size() > candidate_config.max_rings ||
-        total_ring_bytes > candidate_config.max_total_ring_bytes) {
-      report_discovery(
-          "candidate segments exceed global capacity connection_id=" +
-              std::to_string(connection_id),
-          true);
-      return;
+    ConnectionSpec candidate_connection;
+    std::vector<ResolvedSegment> candidate_segments;
+    std::size_t candidate_instrument_count{};
+    std::size_t candidate_ring_count{};
+    {
+      ProducerConfig validation_config = config_;
+      validation_config.connections[connection_id] = std::move(connection);
+      std::string validation_error;
+      if (!validate_resolved_config(validation_config, validation_error)) {
+        report_discovery(
+            "candidate rejected connection_id=" +
+                std::to_string(connection_id) +
+                " reason=" + validation_error,
+            true);
+        return;
+      }
+      candidate_segments = build_resolved_segments(validation_config);
+      const auto total_ring_bytes = std::accumulate(
+          candidate_segments.begin(), candidate_segments.end(),
+          std::uint64_t{},
+          [](std::uint64_t total, const ResolvedSegment &segment) {
+            return total + segment.ring_bytes;
+          });
+      if (candidate_segments.size() > validation_config.max_rings ||
+          total_ring_bytes > validation_config.max_total_ring_bytes) {
+        report_discovery(
+            "candidate segments exceed global capacity connection_id=" +
+                std::to_string(connection_id),
+            true);
+        return;
+      }
+      candidate_instrument_count = validation_config.instrument_count;
+      candidate_ring_count = validation_config.ring_count;
+      candidate_connection =
+          std::move(validation_config.connections[connection_id]);
     }
 
     auto &slot = connection_slots_[connection_id];
@@ -1261,17 +1372,18 @@ class ProducerRuntime::Impl {
         slot.connection == nullptr) {
       pending_candidates_.push_front(
           {.connection_id = connection_id,
-           .connection =
-               candidate_config.connections[connection_id],
+           .connection = std::move(candidate_connection),
            .error = {}});
       return;
     }
     auto *old_pointer = slot.connection;
     PendingReplacement pending{
         .connection_id = connection_id,
-        .candidate_config = std::move(candidate_config),
-        .candidate_segments = std::move(candidate_segments),
+        .candidate_connection = std::move(candidate_connection),
         .old_connection = config_.connections[connection_id],
+        .candidate_segments = std::move(candidate_segments),
+        .candidate_instrument_count = candidate_instrument_count,
+        .candidate_ring_count = candidate_ring_count,
         .managed_connection = nullptr,
         .deadline = {},
         .state = RuntimeConnectionState::Replacing,
@@ -1279,10 +1391,9 @@ class ProducerRuntime::Impl {
 
     slot.connection = nullptr;
     slot.state = RuntimeConnectionState::Replacing;
+    discovery_batch_had_replacement_ = true;
     const auto replaced = manager_->replace(
-        old_pointer,
-        convert(pending.candidate_config.connections[connection_id]),
-        false);
+        old_pointer, convert(pending.candidate_connection), false);
     if (!replaced) {
       slot.connection = old_pointer;
       slot.state = RuntimeConnectionState::Active;
@@ -1377,7 +1488,10 @@ class ProducerRuntime::Impl {
       if (state == service::MarketDataState::Live) {
         slot.connection = pending.managed_connection;
         slot.state = RuntimeConnectionState::Active;
-        config_ = std::move(pending.candidate_config);
+        config_.connections[pending.connection_id] =
+            std::move(pending.candidate_connection);
+        config_.instrument_count = pending.candidate_instrument_count;
+        config_.ring_count = pending.candidate_ring_count;
         segments_ = std::move(pending.candidate_segments);
         failure_reported_[pending.connection_id] = false;
         report_discovery(
@@ -1439,6 +1553,96 @@ class ProducerRuntime::Impl {
     }
   }
 
+  void finish_discovery_batch_if_idle() {
+    if (!discovery_batch_active_ || discovery_running_.load()) {
+      return;
+    }
+    if (discovery_worker_.joinable()) {
+      discovery_worker_.join();
+    }
+    {
+      std::lock_guard lock(discovery_mutex_);
+      if (!completed_candidates_.empty()) {
+        return;
+      }
+    }
+    if (!pending_candidates_.empty() || replacement_) {
+      return;
+    }
+    const auto batch_id = discovery_batch_id_;
+    try {
+      std::deque<DiscoveryCandidate> empty_completed;
+      {
+        std::lock_guard lock(discovery_mutex_);
+        completed_candidates_.swap(empty_completed);
+      }
+    } catch (...) {
+    }
+    try {
+      std::deque<DiscoveryCandidate> empty_pending;
+      pending_candidates_.swap(empty_pending);
+    } catch (...) {
+    }
+
+    ProcStatusSnapshot rss_before{};
+    HeapSnapshot heap_before{};
+    ProcStatusSnapshot rss_after{};
+    HeapSnapshot heap_after{};
+    int trim_result = 0;
+    std::uint64_t duration_ms = 0;
+    try {
+      rss_before = read_proc_status();
+      heap_before = read_heap_snapshot();
+      const auto started = RuntimeClock::now();
+#if defined(__GLIBC__)
+      trim_result = malloc_trim(0);
+#endif
+      duration_ms = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              RuntimeClock::now() - started)
+              .count());
+      rss_after = read_proc_status();
+      heap_after = read_heap_snapshot();
+    } catch (...) {
+    }
+
+    try {
+      std::string message = "memory cleanup batch_id=" +
+                            std::to_string(batch_id);
+      auto append_opt = [&](std::string_view name, bool ok,
+                            std::uint64_t value) {
+        message += ' ';
+        message += name;
+        message += '=';
+        if (ok) {
+          message += std::to_string(value);
+        } else {
+          message += "na";
+        }
+      };
+      append_opt("rss_before_kb", rss_before.ok, rss_before.vm_rss_kb);
+      append_opt("rss_after_kb", rss_after.ok, rss_after.vm_rss_kb);
+      append_opt("anon_before_kb", rss_before.ok, rss_before.rss_anon_kb);
+      append_opt("anon_after_kb", rss_after.ok, rss_after.rss_anon_kb);
+      append_opt("shmem_before_kb", rss_before.ok, rss_before.rss_shmem_kb);
+      append_opt("shmem_after_kb", rss_after.ok, rss_after.rss_shmem_kb);
+      append_opt("uordblks_before", heap_before.ok, heap_before.uordblks);
+      append_opt("uordblks_after", heap_after.ok, heap_after.uordblks);
+      append_opt("fordblks_before", heap_before.ok, heap_before.fordblks);
+      append_opt("fordblks_after", heap_after.ok, heap_after.fordblks);
+      append_opt("hblkhd_before", heap_before.ok, heap_before.hblkhd);
+      append_opt("hblkhd_after", heap_after.ok, heap_after.hblkhd);
+      message += " trim_result=" + std::to_string(trim_result);
+      message += " duration_ms=" + std::to_string(duration_ms);
+      message += " had_replacement=";
+      message += discovery_batch_had_replacement_ ? "true" : "false";
+      report_discovery(message);
+    } catch (...) {
+    }
+    discovery_batch_active_ = false;
+    discovery_batch_had_replacement_ = false;
+  }
+
   void cleanup_connections() noexcept {
     stop_discovery_worker();
     if (manager_) {
@@ -1450,6 +1654,8 @@ class ProducerRuntime::Impl {
     pending_candidates_.clear();
     replacement_.reset();
     discovery_enabled_ = false;
+    discovery_batch_active_ = false;
+    discovery_batch_had_replacement_ = false;
     started_ = false;
   }
 
@@ -1467,8 +1673,11 @@ class ProducerRuntime::Impl {
   std::optional<PendingReplacement> replacement_;
   RuntimeClock::time_point next_discovery_at_{};
   std::atomic<bool> discovery_running_{};
+  std::uint64_t discovery_batch_id_{};
   std::string error_;
   bool discovery_enabled_{};
+  bool discovery_batch_active_{};
+  bool discovery_batch_had_replacement_{};
   bool started_{};
   bool failed_{};
 };
@@ -1504,6 +1713,18 @@ int ProducerRuntime::run_once(int timeout_ms) noexcept {
   return impl_->run_once(timeout_ms);
 }
 void ProducerRuntime::stop() noexcept { impl_->stop(); }
+void ProducerRuntime::request_discovery_now_for_test() noexcept {
+  impl_->request_discovery_now_for_test();
+}
+std::size_t ProducerRuntime::instrument_count_for_test() const noexcept {
+  return impl_->instrument_count_for_test();
+}
+std::size_t ProducerRuntime::ring_count_for_test() const noexcept {
+  return impl_->ring_count_for_test();
+}
+bool ProducerRuntime::discovery_batch_active_for_test() const noexcept {
+  return impl_->discovery_batch_active_for_test();
+}
 std::span<const ResolvedSegment>
 ProducerRuntime::resolved_segments() const noexcept {
   return impl_->resolved_segments();

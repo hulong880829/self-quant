@@ -4,7 +4,7 @@ clickhouse_bbo:
   database: market_data
   table: crypto_bbo
   user: bbo_writer
-  password_env: CLICKHOUSE_BBO_PASSWORD
+  password_env: CLICKHOUSE_PASSWORD
 
   shm_prefix: /selfquant.mds.bbo
   sample_interval_ms: 1000

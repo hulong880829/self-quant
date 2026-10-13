@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Restart the 5-venue aggregate chain: producer -> aggregator ->
-# shm consumer (gateway + recorder). Start any process that is not running.
+# shm consumer (gateway + ClickHouse aggregate). Start any process that is
+# not running.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -8,7 +9,6 @@ bin="${MDS_RELEASE_BIN:-$root/core/build-release/mds}"
 config_dir="$root/core/mds/config"
 env_file="$root/backend/.env"
 log_dir="${MDS_AGG_LOG_DIR:-/tmp/mds-agg}"
-record_dir="${AGGDATA_RECORDING_DIR:-/tmp/marketdata/crypto}"
 
 producer_bin="$bin/mds_producer"
 aggregator_bin="$bin/mds_aggregator"
@@ -90,7 +90,7 @@ set -a
 source "$env_file"
 set +a
 [[ -n "${MDS_GATEWAY_TOKEN:-}" ]] || die "MDS_GATEWAY_TOKEN is empty"
-mkdir -p "$log_dir" "$record_dir"
+mkdir -p "$log_dir"
 
 echo "stopping aggregate chain"
 stop_matching "$consumer_pattern"
@@ -112,7 +112,7 @@ echo "waiting ${consumer_delay}s for shared-memory segments before consumer"
 sleep "$consumer_delay"
 
 start_logged "$log_dir/consumer.log" \
-  "$consumer_bin" --config "$consumer_cfg" --gateway --record
+  "$consumer_bin" --config "$consumer_cfg" --gateway --clickhouse-aggregate
 wait_alive "$consumer_pattern"
 
 echo "aggregate chain is up"

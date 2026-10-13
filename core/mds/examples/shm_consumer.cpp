@@ -1,9 +1,7 @@
 #include "mds/consume/aggregate_dispatch.h"
 #include "mds/gateway/gateway.h"
+#include "mds/record/clickhouse_aggregate_recorder.h"
 #include "mds/record/clickhouse_bbo_recorder.h"
-#if defined(MDS_HAS_ZSTD)
-#include "mds/record/recorder.h"
-#endif
 #include "mds/transport/shared_ring.h"
 #include "aggregate_dashboard.h"
 #include "consumer_config.h"
@@ -65,8 +63,8 @@ struct Options {
   std::vector<std::string> segments;
   std::string config_path;
   bool gateway{};
-  bool record{};
   bool clickhouse_bbo{};
+  bool clickhouse_aggregate{};
   bool validate_only{};
 };
 
@@ -123,6 +121,12 @@ std::string_view type_name(std::uint16_t type) noexcept {
       return "AggBbo";
     case md::MessageType::AggOrderBook:
       return "AggOrderBook";
+    case md::MessageType::InstrumentCatalog:
+      return "InstrumentCatalog";
+    case md::MessageType::FairPrice:
+      return "FairPrice";
+    case md::MessageType::FairPriceV2:
+      return "FairPriceV2";
   }
   return "Unknown";
 }
@@ -207,6 +211,9 @@ std::string profile_text(const md::Instrument &instrument) {
       break;
     case md::Venue::Lighter:
       profile = "lighter/";
+      break;
+    case md::Venue::Ibkr:
+      profile = "ibkr/";
       break;
     case md::Venue::Unknown:
       profile = "unknown/";
@@ -403,6 +410,8 @@ std::string_view venue_name(std::uint8_t venue) noexcept {
       return "aster";
     case md::Venue::Lighter:
       return "lighter";
+    case md::Venue::Ibkr:
+      return "ibkr";
     case md::Venue::Unknown:
       return "unknown";
   }
@@ -897,10 +906,10 @@ bool parse_options(int argc, char **argv, Options &options) {
     const std::string_view argument(argv[index]);
     if (argument == "--gateway") {
       options.gateway = true;
-    } else if (argument == "--record") {
-      options.record = true;
     } else if (argument == "--clickhouse-bbo") {
       options.clickhouse_bbo = true;
+    } else if (argument == "--clickhouse-aggregate") {
+      options.clickhouse_aggregate = true;
     } else if (argument == "--validate-only") {
       options.validate_only = true;
     } else if (argument == "--config") {
@@ -966,9 +975,11 @@ bool parse_options(int argc, char **argv, Options &options) {
   return (!options.segments.empty() || !options.config_path.empty()) &&
          (options.config_path.empty() || options.segments.empty()) &&
          (!options.validate_only || !options.config_path.empty()) &&
-         ((!options.gateway && !options.record && !options.clickhouse_bbo) ||
+         ((!options.gateway && !options.clickhouse_bbo &&
+           !options.clickhouse_aggregate) ||
           !options.config_path.empty()) &&
-         !(options.clickhouse_bbo && (options.gateway || options.record)) &&
+         !(options.clickhouse_bbo &&
+           (options.gateway || options.clickhouse_aggregate)) &&
          (!options.live_agg_bbo || (!options.raw && options.refresh_ms != 0)) &&
          (!options.refresh_explicit || options.live_agg_bbo);
 }
@@ -1191,7 +1202,8 @@ int main(int argc, char **argv) {
   mds::consumer::ConsumerConfig consumer_config;
   if (!parse_options(argc, argv, command_line)) {
     std::cerr << "usage: mds_shm_consumer [--config PATH] [--validate-only] "
-                 "[--gateway] [--record] [--clickhouse-bbo] [--raw] "
+                 "[--gateway] [--clickhouse-bbo] "
+                 "[--clickhouse-aggregate] [--raw] "
                  "[--bbo-only] "
                  "[--book-depth N] [--live-book-depth N] [--agg-depth N] "
                  "[--live-agg-bbo] [--refresh-ms N] "
@@ -1202,8 +1214,8 @@ int main(int argc, char **argv) {
   }
   if (!command_line.config_path.empty()) {
     auto loaded = mds::consumer::load_config(
-        command_line.config_path, command_line.gateway, command_line.record,
-        command_line.clickhouse_bbo);
+        command_line.config_path, command_line.gateway,
+        command_line.clickhouse_bbo, command_line.clickhouse_aggregate);
     if (!loaded) {
       std::cerr << loaded.message << '\n';
       return 2;
@@ -1221,22 +1233,16 @@ int main(int argc, char **argv) {
     if (command_line.validate_only) {
       std::cout << "validated segments=" << command_line.segments.size()
                 << " gateway=" << (command_line.gateway ? "on" : "off")
-                << " recording=" << (command_line.record ? "on" : "off")
                 << " clickhouse_bbo="
                 << (command_line.clickhouse_bbo ? "on" : "off")
+                << " clickhouse_aggregate="
+                << (command_line.clickhouse_aggregate ? "on" : "off")
                 << '\n';
       return 0;
     }
   }
-#if !defined(MDS_HAS_ZSTD)
-  if (command_line.record) {
-    std::cerr << "recording is unavailable: install libzstd-dev and rebuild "
-                 "with -DMDS_ENABLE_RECORDING=ON\n";
-    return 2;
-  }
-#endif
-  if ((command_line.gateway || command_line.record ||
-       command_line.clickhouse_bbo) &&
+  if ((command_line.gateway || command_line.clickhouse_bbo ||
+       command_line.clickhouse_aggregate) &&
       command_line.idle_wait == IdleWait::Spin) {
     std::cerr << "--idle-wait spin is not allowed with service modes "
                  "service modes\n";
@@ -1272,8 +1278,9 @@ int main(int argc, char **argv) {
           consumer_config.ingestion.stale_after_ms * 1'000'000ULL,
           consumer_config.ingestion.hard_reset_after_ms * 1'000'000ULL);
       const auto window_interval_ns =
-          command_line.record
-              ? consumer_config.recording.sample_interval_ms * 1'000'000ULL
+          command_line.clickhouse_aggregate
+              ? consumer_config.clickhouse_aggregate.options.sample_interval_ms *
+                    1'000'000ULL
               : 0;
       segment.latest_state = std::make_unique<consume::AggregateLatestState>(
           window_interval_ns);
@@ -1337,35 +1344,46 @@ int main(int argc, char **argv) {
               << ':' << gateway->port() << "/v1/market-data\n";
   }
 
-#if defined(MDS_HAS_ZSTD)
-  std::unique_ptr<mds::record::Recorder> recorder;
-  if (command_line.record) {
-    std::vector<mds::record::Topic> topics;
-    topics.reserve(segments.size());
-    for (auto &segment : segments) {
-      topics.push_back({.segment = segment.name,
-                        .kind = segment.aggregate_topic,
-                        .latest = segment.latest_state.get()});
+  std::unique_ptr<mds::record::ClickHouseAggregateRecorder>
+      clickhouse_aggregate_recorder;
+  if (command_line.clickhouse_aggregate) {
+    auto configured = consumer_config.clickhouse_aggregate.options;
+    const auto &password_env =
+        consumer_config.clickhouse_aggregate.password_env;
+    if (!password_env.empty()) {
+      const char *value = std::getenv(password_env.c_str());
+      if (value == nullptr) {
+        std::cerr << "ClickHouse password environment variable is missing: "
+                  << password_env << '\n';
+        for (auto &segment : segments) {
+          (void)segment.ring.unregister_reader(segment.reader);
+        }
+        return 1;
+      }
+      configured.password = value;
     }
-    const auto &recording = consumer_config.recording;
-    recorder = std::make_unique<mds::record::Recorder>(
-        mds::record::RecorderOptions{
-            .output_directory = recording.output_directory,
-            .sample_interval_ms = recording.sample_interval_ms,
-            .retention_hours = recording.retention_hours,
-            .depth = recording.depth,
-            .zstd_level = recording.zstd_level,
-            .min_free_disk_bytes = recording.min_free_disk_bytes},
-        topics);
-    if (!recorder->start()) {
-      std::cerr << "recorder failed to start: " << recorder->error() << '\n';
+    configured.topics.reserve(segments.size());
+    for (auto &segment : segments) {
+      if (segment.latest_state != nullptr) {
+        configured.topics.push_back(
+            {.segment = segment.name,
+             .kind = segment.aggregate_topic,
+             .latest = segment.latest_state.get()});
+      }
+    }
+    clickhouse_aggregate_recorder =
+        std::make_unique<mds::record::ClickHouseAggregateRecorder>(
+            std::move(configured));
+    std::signal(SIGPIPE, SIG_IGN);
+    if (!clickhouse_aggregate_recorder->start()) {
+      std::cerr << "ClickHouse aggregate recorder failed to start: "
+                << clickhouse_aggregate_recorder->error() << '\n';
       for (auto &segment : segments) {
         (void)segment.ring.unregister_reader(segment.reader);
       }
       return 1;
     }
   }
-#endif
 
   std::unique_ptr<mds::record::ClickHouseBboRecorder> clickhouse_recorder;
   if (command_line.clickhouse_bbo) {
@@ -1401,21 +1419,11 @@ int main(int argc, char **argv) {
   std::uint64_t idle_rounds = 0;
   std::uint64_t poll_rounds = 0;
   std::uint64_t last_heartbeat_ns = utils::runtime::Timestamp::NowMono();
-  bool recorder_failure_reported = false;
   bool gateway_failure_reported = false;
   bool service_failed = false;
   auto last_refresh = std::chrono::steady_clock::now() -
                       std::chrono::milliseconds(command_line.refresh_ms);
   while (!stop_requested.load(std::memory_order_relaxed)) {
-#if defined(MDS_HAS_ZSTD)
-    if (recorder != nullptr && recorder->failed() &&
-        !recorder_failure_reported) {
-      std::cerr << "recording disabled after failure: " << recorder->error()
-                << "; shared-memory consumption continues\n";
-      recorder_failure_reported = true;
-      service_failed = true;
-    }
-#endif
     if (gateway != nullptr && gateway->failed() &&
         !gateway_failure_reported) {
       std::cerr << "gateway disabled after failure: " << gateway->error()
@@ -1598,8 +1606,8 @@ int main(int argc, char **argv) {
         const bool metadata =
             message_type == md::MessageType::InstrumentCatalog ||
             message_type == md::MessageType::InstrumentUpdate;
-        if (!command_line.gateway && !command_line.record &&
-            !command_line.clickhouse_bbo &&
+        if (!command_line.gateway && !command_line.clickhouse_bbo &&
+            !command_line.clickhouse_aggregate &&
             (metadata || selected(segment, header.instrument_id))) {
           process_record(segment, stable_view, record, command_line);
         }
@@ -1663,6 +1671,17 @@ int main(int argc, char **argv) {
           wire::AggOrderBookRecord record{};
           handled =
               finish(record, wire::DecodeAggOrderBook(view.payload, record));
+          break;
+        }
+        case md::MessageType::FairPrice: {
+          wire::FairPriceRecordV1 record{};
+          handled = finish(record, wire::DecodeFairPrice(view.payload, record));
+          break;
+        }
+        case md::MessageType::FairPriceV2: {
+          wire::FairPriceRecordV2 record{};
+          handled =
+              finish(record, wire::DecodeFairPriceV2(view.payload, record));
           break;
         }
         default: {
@@ -1755,6 +1774,19 @@ int main(int argc, char **argv) {
       service_failed = true;
     }
   }
+  if (clickhouse_aggregate_recorder != nullptr) {
+    clickhouse_aggregate_recorder->stop();
+    const auto metrics = clickhouse_aggregate_recorder->metrics();
+    std::cerr << "ClickHouse aggregate recorder stopped rows_enqueued="
+              << metrics.rows_enqueued << " rows_written="
+              << metrics.rows_written << " queue_drops="
+              << metrics.queue_drops << " http_failures="
+              << metrics.http_failures << " retry_rows="
+              << metrics.retry_rows << " shutdown_drops="
+              << metrics.shutdown_drops << " stale_skips="
+              << metrics.stale_skips << " encode_failures="
+              << metrics.encode_failures << '\n';
+  }
   if (clickhouse_recorder != nullptr) {
     clickhouse_recorder->stop();
     const auto metrics = clickhouse_recorder->metrics();
@@ -1782,17 +1814,5 @@ int main(int argc, char **argv) {
               << '\n';
     (void)segment.ring.unregister_reader(segment.reader);
   }
-#if defined(MDS_HAS_ZSTD)
-  if (recorder != nullptr) {
-    recorder->stop();
-    if (recorder->failed()) {
-      service_failed = true;
-      if (!recorder_failure_reported) {
-        std::cerr << "recording disabled after failure: " << recorder->error()
-                  << "; shared-memory consumption completed normally\n";
-      }
-    }
-  }
-#endif
   return service_failed ? 1 : 0;
 }

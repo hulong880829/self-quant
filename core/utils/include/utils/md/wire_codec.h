@@ -70,6 +70,12 @@ DecodeAggBbo(std::span<const std::byte> bytes,
 [[nodiscard]] CodecError
 DecodeAggOrderBook(std::span<const std::byte> bytes,
                    AggOrderBookRecord &record) noexcept;
+[[nodiscard]] CodecError
+DecodeFairPrice(std::span<const std::byte> bytes,
+                FairPriceRecordV1 &record) noexcept;
+[[nodiscard]] CodecError
+DecodeFairPriceV2(std::span<const std::byte> bytes,
+                  FairPriceRecordV2 &record) noexcept;
 
 [[nodiscard]] EncodeResult
 EncodeInstrument(std::span<std::byte> destination,
@@ -109,6 +115,14 @@ EncodeAggBbo(std::span<std::byte> destination,
 EncodeAggOrderBook(std::span<std::byte> destination,
                    const HeaderFields &header,
                    const AggOrderBookRecord &value) noexcept;
+[[nodiscard]] EncodeResult
+EncodeFairPrice(std::span<std::byte> destination,
+                const HeaderFields &header,
+                const FairPriceRecordV1 &value) noexcept;
+[[nodiscard]] EncodeResult
+EncodeFairPriceV2(std::span<std::byte> destination,
+                  const HeaderFields &header,
+                  const FairPriceRecordV2 &value) noexcept;
 
 class RecordVisitor {
  public:
@@ -124,6 +138,8 @@ class RecordVisitor {
   virtual bool OnSnapshotBegin(const SnapshotBeginRecord &) noexcept = 0;
   virtual bool OnSnapshotChunk(const SnapshotChunkRecord &) noexcept = 0;
   virtual bool OnSnapshotEnd(const SnapshotEndRecord &) noexcept = 0;
+  virtual bool OnFairPrice(const FairPriceRecordV1 &) noexcept { return true; }
+  virtual bool OnFairPriceV2(const FairPriceRecordV2 &) noexcept { return true; }
 };
 
 // Copies into an aligned stack object before dispatch, so consumers may decode

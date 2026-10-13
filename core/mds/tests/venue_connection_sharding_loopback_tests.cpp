@@ -10,18 +10,21 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 #include <sstream>
 #include <set>
 #include <span>
+#include <sys/select.h>
 #include <string>
 #include <string_view>
 #include <sys/socket.h>
@@ -410,6 +413,7 @@ class Server {
 
   ~Server() {
     stopping_.store(true);
+    metadata_hold_cv_.notify_all();
     ::shutdown(listener_, SHUT_RDWR);
     ::close(listener_);
     if (acceptor_.joinable()) acceptor_.join();
@@ -436,6 +440,11 @@ class Server {
   unsigned websocket_requests() const {
     return websocket_requests_.load();
   }
+  unsigned websocket_accepted() const {
+    return websocket_accepted_.load();
+  }
+  void hold_scale_mismatch() { scale_mismatch_release_.store(false); }
+  void release_scale_mismatch() { scale_mismatch_release_.store(true); }
   unsigned websocket_decimal_headers() const {
     return websocket_decimal_headers_.load();
   }
@@ -486,6 +495,21 @@ class Server {
   }
   void close_btc_connection() { ++btc_close_requests_; }
 
+  void hold_metadata(std::chrono::milliseconds safety_timeout = 200ms) {
+    metadata_hold_timeout_ = safety_timeout;
+    metadata_request_entered_.store(false);
+    release_metadata_.store(false);
+  }
+
+  void release_metadata() {
+    release_metadata_.store(true);
+    metadata_hold_cv_.notify_all();
+  }
+
+  bool metadata_request_entered() const {
+    return metadata_request_entered_.load();
+  }
+
  private:
   void accept_loop() {
     while (!stopping_.load()) {
@@ -507,6 +531,7 @@ class Server {
       const auto request = read_headers(ssl);
       if (request.find("Upgrade: websocket") != std::string::npos) {
         ++websocket_requests_;
+        ++websocket_accepted_;
         if (request.find("\r\nX-Gate-Size-Decimal: 1\r\n") !=
             std::string::npos) {
           ++websocket_decimal_headers_;
@@ -552,6 +577,16 @@ class Server {
         request.find("/depth?") != std::string::npos) {
       static constexpr std::string_view body =
           R"({"lastUpdateId":100,"bids":[["100.00","1.000"],["99.99","1.000"],["99.98","1.000"],["99.97","1.000"],["99.96","1.000"],["99.95","1.000"],["99.94","1.000"],["99.93","1.000"],["99.92","1.000"],["99.91","1.000"]],"asks":[["100.01","2.000"],["100.02","2.000"],["100.03","2.000"],["100.04","2.000"],["100.05","2.000"],["100.06","2.000"],["100.07","2.000"],["100.08","2.000"],["100.09","2.000"],["100.10","2.000"]]})";
+      const auto response =
+          "HTTP/1.1 200 OK\r\nContent-Length: " +
+          std::to_string(body.size()) +
+          "\r\nConnection: close\r\n\r\n" + std::string(body);
+      (void)write_all(ssl, response);
+      return;
+    }
+    if (request.find("/depth") != std::string::npos) {
+      static constexpr std::string_view body =
+          R"({"lastUpdateId":100,"E":1,"T":1,"bids":[["100.00","1.000"],["99.99","1.000"],["99.98","1.000"],["99.97","1.000"],["99.96","1.000"],["99.95","1.000"],["99.94","1.000"],["99.93","1.000"],["99.92","1.000"],["99.91","1.000"]],"asks":[["100.01","2.000"],["100.02","2.000"],["100.03","2.000"],["100.04","2.000"],["100.05","2.000"],["100.06","2.000"],["100.07","2.000"],["100.08","2.000"],["100.09","2.000"],["100.10","2.000"]]})";
       const auto response =
           "HTTP/1.1 200 OK\r\nContent-Length: " +
           std::to_string(body.size()) +
@@ -758,6 +793,10 @@ class Server {
         "HTTP/1.1 200 OK\r\nContent-Length: " +
         std::to_string(body.size()) +
         "\r\nConnection: close\r\n\r\n" + std::string(body);
+    wait_if_metadata_held();
+    if (stopping_.load()) {
+      return;
+    }
     (void)write_all(ssl, response);
   }
 
@@ -1031,6 +1070,14 @@ class Server {
                 R"(","B":"1.000","a":")" + std::string(bid) +
                 R"(","A":"2.000","E":1})");
       };
+      while (!stopping_.load() && !scale_mismatch_release_.load()) {
+        if (!update("BTCUSDT", "100.00", 1) ||
+            !update("ETHUSDT", "200.00", 1) ||
+            !update("SOLUSDT", "150.00", 1)) {
+          return;
+        }
+        std::this_thread::sleep_for(20ms);
+      }
       if (!update("BTCUSDT", "100.00", 1) ||
           !update("ETHUSDT", "200.00", 1) ||
           !update("SOLUSDT", "150.00", 1)) {
@@ -1054,12 +1101,48 @@ class Server {
         ++scale_eth_updates_;
         std::this_thread::sleep_for(5ms);
       }
-      const auto unsubscribe = read_masked_text(ssl);
+      const auto read_while_quoting = [&]() {
+        unsigned sequence = 81;
+        const int fd = SSL_get_fd(ssl);
+        while (!stopping_.load()) {
+          if (SSL_pending(ssl) > 0) {
+            const auto message = read_masked_text(ssl);
+            if (!message.empty()) {
+              return message;
+            }
+            return std::string{};
+          }
+          fd_set reads;
+          FD_ZERO(&reads);
+          FD_SET(fd, &reads);
+          timeval wait{0, 50 * 1000};
+          const int ready = ::select(fd + 1, &reads, nullptr, nullptr, &wait);
+          if (ready > 0) {
+            const auto message = read_masked_text(ssl);
+            if (!message.empty()) {
+              return message;
+            }
+            return std::string{};
+          }
+          if (ready < 0) {
+            return std::string{};
+          }
+          if (!update("BTCUSDT", "100.00", sequence) ||
+              !update("ETHUSDT", "200.00", sequence)) {
+            return std::string{};
+          }
+          ++scale_btc_updates_;
+          ++scale_eth_updates_;
+          ++sequence;
+        }
+        return std::string{};
+      };
+      const auto unsubscribe = read_while_quoting();
       if (unsubscribe.find("solusdt") == std::string::npos ||
           !send_text(ssl, R"({"result":null,"id":1})")) {
         return;
       }
-      const auto resubscribe = read_masked_text(ssl);
+      const auto resubscribe = read_while_quoting();
       if (resubscribe.find("solusdt") == std::string::npos ||
           !send_text(ssl, R"({"result":null,"id":1})")) {
         return;
@@ -1165,7 +1248,7 @@ class Server {
       ++gate_btc_updates_;
       ++gate_eth_updates_;
       ++gate_sol_updates_;
-      if (!update("SOL_USDT", "150.000", "0.123456789", 2)) {
+      if (!update("SOL_USDT", "150.000", "-0.12345678", 2)) {
         return;
       }
       for (unsigned sequence = 2; sequence <= 5; ++sequence) {
@@ -1298,15 +1381,35 @@ class Server {
     }
     const auto close_request = btc_close_requests_.load();
     auto &updates = btc ? btc_updates_ : eth_updates_;
+    const bool send_ticker =
+        subscription.find("bookTicker") != std::string::npos;
+    const bool send_depth =
+        subscription.find("depth") != std::string::npos;
+    std::uint64_t depth_sequence = 100;
     while (!stopping_.load() &&
            (!btc || btc_close_requests_.load() == close_request)) {
       const auto sequence = ++updates;
-      if (!send_text(
+      if (send_ticker &&
+          !send_text(
               ssl,
               R"({"u":)" + std::to_string(sequence) + R"(,"s":")" +
                   symbol +
                   R"(","b":"100.00","B":"1.000","a":"100.01","A":"2.000","E":1})")) {
         return;
+      }
+      if (send_depth) {
+        ++depth_sequence;
+        if (!send_text(
+                ssl,
+                R"({"e":"depthUpdate","E":)" +
+                    std::to_string(sequence) + R"(,"T":)" +
+                    std::to_string(sequence) + R"(,"s":")" + symbol +
+                    R"(","U":)" + std::to_string(depth_sequence) +
+                    R"(,"u":)" + std::to_string(depth_sequence) +
+                    R"(,"pu":)" + std::to_string(depth_sequence - 1) +
+                    R"(,"b":[["100.00","1.000"]],"a":[["100.01","2.000"]]})")) {
+          return;
+        }
       }
       std::this_thread::sleep_for(10ms);
     }
@@ -1315,10 +1418,32 @@ class Server {
     }
   }
 
+  void wait_if_metadata_held() {
+    if (release_metadata_.load()) {
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(metadata_hold_mutex_);
+      metadata_request_entered_.store(true);
+    }
+    metadata_hold_cv_.notify_all();
+    std::unique_lock<std::mutex> lock(metadata_hold_mutex_);
+    const auto deadline =
+        std::chrono::steady_clock::now() + metadata_hold_timeout_;
+    metadata_hold_cv_.wait_until(lock, deadline, [this] {
+      return release_metadata_.load() || stopping_.load();
+    });
+  }
+
   SSL_CTX *context_{};
   int listener_{-1};
   std::uint16_t port_{};
   std::atomic<bool> stopping_{};
+  std::atomic<bool> release_metadata_{true};
+  std::atomic<bool> metadata_request_entered_{};
+  std::chrono::milliseconds metadata_hold_timeout_{200ms};
+  std::mutex metadata_hold_mutex_;
+  std::condition_variable metadata_hold_cv_;
   std::atomic<unsigned> btc_connections_{};
   std::atomic<unsigned> eth_connections_{};
   std::atomic<unsigned> btc_close_requests_{};
@@ -1330,6 +1455,8 @@ class Server {
   std::atomic<unsigned> gate_sol_updates_{};
   std::atomic<unsigned> gate_connections_{};
   std::atomic<unsigned> websocket_requests_{};
+  std::atomic<unsigned> websocket_accepted_{};
+  std::atomic<bool> scale_mismatch_release_{true};
   std::atomic<unsigned> websocket_decimal_headers_{};
   std::atomic<unsigned> metadata_decimal_headers_{};
   std::atomic<unsigned> gate_snapshot_requests_{};
@@ -1353,17 +1480,35 @@ class Server {
 };
 
 struct Audit final : utils::md::wire::RecordVisitor {
+  struct Observed {
+    utils::md::InstrumentId instrument_id{};
+    std::uint32_t generation{};
+    utils::md::MessageType type{};
+  };
+
   bool OnInstrument(
       const utils::md::wire::InstrumentUpdateRecord &record) noexcept override {
     instruments.insert(record.header.instrument_id);
-    observe(record.header.bus_seq);
+    kinds.push_back(utils::md::MessageType::InstrumentUpdate);
+    remember_symbol(record.header.instrument_id,
+                    record.instrument.canonical_symbol);
+    note(record.header, utils::md::MessageType::InstrumentUpdate);
     return true;
   }
   bool OnInstrumentCatalog(
       const utils::md::wire::InstrumentCatalogRecord &record) noexcept override {
     catalogs.insert(record.header.instrument_id);
     ++catalog_records;
-    observe(record.header.bus_seq);
+    kinds.push_back(utils::md::MessageType::InstrumentCatalog);
+    if (first_catalog_generation == 0) {
+      first_catalog_generation = record.header.book_generation;
+    }
+    catalog_generations.push_back(record.header.book_generation);
+    catalog_generations_by_id[record.header.instrument_id].push_back(
+        record.header.book_generation);
+    remember_symbol(record.header.instrument_id,
+                    record.catalog.canonical_symbol);
+    note(record.header, utils::md::MessageType::InstrumentCatalog);
     return true;
   }
   bool OnBbo(const utils::md::wire::BboRecord &record) noexcept override {
@@ -1371,46 +1516,319 @@ struct Audit final : utils::md::wire::RecordVisitor {
     ++bbo_records;
     last_bid_price = record.bid_price;
     last_ask_price = record.ask_price;
-    observe(record.header.bus_seq);
+    kinds.push_back(utils::md::MessageType::Bbo);
+    bbo_generations_by_id[record.header.instrument_id].push_back(
+        record.header.book_generation);
+    note(record.header, utils::md::MessageType::Bbo);
     return true;
   }
-  bool OnTicker(const utils::md::wire::TickerRecord &) noexcept override {
+  bool OnTicker(const utils::md::wire::TickerRecord &record) noexcept override {
+    kinds.push_back(utils::md::MessageType::Ticker);
+    observe(record.header);
     return true;
   }
-  bool OnDelta(const utils::md::wire::DeltaRecord &) noexcept override {
+  bool OnDelta(const utils::md::wire::DeltaRecord &record) noexcept override {
     ++delta_records;
+    kinds.push_back(utils::md::MessageType::BookDelta);
+    observe(record.header);
     return true;
   }
   bool OnSnapshotBegin(
-      const utils::md::wire::SnapshotBeginRecord &) noexcept override {
+      const utils::md::wire::SnapshotBeginRecord &record) noexcept override {
     ++snapshot_begin_records;
+    kinds.push_back(utils::md::MessageType::SnapshotBegin);
+    observe(record.header);
     return true;
   }
   bool OnSnapshotChunk(
-      const utils::md::wire::SnapshotChunkRecord &) noexcept override {
+      const utils::md::wire::SnapshotChunkRecord &record) noexcept override {
+    kinds.push_back(utils::md::MessageType::SnapshotChunk);
+    observe(record.header);
     return true;
   }
   bool OnSnapshotEnd(
-      const utils::md::wire::SnapshotEndRecord &) noexcept override {
+      const utils::md::wire::SnapshotEndRecord &record) noexcept override {
+    ++snapshot_end_records;
+    kinds.push_back(utils::md::MessageType::SnapshotEnd);
+    observe(record.header);
     return true;
   }
-  void observe(std::uint64_t sequence) {
-    monotonic = monotonic && sequence > last_bus_seq;
-    last_bus_seq = sequence;
+  void observe(const utils::md::wire::RecordHeader &header) {
+    monotonic = monotonic && header.bus_seq > last_bus_seq;
+    last_bus_seq = header.bus_seq;
+    last_generation = header.book_generation;
+    if (header.instrument_id == 0) {
+      saw_zero_instrument = true;
+    }
+  }
+  void note(const utils::md::wire::RecordHeader &header,
+            utils::md::MessageType type) {
+    observe(header);
+    timeline.push_back({header.instrument_id, header.book_generation, type});
+  }
+  template <std::size_t Size>
+  void remember_symbol(utils::md::InstrumentId id,
+                       const std::array<char, Size> &value) {
+    if (id == 0) {
+      return;
+    }
+    const auto end = std::find(value.begin(), value.end(), '\0');
+    const std::string_view symbol{
+        value.data(), static_cast<std::size_t>(end - value.begin())};
+    if (!symbol.empty()) {
+      symbol_by_id[id] = std::string(symbol);
+    }
   }
 
   std::set<utils::md::InstrumentId> catalogs;
   std::set<utils::md::InstrumentId> instruments;
   std::set<utils::md::InstrumentId> bbos;
+  std::vector<utils::md::MessageType> kinds;
+  std::vector<Observed> timeline;
+  std::vector<std::uint32_t> catalog_generations;
+  std::map<utils::md::InstrumentId, std::vector<std::uint32_t>>
+      catalog_generations_by_id;
+  std::map<utils::md::InstrumentId, std::vector<std::uint32_t>>
+      bbo_generations_by_id;
+  std::map<utils::md::InstrumentId, std::string> symbol_by_id;
   std::size_t catalog_records{};
   std::size_t bbo_records{};
   std::size_t delta_records{};
   std::size_t snapshot_begin_records{};
+  std::size_t snapshot_end_records{};
   std::int64_t last_bid_price{};
   std::int64_t last_ask_price{};
   std::uint64_t last_bus_seq{};
+  std::uint32_t first_catalog_generation{};
+  std::uint32_t last_generation{};
   bool monotonic{true};
+  bool saw_zero_instrument{};
 };
+
+std::size_t count_marker(std::string_view text, std::string_view marker) {
+  std::size_t result{};
+  for (std::size_t offset{};
+       (offset = text.find(marker, offset)) != std::string_view::npos;
+       offset += marker.size()) {
+    ++result;
+  }
+  return result;
+}
+
+std::uint64_t reader_now_ns() {
+  return static_cast<std::uint64_t>(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+}
+
+void drain_ring(mds::transport::SharedRing &ring,
+                mds::transport::ReaderHandle &reader, Audit &audit) {
+  for (;;) {
+    auto record = ring.read(reader);
+    if (!record) {
+      return;
+    }
+    assert(utils::md::wire::Decode(record.value->payload, audit) ==
+           utils::md::wire::CodecError::Ok);
+    assert(record.value.commit());
+  }
+}
+
+enum class LateReaderLayout : std::uint8_t {
+  OwnedTicker,
+  OwnedOrderbook,
+  MultiplexTicker,
+  MultiplexOrderbook
+};
+
+const char *layout_name(LateReaderLayout layout) {
+  switch (layout) {
+  case LateReaderLayout::OwnedTicker:
+    return "owned.ticker";
+  case LateReaderLayout::OwnedOrderbook:
+    return "owned.orderbook";
+  case LateReaderLayout::MultiplexTicker:
+    return "multiplex.ticker";
+  case LateReaderLayout::MultiplexOrderbook:
+    return "multiplex.orderbook";
+  }
+  return "unknown";
+}
+
+bool layout_uses_orderbook(LateReaderLayout layout) {
+  return layout == LateReaderLayout::OwnedOrderbook ||
+         layout == LateReaderLayout::MultiplexOrderbook;
+}
+
+bool layout_is_multiplex(LateReaderLayout layout) {
+  return layout == LateReaderLayout::MultiplexTicker ||
+         layout == LateReaderLayout::MultiplexOrderbook;
+}
+
+mds::service::VenueConnectionOptions make_late_reader_options(
+    const Server &server, LateReaderLayout layout, std::string prefix,
+    std::size_t ring_bytes = 64U << 10U,
+    mds::api::RingMode mode = mds::api::RingMode::OverwriteOldest) {
+  mds::service::VenueConnectionOptions options;
+  options.venue = utils::md::Venue::Binance;
+  options.product = utils::md::ProductType::Perpetual;
+  options.websocket_endpoint = server.endpoint("wss", "/ws");
+  options.rest_endpoint = server.endpoint("https");
+  options.max_symbols_per_ws = 1;
+  options.connect_timeout = 1s;
+  options.request_timeout = 5s;
+  options.idle_timeout = 5s;
+  options.reconnect_base = 20ms;
+  options.reconnect_max = 40ms;
+  const bool orderbook = layout_uses_orderbook(layout);
+  const bool multiplex = layout_is_multiplex(layout);
+  for (const char *symbol : {"BTCUSDT", "ETHUSDT"}) {
+    mds::service::SymbolStreamOptions stream;
+    stream.symbol = symbol;
+    stream.ticker = !orderbook;
+    stream.orderbook = orderbook;
+    stream.ticker_channel = "bookTicker";
+    stream.orderbook_channel = "depth";
+    stream.orderbook_bootstrap =
+        mds::exchange::BookBootstrap::RestSnapshotThenDelta;
+    stream.update_interval_ms = 100;
+    stream.ladder_ticks_per_side = 256;
+    stream.snapshot_depth = 10;
+    stream.max_levels_per_message = 50;
+    stream.shm_prefix = prefix;
+    stream.ring_layout = multiplex ? mds::publish::RingLayout::Multiplex
+                                   : mds::publish::RingLayout::PerSymbol;
+    stream.shard_count = 1;
+    auto &ring = multiplex ? stream.multiplex_ring : stream.ring;
+    ring.ring_bytes = ring_bytes;
+    ring.max_record_bytes = std::min<std::size_t>(4096, ring_bytes / 8U);
+    ring.max_readers = 8;
+    ring.unlink_on_close = true;
+    ring.mode = mode;
+    options.streams.push_back(std::move(stream));
+  }
+  return options;
+}
+
+std::string ring_name_for(LateReaderLayout layout, std::string_view prefix,
+                          std::string_view symbol) {
+  if (layout_is_multiplex(layout)) {
+    return mds::publish::make_multiplex_segment_name(
+        prefix, "binance", "perpetual",
+        layout_uses_orderbook(layout) ? "orderbook" : "ticker", 0);
+  }
+  return mds::publish::make_publisher_segment_name(
+      prefix, mds::exchange::segment_profile(utils::md::Venue::Binance,
+                                             utils::md::ProductType::Perpetual),
+      symbol, layout_uses_orderbook(layout) ? "orderbook" : "ticker");
+}
+
+mds::transport::SharedRing open_existing_ring(const std::string &name) {
+  mds::transport::RingOptions attach;
+  attach.create = false;
+  attach.name = name;
+  auto opened = mds::transport::SharedRing::open(attach);
+  assert(opened);
+  return std::move(opened.value);
+}
+
+mds::transport::ReaderHandle register_reader(mds::transport::SharedRing &ring) {
+  auto registered = ring.register_reader(
+      mds::transport::process_start_marker(::getpid()), reader_now_ns());
+  assert(registered);
+  return registered.value;
+}
+
+template <typename Predicate>
+bool pump_until(mds::service::VenueConnectionManager &manager,
+                Predicate &&predicate,
+                std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    (void)manager.run_once(5);
+    if (predicate()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool has_in_order(const std::vector<utils::md::MessageType> &kinds,
+                  std::initializer_list<utils::md::MessageType> expected) {
+  auto cursor = kinds.begin();
+  for (const auto want : expected) {
+    cursor = std::find(cursor, kinds.end(), want);
+    if (cursor == kinds.end()) {
+      return false;
+    }
+    ++cursor;
+  }
+  return true;
+}
+
+utils::md::InstrumentId instrument_id_for_symbol(
+    const Audit &audit, std::string_view symbol) {
+  for (const auto &[id, name] : audit.symbol_by_id) {
+    if (name == symbol) {
+      return id;
+    }
+  }
+  return 0;
+}
+
+std::vector<std::uint32_t> unique_generations(
+    const std::vector<std::uint32_t> &values) {
+  auto unique = values;
+  std::sort(unique.begin(), unique.end());
+  unique.erase(std::unique(unique.begin(), unique.end()), unique.end());
+  return unique;
+}
+
+std::size_t count_observed(const Audit &audit, utils::md::InstrumentId id,
+                           utils::md::MessageType type,
+                           std::uint32_t generation) {
+  return static_cast<std::size_t>(std::count_if(
+      audit.timeline.begin(), audit.timeline.end(),
+      [&](const Audit::Observed &event) {
+        return event.instrument_id == id && event.type == type &&
+               event.generation == generation;
+      }));
+}
+
+bool generation_catalog_then_instrument_then_bbo(
+    const Audit &audit, utils::md::InstrumentId id,
+    std::uint32_t generation) {
+  std::vector<utils::md::MessageType> kinds;
+  for (const auto &event : audit.timeline) {
+    if (event.instrument_id == id && event.generation == generation) {
+      kinds.push_back(event.type);
+    }
+  }
+  return has_in_order(kinds,
+                      {utils::md::MessageType::InstrumentCatalog,
+                       utils::md::MessageType::InstrumentUpdate,
+                       utils::md::MessageType::Bbo});
+}
+
+bool no_stale_bbo_after_catalog(const Audit &audit,
+                                utils::md::InstrumentId id,
+                                std::uint32_t generation) {
+  bool saw_catalog = false;
+  for (const auto &event : audit.timeline) {
+    if (event.instrument_id != id) {
+      continue;
+    }
+    if (event.type == utils::md::MessageType::InstrumentCatalog &&
+        event.generation == generation) {
+      saw_catalog = true;
+      continue;
+    }
+    if (!saw_catalog || event.type != utils::md::MessageType::Bbo) {
+      continue;
+    }
+    return event.generation == generation;
+  }
+  return saw_catalog;
+}
 
 }  // namespace
 
@@ -1503,12 +1921,21 @@ void test_binance_shard_reconnect() {
               << " bbos=" << audit.bbos.size() << '\n';
   }
   assert(initially_live);
+  const auto btc_id = instrument_id_for_symbol(audit, "BTCUSDT");
+  const auto eth_id = instrument_id_for_symbol(audit, "ETHUSDT");
+  assert(btc_id != 0 && eth_id != 0 && btc_id != eth_id);
+  assert(unique_generations(audit.catalog_generations_by_id[btc_id]) ==
+         std::vector<std::uint32_t>{1});
+  assert(unique_generations(audit.catalog_generations_by_id[eth_id]) ==
+         std::vector<std::uint32_t>{1});
 
   std::ostringstream diagnostics;
   auto *original = std::cerr.rdbuf(diagnostics.rdbuf());
   for (unsigned disconnect = 1; disconnect <= 2; ++disconnect) {
     const auto prior_btc_connections = server.btc_connections();
     const auto prior_btc_updates = server.btc_updates();
+    const auto prior_catalog_records = audit.catalog_records;
+    const auto reconnect_generation = 1U + disconnect;
     server.close_btc_connection();
     assert(wait_until([&] {
       return server.btc_closures() >= disconnect;
@@ -1548,6 +1975,26 @@ void test_binance_shard_reconnect() {
                    diagnostics.str().c_str());
     }
     assert(restored);
+    const bool new_generation_quotes = wait_until([&] {
+      return generation_catalog_then_instrument_then_bbo(
+          audit, btc_id, reconnect_generation);
+    });
+    assert(new_generation_quotes);
+    assert(audit.catalog_records == prior_catalog_records + 1);
+    assert(count_observed(audit, btc_id,
+                          utils::md::MessageType::InstrumentCatalog,
+                          reconnect_generation) == 1);
+    assert(count_observed(audit, btc_id,
+                          utils::md::MessageType::InstrumentUpdate,
+                          reconnect_generation) == 1);
+    assert(unique_generations(audit.catalog_generations_by_id[btc_id]).back() ==
+           reconnect_generation);
+    assert(unique_generations(audit.catalog_generations_by_id[eth_id]) ==
+           std::vector<std::uint32_t>{1});
+    assert(no_stale_bbo_after_catalog(audit, btc_id, reconnect_generation));
+    const auto &btc_bbos = audit.bbo_generations_by_id[btc_id];
+    assert(!btc_bbos.empty());
+    assert(btc_bbos.back() == reconnect_generation);
   }
   std::cerr.rdbuf(original);
 
@@ -1563,6 +2010,10 @@ void test_binance_shard_reconnect() {
   assert(audit.instruments.size() == 2);
   assert(audit.bbos.size() == 2);
   assert(audit.monotonic);
+  assert(unique_generations(audit.catalog_generations_by_id[btc_id]) ==
+         std::vector<std::uint32_t>({1, 2, 3}));
+  assert(unique_generations(audit.catalog_generations_by_id[eth_id]) ==
+         std::vector<std::uint32_t>{1});
   const auto log = diagnostics.str();
   const auto count = [&](std::string_view marker) {
     std::size_t result{};
@@ -1587,6 +2038,7 @@ void test_binance_shard_reconnect() {
   assert(late_registered);
   auto late_reader = late_registered.value;
   Audit late_audit;
+  const auto error_baseline = connection->metrics().publish_errors;
   const auto late_deadline = std::chrono::steady_clock::now() + 3s;
   while (std::chrono::steady_clock::now() < late_deadline) {
     (void)manager.run_once(5);
@@ -1598,15 +2050,28 @@ void test_binance_shard_reconnect() {
       assert(record.value.commit());
     }
     if (late_audit.catalogs.size() == 2 &&
-        late_audit.instruments.size() == 2 &&
-        late_audit.bbos.size() == 2) {
+        late_audit.instruments.size() == 2 && !late_audit.bbos.empty()) {
       break;
     }
   }
   assert(late_audit.catalogs.size() == 2);
   assert(late_audit.instruments.size() == 2);
-  assert(late_audit.bbos.size() == 2);
+  assert(!late_audit.bbos.empty());
+  assert(!late_audit.saw_zero_instrument);
   assert(late_audit.monotonic);
+  const auto late_btc = instrument_id_for_symbol(late_audit, "BTCUSDT");
+  const auto late_eth = instrument_id_for_symbol(late_audit, "ETHUSDT");
+  assert(late_btc == btc_id && late_eth == eth_id);
+  assert(unique_generations(late_audit.catalog_generations_by_id[btc_id]) ==
+         std::vector<std::uint32_t>{3});
+  assert(unique_generations(late_audit.catalog_generations_by_id[eth_id]) ==
+         std::vector<std::uint32_t>{1});
+  assert(!late_audit.bbo_generations_by_id[btc_id].empty());
+  for (const auto generation : late_audit.bbo_generations_by_id[btc_id]) {
+    assert(generation == 3);
+  }
+  assert(generation_catalog_then_instrument_then_bbo(late_audit, btc_id, 3));
+  assert(connection->metrics().publish_errors == error_baseline);
   manager.stop();
 }
 
@@ -1700,6 +2165,22 @@ void test_multiplex_publishers_survive_compatible_replace() {
   }));
   assert(audit.last_bus_seq > bus_seq_before_replace);
   assert(audit.monotonic);
+
+  for (int round = 0; round < 3; ++round) {
+    const auto seq_before = audit.last_bus_seq;
+    const auto records_before = audit.bbo_records;
+    replaced = manager.replace(connection, make_options());
+    assert(replaced);
+    connection = replaced.value;
+    assert(ring.name() == segment_name);
+    assert(ring.epoch() == producer_epoch);
+    assert(wait_until([&] {
+      return connection->state() == mds::service::MarketDataState::Live &&
+             audit.bbo_records > records_before;
+    }));
+    assert(audit.last_bus_seq > seq_before);
+    assert(audit.monotonic);
+  }
 
   auto incompatible = make_options();
   incompatible.streams.front().shard_count = 2;
@@ -1884,6 +2365,7 @@ void test_symbol_scale_refresh(Protocol protocol,
   Certificate identity;
   auto tls = client_context(identity);
   Server server(identity, protocol);
+  server.hold_scale_mismatch();
   mds::service::VenueConnectionManager manager(tls);
   mds::service::VenueConnectionOptions options;
   options.venue = utils::md::Venue::Binance;
@@ -1915,6 +2397,19 @@ void test_symbol_scale_refresh(Protocol protocol,
   auto created = manager.create(std::move(options));
   assert(created);
   auto *connection = created.value;
+  const auto ready_deadline = std::chrono::steady_clock::now() + 5s;
+  while (std::chrono::steady_clock::now() < ready_deadline &&
+         (server.websocket_accepted() < 1 ||
+          server.metadata_requests() < 1 ||
+          connection->state() !=
+              mds::service::MarketDataState::Live)) {
+    (void)manager.run_once(5);
+  }
+  assert(server.websocket_accepted() >= 1);
+  assert(server.metadata_requests() >= 1);
+  assert(connection->state() ==
+         mds::service::MarketDataState::Live);
+  server.release_scale_mismatch();
   const auto deadline = std::chrono::steady_clock::now() + 5s;
   while (std::chrono::steady_clock::now() < deadline &&
          (connection->metrics().metadata_refresh_successes < 1 ||
@@ -1923,32 +2418,36 @@ void test_symbol_scale_refresh(Protocol protocol,
               mds::service::MarketDataState::Live)) {
     (void)manager.run_once(5);
   }
-  assert(connection->state() ==
-         mds::service::MarketDataState::Live);
-  assert(connection->metrics().scale_mismatch_frames >= 1);
-  assert(connection->metrics().scale_mismatch_symbols == 1);
-  assert(connection->metrics().metadata_refresh_coalesced >= 2);
-  assert(connection->metrics().metadata_refresh_successes == 1);
-  assert(connection->metrics().resyncs == 1);
-  assert(connection->metrics().last_resync_reason ==
-         mds::service::ResyncReason::ScaleMismatch);
-  assert(std::string_view(
-             connection->metrics().last_resync_symbol.data()) ==
-         "SOLUSDT");
-  assert(connection->metrics().reconnects == 0);
-  assert(connection->metrics().connection_rebuild_attempts == 0);
-  assert(server.scale_btc_updates() >= 80);
-  assert(server.scale_eth_updates() >= 80);
-  assert(server.scale_sol_updates() >= 5);
-  if (expect_retry) {
-    assert(connection->metrics().metadata_refresh_failures >= 1);
-    assert(server.metadata_requests() >= 3);
-    assert(server.metadata_retry_delay_ms() >= 900);
-  } else {
-    assert(connection->metrics().metadata_refresh_failures == 0);
-    assert(server.metadata_requests() == 2);
-  }
+  const auto metrics = connection->metrics();
+  const auto state = connection->state();
+  const auto scale_btc_updates = server.scale_btc_updates();
+  const auto scale_eth_updates = server.scale_eth_updates();
+  const auto scale_sol_updates = server.scale_sol_updates();
+  const auto metadata_requests = server.metadata_requests();
+  const auto metadata_retry_delay_ms = server.metadata_retry_delay_ms();
   manager.stop();
+  assert(state == mds::service::MarketDataState::Live);
+  assert(metrics.scale_mismatch_frames >= 1);
+  assert(metrics.scale_mismatch_symbols == 1);
+  assert(metrics.metadata_refresh_coalesced >= 2);
+  assert(metrics.metadata_refresh_successes == 1);
+  assert(metrics.resyncs == 1);
+  assert(metrics.last_resync_reason ==
+         mds::service::ResyncReason::ScaleMismatch);
+  assert(std::string_view(metrics.last_resync_symbol.data()) == "SOLUSDT");
+  assert(metrics.reconnects == 0);
+  assert(metrics.connection_rebuild_attempts == 0);
+  assert(scale_btc_updates >= 80);
+  assert(scale_eth_updates >= 80);
+  assert(scale_sol_updates >= 5);
+  if (expect_retry) {
+    assert(metrics.metadata_refresh_failures >= 1);
+    assert(metadata_requests >= 3);
+    assert(metadata_retry_delay_ms >= 900);
+  } else {
+    assert(metrics.metadata_refresh_failures == 0);
+    assert(metadata_requests == 2);
+  }
 }
 
 void test_invalid_symbol_scale_refresh_does_not_publish_catalog() {
@@ -3312,6 +3811,407 @@ void test_lighter_budget_is_shared_across_products() {
   manager.stop();
 }
 
+void test_late_reader_startup_race_and_first_publish(LateReaderLayout layout) {
+  Certificate identity;
+  auto tls = client_context(identity);
+  Server server(identity);
+  server.hold_metadata(4s);
+  mds::service::VenueConnectionManager manager(tls);
+  const auto prefix = std::string("/mds.late.reader.") + layout_name(layout) +
+                      "." + std::to_string(::getpid());
+  auto created =
+      manager.create(make_late_reader_options(server, layout, prefix));
+  assert(created);
+  auto *connection = created.value;
+  assert(pump_until(
+      manager, [&] { return server.metadata_request_entered(); }, 2s));
+
+  const std::vector<std::string> symbols{"BTCUSDT", "ETHUSDT"};
+  std::vector<mds::transport::SharedRing> rings;
+  std::vector<mds::transport::ReaderHandle> readers;
+  if (layout_is_multiplex(layout)) {
+    rings.push_back(
+        open_existing_ring(ring_name_for(layout, prefix, symbols.front())));
+    readers.push_back(register_reader(rings.back()));
+  } else {
+    for (const auto &symbol : symbols) {
+      rings.push_back(open_existing_ring(ring_name_for(layout, prefix, symbol)));
+      readers.push_back(register_reader(rings.back()));
+    }
+  }
+  std::vector<Audit> audits(readers.size());
+
+  std::ostringstream diagnostics;
+  auto *original = std::cerr.rdbuf(diagnostics.rdbuf());
+  assert(pump_until(
+      manager,
+      [&] {
+        for (std::size_t index = 0; index < rings.size(); ++index) {
+          drain_ring(rings[index], readers[index], audits[index]);
+        }
+        return true;
+      },
+      1s));
+  const auto log = diagnostics.str();
+  std::cerr.rdbuf(original);
+
+  assert(connection->metrics().publish_errors == 0);
+  assert(connection->metrics().connection_rebuild_attempts == 0);
+  assert(count_marker(log, "connection rebuild") == 0);
+  assert(count_marker(log, "websocket reconnect scheduled") == 0);
+  assert(count_marker(log, "failed to republish") == 0);
+  for (const auto &audit : audits) {
+    assert(audit.catalog_records == 0);
+    assert(audit.instruments.empty());
+    assert(!audit.saw_zero_instrument);
+  }
+
+  server.release_metadata();
+  const bool orderbook = layout_uses_orderbook(layout);
+  const auto live = pump_until(
+      manager,
+      [&] {
+        for (std::size_t index = 0; index < rings.size(); ++index) {
+          drain_ring(rings[index], readers[index], audits[index]);
+        }
+        if (connection->metrics().connection_rebuild_attempts != 0) {
+          return false;
+        }
+        std::size_t catalogs{};
+        std::size_t instruments{};
+        std::size_t images{};
+        for (const auto &audit : audits) {
+          catalogs += audit.catalogs.size();
+          instruments += audit.instruments.size();
+          images += orderbook ? audit.snapshot_begin_records : audit.bbos.size();
+        }
+        const std::size_t expected = layout_is_multiplex(layout) ? 2 : 1;
+        return connection->state() == mds::service::MarketDataState::Live &&
+               catalogs >= expected && instruments >= expected &&
+               images >= expected;
+      },
+      5s);
+  if (!live) {
+    std::fprintf(
+        stderr,
+        "late-reader first publish failed layout=%s state=%.*s error=\"%.*s\" "
+        "rebuilds=%llu publish_errors=%llu ticker=%llu depth=%llu "
+        "rings=%zu\n",
+        layout_name(layout),
+        static_cast<int>(mds::service::to_string(connection->state()).size()),
+        mds::service::to_string(connection->state()).data(),
+        static_cast<int>(connection->error_message().size()),
+        connection->error_message().data(),
+        static_cast<unsigned long long>(
+            connection->metrics().connection_rebuild_attempts),
+        static_cast<unsigned long long>(connection->metrics().publish_errors),
+        static_cast<unsigned long long>(connection->metrics().ticker_updates),
+        static_cast<unsigned long long>(connection->metrics().depth_updates),
+        rings.size());
+    for (std::size_t index = 0; index < audits.size(); ++index) {
+      std::fprintf(stderr,
+                   "  ring=%zu catalogs=%zu instruments=%zu bbos=%zu "
+                   "snapshots=%zu gen=%u\n",
+                   index, audits[index].catalogs.size(),
+                   audits[index].instruments.size(), audits[index].bbos.size(),
+                   audits[index].snapshot_begin_records,
+                   audits[index].first_catalog_generation);
+    }
+  }
+  assert(live);
+  assert(connection->metrics().publish_errors == 0);
+  assert(connection->metrics().connection_rebuild_attempts == 0);
+  for (const auto &audit : audits) {
+    assert(audit.first_catalog_generation == 1);
+    assert(!audit.saw_zero_instrument);
+    assert(!audit.catalogs.empty());
+    assert(*audit.catalogs.begin() != 0);
+    assert(!audit.instruments.empty());
+    assert(*audit.instruments.begin() != 0);
+  }
+
+  std::vector<mds::transport::ReaderHandle> late_readers;
+  std::vector<Audit> late_audits(rings.size());
+  for (auto &ring : rings) {
+    late_readers.push_back(register_reader(ring));
+  }
+  const auto late = pump_until(
+      manager,
+      [&] {
+        for (std::size_t index = 0; index < rings.size(); ++index) {
+          drain_ring(rings[index], late_readers[index], late_audits[index]);
+        }
+        for (const auto &audit : late_audits) {
+          const bool got_image =
+              orderbook ? audit.snapshot_begin_records != 0 &&
+                              audit.snapshot_end_records != 0 &&
+                              !audit.bbos.empty()
+                        : !audit.bbos.empty();
+          if (audit.catalogs.empty() || audit.instruments.empty() ||
+              !got_image) {
+            return false;
+          }
+        }
+        return true;
+      },
+      3s);
+  assert(late);
+  for (const auto &audit : late_audits) {
+    assert(audit.first_catalog_generation == 1);
+    assert(!audit.saw_zero_instrument);
+    if (orderbook) {
+      assert(has_in_order(
+          audit.kinds,
+          {utils::md::MessageType::InstrumentCatalog,
+           utils::md::MessageType::InstrumentUpdate,
+           utils::md::MessageType::SnapshotBegin,
+           utils::md::MessageType::SnapshotEnd, utils::md::MessageType::Bbo}));
+    } else {
+      assert(has_in_order(audit.kinds,
+                          {utils::md::MessageType::InstrumentCatalog,
+                           utils::md::MessageType::InstrumentUpdate,
+                           utils::md::MessageType::Bbo}));
+    }
+  }
+  manager.stop();
+}
+
+void test_late_reader_lossless_republish_failure() {
+  Certificate identity;
+  auto tls = client_context(identity);
+  Server server(identity);
+  server.hold_metadata(200ms);
+  mds::service::VenueConnectionManager manager(tls);
+  const auto prefix =
+      "/mds.late.reader.lossless." + std::to_string(::getpid());
+  constexpr std::size_t ring_bytes = 8192;
+  auto created = manager.create(make_late_reader_options(
+      server, LateReaderLayout::MultiplexTicker, prefix, ring_bytes,
+      mds::api::RingMode::Lossless));
+  assert(created);
+  auto *connection = created.value;
+  assert(pump_until(
+      manager, [&] { return server.metadata_request_entered(); }, 200ms));
+
+  auto ring = open_existing_ring(
+      ring_name_for(LateReaderLayout::MultiplexTicker, prefix, "BTCUSDT"));
+  auto early = register_reader(ring);
+  Audit early_audit;
+  const auto race_deadline = std::chrono::steady_clock::now() + 50ms;
+  while (std::chrono::steady_clock::now() < race_deadline) {
+    (void)manager.run_once(5);
+    drain_ring(ring, early, early_audit);
+  }
+  assert(connection->metrics().publish_errors == 0);
+  assert(connection->metrics().connection_rebuild_attempts == 0);
+  assert(early_audit.catalog_records == 0);
+
+  server.release_metadata();
+  const auto live = pump_until(
+      manager,
+      [&] {
+        drain_ring(ring, early, early_audit);
+        return connection->state() == mds::service::MarketDataState::Live &&
+               early_audit.catalogs.size() == 2 &&
+               !early_audit.bbos.empty();
+      },
+      3s);
+  assert(live);
+  assert(connection->metrics().publish_errors == 0);
+
+  auto slow = register_reader(ring);
+  const auto republished = pump_until(
+      manager,
+      [&] {
+        (void)ring.heartbeat(slow, reader_now_ns());
+        return connection->metrics().publish_errors == 0 &&
+               connection->state() == mds::service::MarketDataState::Live;
+      },
+      200ms);
+  assert(republished);
+  assert(connection->metrics().publish_errors == 0);
+  assert(connection->metrics().connection_rebuild_attempts == 0);
+
+  constexpr std::size_t kRingHeader = 40;
+  const auto framed = [](std::size_t payload) {
+    return (kRingHeader + payload + 7U) & ~std::size_t{7U};
+  };
+  const auto republish_bytes =
+      2U * (framed(sizeof(utils::md::wire::InstrumentCatalogRecord)) +
+            framed(sizeof(utils::md::wire::InstrumentUpdateRecord)) +
+            framed(sizeof(utils::md::wire::BboRecord)));
+  const auto bbo_bytes = framed(sizeof(utils::md::wire::BboRecord));
+  std::size_t occupied = republish_bytes;
+  std::uint64_t seen_updates = connection->metrics().ticker_updates;
+  while (occupied + republish_bytes <= ring_bytes) {
+    const auto errors = connection->metrics().publish_errors;
+    const auto rebuilds = connection->metrics().connection_rebuild_attempts;
+    const bool advanced = pump_until(
+        manager,
+        [&] {
+          (void)ring.heartbeat(slow, reader_now_ns());
+          return connection->metrics().ticker_updates > seen_updates;
+        },
+        500ms);
+    assert(advanced);
+    assert(connection->metrics().publish_errors == errors);
+    assert(connection->metrics().connection_rebuild_attempts == rebuilds);
+    occupied += bbo_bytes * static_cast<std::size_t>(
+                                connection->metrics().ticker_updates -
+                                seen_updates);
+    seen_updates = connection->metrics().ticker_updates;
+  }
+
+  const auto error_baseline = connection->metrics().publish_errors;
+  const auto rebuild_baseline =
+      connection->metrics().connection_rebuild_attempts;
+  auto late = register_reader(ring);
+  const auto failed = pump_until(
+      manager,
+      [&] {
+        (void)ring.heartbeat(slow, reader_now_ns());
+        (void)ring.heartbeat(late, reader_now_ns());
+        return connection->metrics().publish_errors > error_baseline &&
+               connection->metrics().connection_rebuild_attempts >
+                   rebuild_baseline;
+      },
+      2s);
+  assert(failed);
+  manager.stop();
+}
+
+void test_late_reader_generation_switch() {
+  Certificate identity;
+  auto tls = client_context(identity);
+  Server server(identity);
+  mds::service::VenueConnectionManager manager(tls);
+  const auto prefix =
+      "/mds.late.reader.generation." + std::to_string(::getpid());
+  auto created = manager.create(make_late_reader_options(
+      server, LateReaderLayout::MultiplexTicker, prefix));
+  assert(created);
+  auto *connection = created.value;
+  auto ring = open_existing_ring(
+      ring_name_for(LateReaderLayout::MultiplexTicker, prefix, "BTCUSDT"));
+  auto reader = register_reader(ring);
+  Audit audit;
+  const auto live = pump_until(
+      manager,
+      [&] {
+        drain_ring(ring, reader, audit);
+        return connection->state() == mds::service::MarketDataState::Live &&
+               audit.first_catalog_generation == 1 &&
+               audit.catalogs.size() == 2;
+      },
+      3s);
+  assert(live);
+  const auto btc_id = instrument_id_for_symbol(audit, "BTCUSDT");
+  const auto eth_id = instrument_id_for_symbol(audit, "ETHUSDT");
+  assert(btc_id != 0 && eth_id != 0);
+  const auto errors_before_reconnect = connection->metrics().publish_errors;
+  server.close_btc_connection();
+  const auto reconnected = pump_until(
+      manager,
+      [&] {
+        drain_ring(ring, reader, audit);
+        return connection->metrics().reconnects >= 1 &&
+               connection->state() == mds::service::MarketDataState::Live &&
+               !audit.catalog_generations_by_id[btc_id].empty() &&
+               unique_generations(audit.catalog_generations_by_id[btc_id])
+                       .back() >= 2;
+      },
+      3s);
+  assert(reconnected);
+  auto stale = register_reader(ring);
+  Audit stale_audit;
+  const auto stale_drained = pump_until(
+      manager,
+      [&] {
+        drain_ring(ring, stale, stale_audit);
+        return stale_audit.catalogs.size() == 2 &&
+               stale_audit.instruments.size() == 2;
+      },
+      2s);
+  assert(stale_drained);
+  assert(connection->metrics().publish_errors == errors_before_reconnect);
+  assert(connection->metrics().connection_rebuild_attempts == 0);
+  assert(instrument_id_for_symbol(stale_audit, "BTCUSDT") == btc_id);
+  assert(instrument_id_for_symbol(stale_audit, "ETHUSDT") == eth_id);
+  assert(unique_generations(stale_audit.catalog_generations_by_id[btc_id]) ==
+         std::vector<std::uint32_t>{2});
+  assert(unique_generations(stale_audit.catalog_generations_by_id[eth_id]) ==
+         std::vector<std::uint32_t>{1});
+  for (const auto generation : stale_audit.bbo_generations_by_id[btc_id]) {
+    assert(generation == 2);
+  }
+
+  manager.stop();
+
+  Server rebuild_server(identity, Protocol::BinanceMetadataFailOnce);
+  rebuild_server.hold_metadata(200ms);
+  mds::service::VenueConnectionManager rebuild_manager(tls);
+  const auto rebuild_prefix =
+      "/mds.late.reader.rebuild." + std::to_string(::getpid());
+  auto rebuild_options = make_late_reader_options(
+      rebuild_server, LateReaderLayout::MultiplexTicker, rebuild_prefix);
+  rebuild_options.reconnect_base = 20ms;
+  rebuild_options.reconnect_max = 40ms;
+  auto rebuild_created = rebuild_manager.create(std::move(rebuild_options));
+  assert(rebuild_created);
+  auto *rebuild_connection = rebuild_created.value;
+  assert(pump_until(
+      rebuild_manager, [&] { return rebuild_server.metadata_request_entered(); },
+      400ms));
+  auto rebuild_ring = open_existing_ring(ring_name_for(
+      LateReaderLayout::MultiplexTicker, rebuild_prefix, "BTCUSDT"));
+  auto pre_barrier = register_reader(rebuild_ring);
+  Audit pre_audit;
+  const auto skipped = pump_until(
+      rebuild_manager,
+      [&] {
+        drain_ring(rebuild_ring, pre_barrier, pre_audit);
+        return rebuild_connection->metrics().connection_rebuild_attempts >= 1;
+      },
+      1s);
+  assert(skipped);
+  assert(rebuild_connection->metrics().publish_errors == 0);
+  assert(pre_audit.catalog_records == 0);
+
+  rebuild_server.release_metadata();
+  const auto rebuilt_live = pump_until(
+      rebuild_manager,
+      [&] {
+        drain_ring(rebuild_ring, pre_barrier, pre_audit);
+        return rebuild_connection->state() ==
+                   mds::service::MarketDataState::Live &&
+               pre_audit.first_catalog_generation != 0 &&
+               !pre_audit.catalogs.empty();
+      },
+      3s);
+  assert(rebuilt_live);
+  assert(pre_audit.first_catalog_generation >= 1);
+  assert(!pre_audit.saw_zero_instrument);
+
+  auto late = register_reader(rebuild_ring);
+  Audit late_audit;
+  const auto late_ok = pump_until(
+      rebuild_manager,
+      [&] {
+        drain_ring(rebuild_ring, late, late_audit);
+        return !late_audit.catalogs.empty() && !late_audit.instruments.empty() &&
+               !late_audit.bbos.empty();
+      },
+      3s);
+  assert(late_ok);
+  assert(late_audit.first_catalog_generation ==
+         pre_audit.first_catalog_generation);
+  assert(has_in_order(late_audit.kinds,
+                      {utils::md::MessageType::InstrumentCatalog,
+                       utils::md::MessageType::InstrumentUpdate,
+                       utils::md::MessageType::Bbo}));
+  rebuild_manager.stop();
+}
+
 int main() {
   std::signal(SIGPIPE, SIG_IGN);
   test_aster_lighter_full_pipeline(
@@ -3332,6 +4232,16 @@ int main() {
   }
   test_multiplex_publishers_survive_compatible_replace();
   test_binance_shard_reconnect();
+  test_late_reader_startup_race_and_first_publish(
+      LateReaderLayout::OwnedTicker);
+  test_late_reader_startup_race_and_first_publish(
+      LateReaderLayout::OwnedOrderbook);
+  test_late_reader_startup_race_and_first_publish(
+      LateReaderLayout::MultiplexTicker);
+  test_late_reader_startup_race_and_first_publish(
+      LateReaderLayout::MultiplexOrderbook);
+  test_late_reader_lossless_republish_failure();
+  test_late_reader_generation_switch();
   test_binance_ticker_only_ack_is_live();
   test_continuous_recovery_timeout_isolates_connection();
   test_metadata_failure_rebuilds_connection();

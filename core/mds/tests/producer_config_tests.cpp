@@ -727,5 +727,18 @@ int main() {
   std::filesystem::remove(bad_polymarket);
   std::filesystem::remove(discovery_path);
   std::filesystem::remove(unsafe_path);
+
+  const auto ibkr_venue = write_temp(
+      "shared_memory:\n"
+      "  prefix: /selfquant.test.ibkr\n"
+      "venues:\n"
+      "  - venue: ibkr\n"
+      "    product: equity\n"
+      "    websocket_endpoint: wss://127.0.0.1/ws\n",
+      "ibkr-venue");
+  const auto rejected = mds::producer::load_config(ibkr_venue.string());
+  assert(!rejected);
+  assert(rejected.message.find("mds_ibkr_producer") != std::string::npos);
+  std::filesystem::remove(ibkr_venue);
   return 0;
 }

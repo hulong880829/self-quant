@@ -69,7 +69,7 @@ wait_alive() {
 [[ -x "$consumer_bin" ]] || die "missing binary $consumer_bin"
 [[ -f "$producer_cfg" ]] || die "missing config $producer_cfg"
 [[ -f "$consumer_cfg" ]] || die "missing config $consumer_cfg"
-[[ -f "$env_file" ]] || die "missing $env_file (need CLICKHOUSE_BBO_PASSWORD)"
+[[ -f "$env_file" ]] || die "missing $env_file (need CLICKHOUSE_PASSWORD)"
 [[ -z "$(matching_pids "$book_pattern")" ]] ||
   die "Aster/Lighter book producer is running; use a separate outbound IP"
 
@@ -77,8 +77,8 @@ set -a
 # shellcheck disable=SC1090
 source "$env_file"
 set +a
-[[ -n "${CLICKHOUSE_BBO_PASSWORD:-}" ]] ||
-  die "CLICKHOUSE_BBO_PASSWORD is empty"
+[[ -n "${CLICKHOUSE_PASSWORD:-}" ]] ||
+  die "CLICKHOUSE_PASSWORD is empty"
 
 stop_matching "$consumer_pattern"
 stop_matching "$producer_pattern"

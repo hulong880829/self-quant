@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mds/api/mds_api.h"
+#include "mds/record/clickhouse_aggregate_recorder.h"
 #include "mds/record/clickhouse_bbo_recorder.h"
 
 #include <cstddef>
@@ -45,22 +46,15 @@ struct GatewayConfig {
   bool reuse_port{};
 };
 
-struct RecordingConfig {
-  std::string output_directory;
-  std::uint64_t sample_interval_ms{200};
-  std::uint32_t retention_hours{24};
-  std::size_t depth{50};
-  std::uint32_t shard_hours{1};
-  int zstd_level{1};
-  std::size_t writer_queue_slots{1024};
-  std::size_t topic_slots{64};
-  std::uint64_t min_free_disk_bytes{1ULL << 30U};
-};
-
 struct ClickHouseBboConfig {
   record::ClickHouseBboOptions options;
   std::string password_env;
   std::vector<std::string> segments;
+};
+
+struct ClickHouseAggregateConfig {
+  record::ClickHouseAggregateOptions options;
+  std::string password_env;
 };
 
 struct IngestionConfig {
@@ -73,15 +67,13 @@ struct ConsumerConfig {
   std::vector<SegmentConfig> segments;
   IngestionConfig ingestion;
   GatewayConfig gateway;
-  RecordingConfig recording;
   ClickHouseBboConfig clickhouse_bbo;
+  ClickHouseAggregateConfig clickhouse_aggregate;
 };
 
 [[nodiscard]] api::Result<ConsumerConfig> load_config(
     const std::string &path, bool gateway_requested = false,
-    bool recording_requested = false,
-    bool clickhouse_bbo_requested = false) noexcept;
-
-[[nodiscard]] bool recording_available() noexcept;
+    bool clickhouse_bbo_requested = false,
+    bool clickhouse_aggregate_requested = false) noexcept;
 
 }  // namespace mds::consumer

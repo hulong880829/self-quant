@@ -218,26 +218,21 @@ YAML:
 The Gateway uses plaintext WebSocket and requires `auth_token_env` on every
 listener; clients send the environment variable's value as a bearer token.
 Because the token is sent in plaintext, keep this endpoint on a trusted private
-network. The example starts a 50 ms latest-state Gateway and an independent
-200 ms, 24-hour zstd recorder together with:
+network. The example starts a 50 ms latest-state Gateway and ClickHouse aggregate
+writer together with:
 
 ```bash
 export MDS_GATEWAY_TOKEN='replace-with-a-long-random-secret'
+export CLICKHOUSE_PASSWORD='replace-me'
 ./build/mds/mds_shm_consumer \
   --config mds/config/mds_shm_consumer.example.yaml \
-  --gateway --record
+  --gateway --clickhouse-aggregate
 ```
 
 Clients connect to `ws://host:port/v1/market-data` and subscribe by exact
 configured segment name. See `docs/mds_gateway_protocol.md`. The gateway is for
 frontends and medium/low-frequency strategies; latency-sensitive strategies
 should continue to read SHM directly.
-
-Recording detection is optional and can be disabled with
-`-DMDS_ENABLE_RECORDING=OFF`. CMake checks `pkg-config` for `libzstd` before
-falling back to `zstd.h` and the zstd library. Missing zstd does not disable the
-print consumer, Gateway, producer, aggregator, or `libmds.a`; `--record` returns
-`InvalidConfig` until `libzstd-dev` is installed and the project rebuilt.
 
 For fixed-rate crypto BBO snapshots in ClickHouse, start a ClickHouse server
 first (local Docker example from the repo root):
@@ -248,7 +243,7 @@ sudo cp backend/deploy/clickhouse/certs/server.crt \
   /usr/local/share/ca-certificates/clickhouse-localhost.crt
 sudo update-ca-certificates
 
-export CLICKHOUSE_BBO_PASSWORD='replace-me'
+export CLICKHOUSE_PASSWORD='replace-me'
 docker compose -f backend/deploy/docker-compose.yml up -d clickhouse
 curl -sk https://127.0.0.1:8443/ping   # expect Ok.
 ```
@@ -258,7 +253,7 @@ live and `clickhouse_bbo` config uses `host: 127.0.0.1`, `service: "8443"`,
 and matching `shm_prefix` / shard `selectors`):
 
 ```bash
-export CLICKHOUSE_BBO_PASSWORD='replace-me'
+export CLICKHOUSE_PASSWORD='replace-me'
 ./build/mds/mds_shm_consumer \
   --config mds/config/mds_clickhouse_bbo.example.yaml \
   --clickhouse-bbo
@@ -273,17 +268,6 @@ faster than 200 ms, and sends asynchronous RowBinary batches. Failed HTTP
 batches are requeued in the bounded local queue; capacity and final-shutdown
 drops are reported on exit. The configured user needs `CREATE TABLE` and
 `INSERT` permission for the target database/table.
-
-Recordings are UTC hourly `.sqrec.zst` shards with atomic `manifest.v1.json`
-discovery. Validate or export them using:
-
-```bash
-./build/mds/mds_record_tool --validate <shard.sqrec.zst>
-./build/mds/mds_record_tool --export-jsonl <shard.sqrec.zst>
-```
-
-The recording format and public reader contract are documented in
-`docs/mds_recording_format.md`.
 
 Public SDK users can independently call `register_agg_bbo()` and
 `register_agg_orderbook()` between `init()` and `start()`, then use the typed

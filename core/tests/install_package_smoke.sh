@@ -70,9 +70,6 @@ if [[ -x "${consumer_dir}/net_package_consumer" ]]; then
 fi
 if [[ "${mds_mode}" == ON ]]; then
   "${consumer_dir}/mds_package_consumer"
-  if [[ -x "${consumer_dir}/mds_record_package_consumer" ]]; then
-    "${consumer_dir}/mds_record_package_consumer"
-  fi
 fi
 if [[ "${oms_mode}" == ON ]]; then
   "${consumer_dir}/oms_package_consumer"

@@ -73,6 +73,12 @@ public:
       const utils::md::EventHeader &header,
       const utils::md::wire::AggOrderBookRecord &record) noexcept;
   api::Result<std::uint64_t>
+  publish_fair_price(const utils::md::EventHeader &header,
+                     const utils::md::wire::FairPriceRecordV1 &record) noexcept;
+  api::Result<std::uint64_t>
+  publish_fair_price_v2(const utils::md::EventHeader &header,
+                        const utils::md::wire::FairPriceRecordV2 &record) noexcept;
+  api::Result<std::uint64_t>
   publish_snapshot_begin(const utils::md::EventHeader &header,
                          std::uint32_t level_count,
                          std::uint32_t chunk_count) noexcept;

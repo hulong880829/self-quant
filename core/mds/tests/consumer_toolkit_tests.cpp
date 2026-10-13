@@ -109,5 +109,26 @@ int main() {
   BboRecord decoded{};
   assert(DecodeBbo(consumed.value->payload(), decoded) == CodecError::Ok);
   assert(decoded.bid_price == 100 && decoded.ask_price == 101);
+
+  event.bus_seq = 2;
+  event.source_seq = 2;
+  assert(publisher.publish_bbo({event, {200, 5}, {201, 6}}));
+  auto viewed = reader.value.try_read_view();
+  assert(viewed && viewed.value.has_value());
+  const auto payload_ptr = viewed.value->payload().data();
+  BboRecord viewed_record{};
+  assert(DecodeBbo(viewed.value->payload(), viewed_record) == CodecError::Ok);
+  assert(viewed_record.bid_price == 200 && viewed_record.ask_price == 201);
+  assert(viewed.value->payload().data() == payload_ptr);
+  assert(static_cast<bool>(viewed.value->commit()));
+
+  event.bus_seq = 3;
+  event.source_seq = 3;
+  assert(publisher.publish_bbo({event, {1, 1}, {2, 1}}));
+  auto illegal = reader.value.try_read_view();
+  assert(illegal && illegal.value.has_value());
+  assert(static_cast<bool>(illegal.value->commit()));
+  auto after_commit = reader.value.try_read_view();
+  assert(after_commit && !after_commit.value.has_value());
   return 0;
 }

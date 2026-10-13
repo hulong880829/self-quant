@@ -8,47 +8,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(MDS_BUILD_TESTS "Build MDS unit tests" ON)
 option(MDS_BUILD_EXAMPLES "Build MDS examples" ON)
 option(MDS_ENABLE_SIMDJSON "Enable simdjson OnDemand JSON parsing" ON)
-option(MDS_ENABLE_RECORDING "Enable zstd-backed consumer recording" ON)
 
 find_package(yaml-cpp REQUIRED)
 if(MDS_ENABLE_SIMDJSON)
   find_package(simdjson CONFIG QUIET)
-endif()
-set(MDS_RECORDING_AVAILABLE OFF)
-if(MDS_ENABLE_RECORDING)
-  find_package(PkgConfig QUIET)
-  if(PkgConfig_FOUND)
-    pkg_check_modules(ZSTD QUIET IMPORTED_TARGET libzstd)
-  endif()
-  if(TARGET PkgConfig::ZSTD)
-    add_library(mds_recording_zstd INTERFACE)
-    target_link_libraries(mds_recording_zstd INTERFACE PkgConfig::ZSTD)
-    set(MDS_RECORDING_AVAILABLE ON)
-  else()
-    find_path(MDS_ZSTD_INCLUDE_DIR zstd.h)
-    find_library(MDS_ZSTD_LIBRARY NAMES zstd)
-    if(MDS_ZSTD_INCLUDE_DIR AND MDS_ZSTD_LIBRARY)
-      add_library(mds_recording_zstd INTERFACE)
-      target_include_directories(mds_recording_zstd INTERFACE
-        ${MDS_ZSTD_INCLUDE_DIR})
-      target_link_libraries(mds_recording_zstd INTERFACE
-        ${MDS_ZSTD_LIBRARY})
-      set(MDS_RECORDING_AVAILABLE ON)
-    endif()
-  endif()
-  if(MDS_RECORDING_AVAILABLE)
-    set(SELF_QUANT_HAS_RECORDING ON PARENT_SCOPE)
-    message(STATUS "MDS recording support enabled with libzstd")
-  else()
-    set(SELF_QUANT_HAS_RECORDING OFF PARENT_SCOPE)
-    message(STATUS
-      "libzstd not found: recording is unavailable; producer, aggregator, "
-      "libmds, print consumer, and gateway remain buildable")
-  endif()
-else()
-  set(SELF_QUANT_HAS_RECORDING OFF PARENT_SCOPE)
-  message(STATUS
-    "MDS recording disabled: print consumer and gateway remain buildable")
 endif()
 
 add_library(mds STATIC
@@ -64,6 +27,7 @@ add_library(mds STATIC
   src/consume/sequence_tracker.cpp
   src/publish/wire_publisher.cpp
   src/record/clickhouse_bbo_recorder.cpp
+  src/record/clickhouse_aggregate_recorder.cpp
   src/service/inprocess_aggregation.cpp
   src/service/binance_session.cpp
   src/service/market_data_session.cpp
@@ -87,6 +51,10 @@ add_library(mds STATIC
   src/gateway/gateway.cpp
   src/instrument/instrument_manager.cpp
   src/redundancy/sequence_arbiter.cpp
+  src/ibkr/ibkr_bbo_assembler.cpp
+  src/ibkr/ibkr_client.cpp
+  src/ibkr/ibkr_runtime.cpp
+  src/ibkr/ibkr_universe.cpp
 )
 add_library(self_quant::mds ALIAS mds)
 set_target_properties(mds PROPERTIES EXPORT_NAME mds)
@@ -115,22 +83,6 @@ else()
   message(STATUS
     "simdjson not found: Binance JSON parser returns a clear runtime error; "
     "install simdjson or configure with -DMDS_ENABLE_SIMDJSON=OFF")
-endif()
-
-if(MDS_RECORDING_AVAILABLE)
-  add_library(mds_record STATIC
-    src/record/record_format.cpp
-    src/record/record_reader.cpp
-    src/record/recorder.cpp)
-  add_library(self_quant::mds_record ALIAS mds_record)
-  set_target_properties(mds_record PROPERTIES EXPORT_NAME mds_record)
-  target_include_directories(mds_record PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/internal)
-  target_link_libraries(mds_record
-    PUBLIC mds
-    PRIVATE mds_recording_zstd)
-  target_compile_definitions(mds_record PUBLIC MDS_HAS_ZSTD=1)
-  target_compile_options(mds_record PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 set(MDS_BUILD_VERSION_SOURCE
@@ -180,14 +132,6 @@ if(SELF_QUANT_INSTALL)
   install(TARGETS mds_producer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
-if(MDS_RECORDING_AVAILABLE)
-  add_executable(mds_record_tool cmd/mds_record_tool/main.cpp)
-  target_link_libraries(mds_record_tool PRIVATE mds_record)
-  if(SELF_QUANT_INSTALL)
-    install(TARGETS mds_record_tool RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-  endif()
-endif()
-
 add_library(mds_aggregator_config STATIC
   cmd/mds_aggregator/aggregator_config.cpp)
 target_include_directories(mds_aggregator_config
@@ -223,9 +167,6 @@ if(TARGET yaml-cpp::yaml-cpp)
 else()
   target_link_libraries(mds_consumer_config PRIVATE yaml-cpp)
 endif()
-if(MDS_RECORDING_AVAILABLE)
-  target_compile_definitions(mds_consumer_config PRIVATE MDS_HAS_ZSTD=1)
-endif()
 target_compile_options(mds_consumer_config PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(mds_shm_consumer
@@ -234,11 +175,33 @@ add_executable(mds_shm_consumer
 target_include_directories(mds_shm_consumer PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/examples)
 target_link_libraries(mds_shm_consumer PRIVATE mds_consumer_config mds)
-if(MDS_RECORDING_AVAILABLE)
-  target_link_libraries(mds_shm_consumer PRIVATE mds_record)
-endif()
 if(SELF_QUANT_INSTALL)
   install(TARGETS mds_shm_consumer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_library(mds_ibkr_config STATIC
+  cmd/mds_ibkr_producer/ibkr_candidates.cpp
+  cmd/mds_ibkr_producer/ibkr_config.cpp)
+target_include_directories(mds_ibkr_config
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmd/mds_ibkr_producer
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(mds_ibkr_config PUBLIC mds)
+find_package(PostgreSQL REQUIRED)
+if(TARGET PostgreSQL::PostgreSQL)
+  target_link_libraries(mds_ibkr_config PUBLIC PostgreSQL::PostgreSQL)
+else()
+  target_include_directories(mds_ibkr_config PUBLIC ${PostgreSQL_INCLUDE_DIRS})
+  target_link_libraries(mds_ibkr_config PUBLIC ${PostgreSQL_LIBRARIES})
+endif()
+if(TARGET yaml-cpp::yaml-cpp)
+  target_link_libraries(mds_ibkr_config PRIVATE yaml-cpp::yaml-cpp)
+else()
+  target_link_libraries(mds_ibkr_config PRIVATE yaml-cpp)
+endif()
+target_compile_options(mds_ibkr_config PRIVATE -Wall -Wextra -Wpedantic)
+if(TARGET self_quant_warnings)
+  target_link_libraries(mds_ibkr_config PRIVATE self_quant_warnings)
 endif()
 
 if(MDS_BUILD_TESTS)
@@ -305,7 +268,10 @@ if(MDS_BUILD_TESTS)
     mds_producer_runtime)
   target_compile_definitions(mds_producer_runtime_tests PRIVATE
     MDS_PRODUCER_EXAMPLE_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/config/mds_producer.example.yaml")
+  target_compile_options(mds_producer_runtime_tests PRIVATE
+    $<$<CONFIG:Release>:-UNDEBUG>)
   add_test(NAME mds_producer_runtime_tests COMMAND mds_producer_runtime_tests)
+  set_tests_properties(mds_producer_runtime_tests PROPERTIES TIMEOUT 900)
   add_test(NAME mds_producer_validate_example
     COMMAND mds_producer
       --config ${CMAKE_CURRENT_SOURCE_DIR}/config/mds_producer.example.yaml
@@ -425,9 +391,6 @@ if(MDS_BUILD_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/examples)
   target_link_libraries(mds_shm_consumer_demux_tests PRIVATE
     mds_consumer_config mds)
-  if(MDS_RECORDING_AVAILABLE)
-    target_link_libraries(mds_shm_consumer_demux_tests PRIVATE mds_record)
-  endif()
   add_test(NAME mds_shm_consumer_demux_tests
     COMMAND mds_shm_consumer_demux_tests)
   add_test(NAME mds_consumer_validate_example
@@ -444,6 +407,16 @@ if(MDS_BUILD_TESTS)
   add_test(NAME mds_clickhouse_bbo_recorder_tests
     COMMAND mds_clickhouse_bbo_recorder_tests)
   set_tests_properties(mds_clickhouse_bbo_recorder_tests PROPERTIES TIMEOUT 10)
+  add_executable(mds_clickhouse_aggregate_recorder_tests
+    tests/clickhouse_aggregate_recorder_tests.cpp)
+  target_link_libraries(mds_clickhouse_aggregate_recorder_tests PRIVATE mds)
+  target_compile_definitions(mds_clickhouse_aggregate_recorder_tests PRIVATE
+    MDS_AGGREGATE_HISTORY_SQL="${CMAKE_CURRENT_SOURCE_DIR}/../../backend/deploy/clickhouse/migrations/002_aggregate_history.sql"
+    MDS_CLICKHOUSE_AGGREGATE_RECORDER_H="${CMAKE_CURRENT_SOURCE_DIR}/include/mds/record/clickhouse_aggregate_recorder.h"
+    MDS_CLICKHOUSE_AGGREGATE_RECORDER_CPP="${CMAKE_CURRENT_SOURCE_DIR}/src/record/clickhouse_aggregate_recorder.cpp")
+  add_test(NAME mds_clickhouse_aggregate_recorder_tests
+    COMMAND mds_clickhouse_aggregate_recorder_tests)
+  set_tests_properties(mds_clickhouse_aggregate_recorder_tests PROPERTIES TIMEOUT 20)
   add_executable(mds_shm_consumer_sigpipe_tests
     tests/shm_consumer_sigpipe_tests.cpp)
   target_link_libraries(mds_shm_consumer_sigpipe_tests PRIVATE mds)
@@ -453,14 +426,29 @@ if(MDS_BUILD_TESTS)
   add_test(NAME mds_shm_consumer_sigpipe_tests
     COMMAND mds_shm_consumer_sigpipe_tests)
   set_tests_properties(mds_shm_consumer_sigpipe_tests PROPERTIES TIMEOUT 20)
-  if(MDS_RECORDING_AVAILABLE)
-    add_executable(mds_recording_tests tests/recording_tests.cpp)
-    target_link_libraries(mds_recording_tests PRIVATE mds_record)
-    target_include_directories(mds_recording_tests PRIVATE
-      ${CMAKE_CURRENT_SOURCE_DIR}/internal)
-    add_test(NAME mds_recording_tests COMMAND mds_recording_tests)
-    set_tests_properties(mds_recording_tests PROPERTIES TIMEOUT 10)
-  endif()
+  add_executable(mds_ibkr_bbo_assembler_tests
+    tests/ibkr_bbo_assembler_tests.cpp)
+  target_link_libraries(mds_ibkr_bbo_assembler_tests PRIVATE mds)
+  add_test(NAME mds_ibkr_bbo_assembler_tests
+    COMMAND mds_ibkr_bbo_assembler_tests)
+  add_executable(mds_ibkr_config_tests tests/ibkr_config_tests.cpp)
+  target_link_libraries(mds_ibkr_config_tests PRIVATE mds_ibkr_config)
+  target_compile_definitions(mds_ibkr_config_tests PRIVATE
+    MDS_IBKR_EXAMPLE_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/config/mds_ibkr.example.yaml")
+  add_test(NAME mds_ibkr_config_tests COMMAND mds_ibkr_config_tests)
+  add_executable(mds_ibkr_runtime_tests tests/ibkr_runtime_tests.cpp)
+  target_link_libraries(mds_ibkr_runtime_tests PRIVATE mds)
+  add_test(NAME mds_ibkr_runtime_tests COMMAND mds_ibkr_runtime_tests)
+  set_tests_properties(mds_ibkr_runtime_tests PROPERTIES TIMEOUT 60)
+  add_executable(mds_ibkr_universe_tests tests/ibkr_universe_tests.cpp)
+  target_link_libraries(mds_ibkr_universe_tests PRIVATE mds)
+  add_test(NAME mds_ibkr_universe_tests COMMAND mds_ibkr_universe_tests)
+  add_test(NAME mds_ibkr_restart_ring_cleanup
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/restart_recoder_ibkr_ring_test.sh)
+  add_test(NAME mds_ibkr_clickhouse_validate_example
+    COMMAND mds_shm_consumer
+      --config ${CMAKE_CURRENT_SOURCE_DIR}/config/mds_ibkr_clickhouse.example.yaml
+      --clickhouse-bbo --validate-only)
 endif()
 
 if(MDS_BUILD_EXAMPLES)
@@ -491,4 +479,146 @@ if(MDS_BUILD_EXAMPLES)
     set_tests_properties(mds_equity_demo_integration_tests PROPERTIES
       TIMEOUT 8)
   endif()
+endif()
+
+option(SELF_QUANT_ENABLE_IBKR_MDS
+  "Build mds_ibkr_producer against the official TWS API Stable 10.45" OFF)
+set(IBKR_DEPS_ROOT "${CMAKE_SOURCE_DIR}/.deps/ibkr" CACHE PATH
+  "Root of bootstrapped IBKR build dependencies")
+set(IBKR_TWS_API_ROOT
+  "${IBKR_DEPS_ROOT}/src/twsapi-10.45.01/IBJts" CACHE PATH
+  "Root of the official TWS API Stable 10.45 C++ client")
+set(IBKR_TWS_API_VERSION "10.45" CACHE STRING
+  "Required official TWS API version")
+set(IBKR_DECIMAL_LIBRARY
+  "${IBKR_DEPS_ROOT}/prefix/lib/libbid.a" CACHE FILEPATH
+  "Intel decimal floating-point library required by TWS Decimal.cpp")
+
+if(SELF_QUANT_ENABLE_IBKR_MDS)
+  if(NOT IBKR_TWS_API_VERSION STREQUAL "10.45")
+    message(FATAL_ERROR
+      "IBKR MDS requires the official TWS API Stable 10.45, not ${IBKR_TWS_API_VERSION}")
+  endif()
+  if(NOT IBKR_TWS_API_ROOT)
+    message(FATAL_ERROR
+      "SELF_QUANT_ENABLE_IBKR_MDS=ON requires IBKR_TWS_API_ROOT")
+  endif()
+  if(NOT EXISTS "${IBKR_TWS_API_ROOT}/API_VersionNum.txt")
+    message(FATAL_ERROR
+      "TWS API version file is missing under ${IBKR_TWS_API_ROOT}; "
+      "run scripts/bootstrap-ibkr-deps.sh --accept-ib-license")
+  endif()
+  file(READ "${IBKR_TWS_API_ROOT}/API_VersionNum.txt" IBKR_API_VERSION_FILE)
+  if(NOT IBKR_API_VERSION_FILE MATCHES "API_Version=10\\.45(\\.|$)")
+    message(FATAL_ERROR
+      "IBKR MDS requires TWS API 10.45; found ${IBKR_API_VERSION_FILE}")
+  endif()
+  find_path(IBKR_TWS_CLIENT_DIR EClientSocket.h
+    PATHS
+      "${IBKR_TWS_API_ROOT}"
+      "${IBKR_TWS_API_ROOT}/client"
+      "${IBKR_TWS_API_ROOT}/source/cppclient/client"
+    NO_DEFAULT_PATH)
+  if(NOT IBKR_TWS_CLIENT_DIR)
+    message(FATAL_ERROR
+      "EClientSocket.h was not found under IBKR_TWS_API_ROOT=${IBKR_TWS_API_ROOT}")
+  endif()
+  file(GLOB IBKR_TWS_API_SOURCES CONFIGURE_DEPENDS
+    "${IBKR_TWS_CLIENT_DIR}/*.cpp")
+  list(FILTER IBKR_TWS_API_SOURCES EXCLUDE REGEX
+    ".*/(Main|TestCppClient|AvailableAlgoParams)\\.cpp$")
+  list(FILTER IBKR_TWS_API_SOURCES EXCLUDE REGEX
+    ".*\\.pb\\.(cpp|cc)$")
+  if(NOT IBKR_TWS_API_SOURCES)
+    message(FATAL_ERROR
+      "No TWS API client sources found in ${IBKR_TWS_CLIENT_DIR}")
+  endif()
+  find_package(Protobuf QUIET)
+  if(NOT Protobuf_FOUND)
+    message(FATAL_ERROR
+      "IBKR MDS requires protobuf for the official TWS API")
+  endif()
+  set(IBKR_TWS_PROTO_DIR "${IBKR_TWS_API_ROOT}/source/proto")
+  file(GLOB IBKR_TWS_PROTO_FILES CONFIGURE_DEPENDS
+    "${IBKR_TWS_PROTO_DIR}/*.proto")
+  if(NOT IBKR_TWS_PROTO_FILES)
+    message(FATAL_ERROR
+      "No TWS protobuf definitions found under ${IBKR_TWS_PROTO_DIR}")
+  endif()
+  set(IBKR_TWS_PROTO_OUTPUT_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/ibkr-proto")
+  set(IBKR_TWS_PROTO_SOURCES)
+  set(IBKR_TWS_PROTO_HEADERS)
+  foreach(IBKR_TWS_PROTO_FILE IN LISTS IBKR_TWS_PROTO_FILES)
+    get_filename_component(IBKR_TWS_PROTO_NAME
+      "${IBKR_TWS_PROTO_FILE}" NAME_WE)
+    list(APPEND IBKR_TWS_PROTO_SOURCES
+      "${IBKR_TWS_PROTO_OUTPUT_DIR}/${IBKR_TWS_PROTO_NAME}.pb.cc")
+    list(APPEND IBKR_TWS_PROTO_HEADERS
+      "${IBKR_TWS_PROTO_OUTPUT_DIR}/${IBKR_TWS_PROTO_NAME}.pb.h")
+  endforeach()
+  add_custom_command(
+    OUTPUT ${IBKR_TWS_PROTO_SOURCES} ${IBKR_TWS_PROTO_HEADERS}
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+      "${IBKR_TWS_PROTO_OUTPUT_DIR}"
+    COMMAND "${Protobuf_PROTOC_EXECUTABLE}"
+      --experimental_allow_proto3_optional
+      "--proto_path=${IBKR_TWS_PROTO_DIR}"
+      "--cpp_out=${IBKR_TWS_PROTO_OUTPUT_DIR}"
+      ${IBKR_TWS_PROTO_FILES}
+    DEPENDS ${IBKR_TWS_PROTO_FILES}
+    COMMENT "Generating TWS 10.45 protobuf C++ sources"
+    VERBATIM)
+
+  if(NOT EXISTS "${IBKR_DECIMAL_LIBRARY}")
+    message(FATAL_ERROR
+      "IBKR decimal library is missing at ${IBKR_DECIMAL_LIBRARY}; "
+      "run scripts/bootstrap-ibkr-deps.sh --accept-ib-license")
+  endif()
+  if(NOT CMAKE_NM)
+    find_program(CMAKE_NM NAMES llvm-nm nm REQUIRED)
+  endif()
+  execute_process(
+    COMMAND "${CMAKE_NM}" -g --defined-only "${IBKR_DECIMAL_LIBRARY}"
+    RESULT_VARIABLE IBKR_DECIMAL_NM_RESULT
+    OUTPUT_VARIABLE IBKR_DECIMAL_SYMBOLS
+    ERROR_VARIABLE IBKR_DECIMAL_NM_ERROR)
+  if(NOT IBKR_DECIMAL_NM_RESULT EQUAL 0 OR
+     NOT IBKR_DECIMAL_SYMBOLS MATCHES "__bid64_to_string" OR
+     NOT IBKR_DECIMAL_SYMBOLS MATCHES "__bid64_from_string")
+    message(FATAL_ERROR
+      "${IBKR_DECIMAL_LIBRARY} is not a compatible Intel libbid "
+      "(missing __bid64_to_string/__bid64_from_string): "
+      "${IBKR_DECIMAL_NM_ERROR}")
+  endif()
+
+  add_library(ibkr_tws_api STATIC
+    ${IBKR_TWS_API_SOURCES}
+    ${IBKR_TWS_PROTO_SOURCES})
+  target_include_directories(ibkr_tws_api PUBLIC
+    "${IBKR_TWS_CLIENT_DIR}"
+    "${IBKR_TWS_PROTO_OUTPUT_DIR}")
+  if(TARGET protobuf::libprotobuf)
+    target_link_libraries(ibkr_tws_api PUBLIC protobuf::libprotobuf)
+  else()
+    target_link_libraries(ibkr_tws_api PUBLIC ${Protobuf_LIBRARIES})
+    target_include_directories(ibkr_tws_api PUBLIC ${Protobuf_INCLUDE_DIRS})
+  endif()
+  target_link_libraries(ibkr_tws_api PUBLIC "${IBKR_DECIMAL_LIBRARY}")
+  target_compile_options(ibkr_tws_api PRIVATE -w)
+
+  add_executable(mds_ibkr_producer
+    cmd/mds_ibkr_producer/main.cpp
+    src/ibkr/ibkr_tws_client.cpp)
+  target_compile_definitions(mds_ibkr_producer PRIVATE MDS_HAS_IBKR=1)
+  target_link_libraries(mds_ibkr_producer PRIVATE
+    mds_ibkr_config mds ibkr_tws_api)
+  target_compile_options(mds_ibkr_producer PRIVATE -Wall -Wextra -Wpedantic)
+  if(SELF_QUANT_INSTALL)
+    install(TARGETS mds_ibkr_producer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  endif()
+else()
+  message(STATUS
+    "mds_ibkr_producer is disabled; configure -DSELF_QUANT_ENABLE_IBKR_MDS=ON "
+    "after running scripts/bootstrap-ibkr-deps.sh --accept-ib-license")
 endif()

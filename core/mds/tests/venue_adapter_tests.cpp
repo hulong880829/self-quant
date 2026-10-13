@@ -1416,6 +1416,65 @@ void test_gate() {
       R"({"channel":"spot.book_ticker","event":"update","time_ms":11,"result":{"s":"BTC_USDT","b":"100.1","B":"1.000","a":"100.2","A":"2.000","u":8,"t":11}})",
       event, error);
 
+  constexpr std::string_view eth_bbo_385 =
+      R"({"channel":"spot.book_ticker","event":"update","time_ms":12,"result":{"s":"ETH_USDT","b":"2388.385","B":"1.000000","a":"2388.385","A":"1.000000","u":9,"t":12}})";
+  assert(adapter->parse_ws(eth_bbo_385, event, error));
+  assert(event.type == AdapterEventType::Bbo);
+  assert(event.bid.price == 238'838);
+  assert(event.ask.price == 238'839);
+  assert(event.bid.price < event.ask.price);
+  assert(event.bid.price > 0 && event.ask.price > 0);
+  assert(event.bid.quantity > 0 && event.ask.quantity > 0);
+  expect_no_allocation(*adapter, eth_bbo_385, event, error);
+
+  constexpr std::string_view eth_bbo_895 =
+      R"({"channel":"spot.book_ticker","event":"update","time_ms":13,"result":{"s":"ETH_USDT","b":"2392.895","B":"1.000000","a":"2392.895","A":"1.000000","u":10,"t":13}})";
+  assert(adapter->parse_ws(eth_bbo_895, event, error));
+  assert(event.type == AdapterEventType::Bbo);
+  assert(event.bid.price == 239'289);
+  assert(event.ask.price == 239'290);
+  assert(event.bid.price < event.ask.price);
+  expect_no_allocation(*adapter, eth_bbo_895, event, error);
+
+  constexpr std::string_view btc_qty_bbo =
+      R"({"channel":"spot.book_ticker","event":"update","time_ms":14,"result":{"s":"BTC_USDT","b":"100.0","B":"0.08395752","a":"100.1","A":"0.2403928955","u":11,"t":14}})";
+  assert(adapter->parse_ws(btc_qty_bbo, event, error));
+  assert(event.type == AdapterEventType::Bbo);
+  assert(event.bid.quantity == 83'957);
+  assert(event.ask.quantity == 240'392);
+  assert(event.bid.price < event.ask.price);
+  expect_no_allocation(*adapter, btc_qty_bbo, event, error);
+
+  constexpr std::string_view btc_qty_delta =
+      R"({"channel":"spot.order_book_update","event":"update","time_ms":15,"result":{"s":"BTC_USDT","U":11,"u":12,"full":false,"b":[["99.95","1.000"],["100.0","0.08395752"],["99.8","1.000"]],"a":[["100.15","1.000"],["100.1","0.2403928955"],["100.2","20410.4397778"]]}})";
+  assert(adapter->parse_ws(btc_qty_delta, event, error));
+  assert(event.type == AdapterEventType::BookDelta);
+  assert(event.bids.size() == 2);
+  assert(event.bids[0].price == 1'000);
+  assert(event.bids[0].quantity == 83'957);
+  assert(event.bids[1].price == 998);
+  assert(event.bids[1].quantity == 1'000'000);
+  assert(event.asks.size() == 2);
+  assert(event.asks[0].price == 1'001);
+  assert(event.asks[0].quantity == 240'392);
+  assert(event.asks[1].price == 1'002);
+  assert(event.asks[1].quantity == 20'410'439'777);
+  expect_no_allocation(*adapter, btc_qty_delta, event, error);
+
+  assert(adapter->parse_snapshot(
+      R"({"id":12,"current":16,"bids":[["99.95","0"],["100.0","0.08395752"],["99.8","1.000"]],"asks":[["100.15","0"],["100.1","0.2403928955"]]})",
+      "BTC_USDT", event, error));
+  assert(event.type == AdapterEventType::BookSnapshot);
+  assert(event.bids.size() == 2);
+  assert(event.bids[0].quantity == 83'957);
+  assert(event.asks.size() == 1);
+  assert(event.asks[0].quantity == 240'392);
+  assert(!adapter->parse_ws(
+      R"({"channel":"spot.order_book_update","event":"update","time_ms":16,"result":{"s":"BTC_USDT","U":12,"u":13,"full":false,"b":[["100.0","1.000"],["bad","1.000"]],"a":[]}})",
+      event, error));
+  assert(error.find("reason=price") != std::string::npos);
+  assert(error.find("side=bid") != std::string::npos);
+
   auto sol_spot = mds::exchange::make_venue_adapter(
       Venue::Gate, ProductType::Spot, 100);
   assert(sol_spot);
@@ -1439,16 +1498,20 @@ void test_gate() {
 
   ParseFailure failure;
   expect_no_allocation(*sol_spot, valid_sol_spot, event, failure);
-  assert(!sol_spot->parse_ws(
-      R"({"channel":"spot.book_ticker","event":"update","time_ms":13,"result":{"s":"SOL_USDT","b":"150.0001","B":"0.12345678","a":"150.001","A":"2.00000000","u":10,"t":13}})",
-      event, failure));
-  assert(failure.category ==
-         ParseFailureCategory::ConfigurationMetadata);
-  assert(failure.scope == ParseFailureScope::Symbol);
-  assert(failure.code == ParseFailureCode::ScaleMismatch);
-  assert(failure.symbol_view() == "SOL_USDT");
-  assert(failure.diagnostic_view().find("reason=scale") !=
-         std::string_view::npos);
+  constexpr std::string_view excess_sol_spot =
+      R"({"channel":"spot.book_ticker","event":"update","time_ms":13,"result":{"s":"SOL_USDT","b":"150.0001","B":"0.12345678","a":"150.001","A":"2.00000000","u":10,"t":13}})";
+  assert(sol_spot->parse_ws(excess_sol_spot, event, error));
+  assert(event.type == AdapterEventType::Bbo);
+  assert(event.bid.price == 150'000);
+  assert(event.ask.price == 150'001);
+  assert(event.bid.quantity == 12'345'678);
+  assert(event.bid.price < event.ask.price);
+  expect_no_allocation(*sol_spot, excess_sol_spot, event, error);
+  assert(sol_spot->parse_ws(
+      R"({"channel":"spot.book_ticker","event":"update","time_ms":13,"result":{"s":"SOL_USDT","b":"150.000","B":"0.0000004","a":"150.001","A":"2.00000000","u":10,"t":13}})",
+      event, error));
+  assert(event.type == AdapterEventType::Ignored);
+  assert(error.empty());
   assert(!sol_spot->parse_ws(
       R"({"channel":"spot.book_ticker","event":"update","time_ms":14,"result":{"s":"SOL_USDT","b":"bad","B":"1.00000000","a":"150.001","A":"2.00000000","u":11,"t":14}})",
       event, failure));
@@ -1456,6 +1519,24 @@ void test_gate() {
   assert(failure.scope == ParseFailureScope::Symbol);
   assert(failure.code == ParseFailureCode::InvalidPrice);
   assert(failure.symbol_view() == "SOL_USDT");
+  assert(!sol_spot->parse_ws(
+      R"({"channel":"spot.book_ticker","event":"update","time_ms":15,"result":{"s":"SOL_USDT","b":"1.2.3","B":"1.00000000","a":"150.001","A":"2.00000000","u":12,"t":15}})",
+      event, failure));
+  assert(failure.category == ParseFailureCategory::DirtyData);
+  assert(failure.code == ParseFailureCode::InvalidPrice);
+  assert(!sol_spot->parse_ws(
+      R"({"channel":"spot.book_ticker","event":"update","time_ms":16,"result":{"s":"SOL_USDT","b":"9223372036854775808","B":"1.00000000","a":"150.001","A":"2.00000000","u":13,"t":16}})",
+      event, failure));
+  assert(failure.category == ParseFailureCategory::DirtyData);
+  assert(failure.code == ParseFailureCode::InvalidPrice);
+  assert(!sol_spot->parse_ws(
+      R"({"channel":"spot.book_ticker","event":"update","time_ms":17,"result":{"s":"SOL_USDT","b":"150.000","B":"-0.12345678","a":"150.001","A":"2.00000000","u":14,"t":17}})",
+      event, failure));
+  assert(failure.category == ParseFailureCategory::DirtyData);
+  assert(failure.scope == ParseFailureScope::Symbol);
+  assert(failure.code == ParseFailureCode::InvalidQuantity);
+  assert(failure.diagnostic_view().find("reason=quantity") !=
+         std::string_view::npos);
 
   auto legacy_spot = mds::exchange::make_venue_adapter(
       Venue::Gate, ProductType::Spot, 100);
@@ -1681,6 +1762,26 @@ void test_gate() {
       perpetual_metadata, {&perpetual_request, 1}, metadata, error));
   assert(!limited->parse_ws(
       R"({"channel":"futures.order_book_update","event":"update","time_ms":16,"result":{"s":"BTC_USDT","U":12,"u":13,"b":[{"p":"100.0","s":1},{"p":"99.9","s":2}],"a":[]}})",
+      event, error));
+  assert(error.find("side=bid") != std::string::npos);
+  assert(error.find("reason=capacity") != std::string::npos);
+  assert(error.find("configured=1") != std::string::npos);
+  assert(error.find("observed_at_least=2") != std::string::npos);
+
+  auto limited_spot = mds::exchange::make_venue_adapter(
+      Venue::Gate, ProductType::Spot, 1);
+  assert(limited_spot);
+  metadata.clear();
+  assert(limited_spot->parse_metadata(
+      metadata_json, {&request, 1}, metadata, error));
+  assert(limited_spot->parse_ws(
+      R"({"channel":"spot.order_book_update","event":"update","time_ms":17,"result":{"s":"BTC_USDT","U":13,"u":14,"full":false,"b":[["99.95","1.000"],["100.0","1.000"]],"a":[]}})",
+      event, error));
+  assert(event.type == AdapterEventType::BookDelta);
+  assert(event.bids.size() == 1);
+  assert(event.bids[0].price == 1'000);
+  assert(!limited_spot->parse_ws(
+      R"({"channel":"spot.order_book_update","event":"update","time_ms":18,"result":{"s":"BTC_USDT","U":14,"u":15,"full":false,"b":[["99.95","1.000"],["100.0","1.000"],["99.8","1.000"]],"a":[]}})",
       event, error));
   assert(error.find("side=bid") != std::string::npos);
   assert(error.find("reason=capacity") != std::string::npos);
