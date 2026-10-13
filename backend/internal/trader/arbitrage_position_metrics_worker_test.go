@@ -12,19 +12,23 @@ import (
 )
 
 type stubPositionMetricsStore struct {
-	items         []ArbitrageCombination
-	listErr       error
-	calls         atomic.Int64
-	closeCalls    atomic.Int64
-	lastID        string
-	lastMidA      string
-	lastMidB      string
-	lastCloseID   string
-	lastCloseVer  int64
-	persistResult arbitragePositionMetricsPersistResult
-	persistErr    error
-	closeApplied  bool
-	closeErr      error
+	items               []ArbitrageCombination
+	listErr             error
+	calls               atomic.Int64
+	closeCalls          atomic.Int64
+	lastID              string
+	lastMidA            string
+	lastMidB            string
+	lastCloseID         string
+	lastCloseVer        int64
+	persistResult       arbitragePositionMetricsPersistResult
+	persistErr          error
+	closeApplied        bool
+	closeErr            error
+	annualizedCalls     atomic.Int64
+	annualizedApplied   bool
+	annualizedErr       error
+	lastAnnualizedGuard oneShotAnnualizedExitGuard
 }
 
 func (s *stubPositionMetricsStore) ListRunningArbitrageCombinationsForMetrics(
@@ -37,10 +41,10 @@ func (s *stubPositionMetricsStore) ListRunningArbitrageCombinationsForMetrics(
 }
 
 func (s *stubPositionMetricsStore) PersistRunningArbitragePositionMetrics(
-	_ context.Context, id, midA, midB string, _ time.Time,
+	_ context.Context, id string, quotes arbitrageMetricsQuotes, _ time.Time,
 ) (arbitragePositionMetricsPersistResult, error) {
 	s.calls.Add(1)
-	s.lastID, s.lastMidA, s.lastMidB = id, midA, midB
+	s.lastID, s.lastMidA, s.lastMidB = id, quotes.MidA, quotes.MidB
 	if s.persistErr != nil {
 		return arbitragePositionMetricsPersistResult{}, s.persistErr
 	}
@@ -65,6 +69,23 @@ func (s *stubPositionMetricsStore) MarkOneShotExiting(
 	}
 	return ArbitrageCombination{
 		ID: id, Version: version + 1, Status: "running",
+		RunMode: "one_shot", OneShotPhase: "exiting",
+	}, true, nil
+}
+
+func (s *stubPositionMetricsStore) MarkOneShotAnnualizedExiting(
+	_ context.Context, guard oneShotAnnualizedExitGuard,
+) (ArbitrageCombination, bool, error) {
+	s.annualizedCalls.Add(1)
+	s.lastAnnualizedGuard = guard
+	if s.annualizedErr != nil {
+		return ArbitrageCombination{}, false, s.annualizedErr
+	}
+	if !s.annualizedApplied {
+		return ArbitrageCombination{}, false, nil
+	}
+	return ArbitrageCombination{
+		ID: guard.CombinationID, Version: guard.BasisVersion + 1, Status: "running",
 		RunMode: "one_shot", OneShotPhase: "exiting",
 	}, true, nil
 }
@@ -284,6 +305,36 @@ func TestPositionMetricsWorkerMemberSyncDoesNotBulkPersist(t *testing.T) {
 	}
 }
 
+func TestPositionMetricsWorkerRequestMetricsRefreshResetsDue(t *testing.T) {
+	now := time.Now().UTC()
+	store := &stubPositionMetricsStore{}
+	worker := NewArbitragePositionMetricsWorker(store, stubBBOSource{}, slog.Default())
+	combo := metricsTestCombo()
+	combo.CreatedAt = now
+	combo.MetricsCalculatedAt = now
+	worker.RegisterCombination(combo)
+	worker.refreshDue(context.Background(), now)
+	if store.calls.Load() != 0 {
+		t.Fatalf("fresh register should wait: calls=%d", store.calls.Load())
+	}
+	combo.Version = 2
+	combo.ExitAnnualizedRate = "0.2"
+	worker.mu.Lock()
+	worker.exitState[combo.ID] = oneShotExitState{}
+	worker.mu.Unlock()
+	worker.RequestMetricsRefresh(combo, "exit_annualized_rate")
+	worker.refreshDue(context.Background(), now)
+	if store.calls.Load() != 1 {
+		t.Fatalf("refresh must persist immediately: calls=%d", store.calls.Load())
+	}
+	worker.mu.Lock()
+	_, hasExit := worker.exitState[combo.ID]
+	worker.mu.Unlock()
+	if hasExit {
+		t.Fatal("refresh must clear exit samples")
+	}
+}
+
 func TestPositionMetricsWorkerRegisterCatchupWithoutList(t *testing.T) {
 	now := time.Now().UTC()
 	store := &stubPositionMetricsStore{}
@@ -336,21 +387,24 @@ func TestPositionMetricsWorkerSQLErrorRetriesAfter15s(t *testing.T) {
 func TestClassifyMetricsApplyMissReasons(t *testing.T) {
 	now := time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC)
 	calculated := now.Add(-time.Minute)
-	if metricsApplyMissReason("closing", &calculated, now, false, false) != MetricsInactive {
+	if metricsApplyMissReason("closing", "spread", "", &calculated, now, false, false) != MetricsInactive {
 		t.Fatal("closing should be inactive")
 	}
-	if metricsApplyMissReason("running", &calculated, now, true, false) != MetricsActiveWork {
+	if metricsApplyMissReason("running", "spread", "", &calculated, now, true, false) != MetricsActiveWork {
 		t.Fatal("active execution")
 	}
-	if metricsApplyMissReason("running", &calculated, now, false, true) != MetricsActiveWork {
+	if metricsApplyMissReason("running", "spread", "", &calculated, now, false, true) != MetricsActiveWork {
 		t.Fatal("active filled order")
 	}
 	current := now
-	if metricsApplyMissReason("running", &current, now, false, false) != MetricsAlreadyCurrent {
+	if metricsApplyMissReason("running", "spread", "", &current, now, false, false) != MetricsAlreadyCurrent {
 		t.Fatal("already current")
 	}
-	if metricsApplyMissReason("running", &calculated, now, false, false) != MetricsNotReady {
+	if metricsApplyMissReason("running", "spread", "", &calculated, now, false, false) != MetricsNotReady {
 		t.Fatal("default not ready")
+	}
+	if metricsApplyMissReason("running", "one_shot", "exiting", &calculated, now, false, false) != MetricsInactive {
+		t.Fatal("exiting one-shot should be inactive")
 	}
 }
 
@@ -364,7 +418,7 @@ type recordingFillAverageCompensator struct {
 func (c *recordingFillAverageCompensator) Compensate(_ context.Context, ids []string) {
 	c.called = true
 	c.ids = append([]string{}, ids...)
-	if c.store.calls.Load() != 0 {
+	if c.store != nil && c.store.calls.Load() != 0 {
 		c.persistDuringCompensate = true
 	}
 }

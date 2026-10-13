@@ -172,7 +172,7 @@ func (r *Repository) CreateArbitrageCombination(
 			venue_baseline_captured_at,market_data_stale,
 			run_mode,entry_direction,leg_a_leverage,leg_b_leverage,
 			exit_policy,exit_annualized_rate,exit_after_seconds,one_shot_phase,
-			early_exit_funding_8h_annualized_floor
+			early_exit_funding_8h_annualized_floor,early_exit_liquidation_distance_pct,scheduled_exit_at
 		) VALUES (
 			$1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
 			$14,$15,$16,$17,$18,$19,$20,$21,$22,
@@ -180,7 +180,8 @@ func (r *Repository) CreateArbitrageCombination(
 			$27,$28,$29,$30::numeric,$31::numeric,
 			NULLIF($32,'')::numeric,NULLIF($33,'')::numeric,$34,$35,
 			$36,NULLIF($37,''),$38::numeric,$39::numeric,
-			NULLIF($40,''),$41::numeric,$42,$43,$44::numeric
+			NULLIF($40,''),$41::numeric,$42::integer,$43,$44::numeric,$45::numeric,
+			CASE WHEN $42::integer IS NOT NULL THEN now() + make_interval(secs => $42::integer) ELSE NULL END
 		)
 		ON CONFLICT (idempotency_key) DO NOTHING
 		RETURNING `+arbitrageCombinationColumns,
@@ -340,33 +341,33 @@ func (r *Repository) UpdateArbitrageCombinationConfig(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var status, runMode, ask, bid, target, position string
+	var current ArbitrageCombination
 	err = tx.QueryRow(ctx, `
-		SELECT status,run_mode,ask_threshold_bps::text,bid_threshold_bps::text,
-		       target_notional::text,position_notional::text
+		SELECT `+arbitrageCombinationColumns+`
 		FROM trader_arbitrage_combinations
 		WHERE owner_username=$1 AND id=$2::uuid
 		FOR UPDATE`, owner, id,
-	).Scan(&status, &runMode, &ask, &bid, &target, &position)
+	).Scan(arbitrageCombinationScanTargets(&current)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ArbitrageCombination{}, ErrNotFound
 	}
 	if err != nil {
 		return ArbitrageCombination{}, err
 	}
-	if status != "running" {
+	if current.Status != "running" {
 		return ArbitrageCombination{}, ErrArbitrageConflict
 	}
-	if strings.EqualFold(strings.TrimSpace(runMode), "one_shot") {
-		return ArbitrageCombination{}, fmt.Errorf(
-			"%w: one_shot combinations cannot be patched",
-			ErrArbitrageConfigInvalid,
-		)
+	previous := map[string]any{
+		"askThresholdBps":                   current.AskThresholdBps,
+		"bidThresholdBps":                   current.BidThresholdBps,
+		"targetNotional":                    current.TargetNotional,
+		"exitAfterSeconds":                  current.ExitAfterSeconds,
+		"exitAnnualizedRate":                current.ExitAnnualizedRate,
+		"earlyExitFunding8hAnnualizedFloor": current.EarlyExitFunding8hAnnualizedFloor,
+		"earlyExitLiquidationDistancePct":   current.EarlyExitLiquidationDistancePct,
+		"oneShotPhase":                      current.OneShotPhase,
 	}
-	previous := map[string]string{
-		"askThresholdBps": ask, "bidThresholdBps": bid,
-		"targetNotional": target,
-	}
+	ask, bid, target := current.AskThresholdBps, current.BidThresholdBps, current.TargetNotional
 	if input.AskThresholdBps != nil {
 		ask = *input.AskThresholdBps
 	}
@@ -377,42 +378,63 @@ func (r *Repository) UpdateArbitrageCombinationConfig(
 		target = *input.TargetNotional
 	}
 	targetValue, targetErr := decimal.NewFromString(target)
-	positionValue, positionErr := decimal.NewFromString(position)
+	positionValue, positionErr := decimal.NewFromString(current.PositionNotional)
 	if targetErr != nil || positionErr != nil || !targetValue.IsPositive() {
 		return ArbitrageCombination{}, fmt.Errorf(
 			"%w: target notional must be positive",
 			ErrArbitrageConfigInvalid,
 		)
 	}
-	if input.TargetNotional != nil && targetValue.LessThan(positionValue.Abs()) {
-		return ArbitrageCombination{}, fmt.Errorf(
-			"%w: target notional cannot be below current absolute position %s",
-			ErrArbitrageConfigInvalid, positionValue.Abs().String(),
+	if strings.EqualFold(strings.TrimSpace(current.RunMode), "one_shot") {
+		updated, err := r.updateOneShotArbitrageCombinationConfig(
+			ctx, tx, current, input, target, targetValue, positionValue,
 		)
-	}
-
-	var updated ArbitrageCombination
-	err = tx.QueryRow(ctx, `
-		UPDATE trader_arbitrage_combinations SET
-			ask_threshold_bps=$3::numeric,
-			bid_threshold_bps=$4::numeric,
-			target_notional=$5::numeric,
-			version=version+1,updated_at=now()
-		WHERE owner_username=$1 AND id=$2::uuid AND status='running' AND run_mode='spread'
-		RETURNING `+arbitrageCombinationColumns,
-		owner, id, ask, bid, target,
-	).Scan(arbitrageCombinationScanTargets(&updated)...)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ArbitrageCombination{}, ErrArbitrageConflict
-	}
-	if err != nil {
-		return ArbitrageCombination{}, err
+		if err != nil {
+			return ArbitrageCombination{}, err
+		}
+		current = updated
+	} else {
+		if input.ExitAfterSeconds != nil || input.ExitAnnualizedRate != nil ||
+			input.EarlyExitFunding8hAnnualizedFloor != nil ||
+			input.EarlyExitLiquidationDistancePct != nil {
+			return ArbitrageCombination{}, fmt.Errorf(
+				"%w: spread combinations cannot patch one-shot exit fields",
+				ErrArbitrageConfigInvalid,
+			)
+		}
+		if input.TargetNotional != nil && targetValue.LessThan(positionValue.Abs()) {
+			return ArbitrageCombination{}, fmt.Errorf(
+				"%w: target notional cannot be below current absolute position %s",
+				ErrArbitrageConfigInvalid, positionValue.Abs().String(),
+			)
+		}
+		err = tx.QueryRow(ctx, `
+			UPDATE trader_arbitrage_combinations SET
+				ask_threshold_bps=$3::numeric,
+				bid_threshold_bps=$4::numeric,
+				target_notional=$5::numeric,
+				version=version+1,updated_at=now()
+			WHERE owner_username=$1 AND id=$2::uuid AND status='running' AND run_mode='spread'
+			RETURNING `+arbitrageCombinationColumns,
+			owner, id, ask, bid, target,
+		).Scan(arbitrageCombinationScanTargets(&current)...)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ArbitrageCombination{}, ErrArbitrageConflict
+		}
+		if err != nil {
+			return ArbitrageCombination{}, err
+		}
 	}
 	payload, err := json.Marshal(map[string]any{
 		"previous": previous,
-		"updated": map[string]string{
-			"askThresholdBps": ask, "bidThresholdBps": bid,
-			"targetNotional": target,
+		"updated": map[string]any{
+			"askThresholdBps":                   ask,
+			"bidThresholdBps":                   bid,
+			"targetNotional":                    target,
+			"exitAfterSeconds":                  input.ExitAfterSeconds,
+			"exitAnnualizedRate":                input.ExitAnnualizedRate,
+			"earlyExitFunding8hAnnualizedFloor": input.EarlyExitFunding8hAnnualizedFloor,
+			"earlyExitLiquidationDistancePct":   input.EarlyExitLiquidationDistancePct,
 		},
 	})
 	if err != nil {
@@ -426,7 +448,137 @@ func (r *Repository) UpdateArbitrageCombinationConfig(
 	if err = tx.Commit(ctx); err != nil {
 		return ArbitrageCombination{}, err
 	}
-	return updated, nil
+	return current, nil
+}
+
+func (r *Repository) updateOneShotArbitrageCombinationConfig(
+	ctx context.Context,
+	tx pgx.Tx,
+	current ArbitrageCombination,
+	input UpdateArbitrageInput,
+	target string,
+	targetValue, positionValue decimal.Decimal,
+) (ArbitrageCombination, error) {
+	phase := strings.TrimSpace(current.OneShotPhase)
+	if phase != "building_target" && phase != "waiting_exit" {
+		return ArbitrageCombination{}, ErrArbitrageConflict
+	}
+	if current.PositionUncertain || current.RuntimeState == "manual_intervention" {
+		return ArbitrageCombination{}, ErrArbitrageConflict
+	}
+	if input.AskThresholdBps != nil || input.BidThresholdBps != nil {
+		return ArbitrageCombination{}, fmt.Errorf(
+			"%w: one_shot combinations cannot patch spread thresholds",
+			ErrArbitrageConfigInvalid,
+		)
+	}
+	var liveWork bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM trader_arbitrage_executions e
+			WHERE e.combination_id=$1::uuid
+			  AND e.status NOT IN ('completed','failed','canceled','dry_run')
+		) OR EXISTS (
+			SELECT 1 FROM trader_orders o
+			JOIN trader_arbitrage_executions e ON e.id=o.arbitrage_execution_id
+			WHERE e.combination_id=$1::uuid
+			  AND o.status NOT IN ('filled','canceled','rejected','expired')
+		)`, current.ID,
+	).Scan(&liveWork); err != nil {
+		return ArbitrageCombination{}, err
+	}
+	if liveWork {
+		return ArbitrageCombination{}, ErrArbitrageConflict
+	}
+	oldTarget, _ := decimal.NewFromString(current.TargetNotional)
+	occupancy := positionValue.Abs()
+	if input.TargetNotional != nil {
+		if occupancy.IsPositive() {
+			if !targetValue.GreaterThan(oldTarget) || targetValue.LessThan(occupancy) {
+				return ArbitrageCombination{}, fmt.Errorf(
+					"%w: one_shot target with inventory must exceed the previous target and cover occupancy %s",
+					ErrArbitrageConfigInvalid, occupancy.String(),
+				)
+			}
+		}
+	}
+	exitAfter := current.ExitAfterSeconds
+	if input.ExitAfterSeconds != nil {
+		if current.ExitPolicy != "time" {
+			return ArbitrageCombination{}, fmt.Errorf(
+				"%w: historical annualized combinations cannot patch hold time",
+				ErrArbitrageConfigInvalid,
+			)
+		}
+		exitAfter = *input.ExitAfterSeconds
+	}
+	exitRate := current.ExitAnnualizedRate
+	if input.ExitAnnualizedRate != nil {
+		if strings.TrimSpace(current.ExitAnnualizedRate) == "" {
+			return ArbitrageCombination{}, fmt.Errorf(
+				"%w: annualized early-exit cannot be enabled after create",
+				ErrArbitrageConfigInvalid,
+			)
+		}
+		exitRate = *input.ExitAnnualizedRate
+	}
+	floor := current.EarlyExitFunding8hAnnualizedFloor
+	if input.EarlyExitFunding8hAnnualizedFloor != nil {
+		if strings.TrimSpace(current.EarlyExitFunding8hAnnualizedFloor) == "" {
+			return ArbitrageCombination{}, fmt.Errorf(
+				"%w: 8h funding early-exit cannot be enabled after create",
+				ErrArbitrageConfigInvalid,
+			)
+		}
+		floor = *input.EarlyExitFunding8hAnnualizedFloor
+	}
+	liquidationDistance := current.EarlyExitLiquidationDistancePct
+	if input.EarlyExitLiquidationDistancePct != nil {
+		if strings.TrimSpace(current.EarlyExitLiquidationDistancePct) == "" {
+			return ArbitrageCombination{}, fmt.Errorf(
+				"%w: liquidation distance early-exit cannot be enabled after create",
+				ErrArbitrageConfigInvalid,
+			)
+		}
+		liquidationDistance = *input.EarlyExitLiquidationDistancePct
+	}
+	scheduled := current.ScheduledExitAt
+	if input.ExitAfterSeconds != nil && !current.CreatedAt.IsZero() {
+		scheduled = scheduledExitFromCreated(current.CreatedAt, exitAfter)
+	}
+	nextPhase := phase
+	if phase == "waiting_exit" && input.TargetNotional != nil &&
+		targetValue.GreaterThan(oldTarget) &&
+		(scheduled.IsZero() || scheduled.Equal(time.Unix(0, 0).UTC()) ||
+			scheduled.After(time.Now().UTC())) {
+		nextPhase = "building_target"
+	}
+	var updated ArbitrageCombination
+	err := tx.QueryRow(ctx, `
+		UPDATE trader_arbitrage_combinations SET
+			target_notional=$3::numeric,
+			exit_after_seconds=$4,
+			exit_annualized_rate=$5::numeric,
+			early_exit_funding_8h_annualized_floor=$6::numeric,
+			early_exit_liquidation_distance_pct=$9::numeric,
+			scheduled_exit_at=$7,
+			one_shot_phase=$8,
+			version=version+1,updated_at=now()
+		WHERE id=$1::uuid AND owner_username=$2
+		  AND status='running' AND run_mode='one_shot'
+		  AND one_shot_phase IN ('building_target','waiting_exit')
+		  AND NOT position_uncertain
+		  AND runtime_state<>'manual_intervention'
+		RETURNING `+arbitrageCombinationColumns,
+		current.ID, current.OwnerUsername, target,
+		nullableInt(exitAfter), nullableNumeric(exitRate), nullableNumeric(floor),
+		nullableArbitrageTimestamp(scheduled), nextPhase,
+		nullableNumeric(liquidationDistance),
+	).Scan(arbitrageCombinationScanTargets(&updated)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ArbitrageCombination{}, ErrArbitrageConflict
+	}
+	return updated, err
 }
 
 func (r *Repository) ListArbitrageCombinationsForPositionAudit(
@@ -487,6 +639,7 @@ func (r *Repository) UpdateArbitragePositionAudit(
 	legAVenue, legBVenue, legADifference, legBDifference string,
 	uncertain bool,
 	message string,
+	legALiquidationDistance, legBLiquidationDistance string,
 ) (ArbitrageCombination, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -495,22 +648,23 @@ func (r *Repository) UpdateArbitragePositionAudit(
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var (
-		currentVersion        int64
-		status                string
-		currentUncertain      bool
-		runtimeState          string
-		currentError          string
-		circuitOpen           bool
-		activeExecution       string
-		activeOrder           bool
-		reconcileFailure      bool
-		hasExecution          bool
-		hasOrder              bool
-		carryBaseQuantity     string
-		consecutiveFailures   int
-		repeatedFailureCount  int
-		lastFailureKey        string
-		hasCompletedExecution bool
+		currentVersion                   int64
+		status                           string
+		currentUncertain                 bool
+		runtimeState                     string
+		currentError                     string
+		circuitOpen                      bool
+		activeExecution                  string
+		activeOrder                      bool
+		reconcileFailure                 bool
+		hasExecution                     bool
+		hasOrder                         bool
+		carryBaseQuantity                string
+		consecutiveFailures              int
+		repeatedFailureCount             int
+		lastFailureKey                   string
+		hasCompletedExecution            bool
+		lastCloseResidualRecoveredLatest bool
 	)
 	err = tx.QueryRow(ctx, `
 		SELECT c.version,c.status,c.position_uncertain,c.runtime_state,
@@ -558,6 +712,27 @@ func (r *Repository) UpdateArbitragePositionAudit(
 					SELECT 1 FROM trader_arbitrage_executions e
 					WHERE e.combination_id=c.id
 					  AND e.status='completed'
+			   ),
+		       EXISTS (
+					SELECT 1
+					FROM trader_arbitrage_executions e
+					WHERE e.combination_id=c.id
+					  AND e.status='completed'
+					  AND e.last_close_clip
+					  AND lower(trim(e.position_effect))='close'
+					  AND e.reduce_only
+					  AND e.sequence=(
+							SELECT max(sequence)
+							FROM trader_arbitrage_executions
+							WHERE combination_id=c.id
+					  )
+					  AND EXISTS (
+							SELECT 1
+							FROM trader_arbitrage_events ev
+							WHERE ev.execution_id=e.id
+							  AND ev.combination_id=c.id
+							  AND ev.event_type='last_close_residual_recovered'
+					  )
 			   )
 		FROM trader_arbitrage_combinations c
 		WHERE c.id=$1::uuid
@@ -568,7 +743,7 @@ func (r *Repository) UpdateArbitragePositionAudit(
 		&currentError, &circuitOpen, &activeExecution, &activeOrder,
 		&reconcileFailure, &hasExecution, &hasOrder, &carryBaseQuantity,
 		&consecutiveFailures, &repeatedFailureCount, &lastFailureKey,
-		&hasCompletedExecution,
+		&hasCompletedExecution, &lastCloseResidualRecoveredLatest,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ArbitrageCombination{}, ErrNotFound
@@ -625,7 +800,12 @@ func (r *Repository) UpdateArbitragePositionAudit(
 			currentError == arbitrageOrderReconcileError &&
 			runtimeState == "position_uncertain" && status == "running" &&
 			!circuitOpen && zeroDifferences && hasExecution && hasOrder
-		if clearAuditOwned || clearStickyEmpty || clearOrderUncertain {
+		clearLastCloseResidualAudited := lastCloseResidualAuditUnlockEligible(
+			status, runtimeState, currentError,
+			currentUncertain, circuitOpen, lastCloseResidualRecoveredLatest, zeroDifferences,
+		)
+		if clearAuditOwned || clearStickyEmpty || clearOrderUncertain ||
+			clearLastCloseResidualAudited {
 			nextUncertain = false
 			nextError = ""
 			switch status {
@@ -664,11 +844,14 @@ func (r *Repository) UpdateArbitragePositionAudit(
 			position_uncertain=$6,
 			runtime_state=$7,
 			error_message=$8,
+			leg_a_liquidation_distance_pct=NULLIF($10,'')::numeric,
+			leg_b_liquidation_distance_pct=NULLIF($11,'')::numeric,
 			version=version+1,updated_at=now()
 		WHERE id=$1::uuid AND version=$9
 		RETURNING `+arbitrageCombinationColumns,
 		id, legAVenue, legBVenue, legADifference, legBDifference,
 		nextUncertain, nextRuntime, nextError, expectedVersion,
+		legALiquidationDistance, legBLiquidationDistance,
 	).Scan(arbitrageCombinationScanTargets(&updated)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ArbitrageCombination{}, &ArbitragePositionAuditDeferredError{
@@ -729,7 +912,7 @@ func (r *Repository) MarkOneShotWaitingExit(
 		UPDATE trader_arbitrage_combinations
 		SET one_shot_phase='waiting_exit',
 		    target_reached_at=now(),
-		    scheduled_exit_at=$3,
+		    scheduled_exit_at=COALESCE(scheduled_exit_at, $3),
 		    version=version+1,
 		    updated_at=now()
 		WHERE id=$1::uuid AND version=$2
@@ -759,7 +942,8 @@ func (r *Repository) MarkOneShotExiting(
 	details map[string]any,
 ) (ArbitrageCombination, bool, error) {
 	reason = strings.ToLower(strings.TrimSpace(reason))
-	if reason != "annualized" && reason != "time" && reason != "funding_8h_floor" {
+	if reason != "annualized" && reason != "time" && reason != "funding_8h_floor" &&
+		reason != "liquidation_distance_threshold" {
 		return ArbitrageCombination{}, false, ErrInvalidArgument
 	}
 	var item ArbitrageCombination
@@ -771,12 +955,36 @@ func (r *Repository) MarkOneShotExiting(
 		WHERE id=$1::uuid AND version=$2
 		  AND status='running'
 		  AND run_mode='one_shot'
-		  AND one_shot_phase='waiting_exit'
+		  AND one_shot_phase IN ('building_target','waiting_exit')
 		  AND (
-			(exit_policy=$3 AND $3 IN ('annualized','time'))
+			(
+				$3='time'
+				AND scheduled_exit_at IS NOT NULL
+				AND scheduled_exit_at <= now()
+			)
+			OR (
+				$3='annualized'
+				AND exit_annualized_rate IS NOT NULL
+			)
 			OR (
 				$3='funding_8h_floor'
 				AND early_exit_funding_8h_annualized_floor IS NOT NULL
+			)
+			OR (
+				$3='liquidation_distance_threshold'
+				AND early_exit_liquidation_distance_pct IS NOT NULL
+				AND (
+					(
+						leg_a_liquidation_distance_pct IS NOT NULL
+						AND leg_a_liquidation_distance_pct
+							<= early_exit_liquidation_distance_pct
+					)
+					OR (
+						leg_b_liquidation_distance_pct IS NOT NULL
+						AND leg_b_liquidation_distance_pct
+							<= early_exit_liquidation_distance_pct
+					)
+				)
 			)
 		  )
 		  AND NOT position_uncertain
@@ -810,6 +1018,79 @@ func (r *Repository) MarkOneShotExiting(
 	return item, true, nil
 }
 
+func (r *Repository) MarkOneShotAnnualizedExiting(
+	ctx context.Context,
+	guard oneShotAnnualizedExitGuard,
+) (ArbitrageCombination, bool, error) {
+	if strings.TrimSpace(guard.CombinationID) == "" ||
+		!guard.ExitAnnualizedRate.IsPositive() {
+		return ArbitrageCombination{}, false, ErrInvalidArgument
+	}
+	var item ArbitrageCombination
+	err := r.pool.QueryRow(ctx, `
+		UPDATE trader_arbitrage_combinations
+		SET one_shot_phase='exiting',
+		    version=version+1,
+		    updated_at=now()
+		WHERE id=$1::uuid
+		  AND status='running'
+		  AND run_mode='one_shot'
+		  AND one_shot_phase IN ('building_target','waiting_exit')
+		  AND exit_annualized_rate = $2::numeric
+		  AND COALESCE(metrics_calculated_at, 'epoch'::timestamptz) = $3::timestamptz
+		  AND leg_a_base_position = $4::numeric
+		  AND leg_b_base_position = $5::numeric
+		  AND leg_a_average_entry_price = $6::numeric
+		  AND leg_b_average_entry_price = $7::numeric
+		  AND COALESCE(leg_a_venue_baseline_base_position, 0) = $8::numeric
+		  AND COALESCE(leg_b_venue_baseline_base_position, 0) = $9::numeric
+		  AND COALESCE(venue_baseline_captured_at, 'epoch'::timestamptz) = $10::timestamptz
+		  AND COALESCE(leg_a_venue_base_position, 0) = $11::numeric
+		  AND COALESCE(leg_b_venue_base_position, 0) = $12::numeric
+		  AND COALESCE(leg_a_position_difference, 0) = $13::numeric
+		  AND COALESCE(leg_b_position_difference, 0) = $14::numeric
+		  AND NOT position_uncertain
+		  AND runtime_state <> 'manual_intervention'
+		  AND NOT EXISTS (
+			SELECT 1 FROM trader_arbitrage_executions e
+			WHERE e.combination_id=trader_arbitrage_combinations.id
+			  AND e.status NOT IN ('completed','failed','canceled','dry_run')
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM trader_orders o
+			JOIN trader_arbitrage_executions e ON e.id=o.arbitrage_execution_id
+			WHERE e.combination_id=trader_arbitrage_combinations.id
+			  AND o.filled_quantity>0
+			  AND o.status NOT IN ('filled','canceled','rejected','expired')
+		  )
+		RETURNING `+arbitrageCombinationColumns,
+		guard.CombinationID,
+		guard.ExitAnnualizedRate.String(),
+		annualizedExitClock(guard.CalculatedAt),
+		guard.ComboA.String(),
+		guard.ComboB.String(),
+		guard.AvgA.String(),
+		guard.AvgB.String(),
+		guard.BaselineA.String(),
+		guard.BaselineB.String(),
+		annualizedExitClock(guard.BaselineCapturedAt),
+		guard.VenueA.String(),
+		guard.VenueB.String(),
+		guard.DifferenceA.String(),
+		guard.DifferenceB.String(),
+	).Scan(arbitrageCombinationScanTargets(&item)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ArbitrageCombination{}, false, nil
+	}
+	if err != nil {
+		return ArbitrageCombination{}, false, err
+	}
+	_ = r.AppendArbitrageEvent(ctx, guard.CombinationID, "", "one_shot_exit_started", map[string]any{
+		"reason": "annualized",
+	})
+	return item, true, nil
+}
+
 func (r *Repository) MarkOneShotExited(
 	ctx context.Context,
 	id string,
@@ -819,6 +1100,14 @@ func (r *Repository) MarkOneShotExited(
 	err := r.pool.QueryRow(ctx, `
 		UPDATE trader_arbitrage_combinations
 		SET one_shot_phase='exited',
+		    final_metrics_status=CASE
+		        WHEN final_metrics_status='completed' THEN 'completed'
+		        ELSE 'pending'
+		    END,
+		    final_metrics_next_retry_at=CASE
+		        WHEN final_metrics_status='completed' THEN final_metrics_next_retry_at
+		        ELSE now()
+		    END,
 		    version=version+1,
 		    updated_at=now()
 		WHERE id=$1::uuid AND version=$2
@@ -839,7 +1128,6 @@ func (r *Repository) MarkOneShotExited(
 			SELECT 1 FROM trader_orders o
 			JOIN trader_arbitrage_executions e ON e.id=o.arbitrage_execution_id
 			WHERE e.combination_id=trader_arbitrage_combinations.id
-			  AND o.filled_quantity>0
 			  AND o.status NOT IN ('filled','canceled','rejected','expired')
 		  )
 		RETURNING `+arbitrageCombinationColumns,
@@ -874,6 +1162,22 @@ func (r *Repository) MarkOneShotExitedWithDust(
 	err := r.pool.QueryRow(ctx, `
 		UPDATE trader_arbitrage_combinations
 		SET one_shot_phase='exited',
+		    final_metrics_status=CASE
+		        WHEN final_metrics_status='completed' THEN 'completed'
+		        ELSE 'partial'
+		    END,
+		    final_metrics_next_retry_at=CASE
+		        WHEN final_metrics_status='completed' THEN final_metrics_next_retry_at
+		        ELSE 'infinity'::timestamptz
+		    END,
+		    final_metrics_completed_at=CASE
+		        WHEN final_metrics_status='completed' THEN final_metrics_completed_at
+		        ELSE NULL
+		    END,
+		    final_metrics_last_error=CASE
+		        WHEN final_metrics_status='completed' THEN final_metrics_last_error
+		        ELSE 'one_shot_dust_metrics_skipped'
+		    END,
 		    version=version+1,
 		    updated_at=now()
 		WHERE id=$1::uuid AND version=$2
@@ -961,11 +1265,11 @@ func (r *Repository) ListOneShotFunding8hExitRows(
 			       trim_scale(early_exit_funding_8h_annualized_floor)::text AS floor,
 			       leg_a_instrument_id, leg_b_instrument_id,
 			       leg_a_contract_type, leg_b_contract_type,
-			       target_reached_at
+			       COALESCE(target_reached_at, created_at) AS target_reached_at
 			FROM trader_arbitrage_combinations
 			WHERE status='running'
 			  AND run_mode='one_shot'
-			  AND one_shot_phase='waiting_exit'
+			  AND one_shot_phase IN ('building_target','waiting_exit')
 			  AND early_exit_funding_8h_annualized_floor IS NOT NULL
 		), legs AS (
 			SELECT id, version, entry_direction, floor, 'a'::text AS leg,
@@ -1133,11 +1437,8 @@ func (r *Repository) ListArbitrageEvents(
 	defer rows.Close()
 	var items []ArbitrageEvent
 	for rows.Next() {
-		var item ArbitrageEvent
-		if err := rows.Scan(
-			&item.ID, &item.CombinationID, &item.ExecutionID,
-			&item.Type, &item.Message, &item.CreatedAt,
-		); err != nil {
+		item, err := scanArbitrageEvent(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -1395,6 +1696,273 @@ func (r *Repository) ClaimArbitrageExecution(
 		return ArbitrageExecution{}, false, err
 	}
 	return result, true, nil
+}
+
+func (r *Repository) ClaimOneShotFinalFlattenExecution(
+	ctx context.Context,
+	claim OneShotFinalFlattenClaim,
+) (ArbitrageExecution, bool, error) {
+	execution := claim.Execution
+	if execution.ID == "" {
+		execution.ID = uuid.NewString()
+	}
+	if strings.TrimSpace(execution.CombinationID) == "" {
+		return ArbitrageExecution{}, false, ErrInvalidArgument
+	}
+	claim.Execution = execution
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var combo ArbitrageCombination
+	err = tx.QueryRow(ctx, `
+		SELECT `+arbitrageCombinationColumns+`
+		FROM trader_arbitrage_combinations
+		WHERE id=$1::uuid
+		FOR UPDATE`,
+		execution.CombinationID,
+	).Scan(arbitrageCombinationScanTargets(&combo)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ArbitrageExecution{}, false, nil
+	}
+	if err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	if !validateOneShotFinalFlattenClaim(combo, claim, time.Now().UTC()) {
+		return ArbitrageExecution{}, false, nil
+	}
+	var hasLiveOrder bool
+	err = tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM trader_orders o
+			JOIN trader_arbitrage_executions e ON e.id=o.arbitrage_execution_id
+			WHERE e.combination_id=$1::uuid
+			  AND o.status NOT IN ('filled','canceled','rejected','expired')
+		)`,
+		execution.CombinationID,
+	).Scan(&hasLiveOrder)
+	if err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	if hasLiveOrder {
+		return ArbitrageExecution{}, false, nil
+	}
+	var result ArbitrageExecution
+	err = tx.QueryRow(ctx, `
+		INSERT INTO trader_arbitrage_executions (
+			id,combination_id,direction,sequence,status,
+			trigger_ask_spread_bps,trigger_bid_spread_bps,
+			trigger_leg_a_bid,trigger_leg_a_ask,trigger_leg_b_bid,trigger_leg_b_ask,
+			target_base_quantity,requested_notional,position_effect,reduce_only,last_close_clip,
+			leg_a_filled_quantity,leg_b_filled_quantity,delta_notional,
+			hedge_sequence,attempt,error_message
+		)
+		VALUES ($1::uuid,$2::uuid,$3,
+			COALESCE((SELECT max(sequence)+1 FROM trader_arbitrage_executions WHERE combination_id=$2::uuid),1),
+			$4,$5::numeric,$6::numeric,$7::numeric,$8::numeric,$9::numeric,$10::numeric,
+			$11::numeric,$12::numeric,$13,$14,$15,$16::numeric,$17::numeric,$18::numeric,$19,$20,$21)
+		ON CONFLICT DO NOTHING
+		RETURNING `+arbitrageExecutionColumns,
+		execution.ID, execution.CombinationID, execution.Direction, execution.Status,
+		execution.TriggerAskSpread, execution.TriggerBidSpread,
+		execution.TriggerLegABid, execution.TriggerLegAAsk,
+		execution.TriggerLegBBid, execution.TriggerLegBAsk,
+		execution.TargetBaseQuantity, zeroString(execution.RequestedNotional),
+		execution.PositionEffect, execution.ReduceOnly, execution.LastCloseClip,
+		zeroString(execution.LegAFilledQuantity),
+		zeroString(execution.LegBFilledQuantity), zeroString(execution.DeltaNotional),
+		execution.HedgeSequence, execution.Attempt, execution.ErrorMessage,
+	).Scan(arbitrageExecutionScanTargets(&result)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ArbitrageExecution{}, false, nil
+	}
+	if err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE trader_arbitrage_combinations
+		SET version=version+1,updated_at=now()
+		WHERE id=$1::uuid`,
+		execution.CombinationID,
+	); err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	return result, true, nil
+}
+
+func (r *Repository) FinalizeOneShotFinalFlattenExecution(
+	ctx context.Context,
+	executionID string,
+) (oneShotFinalFlattenFinalizeResult, error) {
+	if strings.TrimSpace(executionID) == "" {
+		return oneShotFinalFlattenFinalizeResult{}, ErrInvalidArgument
+	}
+	return retryOnDeadlock(ctx, func() (oneShotFinalFlattenFinalizeResult, error) {
+		return r.finalizeOneShotFinalFlattenExecutionOnce(ctx, executionID)
+	})
+}
+
+func (r *Repository) finalizeOneShotFinalFlattenExecutionOnce(
+	ctx context.Context,
+	executionID string,
+) (oneShotFinalFlattenFinalizeResult, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return oneShotFinalFlattenFinalizeResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var execution ArbitrageExecution
+	err = tx.QueryRow(ctx, `
+		SELECT `+arbitrageExecutionColumns+`
+		FROM trader_arbitrage_executions
+		WHERE id=$1::uuid
+		FOR UPDATE`,
+		executionID,
+	).Scan(arbitrageExecutionScanTargets(&execution)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return oneShotFinalFlattenFinalizeResult{}, ErrNotFound
+	}
+	if err != nil {
+		return oneShotFinalFlattenFinalizeResult{}, err
+	}
+
+	var combo ArbitrageCombination
+	err = tx.QueryRow(ctx, `
+		SELECT `+arbitrageCombinationColumns+`
+		FROM trader_arbitrage_combinations
+		WHERE id=$1::uuid
+		FOR UPDATE`,
+		execution.CombinationID,
+	).Scan(arbitrageCombinationScanTargets(&combo)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return oneShotFinalFlattenFinalizeResult{}, ErrNotFound
+	}
+	if err != nil {
+		return oneShotFinalFlattenFinalizeResult{}, err
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT `+orderColumns+`
+		FROM trader_orders
+		WHERE arbitrage_execution_id=$1::uuid
+		ORDER BY created_at ASC`,
+		executionID,
+	)
+	if err != nil {
+		return oneShotFinalFlattenFinalizeResult{}, err
+	}
+	var orders []Order
+	for rows.Next() {
+		var item Order
+		if err := rows.Scan(orderScanTargets(&item)...); err != nil {
+			rows.Close()
+			return oneShotFinalFlattenFinalizeResult{}, err
+		}
+		orders = append(orders, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return oneShotFinalFlattenFinalizeResult{}, err
+	}
+	rows.Close()
+
+	if !oneShotFinalFlattenOrdersTerminal(orders, executionID) {
+		return oneShotFinalFlattenFinalizeResult{
+			Combination: combo, Execution: execution,
+		}, ErrArbitrageReconciling
+	}
+
+	if terminalArbitrageExecutionStatus(execution.Status) {
+		if err := tx.Commit(ctx); err != nil {
+			return oneShotFinalFlattenFinalizeResult{}, err
+		}
+		return oneShotFinalFlattenFinalizeResult{
+			Combination: combo, Execution: execution,
+		}, nil
+	}
+
+	updated, err := updateArbitrageCombinationPositions(ctx, tx, execution.CombinationID)
+	if err != nil {
+		return oneShotFinalFlattenFinalizeResult{}, err
+	}
+	combo = updated
+	fillA, fillB, notional := oneShotFinalFlattenFillTotals(orders, executionID)
+	status := "completed"
+	if !fillA.IsPositive() && !fillB.IsPositive() {
+		status = "failed"
+	}
+	var finalized ArbitrageExecution
+	err = tx.QueryRow(ctx, `
+		UPDATE trader_arbitrage_executions SET
+			status=$2,
+			leg_a_filled_quantity=$3::numeric,
+			leg_b_filled_quantity=$4::numeric,
+			delta_notional=$5::numeric,
+			error_message='',
+			closed_at=now(),
+			updated_at=now()
+		WHERE id=$1::uuid
+		  AND status NOT IN ('completed','failed','canceled','dry_run')
+		RETURNING `+arbitrageExecutionColumns,
+		executionID, status, fillA.String(), fillB.String(), notional.String(),
+	).Scan(arbitrageExecutionScanTargets(&finalized)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if err := tx.Commit(ctx); err != nil {
+			return oneShotFinalFlattenFinalizeResult{}, err
+		}
+		return oneShotFinalFlattenFinalizeResult{
+			Combination: combo, Execution: execution,
+		}, nil
+	}
+	if err != nil {
+		return oneShotFinalFlattenFinalizeResult{}, err
+	}
+	if notional.IsPositive() {
+		err = tx.QueryRow(ctx, `
+			UPDATE trader_arbitrage_combinations SET
+				cumulative_turnover_notional=cumulative_turnover_notional+ABS($2::numeric),
+				runtime_state=CASE
+					WHEN runtime_state IN ('hedging','maker_open','repricing') THEN 'monitoring'
+					ELSE runtime_state
+				END,
+				version=version+1,
+				updated_at=now()
+			WHERE id=$1::uuid
+			RETURNING `+arbitrageCombinationColumns,
+			execution.CombinationID, notional.String(),
+		).Scan(arbitrageCombinationScanTargets(&combo)...)
+		if err != nil {
+			return oneShotFinalFlattenFinalizeResult{}, err
+		}
+	} else {
+		err = tx.QueryRow(ctx, `
+			UPDATE trader_arbitrage_combinations SET
+				runtime_state=CASE
+					WHEN runtime_state IN ('hedging','maker_open','repricing') THEN 'monitoring'
+					ELSE runtime_state
+				END,
+				version=version+1,
+				updated_at=now()
+			WHERE id=$1::uuid
+			RETURNING `+arbitrageCombinationColumns,
+			execution.CombinationID,
+		).Scan(arbitrageCombinationScanTargets(&combo)...)
+		if err != nil {
+			return oneShotFinalFlattenFinalizeResult{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return oneShotFinalFlattenFinalizeResult{}, err
+	}
+	return oneShotFinalFlattenFinalizeResult{
+		Combination: combo, Execution: finalized, Applied: true,
+	}, nil
 }
 
 func (r *Repository) GetActiveArbitrageExecution(
@@ -2094,6 +2662,14 @@ func (r *Repository) RecordArbitrageCloseFailure(
 				WHEN status='closing' THEN 'closing'
 				ELSE 'backoff'
 			END,
+			combined_position_annualized=CASE
+				WHEN $2='final_metrics_not_ready' THEN NULL
+				ELSE combined_position_annualized
+			END,
+			metrics_quality=CASE
+				WHEN $2='final_metrics_not_ready' THEN 'partial'
+				ELSE metrics_quality
+			END,
 			version=version+1,
 			updated_at=now()
 		WHERE id=$1::uuid
@@ -2325,25 +2901,105 @@ func (r *Repository) recomputeArbitrageBasePositionsForExecutionOnce(
 	}
 
 	if _, err := tx.Exec(ctx, `
+		WITH combo AS (
+			SELECT e.id AS execution_id,
+			       c.status,
+			       COALESCE(NULLIF(lower(trim(c.maker_leg)), ''), 'a') AS maker_leg,
+			       lower(trim(e.direction)) AS direction,
+			       e.last_close_clip,
+			       e.position_effect,
+			       e.reduce_only,
+			       lower(trim(c.execution_mode)) AS execution_mode
+			FROM trader_arbitrage_executions e
+			JOIN trader_arbitrage_combinations c ON c.id=e.combination_id
+			WHERE e.id=$1::uuid
+		),
+		legs AS (
+			SELECT
+				execution_id,
+				maker_leg,
+				CASE WHEN maker_leg='b' THEN 'a' ELSE 'b' END AS hedge_leg,
+				CASE
+					WHEN direction='ask' AND maker_leg='b' THEN 'buy'
+					WHEN direction='ask' THEN 'sell'
+					WHEN direction='bid' AND maker_leg='b' THEN 'sell'
+					WHEN direction='bid' THEN 'buy'
+					ELSE ''
+				END AS hedge_side,
+				(
+					lower(trim(status))='closing'
+					AND last_close_clip
+					AND lower(trim(position_effect))='close'
+					AND reduce_only
+				) AS last_close_closing,
+				execution_mode
+			FROM combo
+		),
+		agg AS (
+			SELECT
+				l.execution_id,
+				l.maker_leg,
+				l.last_close_closing,
+				l.execution_mode,
+				COALESCE(SUM(o.filled_quantity) FILTER (
+					WHERE lower(trim(o.arbitrage_role))='maker'
+					  AND lower(trim(o.arbitrage_leg))=l.maker_leg
+					  AND o.filled_quantity>0
+				),0) AS maker_fill,
+				COALESCE(SUM(o.filled_quantity) FILTER (
+					WHERE lower(trim(o.arbitrage_role))='hedge'
+					  AND lower(trim(o.arbitrage_leg))=l.hedge_leg
+					  AND lower(trim(o.side))=l.hedge_side
+					  AND o.filled_quantity>0
+				),0) AS hedge_fill,
+				COALESCE(SUM(o.filled_quantity) FILTER (
+					WHERE lower(trim(o.arbitrage_role))='residual'
+					  AND lower(trim(o.arbitrage_leg))=l.hedge_leg
+					  AND lower(trim(o.side))=l.hedge_side
+					  AND o.filled_quantity>0
+				),0) AS residual_fill,
+				COALESCE(SUM(o.filled_quantity) FILTER (
+					WHERE o.arbitrage_leg='a'
+					  AND o.filled_quantity>0
+					  AND o.arbitrage_role IS DISTINCT FROM 'residual'
+				),0) AS paired_a,
+				COALESCE(SUM(o.filled_quantity) FILTER (
+					WHERE o.arbitrage_leg='b'
+					  AND o.filled_quantity>0
+					  AND o.arbitrage_role IS DISTINCT FROM 'residual'
+				),0) AS paired_b,
+				COALESCE(SUM(o.filled_quantity) FILTER (
+					WHERE lower(trim(o.arbitrage_role))='market'
+					  AND lower(trim(o.arbitrage_leg))='a'
+					  AND o.filled_quantity>0
+				),0) AS market_a,
+				COALESCE(SUM(o.filled_quantity) FILTER (
+					WHERE lower(trim(o.arbitrage_role))='market'
+					  AND lower(trim(o.arbitrage_leg))='b'
+					  AND o.filled_quantity>0
+				),0) AS market_b
+			FROM legs l
+			LEFT JOIN trader_orders o ON o.arbitrage_execution_id=l.execution_id
+			GROUP BY l.execution_id, l.maker_leg, l.last_close_closing, l.execution_mode
+		)
 		UPDATE trader_arbitrage_executions e SET
-			leg_a_filled_quantity=COALESCE((
-				SELECT SUM(o.filled_quantity)
-				FROM trader_orders o
-				WHERE o.arbitrage_execution_id=e.id
-				  AND o.arbitrage_leg='a'
-				  AND o.filled_quantity>0
-				  AND o.arbitrage_role IS DISTINCT FROM 'residual'
-			),0),
-			leg_b_filled_quantity=COALESCE((
-				SELECT SUM(o.filled_quantity)
-				FROM trader_orders o
-				WHERE o.arbitrage_execution_id=e.id
-				  AND o.arbitrage_leg='b'
-				  AND o.filled_quantity>0
-				  AND o.arbitrage_role IS DISTINCT FROM 'residual'
-			),0),
+			leg_a_filled_quantity=CASE
+				WHEN a.last_close_closing AND a.execution_mode='simultaneous_market' THEN a.market_a
+				WHEN a.last_close_closing AND a.maker_leg='a' THEN a.maker_fill
+				WHEN a.last_close_closing AND a.maker_leg='b' THEN
+					a.hedge_fill + LEAST(a.residual_fill, GREATEST(a.maker_fill - a.hedge_fill, 0))
+				ELSE a.paired_a
+			END,
+			leg_b_filled_quantity=CASE
+				WHEN a.last_close_closing AND a.execution_mode='simultaneous_market' THEN a.market_b
+				WHEN a.last_close_closing AND a.maker_leg='b' THEN a.maker_fill
+				WHEN a.last_close_closing AND a.maker_leg='a' THEN
+					a.hedge_fill + LEAST(a.residual_fill, GREATEST(a.maker_fill - a.hedge_fill, 0))
+				ELSE a.paired_b
+			END,
 			updated_at=now()
-		WHERE e.id=$1::uuid`, executionID); err != nil {
+		FROM agg a
+		WHERE e.id=a.execution_id`, executionID); err != nil {
 		return ArbitrageCombination{}, err
 	}
 
@@ -2783,6 +3439,19 @@ func (r *Repository) ApplyClosingExternalFlatReconcile(
 	if blockedOrders {
 		return combo, false, nil
 	}
+	if combo.ErrorMessage == ErrArbitrageUnsafeHedge.Error() {
+		if combo.CircuitOpen ||
+			!strings.EqualFold(strings.TrimSpace(combo.RuntimeState), "position_uncertain") {
+			return combo, false, nil
+		}
+		recoveredAfterSnapshot, recoveredErr := recoveredLastCloseFlatSnapshotReady(ctx, tx, combo)
+		if recoveredErr != nil {
+			return ArbitrageCombination{}, false, recoveredErr
+		}
+		if !recoveredAfterSnapshot {
+			return combo, false, errLastCloseExternalFlatSnapshotStale
+		}
+	}
 
 	baselineA := parseDecimal(combo.LegAVenueBaselineBasePosition)
 	baselineB := parseDecimal(combo.LegBVenueBaselineBasePosition)
@@ -2833,8 +3502,9 @@ func (r *Repository) ApplyClosingExternalFlatReconcile(
 		return ArbitrageCombination{}, false, err
 	}
 
+	reason := closingExternalFlatReason(combo.ErrorMessage)
 	payload, err := json.Marshal(redactPayload(map[string]any{
-		"reason":                    "external_or_manual_flatten",
+		"reason":                    reason,
 		"legALocalBasePosition":     combo.LegABasePosition,
 		"legBLocalBasePosition":     combo.LegBBasePosition,
 		"legAVenueBaselinePosition": combo.LegAVenueBaselineBasePosition,
@@ -2863,6 +3533,32 @@ func (r *Repository) ApplyClosingExternalFlatReconcile(
 		return ArbitrageCombination{}, false, err
 	}
 	return applied, true, nil
+}
+
+var errLastCloseExternalFlatSnapshotStale = errors.New(
+	"closing external flat snapshot is not after last close recovery",
+)
+
+func recoveredLastCloseFlatSnapshotReady(
+	ctx context.Context,
+	tx pgx.Tx,
+	combo ArbitrageCombination,
+) (bool, error) {
+	var ready bool
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE((
+			SELECT ex.status='completed'
+			   AND $2::timestamptz >= ev.created_at
+			FROM trader_arbitrage_events ev
+			JOIN trader_arbitrage_executions ex ON ex.id=ev.execution_id
+			WHERE ev.combination_id=$1::uuid
+			  AND ev.event_type=$3
+			ORDER BY ev.created_at DESC
+			LIMIT 1
+		), false)`,
+		combo.ID, combo.LastPositionReconciledAt, lastCloseResidualRecoveredEvent,
+	).Scan(&ready)
+	return ready, err
 }
 
 func commitCircuitOpenVenueSnapshot(
@@ -2957,6 +3653,385 @@ func (r *Repository) AppendArbitrageEvent(
 	return err
 }
 
+func (r *Repository) RecordLastCloseRecoveryBlocked(
+	ctx context.Context,
+	combinationID, executionID, eventType string,
+) error {
+	switch eventType {
+	case lastCloseRecoveryOrderNotTerminalEvent, lastCloseRecoveryFillMismatchEvent:
+	default:
+		return ErrInvalidArgument
+	}
+	if strings.TrimSpace(combinationID) == "" || strings.TrimSpace(executionID) == "" {
+		return ErrInvalidArgument
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO trader_arbitrage_events(combination_id,execution_id,event_type,payload)
+		SELECT $1::uuid,$2::uuid,$3,'{}'::jsonb
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM trader_arbitrage_events
+			WHERE execution_id=$2::uuid
+			  AND event_type=$3
+		)`,
+		combinationID, executionID, eventType)
+	return err
+}
+
+func (r *Repository) RecordLastCloseResidualRecovered(
+	ctx context.Context,
+	combinationID, executionID, makerFill, residualFill, effectiveHedgeFill string,
+) error {
+	if strings.TrimSpace(combinationID) == "" || strings.TrimSpace(executionID) == "" {
+		return ErrInvalidArgument
+	}
+	payload, err := json.Marshal(redactPayload(map[string]any{
+		"makerFill":          makerFill,
+		"residualFill":       residualFill,
+		"effectiveHedgeFill": effectiveHedgeFill,
+	}))
+	if err != nil {
+		return err
+	}
+	_, err = r.pool.Exec(ctx, `
+		INSERT INTO trader_arbitrage_events(combination_id,execution_id,event_type,payload)
+		SELECT $1::uuid,$2::uuid,$3,$4::jsonb
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM trader_arbitrage_events
+			WHERE execution_id=$2::uuid
+			  AND event_type=$3
+		)`,
+		combinationID, executionID, lastCloseResidualRecoveredEvent, payload)
+	return err
+}
+
+func (r *Repository) LastCloseResidualRecovered(
+	ctx context.Context,
+	combinationID string,
+) (bool, error) {
+	if strings.TrimSpace(combinationID) == "" {
+		return false, ErrInvalidArgument
+	}
+	var recovered bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM trader_arbitrage_events
+			WHERE combination_id=$1::uuid
+			  AND event_type=$2
+		)`,
+		combinationID, lastCloseResidualRecoveredEvent,
+	).Scan(&recovered)
+	return recovered, err
+}
+
+func (r *Repository) GetLastCloseResidualFlattenExecution(
+	ctx context.Context,
+	combinationID string,
+) (ArbitrageExecution, bool, error) {
+	if strings.TrimSpace(combinationID) == "" {
+		return ArbitrageExecution{}, false, ErrInvalidArgument
+	}
+	var item ArbitrageExecution
+	err := r.pool.QueryRow(ctx, `
+		SELECT `+arbitrageExecutionColumns+`
+		FROM trader_arbitrage_executions
+		WHERE id=$1::uuid AND combination_id=$2::uuid`,
+		lastCloseResidualFlattenExecutionID(combinationID), combinationID,
+	).Scan(arbitrageExecutionScanTargets(&item)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ArbitrageExecution{}, false, nil
+	}
+	if err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	return item, true, nil
+}
+
+func (r *Repository) ClaimLastCloseResidualFlattenExecution(
+	ctx context.Context,
+	claim LastCloseResidualFlattenClaim,
+) (ArbitrageExecution, bool, error) {
+	combinationID := strings.TrimSpace(claim.Combination.ID)
+	if combinationID == "" || claim.ExpectedVersion <= 0 || len(claim.Orders) == 0 {
+		return ArbitrageExecution{}, false, ErrInvalidArgument
+	}
+	executionID := lastCloseResidualFlattenExecutionID(combinationID)
+	if err := validateLastCloseResidualFlattenOrders(executionID, claim.Orders); err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockArbitrageCombination(ctx, tx, combinationID); err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	var existing ArbitrageExecution
+	err = tx.QueryRow(ctx, `
+		SELECT `+arbitrageExecutionColumns+`
+		FROM trader_arbitrage_executions
+		WHERE id=$1::uuid`,
+		executionID,
+	).Scan(arbitrageExecutionScanTargets(&existing)...)
+	if err == nil {
+		if err := tx.Commit(ctx); err != nil {
+			return ArbitrageExecution{}, false, err
+		}
+		return existing, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return ArbitrageExecution{}, false, err
+	}
+	var version int64
+	var status, runtimeState string
+	var uncertain, circuitOpen bool
+	err = tx.QueryRow(ctx, `
+		SELECT version, status, position_uncertain, circuit_open, runtime_state
+		FROM trader_arbitrage_combinations
+		WHERE id=$1::uuid`,
+		combinationID,
+	).Scan(&version, &status, &uncertain, &circuitOpen, &runtimeState)
+	if err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	if version != claim.ExpectedVersion ||
+		!strings.EqualFold(status, "closing") ||
+		uncertain || circuitOpen ||
+		runtimeState == "manual_intervention" {
+		return ArbitrageExecution{}, false, nil
+	}
+	var otherActive bool
+	err = tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM trader_arbitrage_executions
+			WHERE combination_id=$1::uuid
+			  AND id<>$2::uuid
+			  AND status NOT IN ('completed','failed','canceled','dry_run')
+		) OR EXISTS (
+			SELECT 1 FROM trader_orders o
+			JOIN trader_arbitrage_executions e ON e.id=o.arbitrage_execution_id
+			WHERE e.combination_id=$1::uuid
+			  AND o.arbitrage_execution_id<>$2::uuid
+			  AND o.status NOT IN ('filled','canceled','rejected','expired')
+		)`,
+		combinationID, executionID,
+	).Scan(&otherActive)
+	if err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	if otherActive {
+		return ArbitrageExecution{}, false, nil
+	}
+	direction := "bid"
+	target := decimal.Zero
+	for _, order := range claim.Orders {
+		target = target.Add(parseDecimal(order.Quantity))
+		if strings.EqualFold(order.ArbitrageLeg, "a") && strings.EqualFold(order.Side, "buy") {
+			direction = "ask"
+		}
+	}
+	var created ArbitrageExecution
+	err = tx.QueryRow(ctx, `
+		INSERT INTO trader_arbitrage_executions (
+			id,combination_id,direction,sequence,status,
+			trigger_ask_spread_bps,trigger_bid_spread_bps,
+			trigger_leg_a_bid,trigger_leg_a_ask,trigger_leg_b_bid,trigger_leg_b_ask,
+			target_base_quantity,requested_notional,position_effect,reduce_only,last_close_clip,
+			leg_a_filled_quantity,leg_b_filled_quantity,delta_notional,
+			hedge_sequence,attempt,error_message
+		)
+		VALUES ($1::uuid,$2::uuid,$3,
+			COALESCE((SELECT max(sequence)+1 FROM trader_arbitrage_executions WHERE combination_id=$2::uuid),1),
+			'hedging',0,0,0,0,0,0,
+			$4::numeric,0,'close',TRUE,FALSE,0,0,0,0,0,'')
+		RETURNING `+arbitrageExecutionColumns,
+		executionID, combinationID, direction, target.String(),
+	).Scan(arbitrageExecutionScanTargets(&created)...)
+	if err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	for _, order := range claim.Orders {
+		if order.ID == "" {
+			order.ID = uuid.NewString()
+		}
+		if order.ClientOrderID == "" {
+			order.ClientOrderID = clientOrderID()
+		}
+		order.ArbitrageExecutionID = executionID
+		order.Status = "pending"
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO trader_orders (
+				id,idempotency_key,owner_username,trading_account_id,product_name,
+				exchange,instrument_id,contract_type,exchange_symbol,client_order_id,
+				side,order_type,quantity,price,status,request_fingerprint,base_asset,quote_asset,
+				twap_job_id,twap_slice_index,twap_attempt_index,
+				arbitrage_execution_id,arbitrage_leg,arbitrage_role,reduce_only
+			) VALUES (
+				$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NULLIF($14,'')::numeric,
+				'pending',$15,$16,$17,NULL,NULL,0,NULLIF($18,'')::uuid,NULLIF($19,''),NULLIF($20,''),$21
+			)`, orderWriteArgs(order)...); err != nil {
+			return ArbitrageExecution{}, false, err
+		}
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE trader_arbitrage_combinations
+		SET version=version+1, updated_at=now()
+		WHERE id=$1::uuid AND version=$2 AND status='closing'`,
+		combinationID, claim.ExpectedVersion,
+	)
+	if err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	if tag.RowsAffected() != 1 {
+		return ArbitrageExecution{}, false, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ArbitrageExecution{}, false, err
+	}
+	return created, true, nil
+}
+
+func validateLastCloseResidualFlattenOrders(executionID string, orders []Order) error {
+	if len(orders) == 0 || len(orders) > 2 {
+		return ErrInvalidArgument
+	}
+	seen := map[string]bool{}
+	for _, order := range orders {
+		leg := strings.ToLower(strings.TrimSpace(order.ArbitrageLeg))
+		if leg != "a" && leg != "b" {
+			return ErrInvalidArgument
+		}
+		if seen[leg] || !order.ReduceOnly || order.OrderType != "market" {
+			return ErrInvalidArgument
+		}
+		if order.ArbitrageExecutionID != executionID ||
+			order.IdempotencyKey != lastCloseResidualFlattenIdempotencyKey(executionID, leg) {
+			return ErrInvalidArgument
+		}
+		if !parseDecimal(order.Quantity).IsPositive() {
+			return ErrInvalidArgument
+		}
+		seen[leg] = true
+	}
+	return nil
+}
+
+func (r *Repository) CloseLastCloseResidualWithDust(
+	ctx context.Context,
+	close LastCloseResidualDustClose,
+) (ArbitrageCombination, bool, error) {
+	if strings.TrimSpace(close.CombinationID) == "" || close.ExpectedVersion <= 0 {
+		return ArbitrageCombination{}, false, ErrInvalidArgument
+	}
+	if !close.LegANotional.LessThan(decimal.NewFromInt(arbitrageMinOpenNotional)) ||
+		!close.LegBNotional.LessThan(decimal.NewFromInt(arbitrageMinOpenNotional)) ||
+		close.LegAReducible || close.LegBReducible ||
+		close.LegANotional.IsNegative() || close.LegBNotional.IsNegative() {
+		return ArbitrageCombination{}, false, nil
+	}
+	payload, err := json.Marshal(redactPayload(close.Payload))
+	if err != nil {
+		return ArbitrageCombination{}, false, err
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return ArbitrageCombination{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockArbitrageCombination(ctx, tx, close.CombinationID); err != nil {
+		return ArbitrageCombination{}, false, err
+	}
+	lastOrder := close.LastOrderUpdatedAt.UTC()
+	if lastOrder.IsZero() {
+		lastOrder = time.Unix(0, 0).UTC()
+	}
+	var updated ArbitrageCombination
+	err = tx.QueryRow(ctx, `
+		UPDATE trader_arbitrage_combinations SET
+			status='closed',
+			closed_at=now(),
+			market_data_stale=TRUE,
+			runtime_state='monitoring',
+			error_message='',
+			consecutive_failures=0,
+			last_failure_key='',
+			repeated_failure_count=0,
+			next_retry_at='-infinity'::timestamptz,
+			final_metrics_status=CASE
+				WHEN final_metrics_status='completed' THEN 'completed'
+				ELSE 'partial'
+			END,
+			final_metrics_next_retry_at=CASE
+				WHEN final_metrics_status='completed' THEN final_metrics_next_retry_at
+				ELSE 'infinity'::timestamptz
+			END,
+			final_metrics_completed_at=CASE
+				WHEN final_metrics_status='completed' THEN final_metrics_completed_at
+				ELSE NULL
+			END,
+			final_metrics_last_error=CASE
+				WHEN final_metrics_status='completed' THEN final_metrics_last_error
+				ELSE 'residual_dust_metrics_skipped'
+			END,
+			version=version+1,
+			updated_at=now()
+		WHERE id=$1::uuid
+		  AND version=$2
+		  AND status='closing'
+		  AND NOT position_uncertain
+		  AND NOT circuit_open
+		  AND runtime_state<>'manual_intervention'
+		  AND last_position_reconciled_at > '1970-01-02'::timestamptz
+		  AND (
+			$3::timestamptz <= '1970-01-02'::timestamptz
+			OR last_position_reconciled_at >= $3
+		  )
+		  AND $4::numeric < 20
+		  AND $5::numeric < 20
+		  AND NOT $6
+		  AND NOT $7
+		  AND NOT EXISTS (
+			SELECT 1 FROM trader_arbitrage_executions e
+			WHERE e.combination_id=trader_arbitrage_combinations.id
+			  AND e.status NOT IN ('completed','failed','canceled','dry_run')
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM trader_orders o
+			JOIN trader_arbitrage_executions e ON e.id=o.arbitrage_execution_id
+			WHERE e.combination_id=trader_arbitrage_combinations.id
+			  AND o.status NOT IN ('filled','canceled','rejected','expired')
+		  )
+		RETURNING `+arbitrageCombinationColumns,
+		close.CombinationID, close.ExpectedVersion, lastOrder,
+		close.LegANotional.String(), close.LegBNotional.String(),
+		close.LegAReducible, close.LegBReducible,
+	).Scan(arbitrageCombinationScanTargets(&updated)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ArbitrageCombination{}, false, nil
+	}
+	if err != nil {
+		return ArbitrageCombination{}, false, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO trader_arbitrage_events(combination_id,execution_id,event_type,payload)
+		SELECT $1::uuid, NULLIF($2,'')::uuid, $3, $4::jsonb
+		WHERE NOT EXISTS (
+			SELECT 1 FROM trader_arbitrage_events
+			WHERE combination_id=$1::uuid AND event_type=$3
+		)`,
+		close.CombinationID, close.ExecutionID, lastCloseResidualDustEvent, payload,
+	); err != nil {
+		return ArbitrageCombination{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ArbitrageCombination{}, false, err
+	}
+	return updated, true, nil
+}
+
 func (r *Repository) DeleteExpiredArbitrageCombinations(
 	ctx context.Context,
 	before time.Time,
@@ -3027,6 +4102,8 @@ const arbitrageCombinationColumns = `
 	COALESCE(trim_scale(leg_b_unrealized_pnl)::text,''),
 	trim_scale(realized_spread_pnl)::text,
 	trim_scale(estimated_funding_pnl)::text,
+	COALESCE(trim_scale(estimated_trading_fee)::text,''),
+	COALESCE(metrics_quality,''),
 	trim_scale(notional_exposure_seconds)::text,
 	trim_scale(holding_seconds)::text,
 	COALESCE(exposure_updated_at,'epoch'::timestamptz),
@@ -3061,7 +4138,17 @@ const arbitrageCombinationColumns = `
 	COALESCE(scheduled_exit_at,'epoch'::timestamptz),
 	COALESCE(one_shot_phase,''),
 	COALESCE(trim_scale(early_exit_funding_8h_annualized_floor)::text,''),
-	COALESCE(metrics_calculated_at,'epoch'::timestamptz)`
+	COALESCE(trim_scale(early_exit_liquidation_distance_pct)::text,''),
+	COALESCE(metrics_calculated_at,'epoch'::timestamptz),
+	final_metrics_status,
+	final_metrics_retry_count,
+	final_metrics_last_error,
+	CASE WHEN final_metrics_next_retry_at IN ('-infinity'::timestamptz, 'infinity'::timestamptz)
+		THEN 'epoch'::timestamptz ELSE final_metrics_next_retry_at END,
+	final_metrics_next_retry_at < 'infinity'::timestamptz,
+	COALESCE(final_metrics_completed_at,'epoch'::timestamptz),
+	COALESCE(trim_scale(leg_a_liquidation_distance_pct)::text,''),
+	COALESCE(trim_scale(leg_b_liquidation_distance_pct)::text,'')`
 
 func arbitrageCombinationScanTargets(item *ArbitrageCombination) []any {
 	return []any{
@@ -3082,6 +4169,7 @@ func arbitrageCombinationScanTargets(item *ArbitrageCombination) []any {
 		&item.AverageEntrySpreadBps,
 		&item.LegAUnrealizedPnl, &item.LegBUnrealizedPnl,
 		&item.RealizedSpreadPnl, &item.EstimatedFundingPnl,
+		&item.EstimatedTradingFee, &item.MetricsQuality,
 		&item.NotionalExposureSeconds, &item.HoldingSeconds,
 		&item.ExposureUpdatedAt, &item.CombinedPositionAnnualized,
 		&item.FundingHistoryComplete,
@@ -3100,7 +4188,12 @@ func arbitrageCombinationScanTargets(item *ArbitrageCombination) []any {
 		&item.ExitPolicy, &item.ExitAnnualizedRate, &item.ExitAfterSeconds,
 		&item.TargetReachedAt, &item.ScheduledExitAt, &item.OneShotPhase,
 		&item.EarlyExitFunding8hAnnualizedFloor,
+		&item.EarlyExitLiquidationDistancePct,
 		&item.MetricsCalculatedAt,
+		&item.FinalMetricsStatus, &item.FinalMetricsRetryCount, &item.FinalMetricsLastError,
+		&item.FinalMetricsNextRetryAt, &item.FinalMetricsRetryFinite,
+		&item.FinalMetricsCompletedAt,
+		&item.LegALiquidationDistancePct, &item.LegBLiquidationDistancePct,
 	}
 }
 
@@ -3124,7 +4217,15 @@ func arbitrageCombinationWriteArgs(item ArbitrageCombination) []any {
 		item.ExitPolicy, nullableNumeric(item.ExitAnnualizedRate),
 		nullableInt(item.ExitAfterSeconds), nullableOneShotPhase(item),
 		nullableNumeric(item.EarlyExitFunding8hAnnualizedFloor),
+		nullableNumeric(item.EarlyExitLiquidationDistancePct),
 	}
+}
+
+func scheduledExitFromCreated(created time.Time, seconds int) time.Time {
+	if created.IsZero() || seconds <= 0 {
+		return time.Time{}
+	}
+	return created.Add(time.Duration(seconds) * time.Second)
 }
 
 func nullableArbitrageTimestamp(value time.Time) any {

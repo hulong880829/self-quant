@@ -92,6 +92,17 @@ func lastCloseClipMustMatchFills(
 	combination ArbitrageCombination,
 	execution ArbitrageExecution,
 ) bool {
+	return lastCloseClipMustMatchFillsOrders(combination, execution, nil)
+}
+
+func lastCloseClipMustMatchFillsOrders(
+	combination ArbitrageCombination,
+	execution ArbitrageExecution,
+	orders []Order,
+) bool {
+	if hasOneShotFinalFlattenIdempotency(orders, execution.ID) {
+		return false
+	}
 	return arbitrageFlattening(combination) &&
 		execution.LastCloseClip &&
 		strings.EqualFold(strings.TrimSpace(execution.PositionEffect), "close") &&

@@ -2,6 +2,7 @@ package trader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -224,7 +225,7 @@ func TestArbitragePositionMetricsIncompleteKeepsAnnualizedGroup(t *testing.T) {
 	}
 }
 
-func TestArbitragePositionMetricsWritesAnnualizedWithoutBBO(t *testing.T) {
+func TestArbitragePositionMetricsStaleBBOKeepsAnnualized(t *testing.T) {
 	ctx, env := newMetricsTestEnv(t, "annualized-without-bbo", true)
 	setAccountContractFees(t, ctx, env.pool, env.accountA, "0.0002", "0.0004")
 	setAccountContractFees(t, ctx, env.pool, env.accountB, "-0.0002", "-0.0005")
@@ -235,12 +236,12 @@ func TestArbitragePositionMetricsWritesAnnualizedWithoutBBO(t *testing.T) {
 		t, ctx, env.repo, env.combo.ID, "", "", now.Add(time.Minute),
 	).Combination
 	quality, _, calculatedAt := loadStoredNetMetrics(t, ctx, env.pool, env.combo.ID)
-	if quality != metricsQualityComplete || calculatedAt.Equal(seededAt) {
-		t.Fatalf("missing BBO froze annualized group: quality=%s at=%s seeded=%s",
+	if quality != metricsQualityComplete || !calculatedAt.Equal(seededAt) {
+		t.Fatalf("stale BBO overwrote annualized group: quality=%s at=%s seeded=%s",
 			quality, calculatedAt, seededAt)
 	}
-	if withoutBBO.GrossTurnoverNotional != seeded.GrossTurnoverNotional {
-		t.Fatalf("turnover changed without new fills: %+v", withoutBBO)
+	if withoutBBO.CombinedPositionAnnualized != seeded.CombinedPositionAnnualized {
+		t.Fatalf("stale BBO changed annualized: %+v", withoutBBO)
 	}
 }
 
@@ -568,6 +569,194 @@ func loadStoredNetMetrics(
 		calculatedAt = at.UTC()
 	}
 	return quality, fee, calculatedAt
+}
+
+func TestPersistFinalRejectsZeroAverageThenFailureClearsAnnualized(t *testing.T) {
+	ctx, env := newMetricsTestEnv(t, "final-zero-avg", true)
+	setAccountContractFees(t, ctx, env.pool, env.accountA, "0.0002", "0.0004")
+	setAccountContractFees(t, ctx, env.pool, env.accountB, "0.0002", "0.0004")
+	insertSettledFunding(t, ctx, env.pool, env.instrumentA, env.combo.CreatedAt.Add(2*time.Minute), "0.001")
+	insertSettledFunding(t, ctx, env.pool, env.instrumentB, env.combo.CreatedAt.Add(2*time.Minute), "-0.002")
+	if _, err := env.pool.Exec(ctx, `
+		UPDATE trader_orders SET average_price=0 WHERE id=$1::uuid`, env.orderA.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.pool.Exec(ctx, `
+		UPDATE trader_arbitrage_combinations SET
+			status='closing',
+			one_shot_phase=NULL,
+			leg_a_base_position=0,
+			leg_b_base_position=0,
+			position_notional=9.93,
+			combined_position_annualized=-170.6184,
+			metrics_quality='complete',
+			final_metrics_status='pending'
+		WHERE id=$1::uuid`, env.combo.ID); err != nil {
+		t.Fatal(err)
+	}
+	closing, err := env.repo.GetArbitrageCombinationByOwner(ctx, "admin", env.combo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, err := env.repo.RecordArbitrageCloseFailure(
+		ctx, closing.ID, finalMetricsNotReadyKey, ErrFinalMetricsNotReady.Error(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.CombinedPositionAnnualized != "" || failed.LastFailureKey != finalMetricsNotReadyKey {
+		t.Fatalf("failure clear=%+v", failed)
+	}
+	quality, _, _ := loadStoredNetMetrics(t, ctx, env.pool, closing.ID)
+	if quality != metricsQualityPartial {
+		t.Fatalf("quality=%s", quality)
+	}
+	if _, err := env.pool.Exec(ctx, `
+		UPDATE trader_arbitrage_combinations SET
+			status='closed',
+			final_metrics_status='pending',
+			final_metrics_next_retry_at=now()
+		WHERE id=$1::uuid`, env.combo.ID); err != nil {
+		t.Fatal(err)
+	}
+	combo, err := env.repo.GetArbitrageCombinationByOwner(ctx, "admin", env.combo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.repo.PersistFinalArbitragePositionMetrics(
+		ctx, combo.ID, combo.Version, false, time.Time{},
+	); !errors.Is(err, ErrFinalMetricsNotReady) {
+		t.Fatalf("persist err=%v", err)
+	}
+	kept, err := env.repo.GetArbitrageCombinationByOwner(ctx, "admin", env.combo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.CombinedPositionAnnualized != combo.CombinedPositionAnnualized ||
+		kept.Version != combo.Version || kept.Status != "closed" {
+		t.Fatalf("not-ready persist mutated combo=%+v kept=%+v", combo, kept)
+	}
+	openedAt := env.combo.CreatedAt.Add(time.Minute)
+	if _, err := env.pool.Exec(ctx, `
+		UPDATE trader_orders SET average_price=100, last_venue_event_at=$2
+		WHERE id=$1::uuid`, env.orderA.ID, openedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.pool.Exec(ctx, `
+		UPDATE trader_orders SET last_venue_event_at=$2 WHERE id=$1::uuid`,
+		env.orderB.ID, openedAt); err != nil {
+		t.Fatal(err)
+	}
+	insertLaterMetricFill(t, ctx, env, env.combo.CreatedAt.Add(2*time.Hour))
+	ready, err := env.repo.GetArbitrageCombinationByOwner(ctx, "admin", env.combo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := env.repo.PersistFinalArbitragePositionMetrics(
+		ctx, ready.ID, ready.Version, false, time.Time{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.CombinedPositionAnnualized == "" || persisted.PositionNotional != "0" ||
+		persisted.FinalMetricsStatus != finalMetricsCompleted || persisted.Status != "closed" {
+		t.Fatalf("persisted=%+v", persisted)
+	}
+	replay, err := loadArbitrageReplay(ctx, env.pool, env.combo.ID, true)
+	if err != nil || !replay.coverageComplete || len(replay.fills) != 3 {
+		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+}
+
+func TestRepairFinalArbitragePositionMetricsRecomputesExited(t *testing.T) {
+	ctx, env := newMetricsTestEnv(t, "final-repair", true)
+	setAccountContractFees(t, ctx, env.pool, env.accountA, "0.0002", "0.0004")
+	setAccountContractFees(t, ctx, env.pool, env.accountB, "0.0002", "0.0004")
+	insertSettledFunding(t, ctx, env.pool, env.instrumentA, env.combo.CreatedAt.Add(2*time.Minute), "0.001")
+	insertSettledFunding(t, ctx, env.pool, env.instrumentB, env.combo.CreatedAt.Add(2*time.Minute), "-0.002")
+	openedAt := env.combo.CreatedAt.Add(time.Minute)
+	if _, err := env.pool.Exec(ctx, `
+		UPDATE trader_orders SET last_venue_event_at=$2 WHERE id=$1::uuid`,
+		env.orderA.ID, openedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.pool.Exec(ctx, `
+		UPDATE trader_orders SET last_venue_event_at=$2 WHERE id=$1::uuid`,
+		env.orderB.ID, openedAt); err != nil {
+		t.Fatal(err)
+	}
+	insertLaterMetricFill(t, ctx, env, env.combo.CreatedAt.Add(2*time.Hour))
+	if _, err := env.pool.Exec(ctx, `
+		UPDATE trader_arbitrage_combinations SET
+			run_mode='one_shot',
+			entry_direction='ask',
+			exit_policy='time',
+			exit_after_seconds=3600,
+			one_shot_phase='exited',
+			status='running',
+			leg_a_base_position=0,
+			leg_b_base_position=0,
+			leg_a_venue_base_position=0,
+			leg_b_venue_base_position=0,
+			leg_a_position_difference=0,
+			leg_b_position_difference=0,
+			position_notional=9.93,
+			combined_position_annualized=-170.6184,
+			metrics_quality='complete'
+		WHERE id=$1::uuid`, env.combo.ID); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := env.repo.RepairFinalArbitragePositionMetrics(ctx, env.combo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.CombinedPositionAnnualized == "-170.6184" ||
+		repaired.CombinedPositionAnnualized == "" ||
+		repaired.PositionNotional != "0" {
+		t.Fatalf("repaired=%+v", repaired)
+	}
+	if _, err := env.pool.Exec(ctx, `
+		UPDATE trader_orders SET average_price=0 WHERE id=$1::uuid`, env.orderA.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.repo.RepairFinalArbitragePositionMetrics(ctx, env.combo.ID); !errors.Is(err, ErrFinalMetricsNotReady) {
+		t.Fatalf("missing average repair err=%v", err)
+	}
+	kept, err := env.repo.GetArbitrageCombinationByOwner(ctx, "admin", env.combo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.FinalMetricsStatus != finalMetricsCompleted {
+		t.Fatalf("completed downgraded=%+v", kept)
+	}
+}
+
+func insertLaterMetricFill(
+	t *testing.T, ctx context.Context, env metricsTestEnv, at time.Time,
+) {
+	t.Helper()
+	order, created, err := env.repo.CreateIntent(ctx, Order{
+		IdempotencyKey: env.combo.IdempotencyKey + "-later", OwnerUsername: "admin",
+		TradingAccountID: env.accountA, ProductName: "ARBITRAGE", Exchange: "binance",
+		InstrumentID: env.instrumentA, ContractType: "perpetual",
+		ExchangeSymbol: env.combo.LegA.ExchangeSymbol,
+		BaseAsset:      "BTC", QuoteAsset: "USDT", Side: "buy", OrderType: "market",
+		Quantity: "0.001", RequestFingerprint: env.combo.IdempotencyKey + "-later-fp",
+		ArbitrageExecutionID: env.execution.ID, ArbitrageLeg: "a", ArbitrageRole: "market",
+	})
+	if err != nil || !created {
+		t.Fatalf("later fill created=%v err=%v", created, err)
+	}
+	if _, err := env.repo.UpdateResult(ctx, order.ID, VenueResult{
+		Status: "filled", FilledQuantity: "0.001", AveragePrice: "100",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.pool.Exec(ctx, `
+		UPDATE trader_orders SET last_venue_event_at=$2 WHERE id=$1::uuid`,
+		order.ID, at); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func assertDecimal(t *testing.T, name, got, want string) {

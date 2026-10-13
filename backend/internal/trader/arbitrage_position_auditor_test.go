@@ -15,20 +15,33 @@ import (
 )
 
 type positionAuditStore struct {
-	item          ArbitrageCombination
-	items         []ArbitrageCombination
-	orders        []Order
-	uncertain     bool
-	events        int
-	eventTypes    []string
-	eventPayloads []map[string]any
-	message       string
-	updateErr     error
-	recomputeIDs  []string
-	auditUpdates  int
-	applyCalls    int
-	applyRejected bool
-	applyErr      error
+	item                             ArbitrageCombination
+	items                            []ArbitrageCombination
+	orders                           []Order
+	uncertain                        bool
+	events                           int
+	eventTypes                       []string
+	eventPayloads                    []map[string]any
+	message                          string
+	updateErr                        error
+	recomputeIDs                     []string
+	auditUpdates                     int
+	applyCalls                       int
+	applyRejected                    bool
+	applyStale                       bool
+	applyErr                         error
+	lastApplyReason                  string
+	lastCloseResidualRecoveredLatest bool
+	exitMarks                        []exitMarkCall
+	exitApplied                      bool
+	exitErr                          error
+}
+
+type exitMarkCall struct {
+	id      string
+	version int64
+	reason  string
+	details map[string]any
 }
 
 type auditValuations map[string]ArbitrageValuation
@@ -56,6 +69,7 @@ func (s *positionAuditStore) UpdateArbitragePositionAudit(
 	venueA, venueB, differenceA, differenceB string,
 	uncertain bool,
 	message string,
+	legADistance, legBDistance string,
 ) (ArbitrageCombination, error) {
 	if s.updateErr != nil {
 		return ArbitrageCombination{}, s.updateErr
@@ -65,6 +79,8 @@ func (s *positionAuditStore) UpdateArbitragePositionAudit(
 	s.item.LegBVenueBasePosition = venueB
 	s.item.LegAPositionDifference = differenceA
 	s.item.LegBPositionDifference = differenceB
+	s.item.LegALiquidationDistancePct = legADistance
+	s.item.LegBLiquidationDistancePct = legBDistance
 	previousRuntime := s.item.RuntimeState
 	previousUncertain := s.item.PositionUncertain
 	isAuditSource := strings.HasPrefix(
@@ -77,7 +93,20 @@ func (s *positionAuditStore) UpdateArbitragePositionAudit(
 		s.item.ErrorMessage = message
 	} else if !uncertain && s.item.PositionUncertain && isAuditSource {
 		s.item.PositionUncertain = false
-		s.item.RuntimeState = "monitoring"
+		s.item.ErrorMessage = ""
+		if strings.EqualFold(s.item.Status, "closing") {
+			s.item.RuntimeState = "closing"
+		} else {
+			s.item.RuntimeState = "monitoring"
+		}
+	} else if !uncertain && lastCloseResidualAuditUnlockEligible(
+		s.item.Status, s.item.RuntimeState, s.item.ErrorMessage,
+		s.item.PositionUncertain, s.item.CircuitOpen,
+		s.lastCloseResidualRecoveredLatest,
+		exactZeroDecimal(differenceA) && exactZeroDecimal(differenceB),
+	) {
+		s.item.PositionUncertain = false
+		s.item.RuntimeState = "closing"
 		s.item.ErrorMessage = ""
 	} else if !uncertain && s.item.PositionUncertain &&
 		s.item.ErrorMessage == "" && s.item.RuntimeState == "monitoring" &&
@@ -96,7 +125,30 @@ func (s *positionAuditStore) UpdateArbitragePositionAudit(
 	}
 	s.uncertain = s.item.PositionUncertain
 	s.message = s.item.ErrorMessage
+	s.item.Version++
 	return s.item, nil
+}
+
+func (s *positionAuditStore) MarkOneShotExiting(
+	_ context.Context,
+	id string,
+	version int64,
+	reason string,
+	details map[string]any,
+) (ArbitrageCombination, bool, error) {
+	s.exitMarks = append(s.exitMarks, exitMarkCall{
+		id: id, version: version, reason: reason, details: details,
+	})
+	if s.exitErr != nil {
+		return ArbitrageCombination{}, false, s.exitErr
+	}
+	if !s.exitApplied {
+		return ArbitrageCombination{}, false, nil
+	}
+	marked := s.item
+	marked.OneShotPhase = "exiting"
+	marked.Version++
+	return marked, true, nil
 }
 
 func (s *positionAuditStore) AppendArbitrageEvent(
@@ -159,9 +211,13 @@ func (s *positionAuditStore) ApplyClosingExternalFlatReconcile(
 	if s.applyErr != nil {
 		return ArbitrageCombination{}, false, s.applyErr
 	}
+	if s.applyStale {
+		return s.item, false, errLastCloseExternalFlatSnapshotStale
+	}
 	if s.applyRejected {
 		return s.item, false, nil
 	}
+	s.lastApplyReason = closingExternalFlatReason(s.item.ErrorMessage)
 	baselineA := parseDecimal(s.item.LegAVenueBaselineBasePosition)
 	baselineB := parseDecimal(s.item.LegBVenueBaselineBasePosition)
 	diffA := request.VenueA.Sub(baselineA.Add(parseDecimal(s.item.LegABasePosition)))
@@ -943,6 +999,136 @@ func TestClosingExternalFlatReadyRequiresClosingUncertainAndTwoTicks(t *testing.
 	if closingExternalFlatReady(oneLeg, decimal.Zero, decimal.RequireFromString("0.1")) {
 		t.Fatal("one-leg return to baseline must not trigger")
 	}
+	auditCircuit := item
+	auditCircuit.CircuitOpen = true
+	auditCircuit.RuntimeState = "closing"
+	if !closingExternalFlatReady(auditCircuit, decimal.Zero, decimal.Zero) {
+		t.Fatal("audit-prefix external flat keeps its existing gate")
+	}
+}
+
+func TestClosingExternalFlatReadyAcceptsUnsafeHedgeAfterRecoveryGates(t *testing.T) {
+	item := recoveredExternalFlatCombo(time.Now().UTC().Add(-time.Hour))
+	if !closingExternalFlatReady(item, decimal.Zero, decimal.Zero) {
+		t.Fatal("post-recovery baseline snapshots should be ready")
+	}
+	if closingExternalFlatReason(item.ErrorMessage) !=
+		"external_or_manual_flatten_after_last_close_recovery" {
+		t.Fatal("unsafe hedge reason")
+	}
+	if closingExternalFlatReason(arbitragePositionAuditErrorPrefix+" residual") !=
+		"external_or_manual_flatten" {
+		t.Fatal("audit-prefix reason")
+	}
+	circuit := item
+	circuit.CircuitOpen = true
+	if closingExternalFlatReady(circuit, decimal.Zero, decimal.Zero) {
+		t.Fatal("circuit open must stay locked")
+	}
+	runtime := item
+	runtime.RuntimeState = "closing"
+	if closingExternalFlatReady(runtime, decimal.Zero, decimal.Zero) {
+		t.Fatal("runtime must stay position_uncertain")
+	}
+	live := item
+	if closingExternalFlatReady(
+		live, decimal.RequireFromString("170"), decimal.RequireFromString("-200"),
+	) {
+		t.Fatal("live venue still open must not reconcile")
+	}
+	saved := item
+	saved.LegAVenueBasePosition = "170"
+	saved.LegBVenueBasePosition = "-200"
+	if closingExternalFlatReady(saved, decimal.Zero, decimal.Zero) {
+		t.Fatal("saved venue must already be the baseline")
+	}
+}
+
+func TestPositionAuditorReconcilesRecoveredExternalFlatWithoutOrders(t *testing.T) {
+	store := &positionAuditStore{
+		item: recoveredExternalFlatCombo(time.Now().UTC().Add(-time.Hour)),
+	}
+	auditor := newClosingExternalFlatAuditor(t, store, map[string]portfolio.Snapshot{
+		"gate": {},
+		"okx":  {},
+	})
+	if err := auditor.audit(context.Background(), store.item, nil); err != nil {
+		t.Fatal(err)
+	}
+	if store.applyCalls != 1 || store.auditUpdates != 0 || len(store.orders) != 0 {
+		t.Fatalf("applyCalls=%d auditUpdates=%d orders=%d",
+			store.applyCalls, store.auditUpdates, len(store.orders))
+	}
+	if store.lastApplyReason != "external_or_manual_flatten_after_last_close_recovery" ||
+		store.item.Status != "closing" || store.item.PositionUncertain ||
+		store.item.LegABasePosition != "0" || store.item.LegBBasePosition != "0" ||
+		store.item.CarryBaseQuantity != "0" {
+		t.Fatalf("applied=%+v reason=%s", store.item, store.lastApplyReason)
+	}
+	if parseDecimal(store.item.LegAReconciliationAdjustment).Cmp(decimal.RequireFromString("-170")) != 0 ||
+		parseDecimal(store.item.LegBReconciliationAdjustment).Cmp(decimal.RequireFromString("200")) != 0 {
+		t.Fatalf("adjustments a=%s b=%s",
+			store.item.LegAReconciliationAdjustment, store.item.LegBReconciliationAdjustment)
+	}
+}
+
+func TestPositionAuditorStaleRecoverySnapshotUsesNormalAudit(t *testing.T) {
+	item := recoveredExternalFlatCombo(time.Now().UTC().Add(-time.Hour))
+	store := &positionAuditStore{item: item, applyStale: true}
+	auditor := newClosingExternalFlatAuditor(t, store, map[string]portfolio.Snapshot{
+		"gate": {},
+		"okx":  {},
+	})
+	if err := auditor.audit(context.Background(), store.item, nil); err != nil {
+		t.Fatal(err)
+	}
+	if store.applyCalls != 1 || store.auditUpdates != 1 {
+		t.Fatalf("applyCalls=%d auditUpdates=%d", store.applyCalls, store.auditUpdates)
+	}
+	if !store.item.PositionUncertain ||
+		store.item.ErrorMessage != ErrArbitrageUnsafeHedge.Error() ||
+		store.item.LegABasePosition != "170" || store.item.LegBBasePosition != "-200" ||
+		store.item.CarryBaseQuantity != "-30" {
+		t.Fatalf("stale snapshot mutated item=%+v", store.item)
+	}
+}
+
+func TestPositionAuditorUnsafeHedgeStillOpenDoesNotReconcile(t *testing.T) {
+	item := recoveredExternalFlatCombo(time.Now().UTC().Add(-time.Hour))
+	item.CircuitOpen = true
+	store := &positionAuditStore{item: item}
+	auditor := newClosingExternalFlatAuditor(t, store, map[string]portfolio.Snapshot{
+		"gate": {},
+		"okx":  {},
+	})
+	if err := auditor.audit(context.Background(), store.item, nil); err != nil {
+		t.Fatal(err)
+	}
+	if store.applyCalls != 0 || store.auditUpdates != 1 || !store.item.PositionUncertain {
+		t.Fatalf("applyCalls=%d auditUpdates=%d item=%+v",
+			store.applyCalls, store.auditUpdates, store.item)
+	}
+
+	openVenue := recoveredExternalFlatCombo(time.Now().UTC().Add(-time.Hour))
+	openStore := &positionAuditStore{item: openVenue}
+	openAuditor := newClosingExternalFlatAuditor(t, openStore, map[string]portfolio.Snapshot{
+		"gate": {Positions: []portfolio.Position{{
+			Kind: "cex", Exchange: "Gate", WireSymbol: "BEAT_USDT",
+			SignedContractSize: "170",
+		}}},
+		"okx": {Positions: []portfolio.Position{{
+			Kind: "cex", Exchange: "OKX", WireSymbol: "BEAT-USDT-SWAP",
+			SignedContractSize: "-200",
+		}}},
+	})
+	if err := openAuditor.audit(context.Background(), openStore.item, nil); err != nil {
+		t.Fatal(err)
+	}
+	if openStore.applyCalls != 0 || openStore.auditUpdates != 1 ||
+		openStore.item.LegABasePosition != "170" {
+		t.Fatalf("applyCalls=%d auditUpdates=%d item=%+v",
+			openStore.applyCalls, openStore.auditUpdates, openStore.item)
+	}
 }
 
 func TestPositionAuditorAppliesClosingExternalFlatWithoutAuditUpdate(t *testing.T) {
@@ -960,8 +1146,9 @@ func TestPositionAuditorAppliesClosingExternalFlatWithoutAuditUpdate(t *testing.
 	}
 	if store.item.Status != "closing" || store.item.PositionUncertain ||
 		store.item.RuntimeState != "closing" ||
-		store.item.LegABasePosition != "0" || store.item.LegBBasePosition != "0" {
-		t.Fatalf("applied=%+v", store.item)
+		store.item.LegABasePosition != "0" || store.item.LegBBasePosition != "0" ||
+		store.lastApplyReason != "external_or_manual_flatten" {
+		t.Fatalf("applied=%+v reason=%s", store.item, store.lastApplyReason)
 	}
 	if parseDecimal(store.item.LegAReconciliationAdjustment).Cmp(decimal.RequireFromString("-0.5")) != 0 ||
 		parseDecimal(store.item.LegBReconciliationAdjustment).Cmp(decimal.RequireFromString("0.57")) != 0 {
@@ -1088,6 +1275,16 @@ func TestPositionAuditorRunningMonitoringSkipsClosingExternalFlat(t *testing.T) 
 	if store.applyCalls != 0 || store.auditUpdates != 1 {
 		t.Fatalf("applyCalls=%d auditUpdates=%d", store.applyCalls, store.auditUpdates)
 	}
+}
+
+func recoveredExternalFlatCombo(capturedAt time.Time) ArbitrageCombination {
+	item := closingExternalFlatCombo(capturedAt)
+	item.ErrorMessage = ErrArbitrageUnsafeHedge.Error()
+	item.RuntimeState = "position_uncertain"
+	item.LegABasePosition = "170"
+	item.LegBBasePosition = "-200"
+	item.CarryBaseQuantity = "-30"
+	return item
 }
 
 func closingExternalFlatCombo(capturedAt time.Time) ArbitrageCombination {

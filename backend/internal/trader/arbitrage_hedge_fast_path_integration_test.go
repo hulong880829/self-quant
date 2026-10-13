@@ -861,3 +861,52 @@ func TestAggregateCarryReplacePartialFillRemainingCarry(t *testing.T) {
 		t.Fatalf("old hedge mutated: %+v err=%v", kept, err)
 	}
 }
+
+func TestAggregateCarryOppositeSignExpectedQuantity(t *testing.T) {
+	env := openHedgeFastPathRepo(t)
+	execution, _ := env.claimMakerFilled(t, "opp", "17765")
+	if _, err := env.pool.Exec(env.ctx, `
+		UPDATE trader_arbitrage_combinations
+		SET leg_a_base_position=413853, leg_b_base_position=-427222
+		WHERE id=$1::uuid`, env.combo.ID); err != nil {
+		t.Fatal(err)
+	}
+	combo, err := env.repo.GetArbitrageCombinationByOwner(env.ctx, "admin", env.combo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !parseDecimal(combo.CarryBaseQuantity).Equal(parseDecimal("-13369")) {
+		t.Fatalf("carry=%s", combo.CarryBaseQuantity)
+	}
+	intent := env.hedgeIntent(execution, "opp", "13369")
+	intent.Side = "buy"
+	intent.IdempotencyKey = fmt.Sprintf("arb:%s:b:hedge:0", execution.ID)
+	got, err := env.repo.PrepareArbitrageHedgeIntent(env.ctx, PrepareArbitrageHedgeIntentInput{
+		Combination: combo, Execution: execution, Order: intent,
+		ExpectedSequence:      0,
+		HedgeLeg:              env.combo.LegB,
+		HedgeSide:             "buy",
+		TargetQuantity:        "13369",
+		AggregateCarry:        true,
+		ExpectedCarryQuantity: combo.CarryBaseQuantity,
+	})
+	if err != nil || !got.Created {
+		t.Fatalf("created=%v err=%v", got.Created, err)
+	}
+	replay, err := env.repo.PrepareArbitrageHedgeIntent(env.ctx, PrepareArbitrageHedgeIntentInput{
+		Combination: combo, Execution: execution, Order: intent,
+		ExpectedSequence:      0,
+		HedgeLeg:              env.combo.LegB,
+		HedgeSide:             "buy",
+		TargetQuantity:        "13369",
+		AggregateCarry:        true,
+		ExpectedCarryQuantity: combo.CarryBaseQuantity,
+	})
+	if err != nil || replay.Created || replay.Order.ID != got.Order.ID {
+		t.Fatalf("replay created=%v id=%s want=%s err=%v",
+			replay.Created, replay.Order.ID, got.Order.ID, err)
+	}
+	if env.countHedgeOrders(t) != 1 {
+		t.Fatalf("hedge orders=%d", env.countHedgeOrders(t))
+	}
+}

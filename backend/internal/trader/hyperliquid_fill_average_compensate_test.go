@@ -180,6 +180,7 @@ type compensateFillReader struct {
 	recorded    []compensateFillCall
 	fills       []exchange.Fill
 	errBySymbol map[string]error
+	getCalls    int
 }
 
 func (*compensateFillReader) GetBBO(context.Context, exchange.Instrument) (exchange.BBO, error) {
@@ -192,10 +193,19 @@ func (*compensateFillReader) PlaceOrder(
 	return exchange.Result{}, nil
 }
 
-func (*compensateFillReader) GetOrder(
+func (r *compensateFillReader) GetOrder(
 	context.Context, exchange.Credentials, exchange.QueryRequest,
 ) (exchange.Result, error) {
+	r.mu.Lock()
+	r.getCalls++
+	r.mu.Unlock()
 	return exchange.Result{}, nil
+}
+
+func (r *compensateFillReader) getOrderCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.getCalls
 }
 
 func (*compensateFillReader) CancelOrder(
@@ -243,9 +253,10 @@ func (r *compensateFillReader) lastSince() time.Time {
 }
 
 type stubAverageCompensateStore struct {
-	mu      sync.Mutex
-	orders  []missingHyperliquidAverageOrder
-	written []averageCompensateUpdate
+	mu        sync.Mutex
+	orders    []missingHyperliquidAverageOrder
+	written   []averageCompensateUpdate
+	listCalls int
 }
 
 type averageCompensateUpdate struct {
@@ -257,9 +268,16 @@ func (s *stubAverageCompensateStore) ListMissingHyperliquidArbitrageAverages(
 ) ([]missingHyperliquidAverageOrder, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.listCalls++
 	out := make([]missingHyperliquidAverageOrder, len(s.orders))
 	copy(out, s.orders)
 	return out, nil
+}
+
+func (s *stubAverageCompensateStore) missingListCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listCalls
 }
 
 func (s *stubAverageCompensateStore) TrySetHyperliquidArbitrageAverage(

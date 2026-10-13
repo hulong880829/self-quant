@@ -114,9 +114,32 @@ type hedgeFastHarness struct {
 
 func newHedgeFastHarness(t *testing.T, hedgeResults []exchange.Result, hedgeErrs []error) *hedgeFastHarness {
 	t.Helper()
+	return newHedgeFastHarnessOn(t, hedgeResults, hedgeErrs, "okx", "BTC-USDT-SWAP")
+}
+
+func newHedgeFastHarnessHyperliquidSKR(t *testing.T, hedgeResults []exchange.Result, hedgeErrs []error) *hedgeFastHarness {
+	t.Helper()
+	return newHedgeFastHarnessOn(t, hedgeResults, hedgeErrs, "hyperliquid", "SKR")
+}
+
+func newHedgeFastHarnessOn(
+	t *testing.T,
+	hedgeResults []exchange.Result,
+	hedgeErrs []error,
+	hedgeVenue, hedgeSymbol string,
+) *hedgeFastHarness {
+	t.Helper()
 	makerInst := hedgeFastInstrument(101, "bybit", "BTCUSDT")
-	hedgeInst := hedgeFastInstrument(202, "okx", "BTC-USDT-SWAP")
+	hedgeInst := hedgeFastInstrument(202, hedgeVenue, hedgeSymbol)
+	if hedgeVenue == "hyperliquid" {
+		hedgeInst.BaseAsset = "SKR"
+		hedgeInst.QuoteAsset = "USDC"
+	}
 	combo := hedgeFastCombo(makerInst, hedgeInst)
+	if hedgeVenue == "hyperliquid" {
+		combo.LegB.BaseAsset = "SKR"
+		combo.LegB.QuoteAsset = "USDC"
+	}
 	orderStore := &postOnlyOrderStore{memoryStore: newMemoryStore()}
 	base := &executorFailStore{combo: combo, intentStore: orderStore}
 	store := &makerHedgeStore{executorFailStore: base, orderStore: orderStore.memoryStore}
@@ -138,7 +161,7 @@ func newHedgeFastHarness(t *testing.T, hedgeResults []exchange.Result, hedgeErrs
 		silentRiskCatalog{makerInst.ID: makerInst, hedgeInst.ID: hedgeInst},
 		silentRiskCredentials{},
 		exchange.NewTestRegistry(map[string]exchange.Adapter{
-			"bybit": maker, "okx": hedge,
+			"bybit": maker, hedgeVenue: hedge,
 		}),
 		hedgeFastMarket(t, makerInst, hedgeInst), "",
 		time.Millisecond, 0, 0, 1, time.Second, nil,
@@ -483,6 +506,82 @@ func TestHedgeEmergencyCloseReduceOnlyOpenDoesNot(t *testing.T) {
 	open.run(t)
 	if len(open.hedge.requests) < 2 || open.hedge.requests[1].ReduceOnly {
 		t.Fatalf("open emergency=%+v", open.hedge.requests)
+	}
+}
+
+func TestHedgeEmergencyHyperliquidSKRCanceledIOCPlacesOneMarket(t *testing.T) {
+	h := newHedgeFastHarnessHyperliquidSKR(t, []exchange.Result{
+		{Status: "canceled", FilledQuantity: "0"},
+		{VenueOrderID: "mkt-1", Status: "filled", FilledQuantity: "1", AveragePrice: "100"},
+	}, nil)
+	h.executor.ConfigureHedgeEmergencyAfter(20 * time.Millisecond)
+	h.run(t)
+	if len(h.hedge.requests) != 2 {
+		t.Fatalf("requests=%+v", h.hedge.requests)
+	}
+	if h.hedge.requests[0].OrderType != "limit" || h.hedge.requests[0].TimeInForce != "IOC" {
+		t.Fatalf("first=%+v", h.hedge.requests[0])
+	}
+	if h.hedge.requests[1].OrderType != "market" || h.hedge.requests[1].TimeInForce != "" {
+		t.Fatalf("emergency=%+v", h.hedge.requests[1])
+	}
+	if h.hedge.requests[1].Quantity != "1" || h.hedge.requests[1].ReduceOnly {
+		t.Fatalf("emergency=%+v", h.hedge.requests[1])
+	}
+	if h.hedge.requests[1].Instrument.Exchange != "hyperliquid" ||
+		h.hedge.requests[1].Instrument.ExchangeSymbol != "SKR" {
+		t.Fatalf("emergency instrument=%+v", h.hedge.requests[1].Instrument)
+	}
+	if !hasEvent(h.base.eventTypes, "hedge_emergency_triggered") ||
+		!hasEvent(h.base.eventTypes, "hedge_emergency_completed") {
+		t.Fatalf("events=%v", h.base.eventTypes)
+	}
+}
+
+func TestHedgeEmergencyHyperliquidSKRCloseReduceOnlyOpenDoesNot(t *testing.T) {
+	h := newHedgeFastHarnessHyperliquidSKR(t, []exchange.Result{
+		{Status: "canceled", FilledQuantity: "0"},
+		{VenueOrderID: "mkt-1", Status: "filled", FilledQuantity: "1", AveragePrice: "100"},
+	}, nil)
+	h.execution.PositionEffect = "close"
+	h.execution.ReduceOnly = true
+	h.combo.Status = "closing"
+	h.combo.RuntimeState = "closing"
+	h.combo.LegABasePosition = "-1"
+	h.combo.LegBBasePosition = "1"
+	h.base.combo = h.combo
+	h.orders.mu.Lock()
+	h.orders.orders["owned-a"] = Order{
+		ID: "owned-a", ArbitrageLeg: "a", Side: "sell",
+		Status: "filled", FilledQuantity: "1",
+	}
+	h.orders.orders["owned-b"] = Order{
+		ID: "owned-b", ArbitrageLeg: "b", Side: "buy",
+		Status: "filled", FilledQuantity: "1",
+	}
+	h.orders.mu.Unlock()
+	h.executor.ConfigureHedgeEmergencyAfter(20 * time.Millisecond)
+	h.run(t)
+	if len(h.hedge.requests) < 2 || !h.hedge.requests[1].ReduceOnly ||
+		h.hedge.requests[1].OrderType != "market" {
+		t.Fatalf("close emergency=%+v", h.hedge.requests)
+	}
+
+	open := newHedgeFastHarnessHyperliquidSKR(t, []exchange.Result{
+		{Status: "canceled", FilledQuantity: "0"},
+		{VenueOrderID: "mkt-1", Status: "filled", FilledQuantity: "1", AveragePrice: "100"},
+	}, nil)
+	open.executor.ConfigureHedgeEmergencyAfter(20 * time.Millisecond)
+	open.run(t)
+	if len(open.hedge.requests) < 2 || open.hedge.requests[1].ReduceOnly ||
+		open.hedge.requests[1].OrderType != "market" {
+		t.Fatalf("open emergency=%+v", open.hedge.requests)
+	}
+	if !hasEvent(h.base.eventTypes, "hedge_emergency_triggered") ||
+		!hasEvent(h.base.eventTypes, "hedge_emergency_completed") ||
+		!hasEvent(open.base.eventTypes, "hedge_emergency_triggered") ||
+		!hasEvent(open.base.eventTypes, "hedge_emergency_completed") {
+		t.Fatalf("close events=%v open events=%v", h.base.eventTypes, open.base.eventTypes)
 	}
 }
 

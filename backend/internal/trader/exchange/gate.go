@@ -265,12 +265,12 @@ func (a *gateAdapter) signed(
 	body []byte,
 	target any,
 ) ([]byte, error) {
-	ts := fmt.Sprintf("%d", timeUnix())
-	pathOnly, query := path, ""
-	if parts := strings.SplitN(path, "?", 2); len(parts) == 2 {
-		pathOnly, query = parts[0], parts[1]
+	parsed, err := url.Parse(path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Gate request path %q: %w", path, err)
 	}
-	payload := method + "\n" + pathOnly + "\n" + query + "\n" + sha512Hex(body) + "\n" + ts
+	ts := fmt.Sprintf("%d", timeUnix())
+	payload := method + "\n" + parsed.Path + "\n" + parsed.RawQuery + "\n" + sha512Hex(body) + "\n" + ts
 	headers := http.Header{
 		"KEY":                 {credentials.APIKey},
 		"Timestamp":           {ts},

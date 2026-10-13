@@ -81,6 +81,55 @@ type circuitOpenTestStore struct {
 	lastReq     circuitOpenExternalReconcileRequest
 }
 
+func (s *circuitOpenTestStore) GetActiveArbitrageExecution(
+	_ context.Context, combinationID string,
+) (ArbitrageExecution, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeExecution != nil && !terminalArbitrageExecutionStatus(s.activeExecution.Status) {
+		return *s.activeExecution, nil
+	}
+	if s.execution.ID != "" && !terminalArbitrageExecutionStatus(s.execution.Status) &&
+		(s.execution.CombinationID == "" || s.execution.CombinationID == combinationID) {
+		return s.execution, nil
+	}
+	return ArbitrageExecution{}, ErrNotFound
+}
+
+func (s *circuitOpenTestStore) CompleteCircuitOpenRecovery(
+	_ context.Context, request circuitOpenRecoveryCloseRequest,
+) (ArbitrageCombination, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completeCircuitCalls++
+	s.lastCircuitClose = request
+	if s.combo.Version != request.ExpectedVersion || !s.combo.CircuitOpen ||
+		s.combo.Status != "running" ||
+		terminalArbitrageExecutionStatus(s.execution.Status) ||
+		!circuitRecoverySnapshotFresh(request.RecoveryStartedAt, request.ObservedAt, time.Now().UTC()) {
+		return s.combo, false, nil
+	}
+	if !parseDecimal(request.LegAFilled).IsPositive() || !parseDecimal(request.LegBFilled).IsPositive() {
+		return s.combo, false, nil
+	}
+	s.combo.CircuitOpen = false
+	s.combo.RuntimeState = "monitoring"
+	s.combo.PositionUncertain = false
+	s.combo.ErrorMessage = ""
+	s.combo.LegAPositionDifference = "0"
+	s.combo.LegBPositionDifference = "0"
+	s.combo.LegAVenueBasePosition = request.VenueA.String()
+	s.combo.LegBVenueBasePosition = request.VenueB.String()
+	s.combo.Version++
+	s.execution.Status = "completed"
+	s.execution.ErrorMessage = ""
+	if request.Kind == circuitCloseFilled {
+		s.execution.LegAFilledQuantity = request.LegAFilled
+		s.execution.LegBFilledQuantity = request.LegBFilled
+	}
+	return s.combo, true, nil
+}
+
 func (s *circuitOpenTestStore) ListArbitrageOrders(
 	context.Context, string, string,
 ) ([]Order, error) {
@@ -334,7 +383,7 @@ func assertCircuitOpenUnlocksBalancedPerps(t *testing.T, combo ArbitrageCombinat
 		}}},
 	})
 	if err := executor.ReconcileCircuitOpen(
-		context.Background(), combo, store.execution,
+		context.Background(), combo,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -346,8 +395,8 @@ func assertCircuitOpenUnlocksBalancedPerps(t *testing.T, combo ArbitrageCombinat
 	if queryA != 0 || queryB != 0 {
 		t.Fatalf("query a=%d b=%d", queryA, queryB)
 	}
-	if store.applyCalls != 1 {
-		t.Fatalf("applyCalls=%d", store.applyCalls)
+	if store.completeCircuitCalls != 1 || store.applyCalls != 0 {
+		t.Fatalf("complete=%d apply=%d", store.completeCircuitCalls, store.applyCalls)
 	}
 	if store.combo.CircuitOpen || store.combo.RuntimeState != "monitoring" {
 		t.Fatalf("combo=%+v", store.combo)
@@ -355,8 +404,7 @@ func assertCircuitOpenUnlocksBalancedPerps(t *testing.T, combo ArbitrageCombinat
 	if store.combo.LegAPositionDifference != "0" || store.combo.LegBPositionDifference != "0" {
 		t.Fatalf("unlock diffs=%+v", store.combo)
 	}
-	if store.execution.Status != "canceled" ||
-		store.execution.ErrorMessage != "externally_reconciled" {
+	if store.execution.Status != "completed" || store.execution.ErrorMessage != "" {
 		t.Fatalf("execution=%+v", store.execution)
 	}
 }
@@ -406,7 +454,7 @@ func TestArbitrageExecutorReconcileCircuitOpenUnlocksOverTarget(t *testing.T) {
 		}}},
 	})
 	if err := executor.ReconcileCircuitOpen(
-		context.Background(), combo, store.execution,
+		context.Background(), combo,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +530,7 @@ func TestArbitrageExecutorReconcileCircuitOpenRecomputesOrderSum(t *testing.T) {
 		}}},
 	})
 	if err := executor.ReconcileCircuitOpen(
-		context.Background(), combo, store.execution,
+		context.Background(), combo,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +582,7 @@ func TestArbitrageExecutorReconcileCircuitOpenSkipsTerminalOrderQueries(t *testi
 		}}},
 	})
 	if err := executor.ReconcileCircuitOpen(
-		context.Background(), combo, store.execution,
+		context.Background(), combo,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -543,8 +591,8 @@ func TestArbitrageExecutorReconcileCircuitOpenSkipsTerminalOrderQueries(t *testi
 	if queryA != 0 || queryB != 0 {
 		t.Fatalf("terminal orders queried a=%d b=%d", queryA, queryB)
 	}
-	if store.applyCalls != 1 {
-		t.Fatalf("applyCalls=%d", store.applyCalls)
+	if store.completeCircuitCalls != 1 || store.combo.CircuitOpen {
+		t.Fatalf("complete=%d circuit=%v", store.completeCircuitCalls, store.combo.CircuitOpen)
 	}
 }
 
@@ -597,7 +645,7 @@ func TestArbitrageExecutorReconcileCircuitOpenQueriesOnlyLiveOrders(t *testing.T
 		}}},
 	})
 	if err := executor.ReconcileCircuitOpen(
-		context.Background(), combo, store.execution,
+		context.Background(), combo,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -606,8 +654,8 @@ func TestArbitrageExecutorReconcileCircuitOpenQueriesOnlyLiveOrders(t *testing.T
 	if queryA != 1 || queryB != 0 {
 		t.Fatalf("query a=%d b=%d", queryA, queryB)
 	}
-	if store.applyCalls != 1 {
-		t.Fatalf("applyCalls=%d", store.applyCalls)
+	if store.completeCircuitCalls != 1 || store.combo.CircuitOpen {
+		t.Fatalf("complete=%d circuit=%v", store.completeCircuitCalls, store.combo.CircuitOpen)
 	}
 }
 
@@ -657,7 +705,7 @@ func TestArbitrageExecutorReconcileCircuitOpenSkipsExecutableCarry(t *testing.T)
 	}
 	executor.catalog = catalog
 	if err := executor.ReconcileCircuitOpen(
-		context.Background(), combo, store.execution,
+		context.Background(), combo,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -730,7 +778,7 @@ func TestArbitrageSchedulerCircuitOpenReconcilesWithoutBBO(t *testing.T) {
 	store := &dryRunStore{item: item, activeExecution: &execution}
 	runner := &schedulerRunner{
 		executed:   make(chan ArbitrageExecution, 1),
-		reconciled: make(chan ArbitrageExecution, 1),
+		reconciled: make(chan ArbitrageCombination, 1),
 		recovered:  make(chan ArbitrageExecution, 1),
 	}
 	scheduler := NewArbitrageScheduler(
@@ -748,8 +796,8 @@ func TestArbitrageSchedulerCircuitOpenReconcilesWithoutBBO(t *testing.T) {
 	}
 	select {
 	case got := <-runner.reconciled:
-		if got.ID != execution.ID {
-			t.Fatalf("execution=%+v", got)
+		if got.ID != item.ID {
+			t.Fatalf("combination=%+v", got)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected readonly reconcile without BBO")
@@ -773,7 +821,7 @@ func TestArbitrageSchedulerCircuitOpenThrottleAppliesOnFailure(t *testing.T) {
 	}
 	store := &dryRunStore{item: item, activeExecution: &execution}
 	runner := &schedulerRunner{
-		reconciled:   make(chan ArbitrageExecution, 2),
+		reconciled:   make(chan ArbitrageCombination, 2),
 		reconcileErr: errors.New("venue timeout"),
 	}
 	scheduler := NewArbitrageScheduler(
@@ -795,7 +843,7 @@ func TestArbitrageSchedulerCircuitOpenThrottleAppliesOnFailure(t *testing.T) {
 }
 
 func TestArbitrageSchedulerCircuitOpenSkipsClosingAndMissingExecution(t *testing.T) {
-	runner := &schedulerRunner{reconciled: make(chan ArbitrageExecution, 1)}
+	runner := &schedulerRunner{reconciled: make(chan ArbitrageCombination, 1)}
 	scheduler := NewArbitrageScheduler(
 		&dryRunStore{item: ArbitrageCombination{ID: "c", Status: "closing"}},
 		nil, runner, time.Second, time.Millisecond, time.Second,
@@ -832,8 +880,11 @@ func TestArbitrageSchedulerCircuitOpenSkipsClosingAndMissingExecution(t *testing
 	}
 	scheduler.handleControl(context.Background(), runtime)
 	select {
-	case <-runner.reconciled:
-		t.Fatal("missing execution must not auto reconcile")
-	default:
+	case got := <-runner.reconciled:
+		if got.ID != running.ID {
+			t.Fatalf("combination=%+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing active execution must still start circuit recovery")
 	}
 }

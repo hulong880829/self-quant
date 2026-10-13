@@ -17,9 +17,8 @@ import (
 )
 
 func (h *Handler) listTraderInstruments(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	accountID, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(request, "accountId")), 10, 64)
@@ -44,9 +43,8 @@ func (h *Handler) listTraderInstruments(writer http.ResponseWriter, request *htt
 	for _, item := range response.GetItems() {
 		data = append(data, traderInstrumentJSON(item))
 	}
-	writer.Header().Set("Cache-Control", "no-store")
 	capabilities := response.GetCapabilities()
-	writeJSON(writer, http.StatusOK, map[string]any{
+	writePrivateJSON(writer, http.StatusOK, map[string]any{
 		"data": data, "meta": map[string]any{"total": len(data)},
 		"serverTime": protoTimeJSON(response.GetServerTime()),
 		"capabilities": map[string]any{
@@ -60,9 +58,8 @@ func (h *Handler) listTraderInstruments(writer http.ResponseWriter, request *htt
 }
 
 func (h *Handler) applyTraderAccountProfile(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	accountID, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(request, "accountId")), 10, 64)
@@ -90,8 +87,7 @@ func (h *Handler) applyTraderAccountProfile(writer http.ResponseWriter, request 
 			"code": step.GetCode(), "message": step.GetMessage(),
 		})
 	}
-	writer.Header().Set("Cache-Control", "no-store")
-	writeJSON(writer, http.StatusOK, map[string]any{
+	writePrivateJSON(writer, http.StatusOK, map[string]any{
 		"data": map[string]any{
 			"tradingAccountId": result.GetTradingAccountId(),
 			"productName":      result.GetProductName(),
@@ -114,9 +110,8 @@ type placeTraderOrderBody struct {
 }
 
 func (h *Handler) placeTraderOrder(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	var body placeTraderOrderBody
@@ -149,14 +144,12 @@ func (h *Handler) placeTraderOrder(writer http.ResponseWriter, request *http.Req
 		h.writeTraderError(writer, err)
 		return
 	}
-	writer.Header().Set("Cache-Control", "no-store")
-	writeJSON(writer, http.StatusAccepted, map[string]any{"data": traderOrderJSON(response.GetOrder())})
+	writePrivateJSON(writer, http.StatusAccepted, map[string]any{"data": traderOrderJSON(response.GetOrder())})
 }
 
 func (h *Handler) listTraderOrders(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	accountID, err := strconv.ParseInt(strings.TrimSpace(request.URL.Query().Get("accountId")), 10, 64)
@@ -184,8 +177,7 @@ func (h *Handler) listTraderOrders(writer http.ResponseWriter, request *http.Req
 	for _, item := range response.GetItems() {
 		data = append(data, traderOrderJSON(item))
 	}
-	writer.Header().Set("Cache-Control", "no-store")
-	writeJSON(writer, http.StatusOK, map[string]any{
+	writePrivateJSON(writer, http.StatusOK, map[string]any{
 		"data":       data,
 		"meta":       map[string]any{"nextCursor": response.GetNextCursor()},
 		"serverTime": protoTimeJSON(response.GetServerTime()),
@@ -193,9 +185,8 @@ func (h *Handler) listTraderOrders(writer http.ResponseWriter, request *http.Req
 }
 
 func (h *Handler) getTraderOrder(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
@@ -207,14 +198,12 @@ func (h *Handler) getTraderOrder(writer http.ResponseWriter, request *http.Reque
 		h.writeTraderError(writer, err)
 		return
 	}
-	writer.Header().Set("Cache-Control", "no-store")
-	writeJSON(writer, http.StatusOK, map[string]any{"data": traderOrderJSON(response.GetOrder())})
+	writePrivateJSON(writer, http.StatusOK, map[string]any{"data": traderOrderJSON(response.GetOrder())})
 }
 
 func (h *Handler) cancelTraderOrder(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 15*time.Second)
@@ -226,8 +215,7 @@ func (h *Handler) cancelTraderOrder(writer http.ResponseWriter, request *http.Re
 		h.writeTraderError(writer, err)
 		return
 	}
-	writer.Header().Set("Cache-Control", "no-store")
-	writeJSON(writer, http.StatusOK, map[string]any{"data": traderOrderJSON(response.GetOrder())})
+	writePrivateJSON(writer, http.StatusOK, map[string]any{"data": traderOrderJSON(response.GetOrder())})
 }
 
 type createTraderTwapBody struct {
@@ -245,9 +233,8 @@ type createTraderTwapBody struct {
 }
 
 func (h *Handler) createTraderTwap(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	key := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
@@ -282,14 +269,12 @@ func (h *Handler) createTraderTwap(writer http.ResponseWriter, request *http.Req
 		h.writeTraderError(writer, err)
 		return
 	}
-	writer.Header().Set("Cache-Control", "no-store")
-	writeJSON(writer, http.StatusCreated, map[string]any{"data": traderTwapJSON(response.GetJob())})
+	writePrivateJSON(writer, http.StatusCreated, map[string]any{"data": traderTwapJSON(response.GetJob())})
 }
 
 func (h *Handler) listTraderTwaps(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	accountID := int64(0)
@@ -317,17 +302,15 @@ func (h *Handler) listTraderTwaps(writer http.ResponseWriter, request *http.Requ
 	for _, item := range response.GetItems() {
 		data = append(data, traderTwapJSON(item))
 	}
-	writer.Header().Set("Cache-Control", "no-store")
-	writeJSON(writer, http.StatusOK, map[string]any{
+	writePrivateJSON(writer, http.StatusOK, map[string]any{
 		"data": data, "meta": map[string]any{"nextCursor": response.GetNextCursor()},
 		"serverTime": protoTimeJSON(response.GetServerTime()),
 	})
 }
 
 func (h *Handler) getTraderTwap(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
@@ -339,13 +322,12 @@ func (h *Handler) getTraderTwap(writer http.ResponseWriter, request *http.Reques
 		h.writeTraderError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"data": traderTwapJSON(response.GetJob())})
+	writePrivateJSON(writer, http.StatusOK, map[string]any{"data": traderTwapJSON(response.GetJob())})
 }
 
 func (h *Handler) listTraderTwapOrders(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
@@ -361,13 +343,12 @@ func (h *Handler) listTraderTwapOrders(writer http.ResponseWriter, request *http
 	for _, item := range response.GetItems() {
 		data = append(data, traderOrderJSON(item))
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"data": data})
+	writePrivateJSON(writer, http.StatusOK, map[string]any{"data": data})
 }
 
 func (h *Handler) cancelTraderTwap(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 15*time.Second)
@@ -379,7 +360,7 @@ func (h *Handler) cancelTraderTwap(writer http.ResponseWriter, request *http.Req
 		h.writeTraderError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"data": traderTwapJSON(response.GetJob())})
+	writePrivateJSON(writer, http.StatusOK, map[string]any{"data": traderTwapJSON(response.GetJob())})
 }
 
 type createArbitrageCombinationBody struct {
@@ -401,12 +382,78 @@ type createArbitrageCombinationBody struct {
 	ExitAnnualizedRate                string `json:"exitAnnualizedRate"`
 	ExitAfterSeconds                  int    `json:"exitAfterSeconds"`
 	EarlyExitFunding8hAnnualizedFloor string `json:"earlyExitFunding8hAnnualizedFloor"`
+	EarlyExitLiquidationDistancePct   string `json:"earlyExitLiquidationDistancePct"`
+}
+
+func (h *Handler) preflightArbitrageCombination(writer http.ResponseWriter, request *http.Request) {
+	token, ok := h.userSession(writer, request)
+	if !ok {
+		return
+	}
+	var body createArbitrageCombinationBody
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid arbitrage preflight payload"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
+	defer cancel()
+	response, err := h.trader.PreflightArbitrageCombination(
+		ctx, &traderv1.PreflightArbitrageCombinationRequest{
+			Token:                token,
+			LegATradingAccountId: body.LegATradingAccountID, LegAInstrumentId: body.LegAInstrumentID,
+			LegBTradingAccountId: body.LegBTradingAccountID, LegBInstrumentId: body.LegBInstrumentID,
+			AskThresholdBps: body.AskThresholdBps, BidThresholdBps: body.BidThresholdBps,
+			TargetNotional: body.TargetNotional, ExecutionMode: body.ExecutionMode,
+			MakerLeg: body.MakerLeg, RunMode: body.RunMode, EntryDirection: body.EntryDirection,
+			LegALeverage: body.LegALeverage, LegBLeverage: body.LegBLeverage,
+			ExitPolicy: body.ExitPolicy, ExitAnnualizedRate: body.ExitAnnualizedRate,
+			ExitAfterSeconds:                   int32(body.ExitAfterSeconds),
+			EarlyExitFunding_8HAnnualizedFloor: body.EarlyExitFunding8hAnnualizedFloor,
+			EarlyExitLiquidationDistancePct:    body.EarlyExitLiquidationDistancePct,
+		},
+	)
+	if err != nil {
+		h.writeTraderError(writer, err)
+		return
+	}
+	warnings := make([]map[string]any, 0, len(response.GetWarnings()))
+	for _, warning := range response.GetWarnings() {
+		warnings = append(warnings, map[string]any{
+			"code": warning.GetCode(), "message": warning.GetMessage(),
+			"leg": warning.GetLeg(), "exchange": warning.GetExchange(),
+		})
+	}
+	writePrivateJSON(writer, http.StatusOK, map[string]any{"data": map[string]any{
+		"executable": response.GetExecutable(),
+		"checkedAt":  protoTimeJSON(response.GetCheckedAt()),
+		"expiresAt":  protoTimeJSON(response.GetExpiresAt()),
+		"legA":       traderPreflightLegJSON(response.GetLegA()),
+		"legB":       traderPreflightLegJSON(response.GetLegB()),
+		"warnings":   warnings, "code": response.GetCode(), "message": response.GetMessage(),
+		"leg": response.GetLeg(), "exchange": response.GetExchange(),
+	}})
+}
+
+func traderPreflightLegJSON(leg *traderv1.PreflightLeg) map[string]any {
+	field := func(value *traderv1.PreflightDecimal) map[string]any {
+		return map[string]any{"value": emptyToNil(value.GetValue()), "status": value.GetStatus()}
+	}
+	return map[string]any{
+		"availableFunds":      field(leg.GetAvailableFunds()),
+		"requiredMargin":      field(leg.GetRequiredMargin()),
+		"estimatedFee":        field(leg.GetEstimatedFee()),
+		"minQuantity":         field(leg.GetMinQuantity()),
+		"minNotional":         field(leg.GetMinNotional()),
+		"quantityStep":        field(leg.GetQuantityStep()),
+		"roundedBaseQuantity": field(leg.GetRoundedBaseQuantity()),
+	}
 }
 
 func (h *Handler) createArbitrageCombination(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	key := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
@@ -441,30 +488,33 @@ func (h *Handler) createArbitrageCombination(writer http.ResponseWriter, request
 		ExitAnnualizedRate:                 body.ExitAnnualizedRate,
 		ExitAfterSeconds:                   int32(body.ExitAfterSeconds),
 		EarlyExitFunding_8HAnnualizedFloor: body.EarlyExitFunding8hAnnualizedFloor,
+		EarlyExitLiquidationDistancePct:    body.EarlyExitLiquidationDistancePct,
 	})
 	if err != nil {
 		h.writeTraderError(writer, err)
 		return
 	}
-	writer.Header().Set("Cache-Control", "no-store")
-	writeJSON(writer, http.StatusCreated, map[string]any{
+	writePrivateJSON(writer, http.StatusCreated, map[string]any{
 		"data": traderArbitrageCombinationJSON(response.GetCombination()),
 	})
 }
 
 type updateArbitrageCombinationBody struct {
-	AskThresholdBps *string `json:"askThresholdBps"`
-	BidThresholdBps *string `json:"bidThresholdBps"`
-	TargetNotional  *string `json:"targetNotional"`
+	AskThresholdBps                   *string `json:"askThresholdBps"`
+	BidThresholdBps                   *string `json:"bidThresholdBps"`
+	TargetNotional                    *string `json:"targetNotional"`
+	ExitAfterSeconds                  *int32  `json:"exitAfterSeconds"`
+	ExitAnnualizedRate                *string `json:"exitAnnualizedRate"`
+	EarlyExitFunding8hAnnualizedFloor *string `json:"earlyExitFunding8hAnnualizedFloor"`
+	EarlyExitLiquidationDistancePct   *string `json:"earlyExitLiquidationDistancePct"`
 }
 
 func (h *Handler) updateArbitrageCombination(
 	writer http.ResponseWriter,
 	request *http.Request,
 ) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	var body updateArbitrageCombinationBody
@@ -475,8 +525,24 @@ func (h *Handler) updateArbitrageCombination(
 		return
 	}
 	if body.AskThresholdBps == nil && body.BidThresholdBps == nil &&
-		body.TargetNotional == nil {
+		body.TargetNotional == nil && body.ExitAfterSeconds == nil &&
+		body.ExitAnnualizedRate == nil && body.EarlyExitFunding8hAnnualizedFloor == nil &&
+		body.EarlyExitLiquidationDistancePct == nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "at least one arbitrage parameter is required"})
+		return
+	}
+	if body.ExitAnnualizedRate != nil && strings.TrimSpace(*body.ExitAnnualizedRate) == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "exitAnnualizedRate cannot be empty"})
+		return
+	}
+	if body.EarlyExitFunding8hAnnualizedFloor != nil &&
+		strings.TrimSpace(*body.EarlyExitFunding8hAnnualizedFloor) == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "earlyExitFunding8hAnnualizedFloor cannot be empty"})
+		return
+	}
+	if body.EarlyExitLiquidationDistancePct != nil &&
+		strings.TrimSpace(*body.EarlyExitLiquidationDistancePct) == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "earlyExitLiquidationDistancePct cannot be empty"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
@@ -484,26 +550,29 @@ func (h *Handler) updateArbitrageCombination(
 	response, err := h.trader.UpdateArbitrageCombination(
 		ctx,
 		&traderv1.UpdateArbitrageCombinationRequest{
-			Token: token, CombinationId: chi.URLParam(request, "id"),
-			AskThresholdBps: body.AskThresholdBps,
-			BidThresholdBps: body.BidThresholdBps,
-			TargetNotional:  body.TargetNotional,
+			Token:                              token,
+			CombinationId:                      chi.URLParam(request, "id"),
+			AskThresholdBps:                    body.AskThresholdBps,
+			BidThresholdBps:                    body.BidThresholdBps,
+			TargetNotional:                     body.TargetNotional,
+			ExitAfterSeconds:                   body.ExitAfterSeconds,
+			ExitAnnualizedRate:                 body.ExitAnnualizedRate,
+			EarlyExitFunding_8HAnnualizedFloor: body.EarlyExitFunding8hAnnualizedFloor,
+			EarlyExitLiquidationDistancePct:    body.EarlyExitLiquidationDistancePct,
 		},
 	)
 	if err != nil {
 		h.writeTraderError(writer, err)
 		return
 	}
-	writer.Header().Set("Cache-Control", "no-store")
-	writeJSON(writer, http.StatusOK, map[string]any{
+	writePrivateJSON(writer, http.StatusOK, map[string]any{
 		"data": traderArbitrageCombinationJSON(response.GetCombination()),
 	})
 }
 
 func (h *Handler) listArbitrageCombinations(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	limit, _ := strconv.Atoi(request.URL.Query().Get("limit"))
@@ -521,8 +590,7 @@ func (h *Handler) listArbitrageCombinations(writer http.ResponseWriter, request 
 	for _, item := range response.GetItems() {
 		data = append(data, traderArbitrageCombinationJSON(item))
 	}
-	writer.Header().Set("Cache-Control", "no-store")
-	writeJSON(writer, http.StatusOK, map[string]any{
+	writePrivateJSON(writer, http.StatusOK, map[string]any{
 		"data": data, "meta": map[string]any{
 			"nextCursor": response.GetNextCursor(), "total": response.GetTotal(),
 		},
@@ -531,9 +599,8 @@ func (h *Handler) listArbitrageCombinations(writer http.ResponseWriter, request 
 }
 
 func (h *Handler) getArbitrageCombination(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
@@ -553,35 +620,178 @@ func (h *Handler) getArbitrageCombination(writer http.ResponseWriter, request *h
 	data["orders"] = orders
 	executions := make([]map[string]any, 0, len(response.GetRecentExecutions()))
 	for _, execution := range response.GetRecentExecutions() {
-		executions = append(executions, map[string]any{
-			"id": execution.GetId(), "direction": execution.GetDirection(),
-			"status": execution.GetStatus(), "triggerSpreadBps": execution.GetTriggerSpreadBps(),
-			"targetBaseQuantity": execution.GetTargetBaseQuantity(),
-			"filledBaseQuantity": execution.GetFilledBaseQuantity(),
-			"deltaNotional":      execution.GetDeltaNotional(), "errorMessage": execution.GetErrorMessage(),
-			"createdAt":         protoTimeJSON(execution.GetCreatedAt()),
-			"updatedAt":         protoTimeJSON(execution.GetUpdatedAt()),
-			"requestedNotional": execution.GetRequestedNotional(),
-			"positionEffect":    execution.GetPositionEffect(),
-			"reduceOnly":        execution.GetReduceOnly(),
-		})
+		executions = append(executions, traderArbitrageExecutionJSON(execution))
 	}
 	events := make([]map[string]any, 0, len(response.GetRecentEvents()))
 	for _, event := range response.GetRecentEvents() {
-		events = append(events, map[string]any{
-			"id": event.GetId(), "type": event.GetType(), "message": event.GetMessage(),
-			"createdAt": protoTimeJSON(event.GetCreatedAt()),
-		})
+		events = append(events, traderArbitrageEventJSON(event))
 	}
 	data["recentExecutions"] = executions
 	data["recentEvents"] = events
-	writeJSON(writer, http.StatusOK, map[string]any{"data": data})
+	writePrivateJSON(writer, http.StatusOK, map[string]any{"data": data})
+}
+
+func traderArbitrageExecutionJSON(execution *traderv1.ArbitrageExecution) map[string]any {
+	return map[string]any{
+		"id": execution.GetId(), "direction": execution.GetDirection(),
+		"status": execution.GetStatus(), "triggerSpreadBps": execution.GetTriggerSpreadBps(),
+		"targetBaseQuantity": execution.GetTargetBaseQuantity(),
+		"filledBaseQuantity": execution.GetFilledBaseQuantity(),
+		"deltaNotional":      execution.GetDeltaNotional(), "errorMessage": execution.GetErrorMessage(),
+		"createdAt":         protoTimeJSON(execution.GetCreatedAt()),
+		"updatedAt":         protoTimeJSON(execution.GetUpdatedAt()),
+		"requestedNotional": execution.GetRequestedNotional(),
+		"positionEffect":    execution.GetPositionEffect(), "reduceOnly": execution.GetReduceOnly(),
+	}
+}
+
+func traderArbitrageEventJSON(event *traderv1.ArbitrageEvent) map[string]any {
+	var payload any
+	if event.GetPayload() != nil {
+		payload = event.GetPayload().AsMap()
+	}
+	return map[string]any{
+		"id": event.GetId(), "type": event.GetType(), "executionId": event.GetExecutionId(),
+		"payload": payload, "message": event.GetMessage(),
+		"createdAt": protoTimeJSON(event.GetCreatedAt()),
+	}
+}
+
+func (h *Handler) listArbitrageCombinationOrders(writer http.ResponseWriter, request *http.Request) {
+	token, ok := h.userSession(writer, request)
+	if !ok {
+		return
+	}
+	query, ok := arbitrageHistoryRequest(writer, request, token)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
+	defer cancel()
+	response, err := h.trader.ListArbitrageCombinationOrders(
+		ctx, &traderv1.ListArbitrageCombinationOrdersRequest{Query: query},
+	)
+	if err != nil {
+		h.writeTraderError(writer, err)
+		return
+	}
+	data := make([]map[string]any, 0, len(response.GetItems()))
+	for _, item := range response.GetItems() {
+		data = append(data, traderOrderJSON(item))
+	}
+	writePrivateJSON(writer, http.StatusOK, map[string]any{
+		"data": data, "meta": map[string]any{"nextCursor": response.GetNextCursor()},
+	})
+}
+
+func (h *Handler) listArbitrageCombinationExecutions(writer http.ResponseWriter, request *http.Request) {
+	token, ok := h.userSession(writer, request)
+	if !ok {
+		return
+	}
+	query, ok := arbitrageHistoryRequest(writer, request, token)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
+	defer cancel()
+	response, err := h.trader.ListArbitrageCombinationExecutions(
+		ctx, &traderv1.ListArbitrageCombinationExecutionsRequest{Query: query},
+	)
+	if err != nil {
+		h.writeTraderError(writer, err)
+		return
+	}
+	data := make([]map[string]any, 0, len(response.GetItems()))
+	for _, item := range response.GetItems() {
+		data = append(data, traderArbitrageExecutionJSON(item))
+	}
+	writePrivateJSON(writer, http.StatusOK, map[string]any{
+		"data": data, "meta": map[string]any{"nextCursor": response.GetNextCursor()},
+	})
+}
+
+func (h *Handler) listArbitrageCombinationEvents(writer http.ResponseWriter, request *http.Request) {
+	token, ok := h.userSession(writer, request)
+	if !ok {
+		return
+	}
+	query, ok := arbitrageHistoryRequest(writer, request, token)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
+	defer cancel()
+	response, err := h.trader.ListArbitrageCombinationEvents(
+		ctx, &traderv1.ListArbitrageCombinationEventsRequest{Query: query},
+	)
+	if err != nil {
+		h.writeTraderError(writer, err)
+		return
+	}
+	data := make([]map[string]any, 0, len(response.GetItems()))
+	for _, item := range response.GetItems() {
+		data = append(data, traderArbitrageEventJSON(item))
+	}
+	writePrivateJSON(writer, http.StatusOK, map[string]any{
+		"data": data, "meta": map[string]any{"nextCursor": response.GetNextCursor()},
+	})
+}
+
+func arbitrageHistoryRequest(
+	writer http.ResponseWriter, request *http.Request, token string,
+) (*traderv1.ListArbitrageCombinationHistoryRequest, bool) {
+	values := request.URL.Query()
+	limit := int32(50)
+	if raw := strings.TrimSpace(values.Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "limit must be between 1 and 100"})
+			return nil, false
+		}
+		limit = int32(parsed)
+	}
+	parseTime := func(name string) (*timestamppb.Timestamp, bool) {
+		raw := strings.TrimSpace(values.Get(name))
+		if raw == "" {
+			return nil, true
+		}
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": name + " must be RFC3339"})
+			return nil, false
+		}
+		return timestamppb.New(parsed), true
+	}
+	from, ok := parseTime("from")
+	if !ok {
+		return nil, false
+	}
+	to, ok := parseTime("to")
+	if !ok {
+		return nil, false
+	}
+	if from != nil && to != nil && from.AsTime().After(to.AsTime()) {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "from must not be after to"})
+		return nil, false
+	}
+	executionID := strings.TrimSpace(values.Get("executionId"))
+	if executionID != "" {
+		if _, err := uuid.Parse(executionID); err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "executionId must be a UUID"})
+			return nil, false
+		}
+	}
+	return &traderv1.ListArbitrageCombinationHistoryRequest{
+		Token: token, CombinationId: chi.URLParam(request, "id"),
+		Limit: limit, Cursor: values.Get("cursor"), From: from, To: to,
+		ExecutionId: executionID,
+	}, true
 }
 
 func (h *Handler) closeArbitrageCombination(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 15*time.Second)
@@ -593,7 +803,7 @@ func (h *Handler) closeArbitrageCombination(writer http.ResponseWriter, request 
 		h.writeTraderError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusAccepted, map[string]any{
+	writePrivateJSON(writer, http.StatusAccepted, map[string]any{
 		"data": traderArbitrageCombinationJSON(response.GetCombination()),
 	})
 }
@@ -667,7 +877,7 @@ func traderArbitrageCombinationJSON(item *traderv1.ArbitrageCombination) map[str
 			"quoteAsset": leg.GetQuoteAsset(),
 		}
 	}
-	return map[string]any{
+	result := map[string]any{
 		"id": item.GetId(), "idempotencyKey": item.GetIdempotencyKey(),
 		"productName": item.GetLegA().GetProductName(),
 		"legA":        legJSON(item.GetLegA()), "legB": legJSON(item.GetLegB()),
@@ -736,7 +946,27 @@ func traderArbitrageCombinationJSON(item *traderv1.ArbitrageCombination) map[str
 		"scheduledExitAt":                   protoTimeJSON(item.GetScheduledExitAt()),
 		"oneShotPhase":                      item.GetOneShotPhase(),
 		"earlyExitFunding8hAnnualizedFloor": item.GetEarlyExitFunding_8HAnnualizedFloor(),
+		"earlyExitLiquidationDistancePct":   item.GetEarlyExitLiquidationDistancePct(),
+		"legALiquidationDistancePct":        nullableTraderDecimal(item.GetLegALiquidationDistancePct()),
+		"legBLiquidationDistancePct":        nullableTraderDecimal(item.GetLegBLiquidationDistancePct()),
 	}
+	if metrics := item.GetFinalMetrics(); metrics != nil {
+		result["finalMetrics"] = map[string]any{
+			"status":                     metrics.GetStatus(),
+			"completedAt":                protoTimeJSON(metrics.GetCompletedAt()),
+			"retryCount":                 metrics.GetRetryCount(),
+			"lastError":                  metrics.GetLastError(),
+			"realizedSpreadPnl":          metrics.GetRealizedSpreadPnl(),
+			"estimatedFundingPnl":        metrics.GetEstimatedFundingPnl(),
+			"estimatedTradingFee":        nullableTraderDecimal(metrics.GetEstimatedTradingFee()),
+			"combinedPositionAnnualized": nullableTraderDecimal(metrics.GetCombinedPositionAnnualized()),
+			"metricsQuality":             metrics.GetMetricsQuality(),
+			"holdingSeconds":             metrics.GetHoldingSeconds(),
+			"notionalExposureSeconds":    metrics.GetNotionalExposureSeconds(),
+			"calculatedAt":               protoTimeJSON(metrics.GetCalculatedAt()),
+		}
+	}
+	return result
 }
 
 func nullableTraderDecimal(value string) any {

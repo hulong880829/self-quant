@@ -12,8 +12,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"golang.org/x/sync/errgroup"
-	"selfquant/backend/internal/account/portfolio"
 	"selfquant/backend/internal/trader/exchange"
 )
 
@@ -70,20 +68,7 @@ func (s *Service) CreateArbitrageCombination(
 	if !validArbitrageInstrumentPair(accountA, instrumentA, accountB, instrumentB) {
 		return ArbitrageCombination{}, ErrInvalidArgument
 	}
-	orderTypeForHedge := func(instrument Instrument) string {
-		if instrument.ContractType == "spot" {
-			return "limit"
-		}
-		return "market"
-	}
-	requiredA, requiredB := orderTypeForHedge(instrumentA), orderTypeForHedge(instrumentB)
-	if normalized.ExecutionMode == "maker_then_hedge" {
-		if normalized.MakerLeg == "a" {
-			requiredA = "limit"
-		} else {
-			requiredB = "limit"
-		}
-	}
+	requiredA, requiredB := preflightOrderTypes(normalized, instrumentA, instrumentB)
 	if !instrumentRulesReady(instrumentA, requiredA) ||
 		!instrumentRulesReady(instrumentB, requiredB) {
 		return ArbitrageCombination{}, ErrInstrumentUnavailable
@@ -111,46 +96,12 @@ func (s *Service) CreateArbitrageCombination(
 			return ArbitrageCombination{}, ErrUnsupportedExchange
 		}
 	}
-	checkedAccounts := make(map[int64]bool, 2)
-	for _, leg := range []struct {
-		account    Credentials
-		instrument Instrument
-		adapter    exchange.Adapter
-	}{
-		{accountA, instrumentA, adapterA},
-		{accountB, instrumentB, adapterB},
-	} {
-		if leg.instrument.ContractType == "spot" ||
-			checkedAccounts[leg.account.TradingAccountID] {
-			continue
-		}
-		reader, supportsModeCheck := leg.adapter.(exchange.PositionModeReader)
-		if !supportsModeCheck {
-			return ArbitrageCombination{}, fmt.Errorf(
-				"%w: %s account mode cannot be verified",
-				ErrPositionMode, leg.account.Exchange,
-			)
-		}
-		modeCtx, cancel := context.WithTimeout(ctx, s.timeout)
-		mode, modeErr := reader.GetPositionMode(
-			modeCtx,
-			toVenueCredentials(leg.account),
-			toVenueInstrument(leg.instrument),
-		)
-		cancel()
-		if modeErr != nil {
-			return ArbitrageCombination{}, fmt.Errorf(
-				"%w: verify %s account mode: %v",
-				ErrPositionMode, leg.account.Exchange, modeErr,
-			)
-		}
-		if mode != exchange.PositionModeOneWay {
-			return ArbitrageCombination{}, fmt.Errorf(
-				"%w: %s account is in hedge mode",
-				ErrPositionMode, leg.account.Exchange,
-			)
-		}
-		checkedAccounts[leg.account.TradingAccountID] = true
+	if err := preflightPositionModes(
+		ctx, s.timeout,
+		accountA, instrumentA, adapterA,
+		accountB, instrumentB, adapterB,
+	); err != nil {
+		return ArbitrageCombination{}, err
 	}
 	levA, err := defaultLegLeverage(instrumentA.ContractType, normalized.LegALeverage)
 	if err != nil {
@@ -174,6 +125,7 @@ func (s *Service) CreateArbitrageCombination(
 		ExitPolicy: normalized.ExitPolicy, ExitAnnualizedRate: normalized.ExitAnnualizedRate,
 		ExitAfterSeconds:                  normalized.ExitAfterSeconds,
 		EarlyExitFunding8hAnnualizedFloor: normalized.EarlyExitFunding8hAnnualizedFloor,
+		EarlyExitLiquidationDistancePct:   normalized.EarlyExitLiquidationDistancePct,
 		LegA:                              legA, LegB: legB,
 	}
 	probe.RequestFingerprint = arbitrageFingerprint(probe)
@@ -212,44 +164,7 @@ func (s *Service) CreateArbitrageCombination(
 			ErrVenueUnavailable,
 		)
 	}
-	loadSnapshot := func(loadCtx context.Context, account Credentials) (portfolio.Snapshot, error) {
-		queryCtx, cancel := context.WithTimeout(loadCtx, s.timeout)
-		defer cancel()
-		snapshot, snapshotErr := s.portfolios.Snapshot(
-			queryCtx,
-			account.Exchange,
-			portfolio.Credentials{
-				APIKey: account.APIKey, APISecret: account.APISecret,
-				Passphrase:   account.Passphrase,
-				AccountIndex: account.AccountIndex,
-			},
-		)
-		if snapshotErr != nil {
-			return portfolio.Snapshot{}, fmt.Errorf(
-				"%w: capture %s account baseline: %v",
-				ErrVenueUnavailable, account.Exchange, snapshotErr,
-			)
-		}
-		return snapshot, nil
-	}
-	var snapshotA, snapshotB portfolio.Snapshot
-	if accountA.TradingAccountID == accountB.TradingAccountID {
-		snapshotA, err = loadSnapshot(ctx, accountA)
-		snapshotB = snapshotA
-	} else {
-		group, groupCtx := errgroup.WithContext(ctx)
-		group.Go(func() error {
-			var loadErr error
-			snapshotA, loadErr = loadSnapshot(groupCtx, accountA)
-			return loadErr
-		})
-		group.Go(func() error {
-			var loadErr error
-			snapshotB, loadErr = loadSnapshot(groupCtx, accountB)
-			return loadErr
-		})
-		err = group.Wait()
-	}
+	snapshotA, snapshotB, err := s.preflightSnapshots(ctx, accountA, accountB)
 	if err != nil {
 		return ArbitrageCombination{}, err
 	}
@@ -308,6 +223,7 @@ func (s *Service) CreateArbitrageCombination(
 		ExitAnnualizedRate:                normalized.ExitAnnualizedRate,
 		ExitAfterSeconds:                  normalized.ExitAfterSeconds,
 		EarlyExitFunding8hAnnualizedFloor: normalized.EarlyExitFunding8hAnnualizedFloor,
+		EarlyExitLiquidationDistancePct:   normalized.EarlyExitLiquidationDistancePct,
 		OneShotPhase:                      "",
 		PositionNotional:                  "0", CumulativeTurnoverNotional: "0",
 		MarketDataStale:               true,
@@ -535,9 +451,20 @@ func (s *Service) UpdateArbitrageCombination(
 	if !ok {
 		return ArbitrageCombination{}, ErrNotFound
 	}
-	return store.UpdateArbitrageCombinationConfig(
+	updated, err := store.UpdateArbitrageCombinationConfig(
 		ctx, owner, normalized.CombinationID, normalized,
 	)
+	if err != nil {
+		return ArbitrageCombination{}, err
+	}
+	if s.arbitrageMetrics != nil {
+		if normalized.ExitAnnualizedRate != nil {
+			s.arbitrageMetrics.RequestMetricsRefresh(updated, "exit_annualized_rate")
+		} else {
+			s.arbitrageMetrics.RegisterCombination(updated)
+		}
+	}
+	return updated, nil
 }
 
 func (s *Service) CloseArbitrageCombination(
@@ -576,9 +503,37 @@ func normalizeUpdateArbitrageInput(
 		return UpdateArbitrageInput{}, ErrInvalidArgument
 	}
 	if input.AskThresholdBps == nil && input.BidThresholdBps == nil &&
-		input.TargetNotional == nil {
+		input.TargetNotional == nil && input.ExitAfterSeconds == nil &&
+		input.ExitAnnualizedRate == nil && input.EarlyExitFunding8hAnnualizedFloor == nil &&
+		input.EarlyExitLiquidationDistancePct == nil {
 		return UpdateArbitrageInput{}, fmt.Errorf(
 			"%w: at least one arbitrage parameter is required",
+			ErrInvalidArgument,
+		)
+	}
+	if input.ExitAnnualizedRate != nil && strings.TrimSpace(*input.ExitAnnualizedRate) == "" {
+		return UpdateArbitrageInput{}, fmt.Errorf(
+			"%w: exit annualized rate cannot be cleared",
+			ErrInvalidArgument,
+		)
+	}
+	if input.EarlyExitFunding8hAnnualizedFloor != nil &&
+		strings.TrimSpace(*input.EarlyExitFunding8hAnnualizedFloor) == "" {
+		return UpdateArbitrageInput{}, fmt.Errorf(
+			"%w: 8h funding early-exit floor cannot be cleared",
+			ErrInvalidArgument,
+		)
+	}
+	if input.EarlyExitLiquidationDistancePct != nil &&
+		strings.TrimSpace(*input.EarlyExitLiquidationDistancePct) == "" {
+		return UpdateArbitrageInput{}, fmt.Errorf(
+			"%w: liquidation distance early-exit cannot be cleared",
+			ErrInvalidArgument,
+		)
+	}
+	if input.ExitAfterSeconds != nil && !validOneShotHoldSeconds(*input.ExitAfterSeconds) {
+		return UpdateArbitrageInput{}, fmt.Errorf(
+			"%w: one_shot hold time must be 3600, 14400, 28800, 86400 or 604800 seconds",
 			ErrInvalidArgument,
 		)
 	}
@@ -608,10 +563,31 @@ func normalizeUpdateArbitrageInput(
 		{&input.AskThresholdBps, false},
 		{&input.BidThresholdBps, false},
 		{&input.TargetNotional, true},
+		{&input.ExitAnnualizedRate, true},
 	} {
 		if err := normalize(item.value, item.positive); err != nil {
 			return UpdateArbitrageInput{}, err
 		}
+	}
+	if input.EarlyExitFunding8hAnnualizedFloor != nil {
+		floor, err := normalizeEarlyExitFunding8hFloor(*input.EarlyExitFunding8hAnnualizedFloor)
+		if err != nil {
+			return UpdateArbitrageInput{}, err
+		}
+		input.EarlyExitFunding8hAnnualizedFloor = &floor
+	}
+	if input.EarlyExitLiquidationDistancePct != nil {
+		distance, err := normalizeEarlyExitLiquidationDistancePct(*input.EarlyExitLiquidationDistancePct)
+		if err != nil {
+			return UpdateArbitrageInput{}, err
+		}
+		if distance == "" {
+			return UpdateArbitrageInput{}, fmt.Errorf(
+				"%w: liquidation distance early-exit cannot be cleared",
+				ErrInvalidArgument,
+			)
+		}
+		input.EarlyExitLiquidationDistancePct = &distance
 	}
 	return input, nil
 }
@@ -688,44 +664,55 @@ func normalizeArbitrageInput(input CreateArbitrageInput) (CreateArbitrageInput, 
 				ErrInvalidArgument,
 			)
 		}
-		switch input.ExitPolicy {
-		case "annualized":
-			rate, err := decimal.NewFromString(strings.TrimSpace(input.ExitAnnualizedRate))
+		if input.ExitPolicy != "time" {
+			return CreateArbitrageInput{}, fmt.Errorf(
+				"%w: one_shot exit policy must be time",
+				ErrInvalidArgument,
+			)
+		}
+		if !validOneShotHoldSeconds(input.ExitAfterSeconds) {
+			return CreateArbitrageInput{}, fmt.Errorf(
+				"%w: one_shot hold time must be 3600, 14400, 28800, 86400 or 604800 seconds",
+				ErrInvalidArgument,
+			)
+		}
+		rateRaw := strings.TrimSpace(input.ExitAnnualizedRate)
+		if rateRaw == "" {
+			input.ExitAnnualizedRate = ""
+		} else {
+			rate, err := decimal.NewFromString(rateRaw)
 			if err != nil || !rate.IsPositive() {
 				return CreateArbitrageInput{}, fmt.Errorf(
-					"%w: one_shot annualized exit rate is required",
+					"%w: one_shot annualized exit rate must be positive",
+					ErrInvalidArgument,
+				)
+			}
+			printed := strings.ToLower(rate.String())
+			if printed == "nan" || strings.Contains(printed, "inf") {
+				return CreateArbitrageInput{}, fmt.Errorf(
+					"%w: one_shot annualized exit rate must be positive",
 					ErrInvalidArgument,
 				)
 			}
 			input.ExitAnnualizedRate = rate.String()
-			input.ExitAfterSeconds = 0
-		case "time":
-			switch input.ExitAfterSeconds {
-			case 3600, 14400, 28800, 86400, 604800:
-			default:
-				return CreateArbitrageInput{}, fmt.Errorf(
-					"%w: one_shot hold time must be 3600, 14400, 28800, 86400 or 604800 seconds",
-					ErrInvalidArgument,
-				)
-			}
-			input.ExitAnnualizedRate = ""
-		default:
-			return CreateArbitrageInput{}, fmt.Errorf(
-				"%w: one_shot exit policy must be annualized or time",
-				ErrInvalidArgument,
-			)
 		}
 		floor, err := normalizeEarlyExitFunding8hFloor(input.EarlyExitFunding8hAnnualizedFloor)
 		if err != nil {
 			return CreateArbitrageInput{}, err
 		}
 		input.EarlyExitFunding8hAnnualizedFloor = floor
+		distance, err := normalizeEarlyExitLiquidationDistancePct(input.EarlyExitLiquidationDistancePct)
+		if err != nil {
+			return CreateArbitrageInput{}, err
+		}
+		input.EarlyExitLiquidationDistancePct = distance
 	} else {
 		input.EntryDirection = ""
 		input.ExitPolicy = ""
 		input.ExitAnnualizedRate = ""
 		input.ExitAfterSeconds = 0
 		input.EarlyExitFunding8hAnnualizedFloor = ""
+		input.EarlyExitLiquidationDistancePct = ""
 	}
 	return input, nil
 }
@@ -748,6 +735,41 @@ func normalizeEarlyExitFunding8hFloor(raw string) (string, error) {
 		return "", fmt.Errorf("%w: invalid 8h funding early-exit floor", ErrInvalidArgument)
 	}
 	return value.String(), nil
+}
+
+func normalizeEarlyExitLiquidationDistancePct(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	if strings.Contains(trimmed, "%") {
+		return "", fmt.Errorf("%w: invalid liquidation distance early-exit", ErrInvalidArgument)
+	}
+	switch strings.ToLower(trimmed) {
+	case "nan", "+nan", "-nan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity":
+		return "", fmt.Errorf("%w: invalid liquidation distance early-exit", ErrInvalidArgument)
+	}
+	value, err := decimal.NewFromString(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("%w: invalid liquidation distance early-exit", ErrInvalidArgument)
+	}
+	printed := strings.ToLower(value.String())
+	if printed == "nan" || strings.Contains(printed, "inf") {
+		return "", fmt.Errorf("%w: invalid liquidation distance early-exit", ErrInvalidArgument)
+	}
+	if !value.IsPositive() || !value.LessThan(decimal.NewFromInt(100)) {
+		return "", fmt.Errorf("%w: liquidation distance early-exit must be between 0 and 100", ErrInvalidArgument)
+	}
+	return value.String(), nil
+}
+
+func validOneShotHoldSeconds(seconds int) bool {
+	switch seconds {
+	case 3600, 14400, 28800, 86400, 604800:
+		return true
+	default:
+		return false
+	}
 }
 
 func validArbitrageInstrumentPair(
@@ -805,6 +827,7 @@ func arbitrageFingerprint(item ArbitrageCombination) string {
 		item.RunMode, item.EntryDirection, item.LegALeverage, item.LegBLeverage,
 		item.ExitPolicy, item.ExitAnnualizedRate, strconv.Itoa(item.ExitAfterSeconds),
 		item.EarlyExitFunding8hAnnualizedFloor,
+		item.EarlyExitLiquidationDistancePct,
 	}
 	sum := sha256.Sum256([]byte(strings.Join(values, "|")))
 	return hex.EncodeToString(sum[:])
@@ -826,7 +849,8 @@ func sameArbitrageRequest(left, right ArbitrageCombination) bool {
 		left.ExitPolicy != right.ExitPolicy ||
 		left.ExitAnnualizedRate != right.ExitAnnualizedRate ||
 		left.ExitAfterSeconds != right.ExitAfterSeconds ||
-		left.EarlyExitFunding8hAnnualizedFloor != right.EarlyExitFunding8hAnnualizedFloor {
+		left.EarlyExitFunding8hAnnualizedFloor != right.EarlyExitFunding8hAnnualizedFloor ||
+		left.EarlyExitLiquidationDistancePct != right.EarlyExitLiquidationDistancePct {
 		return false
 	}
 	if strings.EqualFold(strings.TrimSpace(left.RunMode), "one_shot") &&

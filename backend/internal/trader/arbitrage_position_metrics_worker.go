@@ -16,10 +16,9 @@ type arbitrageBBOSource interface {
 }
 
 type arbitrageMetricsPersistJob struct {
-	item ArbitrageCombination
-	midA string
-	midB string
-	now  time.Time
+	item   ArbitrageCombination
+	quotes arbitrageMetricsQuotes
+	now    time.Time
 }
 
 type arbitrageFillAverageCompensator interface {
@@ -36,6 +35,7 @@ type ArbitragePositionMetricsWorker struct {
 	store       arbitragePositionMetricsStore
 	market      arbitrageBBOSource
 	compensator arbitrageFillAverageCompensator
+	exitSignal  oneShotExitSignaler
 	interval    time.Duration
 	logger      *slog.Logger
 	mu          sync.Mutex
@@ -68,6 +68,13 @@ func (w *ArbitragePositionMetricsWorker) ConfigureFillAverageCompensator(
 	compensator arbitrageFillAverageCompensator,
 ) {
 	w.compensator = compensator
+}
+
+func (w *ArbitragePositionMetricsWorker) ConfigureExitSignal(signaler oneShotExitSignaler) {
+	if w == nil {
+		return
+	}
+	w.exitSignal = signaler
 }
 
 func (w *ArbitragePositionMetricsWorker) Run(ctx context.Context) {
@@ -103,15 +110,25 @@ func (w *ArbitragePositionMetricsWorker) refreshAt(ctx context.Context, now time
 }
 
 func (w *ArbitragePositionMetricsWorker) RegisterCombination(item ArbitrageCombination) {
-	if w == nil || strings.ToLower(strings.TrimSpace(item.Status)) != "running" || item.ID == "" {
+	if w == nil || item.ID == "" {
+		return
+	}
+	if !oneShotPeriodicMetricsEligible(item) {
+		w.UnregisterCombination(item.ID)
 		return
 	}
 	now := time.Now().UTC()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if existing, ok := w.members[item.ID]; ok {
+		versionChanged := existing.combo.Version != item.Version ||
+			existing.combo.ExitAnnualizedRate != item.ExitAnnualizedRate
 		existing.pinned = true
 		existing.combo = item
+		if versionChanged {
+			existing.nextDueAt = time.Time{}
+			delete(w.exitState, item.ID)
+		}
 		return
 	}
 	w.members[item.ID] = &metricsMember{
@@ -119,6 +136,34 @@ func (w *ArbitragePositionMetricsWorker) RegisterCombination(item ArbitrageCombi
 		nextDueAt: metricsDueAtOnRegister(item.CreatedAt, item.MetricsCalculatedAt, now),
 		pinned:    true,
 	}
+}
+
+func (w *ArbitragePositionMetricsWorker) RequestMetricsRefresh(
+	item ArbitrageCombination,
+	reason string,
+) {
+	if w == nil || item.ID == "" {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.exitState, item.ID)
+	if !oneShotPeriodicMetricsEligible(item) {
+		w.removeMemberLocked(item.ID)
+		return
+	}
+	if existing, ok := w.members[item.ID]; ok {
+		existing.combo = item
+		existing.pinned = true
+		existing.nextDueAt = time.Time{}
+		return
+	}
+	w.members[item.ID] = &metricsMember{
+		combo:     item,
+		nextDueAt: time.Time{},
+		pinned:    true,
+	}
+	_ = reason
 }
 
 func (w *ArbitragePositionMetricsWorker) UnregisterCombination(id string) {
@@ -183,6 +228,9 @@ func (w *ArbitragePositionMetricsWorker) collectDue(now time.Time) []arbitrageMe
 		if _, active := w.inFlight[id]; active {
 			continue
 		}
+		if !oneShotPeriodicMetricsEligible(member.combo) {
+			continue
+		}
 		if !member.nextDueAt.IsZero() && member.nextDueAt.After(now) {
 			continue
 		}
@@ -193,8 +241,12 @@ func (w *ArbitragePositionMetricsWorker) collectDue(now time.Time) []arbitrageMe
 	}
 	w.mu.Unlock()
 	for index := range due {
-		midA, midB, _ := combinationBBOMids(w.market, due[index].item)
-		due[index].midA, due[index].midB = midA, midB
+		quotes, ok := combinationBBOQuotes(w.market, due[index].item, due[index].now)
+		due[index].quotes = quotes
+		if !ok {
+			w.logger.Info("arbitrage metrics quotes stale",
+				"combination_id", due[index].item.ID)
+		}
 	}
 	return due
 }
@@ -216,7 +268,7 @@ func (w *ArbitragePositionMetricsWorker) persistDue(
 			return
 		}
 		result, persistErr := w.store.PersistRunningArbitragePositionMetrics(
-			ctx, job.item.ID, job.midA, job.midB, job.now,
+			ctx, job.item.ID, job.quotes, job.now,
 		)
 		w.applyPersistResult(job.item.ID, job.now, result, persistErr)
 		if persistErr != nil && ctx.Err() == nil {
@@ -435,8 +487,8 @@ func (w *ArbitragePositionMetricsWorker) sampleExit(
 	if !ready {
 		return
 	}
-	_, applied, err := w.store.MarkOneShotExiting(
-		ctx, id, state.basis.Version, "annualized", nil,
+	updated, applied, err := w.store.MarkOneShotAnnualizedExiting(
+		ctx, annualizedExitGuard(state.basis),
 	)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -445,14 +497,43 @@ func (w *ArbitragePositionMetricsWorker) sampleExit(
 		}
 		return
 	}
+	if !applied {
+		w.logger.Info("one-shot annualized exit guard rejected",
+			"combination_id", id,
+			"basis_version", state.basis.Version,
+			"metrics_calculated_at", state.basis.CalculatedAt,
+		)
+		w.rejectAnnualizedExit(id, state.basis)
+		return
+	}
+	if w.exitSignal != nil {
+		w.exitSignal.SignalOneShotExit(id, updated.Version, "annualized")
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	current, ok = w.exitState[id]
 	if !ok {
 		return
 	}
-	if applied || current.basis.Version == state.basis.Version {
+	if current.basis.Version == state.basis.Version &&
+		current.basis.CalculatedAt.Equal(state.basis.CalculatedAt) {
 		delete(w.exitState, id)
+	}
+}
+
+func (w *ArbitragePositionMetricsWorker) rejectAnnualizedExit(
+	id string,
+	basis oneShotExitBasis,
+) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if current, ok := w.exitState[id]; ok &&
+		current.basis.Version == basis.Version &&
+		current.basis.CalculatedAt.Equal(basis.CalculatedAt) {
+		delete(w.exitState, id)
+	}
+	if member, ok := w.members[id]; ok {
+		member.nextDueAt = time.Time{}
 	}
 }
 
@@ -497,19 +578,38 @@ func nextMetricsPhaseAfter(createdAt, now time.Time) time.Time {
 	return next
 }
 
-func combinationBBOMids(
+func combinationBBOQuotes(
 	market arbitrageBBOSource,
 	item ArbitrageCombination,
-) (string, string, bool) {
-	if market == nil {
-		return "", "", false
+	now time.Time,
+) (arbitrageMetricsQuotes, bool) {
+	quotes := arbitrageMetricsQuotes{}
+	bboA, okA := latestLegBBO(market, item.LegA)
+	bboB, okB := latestLegBBO(market, item.LegB)
+	if okA {
+		quotes.BidA, quotes.AskA = bboA.BidPrice, bboA.AskPrice
+		quotes.ReceivedA = bboA.ReceiveTimestamp
+		if mid, ok := bboMid(bboA); ok {
+			quotes.MidA = mid
+		}
 	}
-	midA, okA := legBBOMid(market, item.LegA)
-	midB, okB := legBBOMid(market, item.LegB)
-	if !okA || !okB {
-		return "", "", false
+	if okB {
+		quotes.BidB, quotes.AskB = bboB.BidPrice, bboB.AskPrice
+		quotes.ReceivedB = bboB.ReceiveTimestamp
+		if mid, ok := bboMid(bboB); ok {
+			quotes.MidB = mid
+		}
 	}
-	return midA, midB, true
+	return quotes, quotes.fresh(now)
+}
+
+func bboMid(bbo marketdata.BBO) (string, bool) {
+	bid, errBid := decimal.NewFromString(bbo.BidPrice)
+	ask, errAsk := decimal.NewFromString(bbo.AskPrice)
+	if errBid != nil || errAsk != nil || !bid.IsPositive() || !ask.IsPositive() {
+		return "", false
+	}
+	return bid.Add(ask).Div(decimal.NewFromInt(2)).String(), true
 }
 
 func latestLegBBO(market arbitrageBBOSource, leg ArbitrageLeg) (marketdata.BBO, bool) {

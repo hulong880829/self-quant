@@ -7,6 +7,7 @@ import (
 
 func TestTraderArbitrageDefaults(t *testing.T) {
 	t.Setenv("TRADER_INTERNAL_TOKEN", "test-token")
+	t.Setenv("ADMIN_INTERNAL_TOKEN", "admin-token")
 	config, err := TraderFromEnv()
 	if err != nil {
 		t.Fatal(err)
@@ -48,6 +49,7 @@ func TestTraderArbitrageDefaults(t *testing.T) {
 
 func TestTraderMarketDataRejectsInvalidHeartbeatRange(t *testing.T) {
 	t.Setenv("TRADER_INTERNAL_TOKEN", "test-token")
+	t.Setenv("ADMIN_INTERNAL_TOKEN", "admin-token")
 	t.Setenv("TRADER_ARBITRAGE_BBO_HEARTBEAT", "45s")
 	t.Setenv("TRADER_ARBITRAGE_BBO_READ_WAIT", "45s")
 	if _, err := TraderFromEnv(); err == nil {
@@ -57,6 +59,7 @@ func TestTraderMarketDataRejectsInvalidHeartbeatRange(t *testing.T) {
 
 func TestTraderMarketDataRejectsInvalidReconnectRange(t *testing.T) {
 	t.Setenv("TRADER_INTERNAL_TOKEN", "test-token")
+	t.Setenv("ADMIN_INTERNAL_TOKEN", "admin-token")
 	t.Setenv("TRADER_ARBITRAGE_BBO_RECONNECT_INITIAL", "10s")
 	t.Setenv("TRADER_ARBITRAGE_BBO_RECONNECT_MAX", "1s")
 	if _, err := TraderFromEnv(); err == nil {
@@ -66,6 +69,7 @@ func TestTraderMarketDataRejectsInvalidReconnectRange(t *testing.T) {
 
 func TestTraderOrderStreamRejectsInvalidReconnectRange(t *testing.T) {
 	t.Setenv("TRADER_INTERNAL_TOKEN", "test-token")
+	t.Setenv("ADMIN_INTERNAL_TOKEN", "admin-token")
 	t.Setenv("TRADER_ORDER_STREAM_RECONNECT_INITIAL", "10s")
 	t.Setenv("TRADER_ORDER_STREAM_RECONNECT_MAX", "1s")
 	if _, err := TraderFromEnv(); err == nil {
@@ -75,6 +79,7 @@ func TestTraderOrderStreamRejectsInvalidReconnectRange(t *testing.T) {
 
 func TestTraderArbitrageConfigRejectsNonPositiveDuration(t *testing.T) {
 	t.Setenv("TRADER_INTERNAL_TOKEN", "test-token")
+	t.Setenv("ADMIN_INTERNAL_TOKEN", "admin-token")
 	t.Setenv("TRADER_ARBITRAGE_BBO_STALE", "0s")
 	if _, err := TraderFromEnv(); err == nil {
 		t.Fatal("expected non-positive BBO stale duration to fail")
@@ -83,6 +88,7 @@ func TestTraderArbitrageConfigRejectsNonPositiveDuration(t *testing.T) {
 
 func TestTraderArbitrageConfigRejectsNonPositiveSignalBBOStale(t *testing.T) {
 	t.Setenv("TRADER_INTERNAL_TOKEN", "test-token")
+	t.Setenv("ADMIN_INTERNAL_TOKEN", "admin-token")
 	t.Setenv("TRADER_ARBITRAGE_SIGNAL_BBO_STALE", "0s")
 	if _, err := TraderFromEnv(); err == nil {
 		t.Fatal("expected non-positive signal BBO stale duration to fail")
@@ -91,6 +97,7 @@ func TestTraderArbitrageConfigRejectsNonPositiveSignalBBOStale(t *testing.T) {
 
 func TestTraderArbitrageConfigRejectsNonPositiveControlInterval(t *testing.T) {
 	t.Setenv("TRADER_INTERNAL_TOKEN", "test-token")
+	t.Setenv("ADMIN_INTERNAL_TOKEN", "admin-token")
 	t.Setenv("TRADER_ARBITRAGE_CONTROL_INTERVAL", "0s")
 	if _, err := TraderFromEnv(); err == nil {
 		t.Fatal("expected non-positive control interval to fail")
@@ -99,6 +106,7 @@ func TestTraderArbitrageConfigRejectsNonPositiveControlInterval(t *testing.T) {
 
 func TestTraderArbitrageConfigRejectsCoalesceWindowOutsideBounds(t *testing.T) {
 	t.Setenv("TRADER_INTERNAL_TOKEN", "test-token")
+	t.Setenv("ADMIN_INTERNAL_TOKEN", "admin-token")
 	t.Setenv("TRADER_ARBITRAGE_COALESCE_WINDOW", "19ms")
 	if _, err := TraderFromEnv(); err == nil {
 		t.Fatal("expected too-small coalesce window to fail")
@@ -111,6 +119,7 @@ func TestTraderArbitrageConfigRejectsCoalesceWindowOutsideBounds(t *testing.T) {
 
 func TestTraderHedgeEmergencyAfterConfig(t *testing.T) {
 	t.Setenv("TRADER_INTERNAL_TOKEN", "test-token")
+	t.Setenv("ADMIN_INTERNAL_TOKEN", "admin-token")
 	t.Setenv("TRADER_ARBITRAGE_HEDGE_EMERGENCY_AFTER", "0")
 	config, err := TraderFromEnv()
 	if err != nil {

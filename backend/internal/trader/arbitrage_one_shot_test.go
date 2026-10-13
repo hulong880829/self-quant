@@ -156,26 +156,25 @@ func TestMaybeMarkOneShotTimeExitingFlipsOnce(t *testing.T) {
 }
 
 func TestMaybeMarkOneShotWaitingExitSchedulesSevenDays(t *testing.T) {
+	created := time.Now().UTC().Add(-time.Hour)
+	scheduled := created.Add(7 * 24 * time.Hour)
 	store := &dryRunStore{item: ArbitrageCombination{
 		ID: "combo-7d", Status: "running", RunMode: "one_shot",
 		OneShotPhase: "building_target", ExitPolicy: "time",
 		ExitAfterSeconds: 604800, TargetNotional: "10000",
 		LegABasePosition: "1", LegBBasePosition: "-1",
 		LastPositionReconciledAt: time.Now().UTC(),
+		CreatedAt:                created,
+		ScheduledExitAt:          scheduled,
 	}}
 	scheduler := &ArbitrageScheduler{store: store}
 	runtime := &arbitrageRuntime{combination: store.item}
-	before := time.Now().UTC()
 	scheduler.maybeMarkOneShotWaitingExit(context.Background(), runtime, decimal.Zero)
 	if runtime.combination.OneShotPhase != "waiting_exit" {
 		t.Fatalf("phase=%s", runtime.combination.OneShotPhase)
 	}
-	delta := runtime.combination.ScheduledExitAt.Sub(runtime.combination.TargetReachedAt)
-	if delta < 7*24*time.Hour-2*time.Second || delta > 7*24*time.Hour+2*time.Second {
-		t.Fatalf("scheduled delta=%s", delta)
-	}
-	if runtime.combination.ScheduledExitAt.Before(before.Add(7 * 24 * time.Hour).Add(-2 * time.Second)) {
-		t.Fatalf("scheduled=%s", runtime.combination.ScheduledExitAt)
+	if !runtime.combination.ScheduledExitAt.Equal(scheduled) {
+		t.Fatalf("scheduled=%s want=%s", runtime.combination.ScheduledExitAt, scheduled)
 	}
 }
 

@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/go-chi/chi/v5"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -55,6 +57,15 @@ func TestTraderArbitrageJSONMatchesWebContract(t *testing.T) {
 		},
 		MarketDataStale:                    true,
 		EarlyExitFunding_8HAnnualizedFloor: "0.05",
+		EarlyExitLiquidationDistancePct:    "20",
+		LegALiquidationDistancePct:         "18.42",
+		FinalMetrics: &traderv1.ArbitrageFinalMetrics{
+			Status: "completed", RetryCount: 1, RealizedSpreadPnl: "12",
+			EstimatedFundingPnl: "3", EstimatedTradingFee: "1",
+			CombinedPositionAnnualized: "0.18", MetricsQuality: "estimated",
+			HoldingSeconds: "3600", NotionalExposureSeconds: "3600000",
+			CalculatedAt: timestamppb.Now(), CompletedAt: timestamppb.Now(),
+		},
 	})
 	if result["productName"] != "ARBITRAGE" || result["preferredLeg"] != "a" ||
 		result["runtimeState"] != "monitoring" || result["carryBaseQuantity"] != "0" ||
@@ -79,6 +90,50 @@ func TestTraderArbitrageJSONMatchesWebContract(t *testing.T) {
 	if result["earlyExitFunding8hAnnualizedFloor"] != "0.05" {
 		t.Fatalf("earlyExitFunding8hAnnualizedFloor=%v", result["earlyExitFunding8hAnnualizedFloor"])
 	}
+	if result["earlyExitLiquidationDistancePct"] != "20" {
+		t.Fatalf("earlyExitLiquidationDistancePct=%v", result["earlyExitLiquidationDistancePct"])
+	}
+	if result["legALiquidationDistancePct"] != "18.42" || result["legBLiquidationDistancePct"] != nil {
+		t.Fatalf("liquidation distance=%v %v", result["legALiquidationDistancePct"], result["legBLiquidationDistancePct"])
+	}
+	finalMetrics, _ := result["finalMetrics"].(map[string]any)
+	if finalMetrics["status"] != "completed" ||
+		finalMetrics["estimatedTradingFee"] != "1" ||
+		finalMetrics["metricsQuality"] != "estimated" {
+		t.Fatalf("finalMetrics=%v", finalMetrics)
+	}
+}
+
+func TestTraderArbitrageEventJSONPreservesMessageAndPayloadFallback(t *testing.T) {
+	event := traderArbitrageEventJSON(&traderv1.ArbitrageEvent{
+		Id: "1", Type: "legacy", Message: `["legacy"]`, CreatedAt: timestamppb.Now(),
+	})
+	if event["payload"] != nil || event["message"] != `["legacy"]` {
+		t.Fatalf("event=%v", event)
+	}
+}
+
+func TestArbitrageHistoryRequestValidation(t *testing.T) {
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/trader/arbitrage-combinations/combo/events?limit=101",
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+	if _, ok := arbitrageHistoryRequest(recorder, request, "token"); ok ||
+		recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	request = httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/trader/arbitrage-combinations/combo/events?limit=25&from=2026-10-13T00:00:00Z",
+		nil,
+	)
+	recorder = httptest.NewRecorder()
+	query, ok := arbitrageHistoryRequest(recorder, request, "token")
+	if !ok || query.GetLimit() != 25 || query.GetFrom() == nil {
+		t.Fatalf("query=%v status=%d body=%s", query, recorder.Code, recorder.Body.String())
+	}
 }
 
 func TestUpdateArbitrageCombinationRejectsUnknownAndEmptyPayloads(t *testing.T) {
@@ -89,7 +144,9 @@ func TestUpdateArbitrageCombinationRejectsUnknownAndEmptyPayloads(t *testing.T) 
 	}{
 		{name: "unknown field", body: `{"targetNotional":"1000","unexpected":true}`},
 		{name: "empty update", body: `{}`},
-		{name: "order notional", body: `{"targetNotional":"1000","orderNotional":"500"}`},
+		{name: "empty exit annualized rate", body: `{"exitAnnualizedRate":""}`},
+		{name: "empty 8h floor", body: `{"earlyExitFunding8hAnnualizedFloor":""}`},
+		{name: "empty liquidation distance", body: `{"earlyExitLiquidationDistancePct":""}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -105,6 +162,124 @@ func TestUpdateArbitrageCombinationRejectsUnknownAndEmptyPayloads(t *testing.T) 
 				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+type capturingUpdateTrader struct {
+	traderv1.TraderServiceClient
+	got *traderv1.UpdateArbitrageCombinationRequest
+}
+
+func (s *capturingUpdateTrader) UpdateArbitrageCombination(
+	_ context.Context,
+	in *traderv1.UpdateArbitrageCombinationRequest,
+	_ ...grpc.CallOption,
+) (*traderv1.UpdateArbitrageCombinationResponse, error) {
+	s.got = in
+	createdAt := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+	return &traderv1.UpdateArbitrageCombinationResponse{
+		Combination: &traderv1.ArbitrageCombination{
+			Id:                              in.GetCombinationId(),
+			TargetNotional:                  in.GetTargetNotional(),
+			ExitAfterSeconds:                in.GetExitAfterSeconds(),
+			EarlyExitLiquidationDistancePct: in.GetEarlyExitLiquidationDistancePct(),
+			CreatedAt:                       timestamppb.New(createdAt),
+			ScheduledExitAt:                 timestamppb.New(createdAt.Add(4 * time.Hour)),
+		},
+	}, nil
+}
+
+func TestUpdateArbitrageCombinationForwardsP0Fields(t *testing.T) {
+	stub := &capturingUpdateTrader{}
+	handler := &Handler{sessionCookieName: "sq_session", trader: stub}
+	router := chi.NewRouter()
+	router.Patch(
+		"/api/v1/trader/arbitrage-combinations/{id}",
+		handler.updateArbitrageCombination,
+	)
+	request := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/v1/trader/arbitrage-combinations/combo-1",
+		strings.NewReader(
+			`{"targetNotional":"12000","exitAfterSeconds":14400,`+
+				`"earlyExitLiquidationDistancePct":"15"}`,
+		),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(&http.Cookie{Name: "sq_session", Value: "token"})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if stub.got.GetCombinationId() != "combo-1" ||
+		stub.got.GetTargetNotional() != "12000" ||
+		stub.got.GetExitAfterSeconds() != 14400 ||
+		stub.got.GetEarlyExitLiquidationDistancePct() != "15" {
+		t.Fatalf("forwarded=%v", stub.got)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := payload["data"].(map[string]any)
+	if data["targetNotional"] != "12000" ||
+		data["earlyExitLiquidationDistancePct"] != "15" ||
+		data["scheduledExitAt"] != "2026-10-13T04:00:00Z" {
+		t.Fatalf("data=%v", data)
+	}
+}
+
+type capturingPreflightTrader struct {
+	traderv1.TraderServiceClient
+	got *traderv1.PreflightArbitrageCombinationRequest
+}
+
+func (s *capturingPreflightTrader) PreflightArbitrageCombination(
+	_ context.Context,
+	in *traderv1.PreflightArbitrageCombinationRequest,
+	_ ...grpc.CallOption,
+) (*traderv1.PreflightArbitrageCombinationResponse, error) {
+	s.got = in
+	now := time.Now().UTC()
+	return &traderv1.PreflightArbitrageCombinationResponse{
+		Executable: true, CheckedAt: timestamppb.New(now),
+		ExpiresAt: timestamppb.New(now.Add(3 * time.Second)),
+		LegA: &traderv1.PreflightLeg{
+			AvailableFunds: &traderv1.PreflightDecimal{Value: "500", Status: "known"},
+			EstimatedFee:   &traderv1.PreflightDecimal{Status: "unknown"},
+		},
+		LegB: &traderv1.PreflightLeg{},
+		Warnings: []*traderv1.PreflightWarning{{
+			Code: "fee_unknown", Leg: "a", Exchange: "binance",
+		}},
+	}, nil
+}
+
+func TestPreflightArbitrageCombinationHTTP(t *testing.T) {
+	stub := &capturingPreflightTrader{}
+	handler := &Handler{sessionCookieName: "sq_session", trader: stub}
+	request := httptest.NewRequest(
+		http.MethodPost, "/api/v1/trader/arbitrage-combinations/preflight",
+		strings.NewReader(`{"legAAccountId":1,"legAInstrumentId":11,"legBAccountId":2,`+
+			`"legBInstrumentId":22,"targetNotional":"1000","executionMode":"maker_then_hedge",`+
+			`"preferredLeg":"a"}`),
+	)
+	request.AddCookie(&http.Cookie{Name: "sq_session", Value: "token"})
+	recorder := httptest.NewRecorder()
+	handler.preflightArbitrageCombination(recorder, request)
+	if recorder.Code != http.StatusOK || stub.got.GetTargetNotional() != "1000" {
+		t.Fatalf("status=%d request=%v body=%s", recorder.Code, stub.got, recorder.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := payload["data"].(map[string]any)
+	legA, _ := data["legA"].(map[string]any)
+	fee, _ := legA["estimatedFee"].(map[string]any)
+	if data["executable"] != true || fee["status"] != "unknown" || fee["value"] != nil {
+		t.Fatalf("data=%v", data)
 	}
 }
 
@@ -144,6 +319,14 @@ func TestWriteTraderErrorMappings(t *testing.T) {
 		{
 			name: "rejected", err: status.Error(codes.FailedPrecondition, "venue rejected order"),
 			statusCode: http.StatusUnprocessableEntity, message: "venue rejected order",
+		},
+		{
+			name: "unauthenticated", err: status.Error(codes.Unauthenticated, "invalid session"),
+			statusCode: http.StatusUnauthorized, message: "authentication required",
+		},
+		{
+			name: "not found", err: status.Error(codes.NotFound, "missing"),
+			statusCode: http.StatusNotFound, message: "not found",
 		},
 	}
 	handler := &Handler{}
@@ -287,6 +470,7 @@ func TestCreateArbitrageCombinationRejectsOrderNotional(t *testing.T) {
 type stubCreateTrader struct {
 	traderv1.TraderServiceClient
 	got *traderv1.CreateArbitrageCombinationRequest
+	err error
 }
 
 func (s *stubCreateTrader) CreateArbitrageCombination(
@@ -295,6 +479,9 @@ func (s *stubCreateTrader) CreateArbitrageCombination(
 	_ ...grpc.CallOption,
 ) (*traderv1.CreateArbitrageCombinationResponse, error) {
 	s.got = in
+	if s.err != nil {
+		return nil, s.err
+	}
 	return &traderv1.CreateArbitrageCombinationResponse{
 		Combination: &traderv1.ArbitrageCombination{
 			Id:                                 "combo-1",
@@ -340,5 +527,226 @@ func TestCreateArbitrageCombinationPassesFunding8hFloor(t *testing.T) {
 				t.Fatalf("json floor=%v want=%q", data["earlyExitFunding8hAnnualizedFloor"], tc.want)
 			}
 		})
+	}
+}
+
+type capturingPlaceTrader struct {
+	traderv1.TraderServiceClient
+	got *traderv1.PlaceOrderRequest
+	err error
+}
+
+func (s *capturingPlaceTrader) PlaceOrder(
+	_ context.Context,
+	in *traderv1.PlaceOrderRequest,
+	_ ...grpc.CallOption,
+) (*traderv1.PlaceOrderResponse, error) {
+	s.got = in
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &traderv1.PlaceOrderResponse{
+		Order: &traderv1.Order{Id: "ord-1", IdempotencyKey: in.GetIdempotencyKey()},
+	}, nil
+}
+
+type capturingTwapTrader struct {
+	traderv1.TraderServiceClient
+	got *traderv1.CreateTwapRequest
+	err error
+}
+
+func (s *capturingTwapTrader) CreateTwap(
+	_ context.Context,
+	in *traderv1.CreateTwapRequest,
+	_ ...grpc.CallOption,
+) (*traderv1.CreateTwapResponse, error) {
+	s.got = in
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &traderv1.CreateTwapResponse{Job: &traderv1.TwapJob{Id: "twap-1"}}, nil
+}
+
+type capturingCloseTrader struct {
+	traderv1.TraderServiceClient
+}
+
+func (s *capturingCloseTrader) CloseArbitrageCombination(
+	_ context.Context,
+	_ *traderv1.CloseArbitrageCombinationRequest,
+	_ ...grpc.CallOption,
+) (*traderv1.CloseArbitrageCombinationResponse, error) {
+	return &traderv1.CloseArbitrageCombinationResponse{
+		Combination: &traderv1.ArbitrageCombination{Id: "combo-1", Status: "closing"},
+	}, nil
+}
+
+func TestGatewayIdempotencyKeyValidationAndForwarding(t *testing.T) {
+	stub := &capturingPlaceTrader{}
+	handler := &Handler{sessionCookieName: "sq_session", trader: stub}
+	missing := httptest.NewRequest(
+		http.MethodPost, "/api/v1/trader/orders",
+		strings.NewReader(`{"tradingAccountId":1,"instrumentId":2,"side":"buy","orderType":"limit","quantity":"1","price":"10"}`),
+	)
+	missing.Header.Set("Content-Type", "application/json")
+	missing.AddCookie(&http.Cookie{Name: "sq_session", Value: "token"})
+	recorder := httptest.NewRecorder()
+	handler.placeTraderOrder(recorder, missing)
+	if recorder.Code != http.StatusBadRequest ||
+		!strings.Contains(recorder.Body.String(), "idempotency key is required") {
+		t.Fatalf("missing key status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	headerKey := "11111111-1111-1111-1111-111111111111"
+	withHeader := httptest.NewRequest(
+		http.MethodPost, "/api/v1/trader/orders",
+		strings.NewReader(`{"tradingAccountId":1,"instrumentId":2,"side":"buy","orderType":"limit","quantity":"1","price":"10"}`),
+	)
+	withHeader.Header.Set("Content-Type", "application/json")
+	withHeader.Header.Set("Idempotency-Key", headerKey)
+	withHeader.AddCookie(&http.Cookie{Name: "sq_session", Value: "token"})
+	recorder = httptest.NewRecorder()
+	handler.placeTraderOrder(recorder, withHeader)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("header key status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if stub.got.GetIdempotencyKey() != headerKey {
+		t.Fatalf("forwarded=%q", stub.got.GetIdempotencyKey())
+	}
+
+	bodyKey := "22222222-2222-2222-2222-222222222222"
+	withBody := httptest.NewRequest(
+		http.MethodPost, "/api/v1/trader/orders",
+		strings.NewReader(`{"tradingAccountId":1,"instrumentId":2,"side":"buy","orderType":"limit","quantity":"1","price":"10","idempotencyKey":"`+bodyKey+`"}`),
+	)
+	withBody.Header.Set("Content-Type", "application/json")
+	withBody.AddCookie(&http.Cookie{Name: "sq_session", Value: "token"})
+	recorder = httptest.NewRecorder()
+	handler.placeTraderOrder(recorder, withBody)
+	if recorder.Code != http.StatusAccepted || stub.got.GetIdempotencyKey() != bodyKey {
+		t.Fatalf("body key status=%d forwarded=%q", recorder.Code, stub.got.GetIdempotencyKey())
+	}
+
+	stub.err = status.Error(codes.AlreadyExists, "idempotency key conflict")
+	conflict := httptest.NewRequest(
+		http.MethodPost, "/api/v1/trader/orders",
+		strings.NewReader(`{"tradingAccountId":1,"instrumentId":2,"side":"buy","orderType":"limit","quantity":"1","price":"10"}`),
+	)
+	conflict.Header.Set("Content-Type", "application/json")
+	conflict.Header.Set("Idempotency-Key", headerKey)
+	conflict.AddCookie(&http.Cookie{Name: "sq_session", Value: "token"})
+	recorder = httptest.NewRecorder()
+	handler.placeTraderOrder(recorder, conflict)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("conflict status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestGatewayTwapAndArbitrageIdempotencyMapping(t *testing.T) {
+	twap := &capturingTwapTrader{}
+	handler := &Handler{sessionCookieName: "sq_session", trader: twap}
+	missing := httptest.NewRequest(
+		http.MethodPost, "/api/v1/trader/twaps",
+		strings.NewReader(`{"tradingAccountId":1,"instrumentId":2,"side":"buy","totalQuantity":"1","startAt":"2026-01-01T00:00:00Z","endAt":"2026-01-01T01:00:00Z","intervalSeconds":60,"executionType":"market"}`),
+	)
+	missing.Header.Set("Content-Type", "application/json")
+	missing.AddCookie(&http.Cookie{Name: "sq_session", Value: "token"})
+	recorder := httptest.NewRecorder()
+	handler.createTraderTwap(recorder, missing)
+	if recorder.Code != http.StatusBadRequest ||
+		!strings.Contains(recorder.Body.String(), "idempotency key is required") {
+		t.Fatalf("twap missing key status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	key := "33333333-3333-3333-3333-333333333333"
+	ok := httptest.NewRequest(
+		http.MethodPost, "/api/v1/trader/twaps",
+		strings.NewReader(`{"tradingAccountId":1,"instrumentId":2,"side":"buy","totalQuantity":"1","startAt":"2026-01-01T00:00:00Z","endAt":"2026-01-01T01:00:00Z","intervalSeconds":60,"executionType":"market"}`),
+	)
+	ok.Header.Set("Content-Type", "application/json")
+	ok.Header.Set("Idempotency-Key", key)
+	ok.AddCookie(&http.Cookie{Name: "sq_session", Value: "token"})
+	recorder = httptest.NewRecorder()
+	handler.createTraderTwap(recorder, ok)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("twap create status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if twap.got.GetIdempotencyKey() != key {
+		t.Fatalf("twap forwarded=%q", twap.got.GetIdempotencyKey())
+	}
+
+	twap.err = status.Error(codes.AlreadyExists, "idempotency key conflict")
+	conflict := httptest.NewRequest(
+		http.MethodPost, "/api/v1/trader/twaps",
+		strings.NewReader(`{"tradingAccountId":1,"instrumentId":2,"side":"buy","totalQuantity":"1","startAt":"2026-01-01T00:00:00Z","endAt":"2026-01-01T01:00:00Z","intervalSeconds":60,"executionType":"market"}`),
+	)
+	conflict.Header.Set("Content-Type", "application/json")
+	conflict.Header.Set("Idempotency-Key", key)
+	conflict.AddCookie(&http.Cookie{Name: "sq_session", Value: "token"})
+	recorder = httptest.NewRecorder()
+	handler.createTraderTwap(recorder, conflict)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("twap conflict status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	arb := &stubCreateTrader{}
+	arbHandler := &Handler{sessionCookieName: "sq_session", trader: arb}
+	arbMissing := httptest.NewRequest(
+		http.MethodPost, "/api/v1/trader/arbitrage-combinations",
+		strings.NewReader(`{"targetNotional":"10000"}`),
+	)
+	arbMissing.Header.Set("Content-Type", "application/json")
+	arbMissing.AddCookie(&http.Cookie{Name: "sq_session", Value: "token"})
+	recorder = httptest.NewRecorder()
+	arbHandler.createArbitrageCombination(recorder, arbMissing)
+	if recorder.Code != http.StatusBadRequest ||
+		!strings.Contains(recorder.Body.String(), "idempotency key is required") {
+		t.Fatalf("arb missing key status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	arbOK := httptest.NewRequest(
+		http.MethodPost, "/api/v1/trader/arbitrage-combinations",
+		strings.NewReader(`{"legAAccountId":1,"legAInstrumentId":11,"legBAccountId":2,"legBInstrumentId":22,"askThresholdBps":"12","bidThresholdBps":"-8","targetNotional":"10000","executionMode":"maker_then_hedge","preferredLeg":"a","runMode":"spread"}`),
+	)
+	arbOK.Header.Set("Content-Type", "application/json")
+	arbOK.Header.Set("Idempotency-Key", key)
+	arbOK.AddCookie(&http.Cookie{Name: "sq_session", Value: "token"})
+	recorder = httptest.NewRecorder()
+	arbHandler.createArbitrageCombination(recorder, arbOK)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("arb create status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if arb.got.GetIdempotencyKey() != key {
+		t.Fatalf("arb forwarded=%q", arb.got.GetIdempotencyKey())
+	}
+
+	arb.err = status.Error(codes.AlreadyExists, "idempotency key conflict")
+	arbConflict := httptest.NewRequest(
+		http.MethodPost, "/api/v1/trader/arbitrage-combinations",
+		strings.NewReader(`{"legAAccountId":1,"legAInstrumentId":11,"legBAccountId":2,"legBInstrumentId":22,"askThresholdBps":"12","bidThresholdBps":"-8","targetNotional":"10000","executionMode":"maker_then_hedge","preferredLeg":"a","runMode":"spread"}`),
+	)
+	arbConflict.Header.Set("Content-Type", "application/json")
+	arbConflict.Header.Set("Idempotency-Key", key)
+	arbConflict.AddCookie(&http.Cookie{Name: "sq_session", Value: "token"})
+	recorder = httptest.NewRecorder()
+	arbHandler.createArbitrageCombination(recorder, arbConflict)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("arb conflict status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	closeHandler := &Handler{sessionCookieName: "sq_session", trader: &capturingCloseTrader{}}
+	closeReq := httptest.NewRequest(http.MethodDelete, "/api/v1/trader/arbitrage-combinations/combo-1", nil)
+	closeReq.AddCookie(&http.Cookie{Name: "sq_session", Value: "token"})
+	recorder = httptest.NewRecorder()
+	closeHandler.closeArbitrageCombination(recorder, closeReq)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("close status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("close must set Cache-Control no-store")
+	}
+	if !strings.Contains(recorder.Body.String(), `"status":"closing"`) {
+		t.Fatalf("close body=%s", recorder.Body.String())
 	}
 }

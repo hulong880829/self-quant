@@ -103,8 +103,10 @@ func parseBinance(key Key, payload []byte, received time.Time) ([]Update, bool, 
 	update.AveragePrice = rawString(order["ap"])
 	update.LastFilled = rawString(order["l"])
 	update.LastPrice = rawString(order["L"])
-	if update.AveragePrice == "" {
-		update.AveragePrice = quotient(rawString(order["Z"]), update.CumulativeFilled)
+	if !positiveDecimal(update.AveragePrice) {
+		if fallback := quotient(rawString(order["Z"]), update.CumulativeFilled); positiveDecimal(fallback) {
+			update.AveragePrice = fallback
+		}
 	}
 	update.TradeID = rawString(order["t"])
 	update.EventTime = rawTime(first(order["T"], root["E"]), received)
@@ -654,6 +656,11 @@ func first(values ...json.RawMessage) json.RawMessage {
 		}
 	}
 	return nil
+}
+
+func positiveDecimal(value string) bool {
+	parsed, err := decimal.NewFromString(strings.TrimSpace(value))
+	return err == nil && parsed.IsPositive()
 }
 
 func quotient(numerator, denominator string) string {

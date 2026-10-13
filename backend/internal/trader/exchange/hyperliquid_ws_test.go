@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -211,11 +212,83 @@ func newHyperliquidTestAdapter(
 	upgrades *atomic.Int32,
 ) *hyperliquidAdapter {
 	t.Helper()
-	server := newHyperliquidActionWSServer(t, actionPayload, exchangeCalls, upgrades)
+	adapter, _ := newHyperliquidTestAdapterCapture(t, actionPayload, exchangeCalls, upgrades, nil)
+	return adapter
+}
+
+type hyperliquidWSRecorder struct {
+	mu        sync.Mutex
+	infoTypes []string
+	orders    []capturedHLOrderWire
+}
+
+type capturedHLOrderWire struct {
+	Asset      int    `json:"a"`
+	IsBuy      bool   `json:"b"`
+	LimitPx    string `json:"p"`
+	Size       string `json:"s"`
+	ReduceOnly bool   `json:"r"`
+	OrderType  struct {
+		Limit *struct {
+			Tif string `json:"tif"`
+		} `json:"limit"`
+	} `json:"t"`
+}
+
+func (r *hyperliquidWSRecorder) recordInfo(typ string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.infoTypes = append(r.infoTypes, typ)
+	r.mu.Unlock()
+}
+
+func (r *hyperliquidWSRecorder) recordAction(raw []byte) {
+	if r == nil {
+		return
+	}
+	var envelope struct {
+		Method  string `json:"method"`
+		Request struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Action struct {
+					Orders []capturedHLOrderWire `json:"orders"`
+				} `json:"action"`
+			} `json:"payload"`
+		} `json:"request"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return
+	}
+	if envelope.Method != "post" || envelope.Request.Type != "action" {
+		return
+	}
+	r.mu.Lock()
+	r.orders = append(r.orders, envelope.Request.Payload.Action.Orders...)
+	r.mu.Unlock()
+}
+
+func (r *hyperliquidWSRecorder) snapshot() ([]string, []capturedHLOrderWire) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.infoTypes...), append([]capturedHLOrderWire(nil), r.orders...)
+}
+
+func newHyperliquidTestAdapterCapture(
+	t *testing.T,
+	actionPayload string,
+	exchangeCalls *atomic.Int32,
+	upgrades *atomic.Int32,
+	recorder *hyperliquidWSRecorder,
+) (*hyperliquidAdapter, *httptest.Server) {
+	t.Helper()
+	server := newHyperliquidActionWSServer(t, actionPayload, exchangeCalls, upgrades, recorder)
 	adapter := newHyperliquid(server.Client(), server.URL).(*hyperliquidAdapter)
 	t.Cleanup(server.Close)
 	t.Cleanup(func() { _ = adapter.Close() })
-	return adapter
+	return adapter, server
 }
 
 func newHyperliquidActionWSServer(
@@ -223,6 +296,7 @@ func newHyperliquidActionWSServer(
 	actionPayload string,
 	exchangeCalls *atomic.Int32,
 	upgrades *atomic.Int32,
+	recorder *hyperliquidWSRecorder,
 ) *httptest.Server {
 	t.Helper()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -242,6 +316,7 @@ func newHyperliquidActionWSServer(
 				if err != nil {
 					return
 				}
+				recorder.recordAction(raw)
 				var envelope struct {
 					Method string `json:"method"`
 					ID     int    `json:"id"`
@@ -279,13 +354,16 @@ func newHyperliquidActionWSServer(
 				http.Error(writer, "invalid", http.StatusBadRequest)
 				return
 			}
+			recorder.recordInfo(payload.Type)
 			switch payload.Type {
+			case "allMids":
+				_, _ = writer.Write([]byte(`{"SKR":"0.018003"}`))
 			case "orderStatus":
 				_, _ = writer.Write([]byte(`{"status":"unknown"}`))
 			case "clearinghouseState":
 				_, _ = writer.Write([]byte(`{"marginSummary":{"accountValue":"1000"},"withdrawable":"1000","assetPositions":[]}`))
 			case "meta":
-				_, _ = writer.Write([]byte(`{"universe":[{"name":"BTC","szDecimals":5,"maxLeverage":50}]}`))
+				_, _ = writer.Write([]byte(`{"universe":[{"name":"BTC","szDecimals":5,"maxLeverage":50},{"name":"HLFILL1","szDecimals":2,"maxLeverage":20},{"name":"HLFILL2","szDecimals":2,"maxLeverage":20},{"name":"SKR","szDecimals":0,"maxLeverage":20}]}`))
 			case "spotMeta":
 				_, _ = writer.Write([]byte(`{"universe":[],"tokens":[]}`))
 			case "outcomeMeta":
@@ -297,4 +375,89 @@ func newHyperliquidActionWSServer(
 			http.NotFound(writer, request)
 		}
 	}))
+}
+
+func TestHyperliquidPlaceOrderSKRMarketProtectivePrice(t *testing.T) {
+	cases := []struct {
+		name       string
+		side       string
+		reduceOnly bool
+		wantBuy    bool
+		wantPx     string
+	}{
+		{name: "market buy", side: "buy", wantBuy: true, wantPx: "0.018903"},
+		{name: "market sell", side: "sell", wantBuy: false, wantPx: "0.017103"},
+		{name: "reduce-only close long", side: "sell", reduceOnly: true, wantBuy: false, wantPx: "0.017103"},
+		{name: "reduce-only close short", side: "buy", reduceOnly: true, wantBuy: true, wantPx: "0.018903"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var exchangeCalls atomic.Int32
+			rec := &hyperliquidWSRecorder{}
+			payload := `{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"oid":7,"avgPx":"0.018003","totalSz":"1"}}]}}}`
+			adapter, _ := newHyperliquidTestAdapterCapture(t, payload, &exchangeCalls, nil, rec)
+			result, err := adapter.PlaceOrder(
+				context.Background(),
+				hyperliquidTestCredentials(),
+				OrderRequest{
+					Instrument: Instrument{
+						ContractType: "perpetual", ExchangeSymbol: "SKR",
+						QuantityStep: "1",
+					},
+					ClientOrderID: "client-skr-" + tc.name, Side: tc.side, OrderType: "market",
+					Quantity: "1", ReduceOnly: tc.reduceOnly,
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != "filled" || result.VenueOrderID != "7" {
+				t.Fatalf("result=%+v", result)
+			}
+			if exchangeCalls.Load() != 0 {
+				t.Fatalf("REST /exchange called %d times", exchangeCalls.Load())
+			}
+			infoTypes, orders := rec.snapshot()
+			assertHyperliquidPricingUsesAllMidsOnly(t, infoTypes)
+			if len(orders) != 1 {
+				t.Fatalf("ws orders=%+v", orders)
+			}
+			order := orders[0]
+			if order.Asset < 3 {
+				t.Fatalf("SKR asset id=%d, want >= 3", order.Asset)
+			}
+			if order.IsBuy != tc.wantBuy || order.LimitPx != tc.wantPx || order.Size != "1" {
+				t.Fatalf("order=%+v want isBuy=%v px=%s", order, tc.wantBuy, tc.wantPx)
+			}
+			if order.ReduceOnly != tc.reduceOnly {
+				t.Fatalf("reduceOnly=%v want %v", order.ReduceOnly, tc.reduceOnly)
+			}
+			if order.OrderType.Limit == nil || order.OrderType.Limit.Tif != "Ioc" {
+				t.Fatalf("tif=%+v, want Ioc", order.OrderType)
+			}
+		})
+	}
+}
+
+func assertHyperliquidPricingUsesAllMidsOnly(t *testing.T, types []string) {
+	t.Helper()
+	allowed := map[string]bool{
+		"allMids": true, "meta": true, "spotMeta": true, "outcomeMeta": true,
+		"orderStatus": true, "clearinghouseState": true,
+	}
+	sawAllMids := false
+	for _, typ := range types {
+		if typ == "allMids" {
+			sawAllMids = true
+		}
+		if typ == "l2Book" {
+			t.Fatal("pricing path queried l2Book")
+		}
+		if !allowed[typ] {
+			t.Fatalf("unexpected /info type %q; pricing must use AllMids only", typ)
+		}
+	}
+	if !sawAllMids {
+		t.Fatalf("expected allMids, got %v", types)
+	}
 }

@@ -3,6 +3,7 @@ package trader
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -280,6 +281,231 @@ func TestApplyClosingExternalFlatReconcileIntegration(t *testing.T) {
 			t.Fatalf("ok=%v err=%v applied=%+v", ok, err, applied)
 		}
 	})
+
+	t.Run("unsafe hedge after recovery zeroes carry", func(t *testing.T) {
+		combo := prepareRecoveredExternalFlatCombo(t, ctx, pool, repository, "recovered", true, true)
+		if !parseDecimal(combo.CarryBaseQuantity).Equal(decimal.RequireFromString("-30")) ||
+			combo.LegABasePosition != "170" || combo.LegBBasePosition != "-200" {
+			t.Fatalf("generated carry before reconcile=%+v", combo)
+		}
+		orderCount, fillCount := countComboOrdersAndFills(t, ctx, pool, combo.ID)
+		applied, ok, err := repository.ApplyClosingExternalFlatReconcile(
+			ctx, closingExternalFlatReconcileRequest{
+				CombinationID:   combo.ID,
+				ExpectedVersion: combo.Version,
+				VenueA:          decimal.Zero,
+				VenueB:          decimal.Zero,
+			},
+		)
+		if err != nil || !ok || !combinationLooksFlat(applied) {
+			t.Fatalf("ok=%v err=%v applied=%+v", ok, err, applied)
+		}
+		if applied.CarryBaseQuantity != "0" ||
+			applied.LegABasePosition != "0" || applied.LegBBasePosition != "0" ||
+			applied.Status != "closing" || applied.PositionUncertain {
+			t.Fatalf("applied=%+v", applied)
+		}
+		if parseDecimal(applied.LegAReconciliationAdjustment).Cmp(decimal.RequireFromString("-170")) != 0 ||
+			parseDecimal(applied.LegBReconciliationAdjustment).Cmp(decimal.RequireFromString("200")) != 0 {
+			t.Fatalf("adjustments a=%s b=%s",
+				applied.LegAReconciliationAdjustment, applied.LegBReconciliationAdjustment)
+		}
+		afterOrders, afterFills := countComboOrdersAndFills(t, ctx, pool, combo.ID)
+		if afterOrders != orderCount || afterFills != fillCount {
+			t.Fatalf("orders before=%d after=%d fills before=%d after=%d",
+				orderCount, afterOrders, fillCount, afterFills)
+		}
+		events, err := repository.ListArbitrageEvents(ctx, applied.ID, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := closingExternalFlatEvent(t, events)
+		if payload["reason"] != "external_or_manual_flatten_after_last_close_recovery" {
+			t.Fatalf("payload=%v", payload)
+		}
+	})
+
+	t.Run("saved snapshot before recovery is rejected", func(t *testing.T) {
+		combo := prepareRecoveredExternalFlatCombo(t, ctx, pool, repository, "stale-snapshot", true, true)
+		if _, err := pool.Exec(ctx, `
+			UPDATE trader_arbitrage_combinations
+			SET last_position_reconciled_at=now()-interval '1 hour'
+			WHERE id=$1::uuid`, combo.ID); err != nil {
+			t.Fatal(err)
+		}
+		combo, err := repository.GetArbitrageCombinationByOwner(ctx, "admin", combo.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		applied, ok, err := repository.ApplyClosingExternalFlatReconcile(
+			ctx, closingExternalFlatReconcileRequest{
+				CombinationID:   combo.ID,
+				ExpectedVersion: combo.Version,
+				VenueA:          decimal.Zero,
+				VenueB:          decimal.Zero,
+			},
+		)
+		if !errors.Is(err, errLastCloseExternalFlatSnapshotStale) || ok ||
+			applied.LegABasePosition == "0" {
+			t.Fatalf("ok=%v err=%v applied=%+v", ok, err, applied)
+		}
+	})
+
+	t.Run("missing recovery event is rejected", func(t *testing.T) {
+		combo := prepareRecoveredExternalFlatCombo(t, ctx, pool, repository, "no-event", false, true)
+		_, ok, err := repository.ApplyClosingExternalFlatReconcile(
+			ctx, closingExternalFlatReconcileRequest{
+				CombinationID:   combo.ID,
+				ExpectedVersion: combo.Version,
+				VenueA:          decimal.Zero,
+				VenueB:          decimal.Zero,
+			},
+		)
+		if !errors.Is(err, errLastCloseExternalFlatSnapshotStale) || ok {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+	})
+
+	t.Run("incomplete recovery execution is rejected", func(t *testing.T) {
+		combo := prepareRecoveredExternalFlatCombo(t, ctx, pool, repository, "incomplete", true, false)
+		_, ok, err := repository.ApplyClosingExternalFlatReconcile(
+			ctx, closingExternalFlatReconcileRequest{
+				CombinationID:   combo.ID,
+				ExpectedVersion: combo.Version,
+				VenueA:          decimal.Zero,
+				VenueB:          decimal.Zero,
+			},
+		)
+		if !errors.Is(err, errLastCloseExternalFlatSnapshotStale) || ok {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+	})
+
+	t.Run("circuit open unsafe hedge is rejected", func(t *testing.T) {
+		combo := prepareRecoveredExternalFlatCombo(t, ctx, pool, repository, "circuit", true, true)
+		if _, err := pool.Exec(ctx, `
+			UPDATE trader_arbitrage_combinations
+			SET circuit_open=TRUE, version=version+1
+			WHERE id=$1::uuid`, combo.ID); err != nil {
+			t.Fatal(err)
+		}
+		combo, err := repository.GetArbitrageCombinationByOwner(ctx, "admin", combo.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		applied, ok, err := repository.ApplyClosingExternalFlatReconcile(
+			ctx, closingExternalFlatReconcileRequest{
+				CombinationID:   combo.ID,
+				ExpectedVersion: combo.Version,
+				VenueA:          decimal.Zero,
+				VenueB:          decimal.Zero,
+			},
+		)
+		if err != nil || ok || applied.LegABasePosition == "0" || !applied.CircuitOpen {
+			t.Fatalf("ok=%v err=%v applied=%+v", ok, err, applied)
+		}
+	})
+
+	t.Run("unsafe hedge with other runtime is rejected", func(t *testing.T) {
+		combo := prepareRecoveredExternalFlatCombo(t, ctx, pool, repository, "runtime", true, true)
+		if _, err := pool.Exec(ctx, `
+			UPDATE trader_arbitrage_combinations
+			SET runtime_state='closing', version=version+1
+			WHERE id=$1::uuid`, combo.ID); err != nil {
+			t.Fatal(err)
+		}
+		combo, err := repository.GetArbitrageCombinationByOwner(ctx, "admin", combo.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		applied, ok, err := repository.ApplyClosingExternalFlatReconcile(
+			ctx, closingExternalFlatReconcileRequest{
+				CombinationID:   combo.ID,
+				ExpectedVersion: combo.Version,
+				VenueA:          decimal.Zero,
+				VenueB:          decimal.Zero,
+			},
+		)
+		if err != nil || ok || applied.LegABasePosition == "0" {
+			t.Fatalf("ok=%v err=%v applied=%+v", ok, err, applied)
+		}
+	})
+
+	t.Run("unsafe hedge live venue still open is rejected", func(t *testing.T) {
+		combo := prepareRecoveredExternalFlatCombo(t, ctx, pool, repository, "still-open", true, true)
+		applied, ok, err := repository.ApplyClosingExternalFlatReconcile(
+			ctx, closingExternalFlatReconcileRequest{
+				CombinationID:   combo.ID,
+				ExpectedVersion: combo.Version,
+				VenueA:          decimal.RequireFromString("170"),
+				VenueB:          decimal.RequireFromString("-200"),
+			},
+		)
+		if err != nil || ok || applied.LegABasePosition == "0" {
+			t.Fatalf("ok=%v err=%v applied=%+v", ok, err, applied)
+		}
+	})
+}
+
+func prepareRecoveredExternalFlatCombo(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	repository *Repository,
+	key string,
+	withEvent, executionCompleted bool,
+) ArbitrageCombination {
+	t.Helper()
+	combo, _ := setupClosingExternalFlatCombo(t, ctx, pool, repository, key, "0", "0", false)
+	var executionID string
+	if err := pool.QueryRow(ctx, `
+		SELECT id::text
+		FROM trader_arbitrage_executions
+		WHERE combination_id=$1::uuid
+		ORDER BY created_at DESC
+		LIMIT 1`, combo.ID,
+	).Scan(&executionID); err != nil {
+		t.Fatal(err)
+	}
+	status := "completed"
+	if !executionCompleted {
+		status = "failed"
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE trader_arbitrage_executions
+		SET status=$2
+		WHERE id=$1::uuid`, executionID, status); err != nil {
+		t.Fatal(err)
+	}
+	if withEvent {
+		if err := repository.RecordLastCloseResidualRecovered(
+			ctx, combo.ID, executionID, "170", "200", "170",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE trader_arbitrage_combinations SET
+			error_message=$2,
+			runtime_state='position_uncertain',
+			position_uncertain=TRUE,
+			circuit_open=FALSE,
+			leg_a_base_position=170,
+			leg_b_base_position=-200,
+			leg_a_venue_base_position=0,
+			leg_b_venue_base_position=0,
+			last_position_reconciled_at=now(),
+			version=version+1
+		WHERE id=$1::uuid`,
+		combo.ID, ErrArbitrageUnsafeHedge.Error(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := repository.GetArbitrageCombinationByOwner(ctx, "admin", combo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return updated
 }
 
 func setupClosingExternalFlatCombo(

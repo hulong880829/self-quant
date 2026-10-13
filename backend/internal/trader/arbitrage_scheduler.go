@@ -32,9 +32,7 @@ type arbitrageExecutionRunner interface {
 	RecoverWithoutMarketData(
 		context.Context, ArbitrageCombination, ArbitrageExecution,
 	) error
-	ReconcileCircuitOpen(
-		context.Context, ArbitrageCombination, ArbitrageExecution,
-	) error
+	ReconcileCircuitOpen(context.Context, ArbitrageCombination) error
 	CloseCombination(context.Context, ArbitrageCombination) error
 }
 
@@ -84,6 +82,7 @@ type ArbitrageScheduler struct {
 	leaseBatcher          *leaseBatcher
 	snapshotBatcher       *snapshotBatcher
 	lifecycle             arbitrageRuntimeLifecycle
+	fillAverages          arbitrageFillAverageCompensator
 	closeWaitingLogAt     sync.Map
 }
 
@@ -122,11 +121,14 @@ type arbitrageRuntime struct {
 	snapshotInFlightSeq           uint64
 	nextSnapshotAttemptAt         time.Time
 	lastSnapshotUpdatedAt         time.Time
+	exitMu                        sync.Mutex
+	exitRequest                   exitRequest
 }
 
 type arbitrageRuntimeLifecycle interface {
 	RegisterCombination(ArbitrageCombination)
 	UnregisterCombination(string)
+	RequestMetricsRefresh(ArbitrageCombination, string)
 }
 
 func NewArbitrageScheduler(
@@ -214,6 +216,22 @@ func (s *ArbitrageScheduler) ConfigureSignalBBOStale(d time.Duration) {
 	if d > 0 {
 		s.signalBBOStale = d
 	}
+}
+
+func (s *ArbitrageScheduler) ConfigureFillAverageCompensator(
+	compensator arbitrageFillAverageCompensator,
+) {
+	if s == nil {
+		return
+	}
+	s.fillAverages = compensator
+}
+
+func (s *ArbitrageScheduler) compensateFinalAverages(ctx context.Context, combinationID string) {
+	if s == nil || s.fillAverages == nil || strings.TrimSpace(combinationID) == "" {
+		return
+	}
+	s.fillAverages.Compensate(ctx, []string{combinationID})
 }
 
 func (s *ArbitrageScheduler) signalBBOTooOld(bboA, bboB marketdata.BBO) bool {
@@ -611,8 +629,7 @@ func (s *ArbitrageScheduler) handleControl(
 	bboB, errB := runtime.legB.Latest()
 	if errA != nil || errB != nil {
 		s.staleWakeups.Add(1)
-		s.handleMarketUnavailable(ctx, runtime)
-		return false, refreshed
+		return s.evaluate(ctx, runtime, "market_unavailable"), refreshed
 	}
 	if runtime.combination.MarketDataStale {
 		return s.evaluate(ctx, runtime, "stale_recovered"), refreshed
@@ -639,11 +656,11 @@ func (s *ArbitrageScheduler) reconcileCircuitOpen(
 		now.Sub(runtime.lastCircuitOpenReconcileAt) < circuitOpenReconcileInterval {
 		return
 	}
-	if runtime.executionRunning.Load() {
+	if runtime.executionRunning.Load() || runtime.recoveryRunning.Load() {
 		return
 	}
-	execution, err := s.store.GetActiveArbitrageExecution(ctx, runtime.combination.ID)
-	if err != nil {
+	if _, err := s.store.GetActiveArbitrageExecution(ctx, runtime.combination.ID); err != nil &&
+		!errors.Is(err, ErrNotFound) {
 		return
 	}
 	res, ok := s.tryAcquireExecutionResources(
@@ -655,19 +672,18 @@ func (s *ArbitrageScheduler) reconcileCircuitOpen(
 	runtime.lastCircuitOpenReconcileAt = now
 	snapshot := runtime.combination
 	s.ensureRuntime(runtime)
-	go func(item ArbitrageCombination, execution ArbitrageExecution, res *executionResources) {
+	go func(item ArbitrageCombination, res *executionResources) {
 		defer s.notifyExecutionComplete(runtime)
 		defer s.releaseExecutionResources(runtime, item, res)
-		if recErr := s.runner.ReconcileCircuitOpen(ctx, item, execution); recErr != nil &&
+		if recErr := s.runner.ReconcileCircuitOpen(ctx, item); recErr != nil &&
 			s.logger != nil {
 			s.logger.Info(
 				"circuit open readonly reconcile failed",
 				"combination_id", item.ID,
-				"execution_id", execution.ID,
 				"error", sanitizeError(recErr),
 			)
 		}
-	}(snapshot, execution, res)
+	}(snapshot, res)
 }
 
 func (s *ArbitrageScheduler) maybeFinalizeConfirmedAbsent(
@@ -780,6 +796,11 @@ func (s *ArbitrageScheduler) reloadCombination(
 		return errors.Is(err, ErrNotFound), false
 	}
 	runtime.combination = item
+	if item.OneShotPhase != "exiting" &&
+		runtime.exitRequest.Requested &&
+		runtime.exitRequest.Version != item.Version {
+		runtime.exitRequest = exitRequest{}
+	}
 	return item.Status != "running" && item.Status != "closing", true
 }
 
@@ -814,6 +835,10 @@ func (s *ArbitrageScheduler) closeCombination(
 					failureKey = "close_order_open"
 				case errors.Is(err, ErrCloseOrderUncertain):
 					failureKey = "close_order_uncertain"
+				case errors.Is(err, ErrFinalMetricsNotReady):
+					failureKey = finalMetricsNotReadyKey
+				case errors.Is(err, ErrFinalMetricsPersist):
+					failureKey = finalMetricsPersistKey
 				}
 				if runtime.combination.LastFailureKey == lastClipHedgeMinNotionalFailureKey {
 					failureKey = lastClipHedgeMinNotionalFailureKey
@@ -834,7 +859,12 @@ func (s *ArbitrageScheduler) closeCombination(
 				return false
 			}
 		}
-		return true
+		if item, getErr := s.store.GetArbitrageCombinationByOwner(
+			ctx, runtime.combination.OwnerUsername, runtime.combination.ID,
+		); getErr == nil {
+			runtime.combination = item
+		}
+		return !strings.EqualFold(runtime.combination.Status, "closing")
 	}
 	return false
 }
@@ -851,19 +881,6 @@ func (s *ArbitrageScheduler) evaluate(
 	if runtime.combination.Status != "running" && runtime.combination.Status != "closing" {
 		return true
 	}
-	if runtime.combination.RuntimeState == "manual_intervention" ||
-		runtime.combination.PositionUncertain {
-		if !s.canRecoverUnpairedTinyClose(ctx, runtime) {
-			if runtime.legA != nil && runtime.legB != nil {
-				bboA, errA := runtime.legA.Latest()
-				bboB, errB := runtime.legB.Latest()
-				if errA == nil && errB == nil {
-					s.resumeActiveForIntervention(ctx, runtime, bboA, bboB)
-				}
-			}
-			return false
-		}
-	}
 	if strings.EqualFold(runtime.combination.Status, "closing") &&
 		combinationLooksFlat(runtime.combination) {
 		return s.finalizeFlattening(ctx, runtime)
@@ -877,38 +894,18 @@ func (s *ArbitrageScheduler) evaluate(
 		return false
 	}
 	now := time.Now().UTC()
-	bboA, errA := runtime.legA.Latest()
-	bboB, errB := runtime.legB.Latest()
-	if errA != nil || errB != nil {
-		s.handleMarketUnavailable(ctx, runtime)
-		return false
-	}
-	runtime.latestA, runtime.latestB = bboA, bboB
-	runtime.hasA, runtime.hasB = true, true
-	aBid, e1 := decimal.NewFromString(bboA.BidPrice)
-	aAsk, e2 := decimal.NewFromString(bboA.AskPrice)
-	bBid, e3 := decimal.NewFromString(bboB.BidPrice)
-	bAsk, e4 := decimal.NewFromString(bboB.AskPrice)
-	if e1 != nil || e2 != nil || e3 != nil || e4 != nil {
-		return false
-	}
-	ask, bid, ok := executableArbitrageSpreads(
-		runtime.combination, aBid, aAsk, bBid, bAsk,
-	)
-	if !ok {
-		s.clearArbitrageValuation(runtime.combination.ID)
-		return false
-	}
-	s.storeArbitrageValuation(
-		runtime.combination.ID, aBid, aAsk, bBid, bAsk,
-		bboA.ReceiveTimestamp, bboB.ReceiveTimestamp,
-	)
-	runtime.combination.CurrentAskSpreadBps = ask.String()
-	runtime.combination.CurrentBidSpreadBps = bid.String()
-	wasStale := runtime.combination.MarketDataStale
-	runtime.combination.MarketDataStale = false
-	if s.persistMarketSnapshot(ctx, runtime, ask.String(), bid.String(), false, wasStale) {
+	bboA, bboB, aBid, aAsk, bBid, bAsk, ask, bid, bothFresh, spreadOK, stop :=
+		s.observeAndPersistMarket(ctx, runtime)
+	if stop {
 		return true
+	}
+	if arbitrageTradingLocked(runtime.combination) {
+		s.resumeLockedSafe(ctx, runtime, bboA, bboB, bothFresh)
+		return false
+	}
+	if !bothFresh {
+		s.resumeWithoutMarketData(ctx, runtime)
+		return false
 	}
 	if arbitrageFlattening(runtime.combination) {
 		return s.flattenOrFinalizeClosingFrom(
@@ -916,12 +913,23 @@ func (s *ArbitrageScheduler) evaluate(
 		)
 	}
 	s.maybeMarkOneShotTimeExiting(ctx, runtime, now)
+	s.refreshExitRequest(runtime)
+	if runtime.oneShotShouldStopOpen() &&
+		!arbitrageFlattening(runtime.combination) {
+		if s.resumeActive(ctx, runtime, bboA, bboB) {
+			return false
+		}
+		return false
+	}
 	if arbitrageFlattening(runtime.combination) {
 		return s.flattenOrFinalizeClosingFrom(
 			ctx, runtime, bboA, bboB, aBid, aAsk, bBid, bAsk, source,
 		)
 	}
 	if s.resumeActive(ctx, runtime, bboA, bboB) {
+		return false
+	}
+	if !spreadOK {
 		return false
 	}
 	if !s.combinationEnabled(runtime.combination) ||
@@ -1000,15 +1008,17 @@ func (s *ArbitrageScheduler) flattenOrFinalizeClosingFrom(
 	source string,
 ) bool {
 	runtime.latestA, runtime.latestB = bboA, bboB
+	if arbitrageTradingLocked(runtime.combination) {
+		s.resumeLockedSafe(ctx, runtime, bboA, bboB, true)
+		return false
+	}
+	if s.routeLastCloseResidualFlatten(ctx, runtime, bboA, bboB) {
+		return false
+	}
 	unpairedTiny := strings.EqualFold(runtime.combination.Status, "closing") &&
 		runtime.combination.RuntimeState == "manual_intervention" &&
 		runtime.combination.ErrorMessage == arbitrageUnpairedLegsManualReason &&
 		!runtime.combination.PositionUncertain
-	if runtime.combination.PositionUncertain ||
-		(runtime.combination.RuntimeState == "manual_intervention" && !unpairedTiny) {
-		s.resumeActiveForIntervention(ctx, runtime, bboA, bboB)
-		return false
-	}
 	direction, ownedOK := arbitrageOwnedCloseDirection(runtime.combination)
 	tinyOwnedClose := strings.EqualFold(runtime.combination.Status, "closing") &&
 		s.closeFlattenTinyOwnedPrecheck(ctx, runtime.combination, bboA, bboB)
@@ -1034,6 +1044,9 @@ func (s *ArbitrageScheduler) flattenOrFinalizeClosingFrom(
 	}
 	if tinyOwnedClose {
 		return s.closeCombination(ctx, runtime)
+	}
+	if s.claimOneShotFinalFlatten(ctx, runtime, bboA, bboB, aBid, aAsk, bBid, bAsk) {
+		return false
 	}
 	venueDirection, venueOK := arbitrageVenueReduceDirection(runtime.combination)
 	if ownedOK {
@@ -1083,6 +1096,9 @@ func (s *ArbitrageScheduler) finalizeFlattening(
 		runtime.combination.OneShotPhase != "exiting" {
 		return false
 	}
+	if !s.oneShotExitedVenueReady(ctx, runtime) {
+		return false
+	}
 	store, ok := s.store.(arbitrageOneShotStore)
 	if !ok {
 		return false
@@ -1128,6 +1144,229 @@ func (s *ArbitrageScheduler) markFlattenManualIntervention(
 		ctx, item.ID, "", "flatten_manual_intervention",
 		map[string]any{"reason": reason},
 	)
+}
+
+func (s *ArbitrageScheduler) oneShotExitedVenueReady(
+	ctx context.Context,
+	runtime *arbitrageRuntime,
+) bool {
+	orders, err := s.store.ListArbitrageOrders(
+		ctx, runtime.combination.OwnerUsername, runtime.combination.ID,
+	)
+	if err != nil {
+		return false
+	}
+	hasFlatten := false
+	needle := ":" + oneShotFinalFlattenIdempotencyRole + ":"
+	for _, order := range orders {
+		if strings.Contains(order.IdempotencyKey, needle) {
+			hasFlatten = true
+			break
+		}
+	}
+	if !hasFlatten {
+		return true
+	}
+	if s.catalog == nil {
+		return false
+	}
+	instrumentA, errA := s.catalog.Get(ctx, runtime.combination.LegA.InstrumentID)
+	instrumentB, errB := s.catalog.Get(ctx, runtime.combination.LegB.InstrumentID)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return oneShotFinalFlattenReconcileReady(
+		runtime.combination, orders, "", instrumentA, instrumentB,
+	)
+}
+
+func (s *ArbitrageScheduler) claimOneShotFinalFlatten(
+	ctx context.Context,
+	runtime *arbitrageRuntime,
+	bboA, bboB marketdata.BBO,
+	aBid, aAsk, bBid, bAsk decimal.Decimal,
+) bool {
+	if runtime == nil || !oneShotRunningExiting(runtime.combination) {
+		return false
+	}
+	if s.catalog == nil {
+		return false
+	}
+	instrumentA, errA := s.catalog.Get(ctx, runtime.combination.LegA.InstrumentID)
+	instrumentB, errB := s.catalog.Get(ctx, runtime.combination.LegB.InstrumentID)
+	if errA != nil || errB != nil {
+		return false
+	}
+	if !oneShotFinalFlattenReady(
+		runtime.combination, instrumentA, instrumentB, bboA, bboB, time.Now().UTC(),
+	) {
+		return false
+	}
+	if s.dryRun {
+		return true
+	}
+	store, ok := s.store.(arbitrageOneShotStore)
+	if !ok {
+		return true
+	}
+	planned := planOwnedFlattenLegs(runtime.combination, instrumentA, instrumentB)
+	qtyA, qtyB := oneShotFinalFlattenPlannedQuantities(planned)
+	if !qtyA.IsPositive() && !qtyB.IsPositive() {
+		return true
+	}
+	priceA := closeFlattenOwnedExecutablePrice(
+		parseDecimal(runtime.combination.LegABasePosition), bboA,
+	)
+	priceB := closeFlattenOwnedExecutablePrice(
+		parseDecimal(runtime.combination.LegBBasePosition), bboB,
+	)
+	notionalA, notionalB := decimal.Zero, decimal.Zero
+	if qtyA.IsPositive() {
+		notionalA = qtyA.Mul(priceA)
+	}
+	if qtyB.IsPositive() {
+		notionalB = qtyB.Mul(priceB)
+	}
+	direction := oneShotFinalFlattenDirection(runtime.combination, qtyA, qtyB)
+	if direction == "" {
+		return true
+	}
+	res, acquired := s.tryAcquireExecutionResources(
+		runtime, workPermitNewExecution, true, true,
+	)
+	if !acquired {
+		return true
+	}
+	if s.rejectStaleSignal(bboA, bboB) {
+		s.releaseExecutionResources(runtime, runtime.combination, res)
+		return true
+	}
+	execution := ArbitrageExecution{
+		ID: uuid.NewString(), CombinationID: runtime.combination.ID,
+		Direction: direction, Status: "claimed",
+		TriggerAskSpread: runtime.combination.CurrentAskSpreadBps,
+		TriggerBidSpread: runtime.combination.CurrentBidSpreadBps,
+		TriggerLegABid:   aBid.String(), TriggerLegAAsk: aAsk.String(),
+		TriggerLegBBid: bBid.String(), TriggerLegBAsk: bAsk.String(),
+		TargetBaseQuantity: decimal.Max(qtyA, qtyB).String(),
+		RequestedNotional:  decimal.Max(notionalA, notionalB).String(),
+		PositionEffect:     "close", ReduceOnly: true, LastCloseClip: true,
+		LegAFilledQuantity: "0", LegBFilledQuantity: "0", DeltaNotional: "0",
+	}
+	claimed, claimedOK, err := store.ClaimOneShotFinalFlattenExecution(ctx, OneShotFinalFlattenClaim{
+		Execution: execution, LegAQuantity: qtyA, LegBQuantity: qtyB,
+		LegANotional: notionalA, LegBNotional: notionalB,
+		ReconciledAt: runtime.combination.LastPositionReconciledAt,
+	})
+	if err != nil || !claimedOK || s.runner == nil {
+		s.releaseExecutionResources(runtime, runtime.combination, res)
+		return true
+	}
+	s.claims.Add(1)
+	_ = s.store.AppendArbitrageEvent(
+		ctx, runtime.combination.ID, claimed.ID, oneShotFinalFlattenStartedEvent,
+		map[string]any{
+			"legAQuantity":       qtyA.String(),
+			"legBQuantity":       qtyB.String(),
+			"requestedNotional":  claimed.RequestedNotional,
+			"targetBaseQuantity": claimed.TargetBaseQuantity,
+		},
+	)
+	s.logger.Info("one-shot final flatten claimed",
+		"combination_id", runtime.combination.ID, "execution_id", claimed.ID,
+		"leg_a_quantity", qtyA.String(), "leg_b_quantity", qtyB.String(),
+		"requested_notional", claimed.RequestedNotional,
+		"target_base_quantity", claimed.TargetBaseQuantity)
+	snapshot := runtime.combination
+	s.ensureRuntime(runtime)
+	go func(item ArbitrageCombination, res *executionResources) {
+		defer s.notifyExecutionComplete(runtime)
+		defer s.releaseExecutionResources(runtime, item, res)
+		s.runner.Execute(ctx, item, claimed, bboA, bboB, res.permit)
+	}(snapshot, res)
+	return true
+}
+
+type lastCloseResidualFlattenRunner interface {
+	RunLastCloseResidualFlatten(
+		context.Context, ArbitrageCombination, marketdata.BBO, marketdata.BBO,
+	) error
+}
+
+func (s *ArbitrageScheduler) routeLastCloseResidualFlatten(
+	ctx context.Context,
+	runtime *arbitrageRuntime,
+	bboA, bboB marketdata.BBO,
+) bool {
+	if s == nil || runtime == nil || s.store == nil {
+		return false
+	}
+	combination := runtime.combination
+	if !strings.EqualFold(strings.TrimSpace(combination.Status), "closing") ||
+		combination.PositionUncertain || combination.CircuitOpen ||
+		combination.RuntimeState == "manual_intervention" {
+		return false
+	}
+	if combinationLooksFlat(combination) {
+		return false
+	}
+	store, ok := s.store.(lastCloseResidualFlattenStore)
+	if !ok {
+		return false
+	}
+	existing, found, err := store.GetLastCloseResidualFlattenExecution(ctx, combination.ID)
+	if err != nil {
+		return false
+	}
+	if !found && !s.closeFlattenTinyOwnedPrecheck(ctx, combination, bboA, bboB) {
+		return false
+	}
+	if !found && !residualFlattenDirectionAgrees(combination) {
+		return false
+	}
+	if !found {
+		orders, ordersErr := s.store.ListArbitrageOrders(
+			ctx, combination.OwnerUsername, combination.ID,
+		)
+		if ordersErr != nil {
+			return false
+		}
+		executions, executionsErr := s.store.ListArbitrageExecutions(ctx, combination.ID, 100)
+		if executionsErr != nil {
+			return false
+		}
+		if residualFlattenBlockedByOtherWork(combination.ID, orders, executions) {
+			return false
+		}
+	}
+	if runtime.executionRunning.Load() || runtime.recoveryRunning.Load() {
+		return true
+	}
+	if found && terminalArbitrageExecutionStatus(existing.Status) &&
+		!s.closeFlattenTinyOwnedPrecheck(ctx, combination, bboA, bboB) {
+		runner, runnerOK := s.runner.(lastCloseResidualFlattenRunner)
+		if !runnerOK {
+			return true
+		}
+		_ = runner.RunLastCloseResidualFlatten(ctx, combination, bboA, bboB)
+		return true
+	}
+	runner, runnerOK := s.runner.(lastCloseResidualFlattenRunner)
+	if !runnerOK || s.runner == nil {
+		return true
+	}
+	res, acquired := s.tryAcquireExecutionResources(runtime, workPermitUrgent, true, false)
+	if !acquired {
+		return true
+	}
+	snapshot := combination
+	s.ensureRuntime(runtime)
+	go func(item ArbitrageCombination, res *executionResources) {
+		defer s.notifyExecutionComplete(runtime)
+		defer s.releaseExecutionResources(runtime, item, res)
+		_ = runner.RunLastCloseResidualFlatten(ctx, item, bboA, bboB)
+	}(snapshot, res)
+	return true
 }
 
 func (s *ArbitrageScheduler) closeFlattenTinyOwnedPrecheck(
@@ -1356,8 +1595,11 @@ func (s *ArbitrageScheduler) maybeMarkOneShotTimeExiting(
 	now time.Time,
 ) {
 	if !strings.EqualFold(runtime.combination.RunMode, "one_shot") ||
-		runtime.combination.OneShotPhase != "waiting_exit" ||
 		runtime.combination.Status != "running" {
+		return
+	}
+	phase := runtime.combination.OneShotPhase
+	if phase != "waiting_exit" && phase != "building_target" {
 		return
 	}
 	if runtime.combination.ScheduledExitAt.IsZero() ||
@@ -1365,16 +1607,22 @@ func (s *ArbitrageScheduler) maybeMarkOneShotTimeExiting(
 		now.Before(runtime.combination.ScheduledExitAt) {
 		return
 	}
+	runtime.requestOneShotExit("time")
 	store, ok := s.store.(arbitrageOneShotStore)
 	if !ok {
 		return
 	}
+	runtime.exitMu.Lock()
+	requestVersion := runtime.exitRequest.Version
+	runtime.exitMu.Unlock()
 	updated, applied, err := store.MarkOneShotExiting(
-		ctx, runtime.combination.ID, runtime.combination.Version, "time", nil,
+		ctx, runtime.combination.ID, requestVersion, "time", nil,
 	)
 	if err == nil && applied {
 		runtime.combination = updated
+		return
 	}
+	s.refreshExitRequest(runtime)
 }
 
 func (s *ArbitrageScheduler) maybeMarkOneShotWaitingExit(
@@ -1444,6 +1692,9 @@ func (s *ArbitrageScheduler) applyOneShotWaitingExit(
 		return
 	}
 	runtime.combination = updated
+	if s.lifecycle != nil {
+		s.lifecycle.RequestMetricsRefresh(updated, "waiting_exit")
+	}
 	if withDust {
 		_ = s.store.AppendArbitrageEvent(
 			ctx, runtime.combination.ID, "", "one_shot_target_reached_with_dust",
@@ -1635,12 +1886,133 @@ func (s *ArbitrageScheduler) combinationEnabled(item ArbitrageCombination) bool 
 		exchangeEnabled(s.enabledVenues, item.LegB.Exchange)
 }
 
+func arbitrageTradingLocked(item ArbitrageCombination) bool {
+	return item.CircuitOpen ||
+		item.PositionUncertain ||
+		item.RuntimeState == "manual_intervention" ||
+		item.RuntimeState == "position_uncertain"
+}
+
+func lockedSafeHedgeResume(
+	combination ArbitrageCombination, execution ArbitrageExecution,
+) bool {
+	switch combination.RuntimeState {
+	case "maker_open", "repricing":
+		return false
+	}
+	makerFilled, _, remaining := makerHedgeRemaining(combination, execution)
+	return makerFilled.IsPositive() && remaining.IsPositive()
+}
+
+func (s *ArbitrageScheduler) freshLegQuote(
+	bbo marketdata.BBO, err error, now time.Time,
+) (bid, ask decimal.Decimal, ok bool) {
+	if err != nil {
+		return decimal.Zero, decimal.Zero, false
+	}
+	bid, e1 := decimal.NewFromString(bbo.BidPrice)
+	ask, e2 := decimal.NewFromString(bbo.AskPrice)
+	if e1 != nil || e2 != nil || !bid.IsPositive() || !ask.IsPositive() {
+		return decimal.Zero, decimal.Zero, false
+	}
+	staleAfter := s.signalBBOStale
+	if staleAfter <= 0 {
+		staleAfter = defaultSignalBBOStale
+	}
+	if bbo.Stale(now, staleAfter) {
+		return decimal.Zero, decimal.Zero, false
+	}
+	return bid, ask, true
+}
+
+func (s *ArbitrageScheduler) observeAndPersistMarket(
+	ctx context.Context,
+	runtime *arbitrageRuntime,
+) (
+	bboA, bboB marketdata.BBO,
+	aBid, aAsk, bBid, bAsk, ask, bid decimal.Decimal,
+	bothFresh, spreadOK, stop bool,
+) {
+	now := time.Now().UTC()
+	var errA, errB error
+	bboA, errA = runtime.legA.Latest()
+	bboB, errB = runtime.legB.Latest()
+	runtime.latestA, runtime.latestB = bboA, bboB
+	runtime.hasA, runtime.hasB = errA == nil, errB == nil
+	aBid, aAsk, okA := s.freshLegQuote(bboA, errA, now)
+	bBid, bAsk, okB := s.freshLegQuote(bboB, errB, now)
+	if !okA || !okB {
+		s.staleBBO.Add(1)
+	}
+	s.applyArbitrageLegValuations(
+		runtime.combination.ID, okA, okB,
+		aBid, aAsk, bBid, bAsk,
+		bboA.ReceiveTimestamp, bboB.ReceiveTimestamp,
+	)
+	bothFresh = okA && okB
+	askSpread := runtime.combination.CurrentAskSpreadBps
+	bidSpread := runtime.combination.CurrentBidSpreadBps
+	if bothFresh {
+		computedAsk, computedBid, ok := executableArbitrageSpreads(
+			runtime.combination, aBid, aAsk, bBid, bAsk,
+		)
+		if ok {
+			ask, bid = computedAsk, computedBid
+			askSpread = ask.String()
+			bidSpread = bid.String()
+			runtime.combination.CurrentAskSpreadBps = askSpread
+			runtime.combination.CurrentBidSpreadBps = bidSpread
+			spreadOK = true
+		}
+	}
+	wasStale := runtime.combination.MarketDataStale
+	runtime.combination.MarketDataStale = !bothFresh
+	stop = s.persistMarketSnapshot(
+		ctx, runtime, askSpread, bidSpread, !bothFresh, wasStale,
+	)
+	return
+}
+
+func (s *ArbitrageScheduler) resumeLockedSafe(
+	ctx context.Context,
+	runtime *arbitrageRuntime,
+	bboA, bboB marketdata.BBO,
+	bothFresh bool,
+) {
+	if runtime.executionRunning.Load() || runtime.recoveryRunning.Load() {
+		return
+	}
+	if circuitOpenManualHotPathSuppressed(runtime.combination) {
+		return
+	}
+	if s.store == nil {
+		return
+	}
+	execution, err := s.store.GetActiveArbitrageExecution(
+		ctx, runtime.combination.ID,
+	)
+	if err != nil {
+		return
+	}
+	if lastCloseClipLockedResumeEligible(runtime.combination, execution) {
+		s.resumeWithoutMarketData(ctx, runtime)
+		return
+	}
+	if bothFresh && lockedSafeHedgeResume(runtime.combination, execution) {
+		s.resumeActiveForIntervention(ctx, runtime, bboA, bboB)
+		return
+	}
+	if arbitrageFlattening(runtime.combination) {
+		return
+	}
+	s.resumeWithoutMarketData(ctx, runtime)
+}
+
 func (s *ArbitrageScheduler) handleMarketUnavailable(
 	ctx context.Context,
 	runtime *arbitrageRuntime,
 ) {
 	now := time.Now().UTC()
-	s.clearArbitrageValuation(runtime.combination.ID)
 	s.staleBBO.Add(1)
 	force := !runtime.combination.MarketDataStale
 	if shouldPersistMarketSnapshot(force, runtime.lastPersist, now) {
@@ -1666,24 +2038,55 @@ func (s *ArbitrageScheduler) storeArbitrageValuation(
 	legABid, legAAsk, legBBid, legBAsk decimal.Decimal,
 	legAUpdatedAt, legBUpdatedAt time.Time,
 ) {
-	legAMid := legABid.Add(legAAsk).Div(decimal.NewFromInt(2))
-	legBMid := legBBid.Add(legBAsk).Div(decimal.NewFromInt(2))
-	if !legAMid.IsPositive() || !legBMid.IsPositive() {
-		s.clearArbitrageValuation(combinationID)
-		return
-	}
-	if legAUpdatedAt.IsZero() {
-		legAUpdatedAt = time.Now().UTC()
-	}
-	if legBUpdatedAt.IsZero() {
-		legBUpdatedAt = time.Now().UTC()
-	}
+	s.applyArbitrageLegValuations(
+		combinationID, true, true,
+		legABid, legAAsk, legBBid, legBAsk,
+		legAUpdatedAt, legBUpdatedAt,
+	)
+}
+
+func (s *ArbitrageScheduler) applyArbitrageLegValuations(
+	combinationID string,
+	okA, okB bool,
+	legABid, legAAsk, legBBid, legBAsk decimal.Decimal,
+	legAUpdatedAt, legBUpdatedAt time.Time,
+) {
 	s.mu.Lock()
-	s.valuations[combinationID] = ArbitrageValuation{
-		LegAMid: legAMid.String(), LegBMid: legBMid.String(),
-		LegAUpdatedAt: legAUpdatedAt, LegBUpdatedAt: legBUpdatedAt,
+	defer s.mu.Unlock()
+	current := s.valuations[combinationID]
+	if okA {
+		mid := legABid.Add(legAAsk).Div(decimal.NewFromInt(2))
+		if mid.IsPositive() {
+			current.LegAMid = mid.String()
+			if legAUpdatedAt.IsZero() {
+				legAUpdatedAt = time.Now().UTC()
+			}
+			current.LegAUpdatedAt = legAUpdatedAt
+		} else {
+			okA = false
+		}
 	}
-	s.mu.Unlock()
+	if !okA {
+		current.LegAMid = ""
+		current.LegAUpdatedAt = time.Time{}
+	}
+	if okB {
+		mid := legBBid.Add(legBAsk).Div(decimal.NewFromInt(2))
+		if mid.IsPositive() {
+			current.LegBMid = mid.String()
+			if legBUpdatedAt.IsZero() {
+				legBUpdatedAt = time.Now().UTC()
+			}
+			current.LegBUpdatedAt = legBUpdatedAt
+		} else {
+			okB = false
+		}
+	}
+	if !okB {
+		current.LegBMid = ""
+		current.LegBUpdatedAt = time.Time{}
+	}
+	s.valuations[combinationID] = current
 }
 
 func (s *ArbitrageScheduler) clearArbitrageValuation(combinationID string) {
@@ -1799,6 +2202,18 @@ func applyArbitrageMarketSnapshot(
 		return false
 	}
 	return true
+}
+
+func snapshotFromBatchItem(item arbitrageMarketSnapshotBatchItem) arbitrageMarketSnapshot {
+	return arbitrageMarketSnapshot{
+		CurrentAskSpreadBps: item.AskSpread,
+		CurrentBidSpreadBps: item.BidSpread,
+		MarketDataStale:     item.MarketDataStale,
+		RuntimeState:        item.RuntimeState,
+		Status:              item.Status,
+		Version:             item.Version,
+		UpdatedAt:           item.UpdatedAt,
+	}
 }
 
 func (s *ArbitrageScheduler) resumeActive(
@@ -1994,14 +2409,19 @@ func (s *ArbitrageScheduler) applySnapshotReceipt(
 		return false
 	}
 	if notice.applied {
-		runtime.combination.CurrentAskSpreadBps = notice.item.AskSpread
-		runtime.combination.CurrentBidSpreadBps = notice.item.BidSpread
-		runtime.combination.UpdatedAt = notice.item.UpdatedAt
 		runtime.lastPersist = now
-		runtime.lastSnapshotUpdatedAt = notice.item.UpdatedAt
 		runtime.lastAppliedSnapshotSeq = notice.seq
 		runtime.nextSnapshotAttemptAt = time.Time{}
 		s.snapshotWrites.Add(1)
+		if notice.item.Version != runtime.combination.Version {
+			stop, _ := s.reloadCombination(ctx, runtime)
+			if !stop {
+				runtime.lastSnapshotUpdatedAt = runtime.combination.UpdatedAt
+			}
+			return stop
+		}
+		_ = applyArbitrageMarketSnapshot(&runtime.combination, snapshotFromBatchItem(notice.item))
+		runtime.lastSnapshotUpdatedAt = runtime.combination.UpdatedAt
 		return false
 	}
 	runtime.nextSnapshotAttemptAt = now.Add(marketSnapshotPersistInterval)
@@ -2023,6 +2443,71 @@ func (s *ArbitrageScheduler) registerRuntimeLifecycle(item ArbitrageCombination)
 		return
 	}
 	s.lifecycle.RegisterCombination(item)
+}
+
+func (runtime *arbitrageRuntime) requestOneShotExit(reason string) {
+	if runtime == nil {
+		return
+	}
+	runtime.requestOneShotExitAt(runtime.combination.Version, reason)
+}
+
+func (runtime *arbitrageRuntime) requestOneShotExitAt(version int64, reason string) {
+	if runtime == nil {
+		return
+	}
+	runtime.exitMu.Lock()
+	defer runtime.exitMu.Unlock()
+	if runtime.combination.OneShotPhase == "exiting" {
+		return
+	}
+	runtime.exitRequest = exitRequest{
+		Requested: true,
+		Version:   version,
+		Reason:    reason,
+	}
+}
+
+func (runtime *arbitrageRuntime) oneShotShouldStopOpen() bool {
+	if runtime == nil {
+		return false
+	}
+	if !strings.EqualFold(runtime.combination.RunMode, "one_shot") {
+		return false
+	}
+	phase := runtime.combination.OneShotPhase
+	if phase == "exiting" || phase == "exited" || phase == "waiting_exit" {
+		return true
+	}
+	runtime.exitMu.Lock()
+	defer runtime.exitMu.Unlock()
+	return runtime.exitRequest.Requested &&
+		runtime.exitRequest.Version == runtime.combination.Version
+}
+
+func (s *ArbitrageScheduler) refreshExitRequest(runtime *arbitrageRuntime) {
+	if runtime == nil || runtime.combination.OneShotPhase == "exiting" {
+		return
+	}
+	runtime.exitMu.Lock()
+	defer runtime.exitMu.Unlock()
+	if runtime.exitRequest.Requested &&
+		runtime.exitRequest.Version != runtime.combination.Version {
+		runtime.exitRequest = exitRequest{}
+	}
+}
+
+func (s *ArbitrageScheduler) SignalOneShotExit(id string, version int64, reason string) {
+	if s == nil || id == "" {
+		return
+	}
+	s.mu.Lock()
+	runtime := s.runtimes[id]
+	s.mu.Unlock()
+	if runtime == nil {
+		return
+	}
+	runtime.requestOneShotExitAt(version, reason)
 }
 
 func (s *ArbitrageScheduler) unregisterRuntimeLifecycle(id string) {

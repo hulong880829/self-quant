@@ -22,8 +22,11 @@ type arbitragePositionAuditStore interface {
 	) ([]ArbitrageCombination, error)
 	UpdateArbitragePositionAudit(
 		context.Context,
-		string, int64, string, string, string, string, bool, string,
+		string, int64, string, string, string, string, bool, string, string, string,
 	) (ArbitrageCombination, error)
+	MarkOneShotExiting(
+		context.Context, string, int64, string, map[string]any,
+	) (ArbitrageCombination, bool, error)
 	AppendArbitrageEvent(
 		context.Context, string, string, string, map[string]any,
 	) error
@@ -57,6 +60,7 @@ type ArbitragePositionAuditor struct {
 	portfolios              portfolioSnapshotReader
 	venues                  *exchange.Registry
 	valuations              arbitrageValuationProvider
+	exitSignal              oneShotExitSignaler
 	token                   string
 	interval                time.Duration
 	timeout                 time.Duration
@@ -109,6 +113,13 @@ func (a *ArbitragePositionAuditor) ConfigureArbitrageValuations(
 	valuations arbitrageValuationProvider,
 ) {
 	a.valuations = valuations
+}
+
+func (a *ArbitragePositionAuditor) ConfigureExitSignal(signaler oneShotExitSignaler) {
+	if a == nil {
+		return
+	}
+	a.exitSignal = signaler
 }
 
 func (a *ArbitragePositionAuditor) ConfigureDEXFillReaders(
@@ -267,7 +278,9 @@ func (a *ArbitragePositionAuditor) audit(
 				VenueB:          venueB,
 			},
 		)
-		return applyErr
+		if !errors.Is(applyErr, errLastCloseExternalFlatSnapshotStale) {
+			return applyErr
+		}
 	}
 	localA := parseDecimal(item.LegABasePosition)
 	localB := parseDecimal(item.LegBBasePosition)
@@ -330,21 +343,27 @@ func (a *ArbitragePositionAuditor) audit(
 			expectedB.String(), venueB.String(), diffB.String(),
 		)
 	}
+	legADistance := liquidationDistancePct(accountA.snapshot, item.LegA, item.LegABasePosition)
+	legBDistance := liquidationDistancePct(accountB.snapshot, item.LegB, item.LegBBasePosition)
 	updated, err := a.store.UpdateArbitragePositionAudit(
 		ctx, item.ID, item.Version, venueA.String(), venueB.String(),
 		diffA.String(), diffB.String(), uncertain, message,
+		legADistance, legBDistance,
 	)
 	if err != nil {
 		return err
 	}
 	if item.PositionUncertain && !updated.PositionUncertain {
+		payload := map[string]any{
+			"previousError":          item.ErrorMessage,
+			"legAPositionDifference": updated.LegAPositionDifference,
+			"legBPositionDifference": updated.LegBPositionDifference,
+		}
+		if item.ErrorMessage == ErrArbitrageUnsafeHedge.Error() {
+			payload["reason"] = lastCloseResidualAuditedReason
+		}
 		_ = a.store.AppendArbitrageEvent(
-			ctx, item.ID, "", "position_uncertain_recovered",
-			map[string]any{
-				"previousError":          item.ErrorMessage,
-				"legAPositionDifference": updated.LegAPositionDifference,
-				"legBPositionDifference": updated.LegBPositionDifference,
-			},
+			ctx, item.ID, "", "position_uncertain_recovered", payload,
 		)
 	}
 	if item.RuntimeState == "manual_intervention" &&
@@ -377,11 +396,28 @@ func (a *ArbitragePositionAuditor) audit(
 			},
 		)
 	}
+	a.maybeTriggerLiquidationDistanceExit(ctx, updated)
 	return nil
 }
 
 func venueMatchesCreationBaseline(venue, baseline decimal.Decimal) bool {
 	return venue.Sub(baseline).IsZero()
+}
+
+func closingExternalFlatErrorAccepted(item ArbitrageCombination) bool {
+	if strings.HasPrefix(item.ErrorMessage, arbitragePositionAuditErrorPrefix) {
+		return true
+	}
+	return item.ErrorMessage == ErrArbitrageUnsafeHedge.Error() &&
+		strings.EqualFold(strings.TrimSpace(item.RuntimeState), "position_uncertain") &&
+		!item.CircuitOpen
+}
+
+func closingExternalFlatReason(errorMessage string) string {
+	if errorMessage == ErrArbitrageUnsafeHedge.Error() {
+		return "external_or_manual_flatten_after_last_close_recovery"
+	}
+	return "external_or_manual_flatten"
 }
 
 func closingExternalFlatReady(
@@ -392,7 +428,7 @@ func closingExternalFlatReady(
 		!item.PositionUncertain {
 		return false
 	}
-	if !strings.HasPrefix(item.ErrorMessage, arbitragePositionAuditErrorPrefix) {
+	if !closingExternalFlatErrorAccepted(item) {
 		return false
 	}
 	if !strings.EqualFold(item.LegA.ContractType, "perpetual") ||
@@ -735,6 +771,64 @@ func arbitragePositionAuditMark(item ArbitrageCombination) decimal.Decimal {
 		return decimal.Zero
 	}
 	return positionNotional.Div(pairedBase)
+}
+
+func liquidationDistancePct(
+	snapshot portfolio.Snapshot,
+	leg ArbitrageLeg,
+	legBasePosition string,
+) string {
+	if !strings.EqualFold(strings.TrimSpace(leg.ContractType), "perpetual") {
+		return ""
+	}
+	ledger := parseDecimal(legBasePosition)
+	if ledger.IsZero() {
+		return ""
+	}
+	wantLong := ledger.IsPositive()
+	target := normalizedAuditSymbol(leg.ExchangeSymbol)
+	matched := make([]portfolio.Position, 0, 1)
+	for _, position := range snapshot.Positions {
+		if position.Kind != "" && position.Kind != "cex" {
+			continue
+		}
+		if !strings.EqualFold(position.Exchange, leg.Exchange) {
+			continue
+		}
+		symbolMatches := normalizedAuditSymbol(position.WireSymbol) == target ||
+			normalizedAuditSymbol(position.Symbol) == target
+		if !symbolMatches && position.BaseAsset != "" {
+			symbolMatches = strings.EqualFold(position.BaseAsset, leg.BaseAsset)
+		}
+		if !symbolMatches {
+			continue
+		}
+		signed, err := decimal.NewFromString(strings.TrimSpace(position.SignedContractSize))
+		if err != nil || signed.IsZero() {
+			return ""
+		}
+		side := strings.ToLower(strings.TrimSpace(position.Side))
+		if (side == "long" && signed.IsNegative()) || (side == "short" && signed.IsPositive()) {
+			return ""
+		}
+		if signed.IsPositive() != wantLong {
+			continue
+		}
+		matched = append(matched, position)
+	}
+	if len(matched) != 1 {
+		return ""
+	}
+	mark := parsePositiveDecimal(matched[0].MarkPrice)
+	liquidation := parsePositiveDecimal(matched[0].LiquidationPrice)
+	if !mark.IsPositive() || !liquidation.IsPositive() {
+		return ""
+	}
+	distance := mark.Sub(liquidation)
+	if !wantLong {
+		distance = liquidation.Sub(mark)
+	}
+	return distance.Div(mark).Mul(decimal.NewFromInt(100)).String()
 }
 
 func normalizedAuditSymbol(value string) string {

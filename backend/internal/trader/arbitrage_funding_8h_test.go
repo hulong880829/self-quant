@@ -16,7 +16,8 @@ func TestNormalizeEarlyExitFunding8hFloor(t *testing.T) {
 		TargetNotional:     "1000",
 		ExecutionMode:      "maker_then_hedge",
 		RunMode:            "one_shot",
-		ExitPolicy:         "annualized",
+		ExitPolicy:         "time",
+		ExitAfterSeconds:   86400,
 		ExitAnnualizedRate: "0.15",
 	}
 

@@ -56,6 +56,8 @@ type Manager struct {
 
 	hbMu                 sync.Mutex
 	heartbeatWriteFailed map[string]uint64
+
+	fillAverages *recentFillCache
 }
 
 type session struct {
@@ -137,7 +139,7 @@ func New(options Options) (*Manager, error) {
 		staleAfter: options.StaleAfter, reconnectInitial: options.ReconnectInitial,
 		reconnectMax: options.ReconnectMax, idleTimeout: options.IdleTimeout,
 		now: options.Now, jitter: options.Jitter, logger: options.Logger,
-		sessions: make(map[Key]*session),
+		sessions: make(map[Key]*session), fillAverages: newRecentFillCache(),
 	}, nil
 }
 
@@ -695,6 +697,7 @@ func (m *Manager) publish(current *session, update Update) {
 		return
 	}
 	current.lastEvent = m.now()
+	m.rememberRecentFillAverage(current.key, update)
 	m.publishLocked(current, update)
 }
 

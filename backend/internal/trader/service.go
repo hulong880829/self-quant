@@ -20,14 +20,17 @@ type Service struct {
 	store               orderStore
 	twaps               twapStore
 	arbitrage           arbitrageStore
+	counts              arbitrageCountStore
 	catalog             instrumentCatalog
 	credentials         credentialProvider
 	venues              *exchange.Registry
 	portfolios          portfolioSnapshotProvider
 	orderStreams        *orderstream.Manager
 	arbitrageValuations arbitrageValuationProvider
+	arbitrageMetrics    arbitrageRuntimeLifecycle
 	arbitrageExchanges  map[string]bool
 	timeout             time.Duration
+	adminToken          string
 	logger              *slog.Logger
 }
 
@@ -39,6 +42,9 @@ func (s *Service) ConfigureTwap(store twapStore) {
 
 func (s *Service) ConfigureArbitrage(store arbitrageStore) {
 	s.arbitrage = store
+	if counts, ok := store.(arbitrageCountStore); ok {
+		s.counts = counts
+	}
 }
 
 func (s *Service) ConfigureArbitragePositionSnapshots(
@@ -51,6 +57,10 @@ func (s *Service) ConfigureArbitrageValuations(
 	provider arbitrageValuationProvider,
 ) {
 	s.arbitrageValuations = provider
+}
+
+func (s *Service) ConfigureArbitrageMetricsLifecycle(lifecycle arbitrageRuntimeLifecycle) {
+	s.arbitrageMetrics = lifecycle
 }
 
 func (s *Service) ConfigureArbitrageExchanges(enabled map[string]bool) {

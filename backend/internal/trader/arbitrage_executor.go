@@ -28,6 +28,9 @@ type ArbitrageExecutor struct {
 	market              *marketdata.Manager
 	portfolios          portfolioSnapshotProvider
 	orderStreams        *orderstream.Manager
+	metrics             arbitrageRuntimeLifecycle
+	finalMetrics        arbitrageFinalMetricsStore
+	fillAverages        arbitrageFillAverageCompensator
 	token               string
 	observerInterval    time.Duration
 	repriceTicks        int
@@ -45,6 +48,7 @@ type ArbitrageExecutor struct {
 	restFallbacks       atomic.Uint64
 	lastStreamLagMS     atomic.Uint64
 	lastHedgeLatency    atomic.Uint64
+	circuitSkipLogged   map[string]time.Time
 }
 
 type ArbitrageExecutorStats struct {
@@ -81,6 +85,30 @@ func (e *ArbitrageExecutor) ConfigureOrderStreams(
 
 func (e *ArbitrageExecutor) ConfigurePortfolios(portfolios portfolioSnapshotProvider) {
 	e.portfolios = portfolios
+}
+
+func (e *ArbitrageExecutor) ConfigureMetricsLifecycle(lifecycle arbitrageRuntimeLifecycle) {
+	e.metrics = lifecycle
+}
+
+func (e *ArbitrageExecutor) ConfigureFinalMetrics(store arbitrageFinalMetricsStore) {
+	e.finalMetrics = store
+}
+
+func (e *ArbitrageExecutor) ConfigureFillAverageCompensator(
+	compensator arbitrageFillAverageCompensator,
+) {
+	if e == nil {
+		return
+	}
+	e.fillAverages = compensator
+}
+
+func (e *ArbitrageExecutor) compensateFinalAverages(ctx context.Context, combinationID string) {
+	if e == nil || e.fillAverages == nil || strings.TrimSpace(combinationID) == "" {
+		return
+	}
+	e.fillAverages.Compensate(ctx, []string{combinationID})
 }
 
 func (e *ArbitrageExecutor) ConfigureHedgeEmergencyAfter(after time.Duration) {
@@ -208,14 +236,25 @@ func (e *ArbitrageExecutor) Execute(
 
 	started := time.Now()
 	var err error
-	switch combination.ExecutionMode {
-	case "maker_then_hedge":
-		err = e.executeMakerThenHedge(ctx, combination, &execution, bboA, bboB, permit)
-	case "simultaneous_market":
-		err = e.executeSimultaneousMarket(ctx, combination, &execution, bboA, bboB)
-	default:
-		err = fmt.Errorf("%w: unsupported arbitrage execution mode %q",
-			ErrInvalidArgument, combination.ExecutionMode)
+	orders, listErr := e.store.ListArbitrageOrders(
+		ctx, combination.OwnerUsername, combination.ID,
+	)
+	if listErr != nil {
+		err = listErr
+	} else if lastCloseResidualFlattenExecution(combination.ID, execution) {
+		err = e.runLastCloseResidualFlatten(ctx, combination, bboA, bboB)
+	} else if isOneShotFinalFlattenExecution(combination, execution, orders, bboA, bboB) {
+		err = e.executeOneShotFinalFlatten(ctx, combination, &execution, bboA, bboB)
+	} else {
+		switch combination.ExecutionMode {
+		case "maker_then_hedge":
+			err = e.executeMakerThenHedge(ctx, combination, &execution, bboA, bboB, permit)
+		case "simultaneous_market":
+			err = e.executeSimultaneousMarket(ctx, combination, &execution, bboA, bboB)
+		default:
+			err = fmt.Errorf("%w: unsupported arbitrage execution mode %q",
+				ErrInvalidArgument, combination.ExecutionMode)
+		}
 	}
 	if err != nil {
 		if errors.Is(err, ErrArbitrageReconciling) || errors.Is(err, errLastClipDustHandoff) {
@@ -488,24 +527,38 @@ func (e *ArbitrageExecutor) CloseCombination(
 			closeOrderReference(unresolvedOrders[0]),
 		)
 	}
-	placeA, placeB, err := e.closeFlattenOwnedDecision(ctx, combination)
-	if err != nil {
+	if _, _, err := e.closeFlattenOwnedDecision(ctx, combination); err != nil {
 		return err
 	}
-	combination.Status = "closed"
-	combination.MarketDataStale = true
-	if combination.PositionUncertain {
-		combination.RuntimeState = "position_uncertain"
+	if !combinationLooksFlat(combination) {
+		return nil
+	}
+	if e.finalMetrics != nil && !combination.PositionUncertain {
+		closed, applied, markErr := e.finalMetrics.MarkArbitrageClosedAndScheduleFinalMetrics(
+			ctx, combination.ID, combination.Version,
+		)
+		if markErr != nil {
+			return markErr
+		}
+		if !applied {
+			return ErrArbitrageConflict
+		}
+		combination = closed
 	} else {
-		combination.RuntimeState = "monitoring"
-		combination.ErrorMessage = ""
-	}
-	if combination.ErrorMessage == "closing drain left non-zero base carry" {
-		combination.ErrorMessage = ""
-	}
-	_, err = e.store.UpdateArbitrageCombinationRuntime(ctx, combination)
-	if err != nil {
-		return err
+		combination.Status = "closed"
+		combination.MarketDataStale = true
+		if combination.PositionUncertain {
+			combination.RuntimeState = "position_uncertain"
+		} else {
+			combination.RuntimeState = "monitoring"
+			combination.ErrorMessage = ""
+		}
+		if combination.ErrorMessage == "closing drain left non-zero base carry" {
+			combination.ErrorMessage = ""
+		}
+		if _, err := e.store.UpdateArbitrageCombinationRuntime(ctx, combination); err != nil {
+			return err
+		}
 	}
 	_ = e.store.AppendArbitrageEvent(ctx, combination.ID, "", "closed", map[string]any{
 		"activeRuns":          len(runs),
@@ -517,7 +570,6 @@ func (e *ArbitrageExecutor) CloseCombination(
 		"unresolvedOrderIds":  closeOrderIDs(unresolvedOrders),
 		"attempts":            closeUncertainAttempts(combination),
 	})
-	e.placeCloseFlattenOwnedLegs(ctx, combination, placeA, placeB)
 	return nil
 }
 
@@ -634,32 +686,17 @@ func (e *ArbitrageExecutor) placeCloseFlattenLeg(
 	adapter exchange.Adapter,
 	base decimal.Decimal,
 ) {
-	quantity := closeFlattenQuantity(instrument, base)
-	if !quantity.IsPositive() {
+	request, ok := closeFlattenPlaceRequest(instrument, base)
+	if !ok {
 		return
 	}
-	venueInstrument := toVenueInstrument(instrument)
-	if _, err := exchange.ToVenueQuantity(venueInstrument, quantity.String()); err != nil {
-		e.logger.Info("close flatten skipped leg",
-			"combination_id", combination.ID, "leg", legName,
-			"exchange", instrument.Exchange, "quantity", quantity.String(),
-			"reason", "invalid_venue_quantity", "error", err)
-		return
-	}
+	request.ClientOrderID = clientOrderID()
 	timeout := e.timeout
 	if timeout <= 0 {
 		timeout = 12 * time.Second
 	}
 	placeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	request := exchange.OrderRequest{
-		Instrument:    venueInstrument,
-		ClientOrderID: clientOrderID(),
-		Side:          closeFlattenSide(base),
-		OrderType:     "market",
-		Quantity:      quantity.String(),
-		ReduceOnly:    true,
-	}
 	accountID := credentials.TradingAccountID
 	if accountID == 0 {
 		accountID = leg.TradingAccountID
@@ -878,6 +915,21 @@ func (e *ArbitrageExecutor) RecoverWithoutMarketData(
 	combination ArbitrageCombination,
 	execution ArbitrageExecution,
 ) error {
+	if lastCloseResidualFlattenExecution(combination.ID, execution) {
+		return e.runLastCloseResidualFlatten(ctx, combination, marketdata.BBO{}, marketdata.BBO{})
+	}
+	if orders, listErr := e.store.ListArbitrageOrders(
+		ctx, combination.OwnerUsername, combination.ID,
+	); listErr == nil && isOneShotFinalFlattenExecution(
+		combination, execution, orders, marketdata.BBO{}, marketdata.BBO{},
+	) {
+		return e.recoverOneShotFinalFlatten(ctx, combination, execution)
+	}
+	if handled, recoverErr := e.recoverLastCloseClipClosing(
+		ctx, combination, &execution,
+	); handled {
+		return recoverErr
+	}
 	if handoffErr := e.maybeHandoffLastClipHedgeMinNotional(
 		ctx, combination, &execution, errors.New(execution.ErrorMessage),
 	); handoffErr != nil {
@@ -1007,6 +1059,11 @@ func (e *ArbitrageExecutor) executeMakerThenHedge(
 	bboA, bboB marketdata.BBO,
 	permit *executionWorkPermit,
 ) error {
+	if handled, recoverErr := e.recoverLastCloseClipClosing(
+		ctx, combination, execution,
+	); handled {
+		return recoverErr
+	}
 	aSide, bSide, ok := arbitrageLegSides(execution.Direction)
 	if !ok {
 		return fmt.Errorf("%w: unsupported arbitrage direction %q for maker_then_hedge",
@@ -1071,10 +1128,22 @@ func (e *ArbitrageExecutor) executeMakerThenHedge(
 	); err != nil {
 		return err
 	}
-	enteredDust := strings.EqualFold(
-		strings.TrimSpace(combination.RuntimeState), "hedge_deferred_dust",
-	)
-	startCarry := parseDecimal(combination.CarryBaseQuantity)
+	refreshedCarry := parseDecimal(combination.CarryBaseQuantity)
+	enteredWithMaker := strings.TrimSpace(execution.MakerOrderID) != ""
+	carryBeforeExecution := refreshedCarry
+	if enteredWithMaker {
+		rebuilt, rebuildErr := carryBeforeExecutionFromFills(
+			refreshedCarry,
+			parseDecimal(execution.LegAFilledQuantity),
+			parseDecimal(execution.LegBFilledQuantity),
+			execution.Direction,
+		)
+		if rebuildErr != nil {
+			return rebuildErr
+		}
+		carryBeforeExecution = rebuilt
+	}
+	makerReduceAtEntry := arbitrageReduceLegAvailable(combination, makerLegName, makerSide)
 	hedgeBBO := bboB
 	if combination.MakerLeg == "b" {
 		hedgeBBO = bboA
@@ -1107,44 +1176,46 @@ func (e *ArbitrageExecutor) executeMakerThenHedge(
 			return refreshErr
 		}
 	}
-	if carry := parseDecimal(combination.CarryBaseQuantity); !carry.IsZero() &&
-		execution.MakerOrderID == "" {
-		skipStandalone := false
-		if enteredDust {
-			eligible, eligErr := e.carryHedgeExecutableAtBBO(
-				combination, *execution, hedgeInstrument, hedgeBBO,
-			)
-			if eligErr != nil {
-				return eligErr
-			}
-			if !eligible {
-				skipStandalone = true
-			}
-		}
+	skipMakerCarryBudget := false
+	if !enteredWithMaker && !parseDecimal(combination.CarryBaseQuantity).IsZero() {
+		lastCloseDeferred := false
 		if lastCloseClipMustMatchFills(combination, *execution) {
 			ready, payload := lastCloseStandaloneCarryReady(
 				combination, *execution, hedgeLeg, hedgeInstrument, hedgeBBO,
 			)
 			if !ready {
-				skipStandalone = true
+				lastCloseDeferred = true
 				_ = e.store.AppendArbitrageEvent(
 					ctx, combination.ID, execution.ID, lastCloseCarryDeferredEvent, payload,
 				)
 			}
 		}
-		if !skipStandalone {
-			hedged, hedgeErr := e.hedgeCarry(
-				ctx, &combination, execution, hedgeLeg, hedgeInstrument,
-				hedgeCredentials, hedgeAdapter, hedgeOrders, time.Now(),
+		if !lastCloseDeferred {
+			action, planErr := e.standaloneCarryPlan(
+				ctx, combination, *execution, hedgeLeg, hedgeInstrument,
+				hedgeCredentials, hedgeBBO,
 			)
-			if hedgeErr != nil {
-				return hedgeErr
+			if planErr != nil {
+				return planErr
 			}
-			if hedged {
-				mark := parsePositiveDecimal(bboA.AskPrice).
-					Add(parsePositiveDecimal(bboB.BidPrice)).
-					Div(decimal.NewFromInt(2))
-				return e.completeExecution(ctx, combination, execution, mark)
+			if action == standaloneCarryExecute {
+				hedged, hedgeErr := e.hedgeCarry(
+					ctx, &combination, execution, hedgeLeg, hedgeInstrument,
+					hedgeCredentials, hedgeAdapter, hedgeOrders, time.Now(),
+				)
+				if hedgeErr != nil {
+					return hedgeErr
+				}
+				if hedged {
+					mark := parsePositiveDecimal(bboA.AskPrice).
+						Add(parsePositiveDecimal(bboB.BidPrice)).
+						Div(decimal.NewFromInt(2))
+					return e.completeExecution(ctx, combination, execution, mark)
+				}
+			} else {
+				skipMakerCarryBudget = carrySameSignAsMaker(
+					parseDecimal(combination.CarryBaseQuantity), makerSide,
+				)
 			}
 		}
 	}
@@ -1186,12 +1257,7 @@ func (e *ArbitrageExecutor) executeMakerThenHedge(
 		if !parsePositiveDecimal(execution.TargetBaseQuantity).IsPositive() {
 			roundBaseCap = executionNotional(combination, *execution).Div(priceValue)
 		}
-		dustNow := strings.EqualFold(
-			strings.TrimSpace(combination.RuntimeState), "hedge_deferred_dust",
-		)
-		if !(dustNow && carrySameSignAsMaker(
-			parseDecimal(combination.CarryBaseQuantity), makerSide,
-		)) {
+		if !skipMakerCarryBudget {
 			qty = makerQuantityWithinCarryBudget(
 				qty,
 				parseDecimal(combination.CarryBaseQuantity),
@@ -1456,11 +1522,44 @@ func (e *ArbitrageExecutor) executeMakerThenHedge(
 	if e.hedgeEmergencyAfter > 0 {
 		timing.emergencyAt = hedgeStartedAt.Add(e.hedgeEmergencyAfter)
 	}
-	if enteredDust && carrySameSignAsMaker(startCarry, makerSide) {
+	if !carryBeforeExecution.IsZero() {
 		_, err = e.hedgeCarryWithTiming(
 			context.Background(), &combination, execution, hedgeLeg, hedgeInstrument,
 			hedgeCredentials, hedgeAdapter, hedgeOrders, timing,
 		)
+		if errors.Is(err, ErrArbitrageUnsafeHedge) {
+			orders, listErr := e.store.ListArbitrageOrders(
+				context.Background(), combination.OwnerUsername, combination.ID,
+			)
+			newCarry := parseDecimal(combination.CarryBaseQuantity)
+			if listErr == nil && leftoverCloseDustCompletable(
+				combination, *execution, order, orders,
+				carryBeforeExecution, newCarry, makerReduceAtEntry,
+			) {
+				side := carryHedgeSide(newCarry)
+				price := parsePositiveDecimal(hedgeBBO.AskPrice)
+				if side == "sell" {
+					price = parsePositiveDecimal(hedgeBBO.BidPrice)
+				}
+				if latest, latestErr := e.latestForLeg(hedgeLeg); latestErr == nil {
+					price = parsePositiveDecimal(latest.AskPrice)
+					if side == "sell" {
+						price = parsePositiveDecimal(latest.BidPrice)
+					}
+				}
+				combination = persistHedgeDeferredDust(e, context.Background(), combination)
+				_ = e.store.AppendArbitrageEvent(
+					context.Background(), combination.ID, execution.ID, "hedge_deferred_dust",
+					hedgeDeferredDustPayload(
+						side, newCarry, price, hedgeInstrument, map[string]any{
+							"carryBaseQuantity":    combination.CarryBaseQuantity,
+							"carryBeforeExecution": carryBeforeExecution.String(),
+						},
+					),
+				)
+				err = nil
+			}
+		}
 	} else {
 		_, err = e.hedgeMakerCarryWithDeadline(
 			context.Background(), &combination, execution, hedgeLeg, hedgeInstrument,
@@ -2337,6 +2436,9 @@ func (e *ArbitrageExecutor) refreshArbitragePositions(
 	if err != nil {
 		return combination, err
 	}
+	if terminalArbitrageExecutionStatus(execution.Status) && e.metrics != nil {
+		e.metrics.RequestMetricsRefresh(updated, "execution_terminal")
+	}
 	if active, activeErr := e.store.GetActiveArbitrageExecution(
 		ctx, combination.ID,
 	); activeErr == nil && active.ID == execution.ID {
@@ -2446,6 +2548,112 @@ func arbitrageLegName(
 }
 
 const lastCloseCarryDeferredEvent = "last_close_carry_deferred_to_leg_flatten"
+
+type standaloneCarryAction int
+
+const (
+	standaloneCarryDeferToMaker standaloneCarryAction = iota
+	standaloneCarryExecute
+)
+
+func (e *ArbitrageExecutor) standaloneCarryPlan(
+	ctx context.Context,
+	combination ArbitrageCombination,
+	execution ArbitrageExecution,
+	hedgeLeg ArbitrageLeg,
+	instrument Instrument,
+	credentials Credentials,
+	bbo marketdata.BBO,
+) (standaloneCarryAction, error) {
+	carry := parseDecimal(combination.CarryBaseQuantity)
+	if carry.IsZero() {
+		return standaloneCarryDeferToMaker, nil
+	}
+	step := parsePositiveDecimal(instrument.QuantityStep)
+	if !step.IsPositive() {
+		return 0, ErrInstrumentUnavailable
+	}
+	side := carryHedgeSide(carry)
+	price := parsePositiveDecimal(bbo.AskPrice)
+	if side == "sell" {
+		price = parsePositiveDecimal(bbo.BidPrice)
+	}
+	target := floorToStep(carry.Abs(), step)
+	quantity, eligible, err := executableHedgeQuantity(
+		carry.Abs(), price, instrument,
+		allowBelowMinNotionalCombo(combination, execution, instrument),
+	)
+	if err != nil {
+		return 0, err
+	}
+	if !eligible || !target.IsPositive() || !quantity.Equal(target) {
+		return standaloneCarryDeferToMaker, nil
+	}
+	if execution.ReduceOnly &&
+		strings.EqualFold(strings.TrimSpace(execution.PositionEffect), "close") {
+		available := arbitrageReduceLegAvailable(
+			combination, arbitrageLegName(combination, hedgeLeg), side,
+		)
+		if instrument.ContractType == "spot" {
+			snapshot, snapshotErr := e.bidSpotSnapshot(
+				ctx, execution.ID, hedgeLeg, credentials,
+			)
+			if snapshotErr != nil {
+				return 0, fmt.Errorf("%w: read spot balance: %v",
+					ErrVenueUnavailable, snapshotErr)
+			}
+			available = decimal.Min(
+				available,
+				spotAvailableForSide(snapshot, hedgeLeg.BaseAsset, side),
+			)
+		}
+		if available.LessThan(quantity) {
+			return standaloneCarryDeferToMaker, nil
+		}
+	}
+	return standaloneCarryExecute, nil
+}
+
+func leftoverCloseDustCompletable(
+	combination ArbitrageCombination,
+	execution ArbitrageExecution,
+	maker Order,
+	orders []Order,
+	carryBefore, newCarry, makerReduceAtEntry decimal.Decimal,
+) bool {
+	if combination.PositionUncertain {
+		return false
+	}
+	if !execution.ReduceOnly ||
+		!strings.EqualFold(strings.TrimSpace(execution.PositionEffect), "close") {
+		return false
+	}
+	if !terminalStatus(maker.Status) || !parseDecimal(maker.FilledQuantity).IsPositive() {
+		return false
+	}
+	if hasLiveOrUncertainCarryHedge(orders, execution.ID) {
+		return false
+	}
+	if !newCarry.Abs().LessThan(carryBefore.Abs()) {
+		return false
+	}
+	return makerReduceAtEntry.IsPositive()
+}
+
+func hasLiveOrUncertainCarryHedge(orders []Order, executionID string) bool {
+	for _, order := range orders {
+		if order.ArbitrageExecutionID != executionID {
+			continue
+		}
+		if !isArbitrageCarryHedgeRole(order.ArbitrageRole) {
+			continue
+		}
+		if !terminalStatus(order.Status) || order.ReconcileFailures != 0 {
+			return true
+		}
+	}
+	return false
+}
 
 func lastCloseStandaloneCarryReady(
 	combination ArbitrageCombination,
@@ -3472,7 +3680,14 @@ func (e *ArbitrageExecutor) completeExecution(
 	combination = refreshed
 	fillA := parseDecimal(execution.LegAFilledQuantity)
 	fillB := parseDecimal(execution.LegBFilledQuantity)
-	if lastCloseClipMustMatchFills(combination, *execution) && !fillA.Equal(fillB) {
+	orders, ordersErr := e.store.ListArbitrageOrders(
+		ctx, combination.OwnerUsername, combination.ID,
+	)
+	if ordersErr != nil {
+		return ordersErr
+	}
+	fillA, fillB = applyLastCloseClipAllocatedFills(combination, execution, orders)
+	if lastCloseClipMustMatchFillsOrders(combination, *execution, orders) && !fillA.Equal(fillB) {
 		remaining := fillA.Sub(fillB).Abs()
 		result, failErr := e.store.FailLastCloseClipUnbalanced(
 			ctx, combination, *execution, fillA.String(), fillB.String(), remaining.String(),
@@ -3484,6 +3699,11 @@ func (e *ArbitrageExecutor) completeExecution(
 		return nil
 	}
 	execution.DeltaNotional = deltaNotional(fillA, fillB, mark).String()
+	if circuitRecoveryCompletion(ctx) {
+		execution.LegAFilledQuantity = fillA.String()
+		execution.LegBFilledQuantity = fillB.String()
+		return e.finishCircuitRecoveryExecution(ctx, combination, execution, mark)
+	}
 	execution.Status = "completed"
 	execution.ErrorMessage = ""
 	if _, err := e.store.UpdateArbitrageExecution(ctx, *execution); err != nil {
@@ -3708,7 +3928,7 @@ func (e *ArbitrageExecutor) settleCanceledOrder(
 	order Order,
 	observation orderObservation,
 ) (Order, error) {
-	if confirmedAbsentReliableZeroFill(order) {
+	if confirmedAbsentReliableZeroFill(order) || explicitVenueRejectedZeroFill(order) {
 		return order, nil
 	}
 	if !terminalStatus(order.Status) {

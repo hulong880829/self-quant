@@ -127,6 +127,17 @@ func TestArbitrageCombinationMapping(t *testing.T) {
 			ExchangeSymbol: "BTC-USDT-SWAP", BaseAsset: "BTC", QuoteAsset: "USDT",
 		},
 		EarlyExitFunding8hAnnualizedFloor: "0.05",
+		EarlyExitLiquidationDistancePct:   "20",
+		RealizedSpreadPnl:                 "12",
+		EstimatedFundingPnl:               "3",
+		EstimatedTradingFee:               "1",
+		MetricsQuality:                    "estimated",
+		HoldingSeconds:                    "3600",
+		NotionalExposureSeconds:           "3600000",
+		MetricsCalculatedAt:               time.Now().UTC(),
+		FinalMetricsStatus:                "completed",
+		FinalMetricsRetryCount:            1,
+		FinalMetricsCompletedAt:           time.Now().UTC(),
 	}}
 	server := NewTraderServer(service)
 	response, err := server.CreateArbitrageCombination(
@@ -157,8 +168,17 @@ func TestArbitrageCombinationMapping(t *testing.T) {
 		item.GetLegBVenueValuationAt() == nil ||
 		item.GetVenueBaselineCapturedAt() == nil ||
 		!item.GetFundingHistoryComplete() ||
-		item.GetEarlyExitFunding_8HAnnualizedFloor() != "0.05" {
+		item.GetEarlyExitFunding_8HAnnualizedFloor() != "0.05" ||
+		item.GetEarlyExitLiquidationDistancePct() != "20" {
 		t.Fatalf("combination=%v", item)
+	}
+	detail, err := server.GetArbitrageCombination(
+		context.Background(), &traderv1.GetArbitrageCombinationRequest{CombinationId: "combo-1"},
+	)
+	if err != nil || detail.GetCombination().GetFinalMetrics().GetStatus() != "completed" ||
+		detail.GetCombination().GetFinalMetrics().GetEstimatedTradingFee() != "1" ||
+		detail.GetCombination().GetFinalMetrics().GetMetricsQuality() != "estimated" {
+		t.Fatalf("detail=%v err=%v", detail, err)
 	}
 	ask := "-7"
 	updated, err := server.UpdateArbitrageCombination(
@@ -204,6 +224,59 @@ func TestCreateArbitrageCombinationMapsFunding8hFloor(t *testing.T) {
 		if response.GetCombination().GetEarlyExitFunding_8HAnnualizedFloor() != floor {
 			t.Fatalf("proto floor=%q", response.GetCombination().GetEarlyExitFunding_8HAnnualizedFloor())
 		}
+	}
+}
+
+type readOnlyTrader struct {
+	fakeTrader
+	preflight trader.ArbitragePreflight
+}
+
+func (r readOnlyTrader) PreflightArbitrageCombination(
+	context.Context, trader.CreateArbitrageInput,
+) (trader.ArbitragePreflight, error) {
+	return r.preflight, nil
+}
+
+func (r readOnlyTrader) ListArbitrageCombinationOrders(
+	context.Context, string, string, trader.ArbitrageHistoryQuery,
+) ([]trader.Order, string, error) {
+	return nil, "", nil
+}
+
+func (r readOnlyTrader) ListArbitrageCombinationExecutions(
+	context.Context, string, string, trader.ArbitrageHistoryQuery,
+) ([]trader.ArbitrageExecution, string, error) {
+	return nil, "", nil
+}
+
+func (r readOnlyTrader) ListArbitrageCombinationEvents(
+	context.Context, string, string, trader.ArbitrageHistoryQuery,
+) ([]trader.ArbitrageEvent, string, error) {
+	return nil, "", nil
+}
+
+func TestPreflightArbitrageCombinationMapping(t *testing.T) {
+	now := time.Now().UTC()
+	server := NewTraderServer(readOnlyTrader{preflight: trader.ArbitragePreflight{
+		Executable: true, CheckedAt: now, ExpiresAt: now.Add(3 * time.Second),
+		LegA: trader.PreflightLeg{
+			AvailableFunds: trader.PreflightDecimal{Value: "500", Status: "known"},
+			EstimatedFee:   trader.PreflightDecimal{Status: "unknown"},
+		},
+		Warnings: []trader.PreflightWarning{{
+			Code: "fee_unknown", Leg: "a", Exchange: "binance",
+		}},
+	}})
+	response, err := server.PreflightArbitrageCombination(
+		context.Background(), &traderv1.PreflightArbitrageCombinationRequest{},
+	)
+	if err != nil || !response.GetExecutable() ||
+		response.GetLegA().GetAvailableFunds().GetValue() != "500" ||
+		response.GetLegA().GetEstimatedFee().GetStatus() != "unknown" ||
+		len(response.GetWarnings()) != 1 ||
+		response.GetExpiresAt().AsTime().Sub(response.GetCheckedAt().AsTime()) != 3*time.Second {
+		t.Fatalf("response=%+v err=%v", response, err)
 	}
 }
 

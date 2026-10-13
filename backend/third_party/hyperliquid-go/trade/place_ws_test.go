@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 
@@ -175,6 +177,115 @@ func TestPlaceWSRequiresStream(t *testing.T) {
 	_, err = client.PlaceALOWS(context.Background(), "BTC", types.Buy, 1, 100, SkipValidation())
 	if !errors.Is(err, stream.ErrNotConnected) {
 		t.Fatalf("err=%v, want ErrNotConnected", err)
+	}
+}
+
+func TestPlaceMarketWSSKRProtectivePriceUsesAllMids(t *testing.T) {
+	const skrMid = "0.018003"
+	var (
+		mu        sync.Mutex
+		infoTypes []string
+	)
+	infoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Type string `json:"type"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		infoTypes = append(infoTypes, req.Type)
+		mu.Unlock()
+		if req.Type == "allMids" {
+			_, _ = w.Write([]byte(`{"SKR":"` + skrMid + `"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(infoSrv.Close)
+
+	cases := []struct {
+		name   string
+		side   types.Side
+		wantPx string
+		isBuy  bool
+	}{
+		{name: "buy", side: types.Buy, wantPx: "0.018903", isBuy: true},
+		{name: "sell", side: types.Sell, wantPx: "0.017103", isBuy: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			infoTypes = infoTypes[:0]
+			mu.Unlock()
+
+			poster := &recordingPoster{resp: json.RawMessage(
+				`{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"oid":7,"avgPx":"` + skrMid + `","totalSz":"1"}}]}}}`,
+			)}
+			key, err := crypto.HexToECDSA(testSigningKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := New(Config{
+				PrivateKey: key,
+				Info:       skrTestInfo(t, infoSrv.URL),
+			})
+			client.SetStream(poster)
+
+			result, err := client.PlaceMarketWS(
+				context.Background(), "SKR", tc.side, 1, SkipValidation(),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != "filled" {
+				t.Fatalf("result=%+v", result)
+			}
+
+			action, ok := poster.action.(signing.OrderAction)
+			if !ok {
+				t.Fatalf("action type %T", poster.action)
+			}
+			if len(action.Orders) != 1 {
+				t.Fatalf("orders=%+v", action.Orders)
+			}
+			order := action.Orders[0]
+			if order.Asset != 10 || order.IsBuy != tc.isBuy || order.LimitPx != tc.wantPx {
+				t.Fatalf("order=%+v want asset=10 isBuy=%v px=%s", order, tc.isBuy, tc.wantPx)
+			}
+			if order.OrderType.Limit == nil || order.OrderType.Limit.Tif != string(types.TifIoc) {
+				t.Fatalf("tif=%+v, want Ioc", order.OrderType)
+			}
+
+			mu.Lock()
+			gotTypes := append([]string(nil), infoTypes...)
+			mu.Unlock()
+			assertPricingUsesAllMidsOnly(t, gotTypes)
+		})
+	}
+}
+
+func assertPricingUsesAllMidsOnly(t *testing.T, types []string) {
+	t.Helper()
+	allowed := map[string]bool{
+		"allMids": true, "meta": true, "spotMeta": true, "outcomeMeta": true,
+		"orderStatus": true, "clearinghouseState": true,
+	}
+	sawAllMids := false
+	for _, typ := range types {
+		if typ == "allMids" {
+			sawAllMids = true
+		}
+		if typ == "l2Book" {
+			t.Fatal("pricing path queried l2Book")
+		}
+		if !allowed[typ] {
+			t.Fatalf("unexpected /info type %q; pricing must use AllMids only", typ)
+		}
+	}
+	if !sawAllMids {
+		t.Fatalf("expected allMids, got %v", types)
 	}
 }
 
