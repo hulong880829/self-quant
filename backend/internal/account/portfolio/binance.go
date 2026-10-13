@@ -132,6 +132,7 @@ func (a *binanceAdapter) Snapshot(ctx context.Context, credentials Credentials) 
 		PositionSide     string `json:"positionSide"`
 		EntryPrice       string `json:"entryPrice"`
 		MarkPrice        string `json:"markPrice"`
+		LiquidationPrice string `json:"liquidationPrice"`
 		UnrealizedProfit string `json:"unRealizedProfit"`
 		Notional         string `json:"notional"`
 		NotionalValue    string `json:"notionalValue"`
@@ -214,7 +215,8 @@ func (a *binanceAdapter) Snapshot(ctx context.Context, credentials Credentials) 
 		result.Positions = append(result.Positions, Position{
 			Key: "binance:" + symbol + ":" + side, Kind: "cex", Exchange: "Binance",
 			Symbol: symbol, Side: side, NotionalUSD: notionalValue.String(), Size: size.Abs().String(),
-			EntryPrice: item.EntryPrice, MarkPrice: item.MarkPrice, UnrealizedPnL: pnl.String(),
+			EntryPrice: item.EntryPrice, MarkPrice: item.MarkPrice,
+			LiquidationPrice: item.LiquidationPrice, UnrealizedPnL: pnl.String(),
 			WireSymbol: item.Symbol, ProductCategory: item.category,
 		})
 	}

@@ -2,7 +2,6 @@ package account
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strings"
@@ -150,7 +149,7 @@ type CreateTradingAccountInput struct {
 }
 
 func (s *Service) ListTradingAccounts(ctx context.Context, token string) ([]TradingAccountView, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +189,7 @@ func (s *Service) CreateTradingAccount(
 	token string,
 	input CreateTradingAccountInput,
 ) (TradingAccountView, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return TradingAccountView{}, err
 	}
@@ -261,7 +260,7 @@ func (s *Service) GetTradingCredentials(
 	token string,
 	id int64,
 ) (TradingCredentials, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return TradingCredentials{}, err
 	}
@@ -283,7 +282,7 @@ func (s *Service) GetTradingAccountMeta(
 	token string,
 	id int64,
 ) (TradingAccountMeta, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return TradingAccountMeta{}, err
 	}
@@ -331,11 +330,8 @@ func (s *Service) GetTradingCredentialsInternal(
 	owner string,
 	id int64,
 ) (TradingCredentials, error) {
-	expected := []byte(strings.TrimSpace(s.traderToken))
-	provided := []byte(strings.TrimSpace(serviceToken))
-	if len(expected) == 0 || len(expected) != len(provided) ||
-		subtle.ConstantTimeCompare(expected, provided) != 1 {
-		return TradingCredentials{}, ErrInvalidServiceToken
+	if err := s.authorizeTrader(serviceToken); err != nil {
+		return TradingCredentials{}, err
 	}
 	owner = strings.TrimSpace(owner)
 	if owner == "" || id <= 0 || s.trading == nil || s.cipher == nil {
@@ -433,7 +429,7 @@ func (s *Service) decryptTradingCredentials(record TradingAccountRecord) (Tradin
 }
 
 func (s *Service) DeleteTradingAccount(ctx context.Context, token string, id int64) error {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return err
 	}
@@ -540,7 +536,7 @@ func (s *Service) GetTradingAccountFeeRates(
 	token string,
 	id int64,
 ) (TradingAccountFees, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return TradingAccountFees{}, err
 	}
@@ -561,7 +557,7 @@ func (s *Service) SyncTradingAccountFeeRates(
 	token string,
 	id int64,
 ) (TradingAccountFees, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return TradingAccountFees{}, err
 	}

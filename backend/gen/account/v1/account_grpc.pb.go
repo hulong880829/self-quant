@@ -19,31 +19,40 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AccountService_Login_FullMethodName                              = "/account.v1.AccountService/Login"
-	AccountService_ValidateSession_FullMethodName                    = "/account.v1.AccountService/ValidateSession"
-	AccountService_ListTradingAccounts_FullMethodName                = "/account.v1.AccountService/ListTradingAccounts"
-	AccountService_CreateTradingAccount_FullMethodName               = "/account.v1.AccountService/CreateTradingAccount"
-	AccountService_CreatePolymarketTradingAccount_FullMethodName     = "/account.v1.AccountService/CreatePolymarketTradingAccount"
-	AccountService_GetPolymarketCredentials_FullMethodName           = "/account.v1.AccountService/GetPolymarketCredentials"
-	AccountService_RefreshPolymarketCredentials_FullMethodName       = "/account.v1.AccountService/RefreshPolymarketCredentials"
-	AccountService_InvalidatePolymarketCredentials_FullMethodName    = "/account.v1.AccountService/InvalidatePolymarketCredentials"
-	AccountService_ActivatePolymarketCredentials_FullMethodName      = "/account.v1.AccountService/ActivatePolymarketCredentials"
-	AccountService_DeleteTradingAccount_FullMethodName               = "/account.v1.AccountService/DeleteTradingAccount"
-	AccountService_GetTradingAccountSnapshot_FullMethodName          = "/account.v1.AccountService/GetTradingAccountSnapshot"
-	AccountService_GetProductGroupSnapshot_FullMethodName            = "/account.v1.AccountService/GetProductGroupSnapshot"
-	AccountService_GetProductAccountSnapshotsInternal_FullMethodName = "/account.v1.AccountService/GetProductAccountSnapshotsInternal"
-	AccountService_SyncProductTradeFillsInternal_FullMethodName      = "/account.v1.AccountService/SyncProductTradeFillsInternal"
-	AccountService_GetTradingCredentials_FullMethodName              = "/account.v1.AccountService/GetTradingCredentials"
-	AccountService_GetTradingCredentialsInternal_FullMethodName      = "/account.v1.AccountService/GetTradingCredentialsInternal"
-	AccountService_GetTradingAccountMeta_FullMethodName              = "/account.v1.AccountService/GetTradingAccountMeta"
-	AccountService_InspectTradingReadiness_FullMethodName            = "/account.v1.AccountService/InspectTradingReadiness"
-	AccountService_GetAICredential_FullMethodName                    = "/account.v1.AccountService/GetAICredential"
-	AccountService_UpsertAICredential_FullMethodName                 = "/account.v1.AccountService/UpsertAICredential"
-	AccountService_DeleteAICredential_FullMethodName                 = "/account.v1.AccountService/DeleteAICredential"
-	AccountService_GetAICredentialSecret_FullMethodName              = "/account.v1.AccountService/GetAICredentialSecret"
-	AccountService_UpdateAICredentialStatus_FullMethodName           = "/account.v1.AccountService/UpdateAICredentialStatus"
-	AccountService_GetTradingAccountFeeRates_FullMethodName          = "/account.v1.AccountService/GetTradingAccountFeeRates"
-	AccountService_SyncTradingAccountFeeRates_FullMethodName         = "/account.v1.AccountService/SyncTradingAccountFeeRates"
+	AccountService_Login_FullMethodName                                = "/account.v1.AccountService/Login"
+	AccountService_ValidateSession_FullMethodName                      = "/account.v1.AccountService/ValidateSession"
+	AccountService_ListTradingAccounts_FullMethodName                  = "/account.v1.AccountService/ListTradingAccounts"
+	AccountService_CreateTradingAccount_FullMethodName                 = "/account.v1.AccountService/CreateTradingAccount"
+	AccountService_CreatePolymarketTradingAccount_FullMethodName       = "/account.v1.AccountService/CreatePolymarketTradingAccount"
+	AccountService_GetPolymarketCredentials_FullMethodName             = "/account.v1.AccountService/GetPolymarketCredentials"
+	AccountService_RefreshPolymarketCredentials_FullMethodName         = "/account.v1.AccountService/RefreshPolymarketCredentials"
+	AccountService_InvalidatePolymarketCredentials_FullMethodName      = "/account.v1.AccountService/InvalidatePolymarketCredentials"
+	AccountService_ActivatePolymarketCredentials_FullMethodName        = "/account.v1.AccountService/ActivatePolymarketCredentials"
+	AccountService_DeleteTradingAccount_FullMethodName                 = "/account.v1.AccountService/DeleteTradingAccount"
+	AccountService_GetTradingAccountSnapshot_FullMethodName            = "/account.v1.AccountService/GetTradingAccountSnapshot"
+	AccountService_GetProductGroupSnapshot_FullMethodName              = "/account.v1.AccountService/GetProductGroupSnapshot"
+	AccountService_GetProductAccountSnapshotsInternal_FullMethodName   = "/account.v1.AccountService/GetProductAccountSnapshotsInternal"
+	AccountService_SyncProductTradeFillsInternal_FullMethodName        = "/account.v1.AccountService/SyncProductTradeFillsInternal"
+	AccountService_GetTradingCredentials_FullMethodName                = "/account.v1.AccountService/GetTradingCredentials"
+	AccountService_GetTradingCredentialsInternal_FullMethodName        = "/account.v1.AccountService/GetTradingCredentialsInternal"
+	AccountService_GetTradingAccountMeta_FullMethodName                = "/account.v1.AccountService/GetTradingAccountMeta"
+	AccountService_InspectTradingReadiness_FullMethodName              = "/account.v1.AccountService/InspectTradingReadiness"
+	AccountService_GetAICredential_FullMethodName                      = "/account.v1.AccountService/GetAICredential"
+	AccountService_UpsertAICredential_FullMethodName                   = "/account.v1.AccountService/UpsertAICredential"
+	AccountService_DeleteAICredential_FullMethodName                   = "/account.v1.AccountService/DeleteAICredential"
+	AccountService_GetAICredentialSecret_FullMethodName                = "/account.v1.AccountService/GetAICredentialSecret"
+	AccountService_UpdateAICredentialStatus_FullMethodName             = "/account.v1.AccountService/UpdateAICredentialStatus"
+	AccountService_GetTradingAccountFeeRates_FullMethodName            = "/account.v1.AccountService/GetTradingAccountFeeRates"
+	AccountService_SyncTradingAccountFeeRates_FullMethodName           = "/account.v1.AccountService/SyncTradingAccountFeeRates"
+	AccountService_ListPlatformAccountsInternal_FullMethodName         = "/account.v1.AccountService/ListPlatformAccountsInternal"
+	AccountService_CreatePlatformAccountInternal_FullMethodName        = "/account.v1.AccountService/CreatePlatformAccountInternal"
+	AccountService_DisablePlatformAccountInternal_FullMethodName       = "/account.v1.AccountService/DisablePlatformAccountInternal"
+	AccountService_RestorePlatformAccountInternal_FullMethodName       = "/account.v1.AccountService/RestorePlatformAccountInternal"
+	AccountService_DeletePlatformAccountInternal_FullMethodName        = "/account.v1.AccountService/DeletePlatformAccountInternal"
+	AccountService_ResetPlatformAccountPasswordInternal_FullMethodName = "/account.v1.AccountService/ResetPlatformAccountPasswordInternal"
+	AccountService_UpdatePlatformAccountBrokerInternal_FullMethodName  = "/account.v1.AccountService/UpdatePlatformAccountBrokerInternal"
+	AccountService_IssueBrokerDelegatedSessionInternal_FullMethodName  = "/account.v1.AccountService/IssueBrokerDelegatedSessionInternal"
+	AccountService_GetAdminAccountSummaryInternal_FullMethodName       = "/account.v1.AccountService/GetAdminAccountSummaryInternal"
 )
 
 // AccountServiceClient is the client API for AccountService service.
@@ -75,6 +84,15 @@ type AccountServiceClient interface {
 	UpdateAICredentialStatus(ctx context.Context, in *UpdateAICredentialStatusRequest, opts ...grpc.CallOption) (*AICredentialResponse, error)
 	GetTradingAccountFeeRates(ctx context.Context, in *GetTradingAccountFeeRatesRequest, opts ...grpc.CallOption) (*GetTradingAccountFeeRatesResponse, error)
 	SyncTradingAccountFeeRates(ctx context.Context, in *SyncTradingAccountFeeRatesRequest, opts ...grpc.CallOption) (*GetTradingAccountFeeRatesResponse, error)
+	ListPlatformAccountsInternal(ctx context.Context, in *ListPlatformAccountsInternalRequest, opts ...grpc.CallOption) (*ListPlatformAccountsInternalResponse, error)
+	CreatePlatformAccountInternal(ctx context.Context, in *CreatePlatformAccountInternalRequest, opts ...grpc.CallOption) (*PlatformAccountResponse, error)
+	DisablePlatformAccountInternal(ctx context.Context, in *MutatePlatformAccountInternalRequest, opts ...grpc.CallOption) (*PlatformAccountResponse, error)
+	RestorePlatformAccountInternal(ctx context.Context, in *MutatePlatformAccountInternalRequest, opts ...grpc.CallOption) (*PlatformAccountResponse, error)
+	DeletePlatformAccountInternal(ctx context.Context, in *MutatePlatformAccountInternalRequest, opts ...grpc.CallOption) (*PlatformAccountResponse, error)
+	ResetPlatformAccountPasswordInternal(ctx context.Context, in *ResetPlatformAccountPasswordInternalRequest, opts ...grpc.CallOption) (*PlatformAccountResponse, error)
+	UpdatePlatformAccountBrokerInternal(ctx context.Context, in *UpdatePlatformAccountBrokerInternalRequest, opts ...grpc.CallOption) (*PlatformAccountResponse, error)
+	IssueBrokerDelegatedSessionInternal(ctx context.Context, in *IssueBrokerDelegatedSessionInternalRequest, opts ...grpc.CallOption) (*IssueBrokerDelegatedSessionInternalResponse, error)
+	GetAdminAccountSummaryInternal(ctx context.Context, in *GetAdminAccountSummaryInternalRequest, opts ...grpc.CallOption) (*GetAdminAccountSummaryInternalResponse, error)
 }
 
 type accountServiceClient struct {
@@ -335,6 +353,96 @@ func (c *accountServiceClient) SyncTradingAccountFeeRates(ctx context.Context, i
 	return out, nil
 }
 
+func (c *accountServiceClient) ListPlatformAccountsInternal(ctx context.Context, in *ListPlatformAccountsInternalRequest, opts ...grpc.CallOption) (*ListPlatformAccountsInternalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPlatformAccountsInternalResponse)
+	err := c.cc.Invoke(ctx, AccountService_ListPlatformAccountsInternal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountServiceClient) CreatePlatformAccountInternal(ctx context.Context, in *CreatePlatformAccountInternalRequest, opts ...grpc.CallOption) (*PlatformAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlatformAccountResponse)
+	err := c.cc.Invoke(ctx, AccountService_CreatePlatformAccountInternal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountServiceClient) DisablePlatformAccountInternal(ctx context.Context, in *MutatePlatformAccountInternalRequest, opts ...grpc.CallOption) (*PlatformAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlatformAccountResponse)
+	err := c.cc.Invoke(ctx, AccountService_DisablePlatformAccountInternal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountServiceClient) RestorePlatformAccountInternal(ctx context.Context, in *MutatePlatformAccountInternalRequest, opts ...grpc.CallOption) (*PlatformAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlatformAccountResponse)
+	err := c.cc.Invoke(ctx, AccountService_RestorePlatformAccountInternal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountServiceClient) DeletePlatformAccountInternal(ctx context.Context, in *MutatePlatformAccountInternalRequest, opts ...grpc.CallOption) (*PlatformAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlatformAccountResponse)
+	err := c.cc.Invoke(ctx, AccountService_DeletePlatformAccountInternal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountServiceClient) ResetPlatformAccountPasswordInternal(ctx context.Context, in *ResetPlatformAccountPasswordInternalRequest, opts ...grpc.CallOption) (*PlatformAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlatformAccountResponse)
+	err := c.cc.Invoke(ctx, AccountService_ResetPlatformAccountPasswordInternal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountServiceClient) UpdatePlatformAccountBrokerInternal(ctx context.Context, in *UpdatePlatformAccountBrokerInternalRequest, opts ...grpc.CallOption) (*PlatformAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlatformAccountResponse)
+	err := c.cc.Invoke(ctx, AccountService_UpdatePlatformAccountBrokerInternal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountServiceClient) IssueBrokerDelegatedSessionInternal(ctx context.Context, in *IssueBrokerDelegatedSessionInternalRequest, opts ...grpc.CallOption) (*IssueBrokerDelegatedSessionInternalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IssueBrokerDelegatedSessionInternalResponse)
+	err := c.cc.Invoke(ctx, AccountService_IssueBrokerDelegatedSessionInternal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountServiceClient) GetAdminAccountSummaryInternal(ctx context.Context, in *GetAdminAccountSummaryInternalRequest, opts ...grpc.CallOption) (*GetAdminAccountSummaryInternalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAdminAccountSummaryInternalResponse)
+	err := c.cc.Invoke(ctx, AccountService_GetAdminAccountSummaryInternal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AccountServiceServer is the server API for AccountService service.
 // All implementations must embed UnimplementedAccountServiceServer
 // for forward compatibility.
@@ -364,6 +472,15 @@ type AccountServiceServer interface {
 	UpdateAICredentialStatus(context.Context, *UpdateAICredentialStatusRequest) (*AICredentialResponse, error)
 	GetTradingAccountFeeRates(context.Context, *GetTradingAccountFeeRatesRequest) (*GetTradingAccountFeeRatesResponse, error)
 	SyncTradingAccountFeeRates(context.Context, *SyncTradingAccountFeeRatesRequest) (*GetTradingAccountFeeRatesResponse, error)
+	ListPlatformAccountsInternal(context.Context, *ListPlatformAccountsInternalRequest) (*ListPlatformAccountsInternalResponse, error)
+	CreatePlatformAccountInternal(context.Context, *CreatePlatformAccountInternalRequest) (*PlatformAccountResponse, error)
+	DisablePlatformAccountInternal(context.Context, *MutatePlatformAccountInternalRequest) (*PlatformAccountResponse, error)
+	RestorePlatformAccountInternal(context.Context, *MutatePlatformAccountInternalRequest) (*PlatformAccountResponse, error)
+	DeletePlatformAccountInternal(context.Context, *MutatePlatformAccountInternalRequest) (*PlatformAccountResponse, error)
+	ResetPlatformAccountPasswordInternal(context.Context, *ResetPlatformAccountPasswordInternalRequest) (*PlatformAccountResponse, error)
+	UpdatePlatformAccountBrokerInternal(context.Context, *UpdatePlatformAccountBrokerInternalRequest) (*PlatformAccountResponse, error)
+	IssueBrokerDelegatedSessionInternal(context.Context, *IssueBrokerDelegatedSessionInternalRequest) (*IssueBrokerDelegatedSessionInternalResponse, error)
+	GetAdminAccountSummaryInternal(context.Context, *GetAdminAccountSummaryInternalRequest) (*GetAdminAccountSummaryInternalResponse, error)
 	mustEmbedUnimplementedAccountServiceServer()
 }
 
@@ -448,6 +565,33 @@ func (UnimplementedAccountServiceServer) GetTradingAccountFeeRates(context.Conte
 }
 func (UnimplementedAccountServiceServer) SyncTradingAccountFeeRates(context.Context, *SyncTradingAccountFeeRatesRequest) (*GetTradingAccountFeeRatesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SyncTradingAccountFeeRates not implemented")
+}
+func (UnimplementedAccountServiceServer) ListPlatformAccountsInternal(context.Context, *ListPlatformAccountsInternalRequest) (*ListPlatformAccountsInternalResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListPlatformAccountsInternal not implemented")
+}
+func (UnimplementedAccountServiceServer) CreatePlatformAccountInternal(context.Context, *CreatePlatformAccountInternalRequest) (*PlatformAccountResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreatePlatformAccountInternal not implemented")
+}
+func (UnimplementedAccountServiceServer) DisablePlatformAccountInternal(context.Context, *MutatePlatformAccountInternalRequest) (*PlatformAccountResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DisablePlatformAccountInternal not implemented")
+}
+func (UnimplementedAccountServiceServer) RestorePlatformAccountInternal(context.Context, *MutatePlatformAccountInternalRequest) (*PlatformAccountResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RestorePlatformAccountInternal not implemented")
+}
+func (UnimplementedAccountServiceServer) DeletePlatformAccountInternal(context.Context, *MutatePlatformAccountInternalRequest) (*PlatformAccountResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeletePlatformAccountInternal not implemented")
+}
+func (UnimplementedAccountServiceServer) ResetPlatformAccountPasswordInternal(context.Context, *ResetPlatformAccountPasswordInternalRequest) (*PlatformAccountResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResetPlatformAccountPasswordInternal not implemented")
+}
+func (UnimplementedAccountServiceServer) UpdatePlatformAccountBrokerInternal(context.Context, *UpdatePlatformAccountBrokerInternalRequest) (*PlatformAccountResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdatePlatformAccountBrokerInternal not implemented")
+}
+func (UnimplementedAccountServiceServer) IssueBrokerDelegatedSessionInternal(context.Context, *IssueBrokerDelegatedSessionInternalRequest) (*IssueBrokerDelegatedSessionInternalResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method IssueBrokerDelegatedSessionInternal not implemented")
+}
+func (UnimplementedAccountServiceServer) GetAdminAccountSummaryInternal(context.Context, *GetAdminAccountSummaryInternalRequest) (*GetAdminAccountSummaryInternalResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetAdminAccountSummaryInternal not implemented")
 }
 func (UnimplementedAccountServiceServer) mustEmbedUnimplementedAccountServiceServer() {}
 func (UnimplementedAccountServiceServer) testEmbeddedByValue()                        {}
@@ -920,6 +1064,168 @@ func _AccountService_SyncTradingAccountFeeRates_Handler(srv interface{}, ctx con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AccountService_ListPlatformAccountsInternal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPlatformAccountsInternalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).ListPlatformAccountsInternal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_ListPlatformAccountsInternal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).ListPlatformAccountsInternal(ctx, req.(*ListPlatformAccountsInternalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountService_CreatePlatformAccountInternal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreatePlatformAccountInternalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).CreatePlatformAccountInternal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_CreatePlatformAccountInternal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).CreatePlatformAccountInternal(ctx, req.(*CreatePlatformAccountInternalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountService_DisablePlatformAccountInternal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MutatePlatformAccountInternalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).DisablePlatformAccountInternal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_DisablePlatformAccountInternal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).DisablePlatformAccountInternal(ctx, req.(*MutatePlatformAccountInternalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountService_RestorePlatformAccountInternal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MutatePlatformAccountInternalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).RestorePlatformAccountInternal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_RestorePlatformAccountInternal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).RestorePlatformAccountInternal(ctx, req.(*MutatePlatformAccountInternalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountService_DeletePlatformAccountInternal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MutatePlatformAccountInternalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).DeletePlatformAccountInternal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_DeletePlatformAccountInternal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).DeletePlatformAccountInternal(ctx, req.(*MutatePlatformAccountInternalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountService_ResetPlatformAccountPasswordInternal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResetPlatformAccountPasswordInternalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).ResetPlatformAccountPasswordInternal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_ResetPlatformAccountPasswordInternal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).ResetPlatformAccountPasswordInternal(ctx, req.(*ResetPlatformAccountPasswordInternalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountService_UpdatePlatformAccountBrokerInternal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdatePlatformAccountBrokerInternalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).UpdatePlatformAccountBrokerInternal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_UpdatePlatformAccountBrokerInternal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).UpdatePlatformAccountBrokerInternal(ctx, req.(*UpdatePlatformAccountBrokerInternalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountService_IssueBrokerDelegatedSessionInternal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IssueBrokerDelegatedSessionInternalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).IssueBrokerDelegatedSessionInternal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_IssueBrokerDelegatedSessionInternal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).IssueBrokerDelegatedSessionInternal(ctx, req.(*IssueBrokerDelegatedSessionInternalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountService_GetAdminAccountSummaryInternal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAdminAccountSummaryInternalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountServiceServer).GetAdminAccountSummaryInternal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountService_GetAdminAccountSummaryInternal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountServiceServer).GetAdminAccountSummaryInternal(ctx, req.(*GetAdminAccountSummaryInternalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AccountService_ServiceDesc is the grpc.ServiceDesc for AccountService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1026,6 +1332,42 @@ var AccountService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SyncTradingAccountFeeRates",
 			Handler:    _AccountService_SyncTradingAccountFeeRates_Handler,
+		},
+		{
+			MethodName: "ListPlatformAccountsInternal",
+			Handler:    _AccountService_ListPlatformAccountsInternal_Handler,
+		},
+		{
+			MethodName: "CreatePlatformAccountInternal",
+			Handler:    _AccountService_CreatePlatformAccountInternal_Handler,
+		},
+		{
+			MethodName: "DisablePlatformAccountInternal",
+			Handler:    _AccountService_DisablePlatformAccountInternal_Handler,
+		},
+		{
+			MethodName: "RestorePlatformAccountInternal",
+			Handler:    _AccountService_RestorePlatformAccountInternal_Handler,
+		},
+		{
+			MethodName: "DeletePlatformAccountInternal",
+			Handler:    _AccountService_DeletePlatformAccountInternal_Handler,
+		},
+		{
+			MethodName: "ResetPlatformAccountPasswordInternal",
+			Handler:    _AccountService_ResetPlatformAccountPasswordInternal_Handler,
+		},
+		{
+			MethodName: "UpdatePlatformAccountBrokerInternal",
+			Handler:    _AccountService_UpdatePlatformAccountBrokerInternal_Handler,
+		},
+		{
+			MethodName: "IssueBrokerDelegatedSessionInternal",
+			Handler:    _AccountService_IssueBrokerDelegatedSessionInternal_Handler,
+		},
+		{
+			MethodName: "GetAdminAccountSummaryInternal",
+			Handler:    _AccountService_GetAdminAccountSummaryInternal_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

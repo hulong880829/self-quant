@@ -17,9 +17,10 @@ var (
 )
 
 type TokenClaims struct {
-	Username   string `json:"u"`
-	Permission string `json:"p"`
-	ExpiresAt  int64  `json:"exp"`
+	Username    string `json:"u"`
+	Permission  string `json:"p"`
+	ExpiresAt   int64  `json:"exp"`
+	AuthVersion int64  `json:"av,omitempty"`
 }
 
 type TokenService struct {
@@ -42,11 +43,19 @@ func NewTokenService(secret string, ttl time.Duration) (*TokenService, error) {
 	}, nil
 }
 
-func (s *TokenService) Issue(username, permission string) (string, error) {
+func NormalizedAuthVersion(version int64) int64 {
+	if version <= 0 {
+		return 1
+	}
+	return version
+}
+
+func (s *TokenService) Issue(username, permission string, authVersion int64) (string, error) {
 	claims := TokenClaims{
-		Username:   username,
-		Permission: permission,
-		ExpiresAt:  s.now().UTC().Add(s.ttl).Unix(),
+		Username:    username,
+		Permission:  permission,
+		ExpiresAt:   s.now().UTC().Add(s.ttl).Unix(),
+		AuthVersion: NormalizedAuthVersion(authVersion),
 	}
 	payload, err := json.Marshal(claims)
 	if err != nil {
@@ -80,6 +89,7 @@ func (s *TokenService) Validate(token string) (TokenClaims, error) {
 	if s.now().UTC().Unix() >= claims.ExpiresAt {
 		return TokenClaims{}, ErrExpiredToken
 	}
+	claims.AuthVersion = NormalizedAuthVersion(claims.AuthVersion)
 	return claims, nil
 }
 

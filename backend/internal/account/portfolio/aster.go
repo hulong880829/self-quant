@@ -60,6 +60,7 @@ func (a *asterAdapter) Snapshot(ctx context.Context, credentials Credentials) (S
 		PositionSide     string `json:"positionSide"`
 		EntryPrice       string `json:"entryPrice"`
 		MarkPrice        string `json:"markPrice"`
+		LiquidationPrice string `json:"liquidationPrice"`
 		UnrealizedProfit string `json:"unRealizedProfit"`
 		Notional         string `json:"notional"`
 	}
@@ -130,7 +131,8 @@ func (a *asterAdapter) Snapshot(ctx context.Context, credentials Credentials) (S
 		result.Positions = append(result.Positions, Position{
 			Key: "aster:" + symbol + ":" + side, Kind: "cex", Exchange: "Aster",
 			Symbol: symbol, Side: side, NotionalUSD: notional.String(), Size: size.Abs().String(),
-			EntryPrice: item.EntryPrice, MarkPrice: mark, UnrealizedPnL: pnl.String(),
+			EntryPrice: item.EntryPrice, MarkPrice: mark,
+			LiquidationPrice: item.LiquidationPrice, UnrealizedPnL: pnl.String(),
 			WireSymbol: item.Symbol, ProductCategory: "perp",
 		})
 	}

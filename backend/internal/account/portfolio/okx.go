@@ -67,7 +67,7 @@ func (a *okxAdapter) Snapshot(ctx context.Context, credentials Credentials) (Sna
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
 		Data []struct {
-			InstID, Pos, PosSide, AvgPx, MarkPx, Upl, NotionalUsd, Mmr string
+			InstID, Pos, PosSide, AvgPx, MarkPx, LiqPx, Upl, NotionalUsd, Mmr string
 		} `json:"data"`
 	}
 	if err := a.get(ctx, "/api/v5/account/positions", credentials, &wire); err != nil {
@@ -139,7 +139,7 @@ func (a *okxAdapter) Snapshot(ctx context.Context, credentials Credentials) (Sna
 		result.Positions = append(result.Positions, Position{
 			Key: "okx:" + symbol + ":" + side, Kind: "cex", Exchange: "OKX", Symbol: symbol, Side: side,
 			NotionalUSD: notional.String(), Size: size.Abs().String(), EntryPrice: item.AvgPx,
-			MarkPrice: item.MarkPx, UnrealizedPnL: item.Upl,
+			MarkPrice: item.MarkPx, LiquidationPrice: item.LiqPx, UnrealizedPnL: item.Upl,
 			WireSymbol: item.InstID, ProductCategory: "swap",
 		})
 	}

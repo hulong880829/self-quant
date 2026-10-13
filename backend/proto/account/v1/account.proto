@@ -32,6 +32,15 @@ service AccountService {
   rpc UpdateAICredentialStatus(UpdateAICredentialStatusRequest) returns (AICredentialResponse);
   rpc GetTradingAccountFeeRates(GetTradingAccountFeeRatesRequest) returns (GetTradingAccountFeeRatesResponse);
   rpc SyncTradingAccountFeeRates(SyncTradingAccountFeeRatesRequest) returns (GetTradingAccountFeeRatesResponse);
+  rpc ListPlatformAccountsInternal(ListPlatformAccountsInternalRequest) returns (ListPlatformAccountsInternalResponse);
+  rpc CreatePlatformAccountInternal(CreatePlatformAccountInternalRequest) returns (PlatformAccountResponse);
+  rpc DisablePlatformAccountInternal(MutatePlatformAccountInternalRequest) returns (PlatformAccountResponse);
+  rpc RestorePlatformAccountInternal(MutatePlatformAccountInternalRequest) returns (PlatformAccountResponse);
+  rpc DeletePlatformAccountInternal(MutatePlatformAccountInternalRequest) returns (PlatformAccountResponse);
+  rpc ResetPlatformAccountPasswordInternal(ResetPlatformAccountPasswordInternalRequest) returns (PlatformAccountResponse);
+  rpc UpdatePlatformAccountBrokerInternal(UpdatePlatformAccountBrokerInternalRequest) returns (PlatformAccountResponse);
+  rpc IssueBrokerDelegatedSessionInternal(IssueBrokerDelegatedSessionInternalRequest) returns (IssueBrokerDelegatedSessionInternalResponse);
+  rpc GetAdminAccountSummaryInternal(GetAdminAccountSummaryInternalRequest) returns (GetAdminAccountSummaryInternalResponse);
 }
 
 message LoginRequest {
@@ -390,4 +399,92 @@ message UpdateAICredentialStatusRequest {
   string provider = 2;
   string status = 3;
   string error_message = 4;
+}
+
+message PlatformAccount {
+  string username = 1;
+  string permission = 2;
+  string broker_id = 3;
+  string status = 4;
+  string created_source = 5;
+  string created_by = 6;
+  int64 auth_version = 7;
+  google.protobuf.Timestamp deleted_at = 8;
+}
+
+message ListPlatformAccountsInternalRequest {
+  string service_token = 1;
+  string actor_username = 2;
+  string broker_id = 3;
+  string actor_id = 4;
+}
+
+message ListPlatformAccountsInternalResponse {
+  repeated PlatformAccount accounts = 1;
+}
+
+message CreatePlatformAccountInternalRequest {
+  string service_token = 1;
+  string actor_username = 2;
+  string actor_id = 3;
+  string broker_id = 4;
+  string username = 5;
+  string password = 6;
+  string created_source = 7;
+}
+
+message MutatePlatformAccountInternalRequest {
+  string service_token = 1;
+  string actor_username = 2;
+  string actor_id = 3;
+  string broker_id = 4;
+  string username = 5;
+}
+
+message ResetPlatformAccountPasswordInternalRequest {
+  string service_token = 1;
+  string actor_username = 2;
+  string actor_id = 3;
+  string broker_id = 4;
+  string username = 5;
+  string password = 6;
+}
+
+message UpdatePlatformAccountBrokerInternalRequest {
+  string service_token = 1;
+  string actor_username = 2;
+  string username = 3;
+  string broker_id = 4;
+}
+
+message PlatformAccountResponse {
+  PlatformAccount account = 1;
+}
+
+message IssueBrokerDelegatedSessionInternalRequest {
+  string service_token = 1;
+  string broker_id = 2;
+  string target_username = 3;
+  string actor_id = 4;
+}
+
+message IssueBrokerDelegatedSessionInternalResponse {
+  string session_token = 1;
+  string username = 2;
+  string permission = 3;
+}
+
+message GetAdminAccountSummaryInternalRequest {
+  string service_token = 1;
+}
+
+message OwnerAccountRow {
+  string username = 1;
+  string broker_id = 2;
+  string status = 3;
+  string permission = 4;
+}
+
+message GetAdminAccountSummaryInternalResponse {
+  repeated OwnerAccountRow owners = 1;
 }

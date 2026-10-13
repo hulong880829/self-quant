@@ -40,6 +40,7 @@ type hyperliquidPerpState struct {
 			EntryPx       flexDecimalString `json:"entryPx"`
 			PositionValue flexDecimalString `json:"positionValue"`
 			UnrealizedPnl flexDecimalString `json:"unrealizedPnl"`
+			LiquidationPx flexDecimalString `json:"liquidationPx"`
 		} `json:"position"`
 	} `json:"assetPositions"`
 }
@@ -172,7 +173,8 @@ func hyperliquidAppendPositions(result *Snapshot, state hyperliquidPerpState) {
 		result.Positions = append(result.Positions, Position{
 			Key: "hyperliquid:" + keySymbol + ":" + side, Kind: "cex", Exchange: "Hyperliquid",
 			Symbol: symbol, Side: side, NotionalUSD: notional.String(), Size: size.Abs().String(),
-			EntryPrice: string(item.Position.EntryPx), MarkPrice: mark, UnrealizedPnL: pnl.String(),
+			EntryPrice: string(item.Position.EntryPx), MarkPrice: mark,
+			LiquidationPrice: string(item.Position.LiquidationPx), UnrealizedPnL: pnl.String(),
 			WireSymbol: coin, ProductCategory: "perp", BaseAsset: baseAsset,
 		})
 	}

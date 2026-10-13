@@ -25,7 +25,7 @@ func (f fakeAccountService) Login(context.Context, string, string) (account.Sess
 	return f.session, f.err
 }
 
-func (f fakeAccountService) ValidateSession(string) (account.Session, error) {
+func (f fakeAccountService) ValidateSession(context.Context, string) (account.Session, error) {
 	return f.session, f.err
 }
 
@@ -171,6 +171,60 @@ func (f fakeAccountService) UpdateAICredentialStatus(
 	context.Context, string, string, string, string,
 ) (account.AICredentialView, error) {
 	return account.AICredentialView{}, f.err
+}
+
+func (f fakeAccountService) ListPlatformAccountsInternal(
+	context.Context, string, string,
+) ([]account.PlatformAccountView, error) {
+	return nil, f.err
+}
+
+func (f fakeAccountService) CreatePlatformAccountInternal(
+	context.Context, string, account.CreatePlatformAccountInput,
+) (account.PlatformAccountView, error) {
+	return account.PlatformAccountView{}, f.err
+}
+
+func (f fakeAccountService) DisablePlatformAccountInternal(
+	context.Context, string, account.MutatePlatformAccountInput,
+) (account.PlatformAccountView, error) {
+	return account.PlatformAccountView{}, f.err
+}
+
+func (f fakeAccountService) RestorePlatformAccountInternal(
+	context.Context, string, account.MutatePlatformAccountInput,
+) (account.PlatformAccountView, error) {
+	return account.PlatformAccountView{}, f.err
+}
+
+func (f fakeAccountService) DeletePlatformAccountInternal(
+	context.Context, string, account.MutatePlatformAccountInput,
+) (account.PlatformAccountView, error) {
+	return account.PlatformAccountView{}, f.err
+}
+
+func (f fakeAccountService) ResetPlatformAccountPasswordInternal(
+	context.Context, string, account.MutatePlatformAccountInput, string,
+) (account.PlatformAccountView, error) {
+	return account.PlatformAccountView{}, f.err
+}
+
+func (f fakeAccountService) UpdatePlatformAccountBrokerInternal(
+	context.Context, string, account.MutatePlatformAccountInput,
+) (account.PlatformAccountView, error) {
+	return account.PlatformAccountView{}, f.err
+}
+
+func (f fakeAccountService) IssueBrokerDelegatedSessionInternal(
+	context.Context, string, string, string, string,
+) (account.Session, error) {
+	return f.session, f.err
+}
+
+func (f fakeAccountService) GetAdminAccountSummaryInternal(
+	context.Context, string,
+) ([]account.OwnerAccountRow, error) {
+	return nil, f.err
 }
 
 func TestAccountServerLoginMapsInvalidCredentials(t *testing.T) {

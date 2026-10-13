@@ -87,7 +87,7 @@ func TestHyperliquidSnapshotParsesPerpSpotAndHIP3(t *testing.T) {
 				"crossMaintenanceMarginUsed":"50",
 				"withdrawable":"800",
 				"assetPositions":[
-					{"position":{"coin":"BTC","szi":"0.5","entryPx":"60000","positionValue":"31000","unrealizedPnl":"1000"}},
+					{"position":{"coin":"BTC","szi":"0.5","entryPx":"60000","positionValue":"31000","unrealizedPnl":"1000","liquidationPx":"50000"}},
 					{"position":{"coin":"ETH","szi":"-2","entryPx":"3000","positionValue":"6200","unrealizedPnl":"-200"}}
 				]
 			}`)
@@ -132,6 +132,7 @@ func TestHyperliquidSnapshotParsesPerpSpotAndHIP3(t *testing.T) {
 	hip3 := byWire["xyz:BTC"]
 	if long.Side != "long" || long.Size != "0.5" || long.WireSymbol != "BTC" ||
 		long.BaseAsset != "BTC" || long.SignedContractSize != "0.5" || long.Kind != "cex" ||
+		long.LiquidationPrice != "50000" ||
 		long.Key != "hyperliquid:BTCUSDC:long" {
 		t.Fatalf("long=%+v", long)
 	}
@@ -482,8 +483,9 @@ func TestAsterEquityAndAvailableFallbacks(t *testing.T) {
 			"totalMarginBalance":"100",
 			"availableBalance":"80",
 			"assets":[]
-		}`, `[{"symbol":"BTCUSDT","positionAmt":"2","positionSide":"BOTH","entryPrice":"10","markPrice":"","unRealizedProfit":"4","notional":"24"}]`)
-		if len(snapshot.Positions) != 1 || snapshot.Positions[0].MarkPrice != "12" {
+		}`, `[{"symbol":"BTCUSDT","positionAmt":"2","positionSide":"BOTH","entryPrice":"10","markPrice":"","liquidationPrice":"8","unRealizedProfit":"4","notional":"24"}]`)
+		if len(snapshot.Positions) != 1 || snapshot.Positions[0].MarkPrice != "12" ||
+			snapshot.Positions[0].LiquidationPrice != "8" {
 			t.Fatalf("positions=%+v", snapshot.Positions)
 		}
 	})
@@ -586,11 +588,14 @@ func TestLighterDoesNotUseAvailableAsEquity(t *testing.T) {
 				"account_index":7,
 				"collateral":"40",
 				"available_balance":"15",
-				"positions":[{"symbol":"ETH","sign":1,"position":"1","avg_entry_price":"1","position_value":"2","unrealized_pnl":"5"}]
+				"positions":[{"symbol":"ETH","sign":1,"position":"1","avg_entry_price":"1","position_value":"2","unrealized_pnl":"5","liquidation_price":"0.4"}]
 			}
 		}`)
 		if snapshot.AccountEquityUSD != "45" || snapshot.AvailableFundsUSD != "15" {
 			t.Fatalf("equity/available=%+v", snapshot)
+		}
+		if len(snapshot.Positions) != 1 || snapshot.Positions[0].LiquidationPrice != "0.4" {
+			t.Fatalf("liquidation=%+v", snapshot.Positions)
 		}
 	})
 	t.Run("missing collateral uses upnl only", func(t *testing.T) {

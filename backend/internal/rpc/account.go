@@ -17,7 +17,7 @@ import (
 
 type accountService interface {
 	Login(context.Context, string, string) (account.Session, error)
-	ValidateSession(string) (account.Session, error)
+	ValidateSession(context.Context, string) (account.Session, error)
 	ListTradingAccounts(context.Context, string) ([]account.TradingAccountView, error)
 	CreateTradingAccount(context.Context, string, account.CreateTradingAccountInput) (account.TradingAccountView, error)
 	CreatePolymarketTradingAccount(context.Context, string, account.CreatePolymarketTradingAccountInput) (account.TradingAccountView, error)
@@ -42,6 +42,15 @@ type accountService interface {
 	DeleteAICredential(context.Context, string, string) error
 	GetAICredentialSecret(context.Context, string, string) (account.AICredentialSecret, error)
 	UpdateAICredentialStatus(context.Context, string, string, string, string) (account.AICredentialView, error)
+	ListPlatformAccountsInternal(context.Context, string, string) ([]account.PlatformAccountView, error)
+	CreatePlatformAccountInternal(context.Context, string, account.CreatePlatformAccountInput) (account.PlatformAccountView, error)
+	DisablePlatformAccountInternal(context.Context, string, account.MutatePlatformAccountInput) (account.PlatformAccountView, error)
+	RestorePlatformAccountInternal(context.Context, string, account.MutatePlatformAccountInput) (account.PlatformAccountView, error)
+	DeletePlatformAccountInternal(context.Context, string, account.MutatePlatformAccountInput) (account.PlatformAccountView, error)
+	ResetPlatformAccountPasswordInternal(context.Context, string, account.MutatePlatformAccountInput, string) (account.PlatformAccountView, error)
+	UpdatePlatformAccountBrokerInternal(context.Context, string, account.MutatePlatformAccountInput) (account.PlatformAccountView, error)
+	IssueBrokerDelegatedSessionInternal(context.Context, string, string, string, string) (account.Session, error)
+	GetAdminAccountSummaryInternal(context.Context, string) ([]account.OwnerAccountRow, error)
 }
 
 func (s *AccountServer) GetProductAccountSnapshotsInternal(
@@ -370,14 +379,14 @@ func (s *AccountServer) Login(
 }
 
 func (s *AccountServer) ValidateSession(
-	_ context.Context,
+	ctx context.Context,
 	request *accountv1.ValidateSessionRequest,
 ) (*accountv1.ValidateSessionResponse, error) {
 	token := strings.TrimSpace(request.GetToken())
 	if token == "" {
 		return nil, status.Error(codes.Unauthenticated, "session required")
 	}
-	session, err := s.service.ValidateSession(token)
+	session, err := s.service.ValidateSession(ctx, token)
 	if errors.Is(err, account.ErrInvalidToken) || errors.Is(err, account.ErrExpiredToken) {
 		return nil, status.Error(codes.Unauthenticated, "invalid session")
 	}

@@ -35,7 +35,7 @@ func (s *Service) InspectTradingReadiness(
 	token string,
 	id int64,
 ) (TradingReadiness, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return TradingReadiness{}, err
 	}

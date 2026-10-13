@@ -65,7 +65,7 @@ func (s *Service) WithSnapshots(
 }
 
 func (s *Service) GetTradingAccountSnapshot(ctx context.Context, token string, id int64) (TradingAccountSnapshot, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return TradingAccountSnapshot{}, err
 	}
@@ -84,7 +84,7 @@ func (s *Service) GetCachedTradingAccountSnapshot(
 	token string,
 	id int64,
 ) (TradingAccountSnapshot, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return TradingAccountSnapshot{}, err
 	}
@@ -252,7 +252,7 @@ func (s *Service) loadSnapshot(ctx context.Context, owner string, record Trading
 }
 
 func (s *Service) GetProductGroupSnapshot(ctx context.Context, token, product string) (ProductGroupSnapshot, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return ProductGroupSnapshot{}, err
 	}

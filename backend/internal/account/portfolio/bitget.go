@@ -39,6 +39,8 @@ func (a *bitgetAdapter) Snapshot(ctx context.Context, credentials Credentials) (
 		Data      struct {
 			AccountEquity string `json:"accountEquity"`
 			EffEquity     string `json:"effEquity"`
+			IMR           string `json:"imr"`
+			MgnRatio      string `json:"mgnRatio"`
 			Assets        []struct {
 				Coin    string `json:"coin"`
 				Balance string `json:"balance"`
@@ -52,13 +54,12 @@ func (a *bitgetAdapter) Snapshot(ctx context.Context, credentials Credentials) (
 	if assets.Code != "00000" {
 		return Snapshot{}, fmt.Errorf("bitget assets rejected: %s", assets.Msg)
 	}
-	available := assets.Data.EffEquity
-	if available == "" {
-		available = assets.Data.AccountEquity
-	}
 	result := Snapshot{
-		AccountEquityUSD: assets.Data.AccountEquity, AvailableFundsUSD: available,
-		SpotBalances: make(map[string]string), UpdatedAt: time.Now().UTC(),
+		AccountEquityUSD:  bitgetAccountEquity(assets.Data.AccountEquity),
+		AvailableFundsUSD: bitgetAvailableFunds(assets.Data.EffEquity, assets.Data.IMR),
+		RiskPercent:       bitgetRiskPercent(assets.Data.MgnRatio),
+		SpotBalances:      make(map[string]string),
+		UpdatedAt:         time.Now().UTC(),
 	}
 	for _, item := range assets.Data.Assets {
 		balance, balanceErr := parseDecimal(item.Balance)
@@ -77,14 +78,15 @@ func (a *bitgetAdapter) Snapshot(ctx context.Context, credentials Credentials) (
 			Code, Msg string
 			Data      struct {
 				List []struct {
-					Symbol          string `json:"symbol"`
-					PosSide         string `json:"posSide"`
-					Total           string `json:"total"`
-					AvgPrice        string `json:"avgPrice"`
-					MarkPrice       string `json:"markPrice"`
-					UnrealisedPnL   string `json:"unrealisedPnl"`
-					PositionBalance string `json:"positionBalance"`
-					Leverage        string `json:"leverage"`
+					Symbol           string `json:"symbol"`
+					PosSide          string `json:"posSide"`
+					Total            string `json:"total"`
+					AvgPrice         string `json:"avgPrice"`
+					MarkPrice        string `json:"markPrice"`
+					LiquidationPrice string `json:"liquidationPrice"`
+					UnrealisedPnL    string `json:"unrealisedPnl"`
+					PositionBalance  string `json:"positionBalance"`
+					Leverage         string `json:"leverage"`
 				} `json:"list"`
 			} `json:"data"`
 		}
@@ -117,7 +119,7 @@ func (a *bitgetAdapter) Snapshot(ctx context.Context, credentials Credentials) (
 			result.Positions = append(result.Positions, Position{
 				Key: "bitget:" + symbol + ":" + side, Kind: "cex", Exchange: "Bitget", Symbol: symbol, Side: side,
 				NotionalUSD: notional.String(), Size: size.String(), EntryPrice: item.AvgPrice,
-				MarkPrice: item.MarkPrice, UnrealizedPnL: item.UnrealisedPnL,
+				MarkPrice: item.MarkPrice, LiquidationPrice: item.LiquidationPrice, UnrealizedPnL: item.UnrealisedPnL,
 				WireSymbol: item.Symbol, ProductCategory: strings.ToLower(productType),
 			})
 		}
@@ -168,4 +170,41 @@ func (a *bitgetAdapter) tradeRate(
 		return MarketFee{}, fmt.Errorf("bitget fee-rate rejected: %s", payload.Msg)
 	}
 	return parseMarketFee(payload.Data.MakerFeeRate, payload.Data.TakerFeeRate)
+}
+
+func bitgetAccountEquity(value string) string {
+	if _, err := parseDecimal(value); err != nil {
+		return ""
+	}
+	return value
+}
+
+func bitgetAvailableFunds(effEquity, imr string) string {
+	eff, err := parseDecimal(effEquity)
+	if err != nil {
+		return ""
+	}
+	margin, err := parseDecimal(imr)
+	if err != nil {
+		return ""
+	}
+	if margin.IsNegative() {
+		return ""
+	}
+	available := eff.Sub(margin)
+	if available.IsNegative() {
+		return decimal.Zero.String()
+	}
+	return available.String()
+}
+
+func bitgetRiskPercent(mgnRatio string) string {
+	ratio, err := parseDecimal(mgnRatio)
+	if err != nil {
+		return ""
+	}
+	if ratio.IsNegative() {
+		return ""
+	}
+	return ratio.Mul(decimal.NewFromInt(100)).String()
 }

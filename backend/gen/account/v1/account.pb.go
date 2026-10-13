@@ -3466,6 +3466,866 @@ func (x *UpdateAICredentialStatusRequest) GetErrorMessage() string {
 	return ""
 }
 
+type PlatformAccount struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	Permission    string                 `protobuf:"bytes,2,opt,name=permission,proto3" json:"permission,omitempty"`
+	BrokerId      string                 `protobuf:"bytes,3,opt,name=broker_id,json=brokerId,proto3" json:"broker_id,omitempty"`
+	Status        string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
+	CreatedSource string                 `protobuf:"bytes,5,opt,name=created_source,json=createdSource,proto3" json:"created_source,omitempty"`
+	CreatedBy     string                 `protobuf:"bytes,6,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"`
+	AuthVersion   int64                  `protobuf:"varint,7,opt,name=auth_version,json=authVersion,proto3" json:"auth_version,omitempty"`
+	DeletedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlatformAccount) Reset() {
+	*x = PlatformAccount{}
+	mi := &file_account_v1_account_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlatformAccount) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlatformAccount) ProtoMessage() {}
+
+func (x *PlatformAccount) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlatformAccount.ProtoReflect.Descriptor instead.
+func (*PlatformAccount) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *PlatformAccount) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *PlatformAccount) GetPermission() string {
+	if x != nil {
+		return x.Permission
+	}
+	return ""
+}
+
+func (x *PlatformAccount) GetBrokerId() string {
+	if x != nil {
+		return x.BrokerId
+	}
+	return ""
+}
+
+func (x *PlatformAccount) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *PlatformAccount) GetCreatedSource() string {
+	if x != nil {
+		return x.CreatedSource
+	}
+	return ""
+}
+
+func (x *PlatformAccount) GetCreatedBy() string {
+	if x != nil {
+		return x.CreatedBy
+	}
+	return ""
+}
+
+func (x *PlatformAccount) GetAuthVersion() int64 {
+	if x != nil {
+		return x.AuthVersion
+	}
+	return 0
+}
+
+func (x *PlatformAccount) GetDeletedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.DeletedAt
+	}
+	return nil
+}
+
+type ListPlatformAccountsInternalRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ServiceToken  string                 `protobuf:"bytes,1,opt,name=service_token,json=serviceToken,proto3" json:"service_token,omitempty"`
+	ActorUsername string                 `protobuf:"bytes,2,opt,name=actor_username,json=actorUsername,proto3" json:"actor_username,omitempty"`
+	BrokerId      string                 `protobuf:"bytes,3,opt,name=broker_id,json=brokerId,proto3" json:"broker_id,omitempty"`
+	ActorId       string                 `protobuf:"bytes,4,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPlatformAccountsInternalRequest) Reset() {
+	*x = ListPlatformAccountsInternalRequest{}
+	mi := &file_account_v1_account_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPlatformAccountsInternalRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPlatformAccountsInternalRequest) ProtoMessage() {}
+
+func (x *ListPlatformAccountsInternalRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPlatformAccountsInternalRequest.ProtoReflect.Descriptor instead.
+func (*ListPlatformAccountsInternalRequest) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *ListPlatformAccountsInternalRequest) GetServiceToken() string {
+	if x != nil {
+		return x.ServiceToken
+	}
+	return ""
+}
+
+func (x *ListPlatformAccountsInternalRequest) GetActorUsername() string {
+	if x != nil {
+		return x.ActorUsername
+	}
+	return ""
+}
+
+func (x *ListPlatformAccountsInternalRequest) GetBrokerId() string {
+	if x != nil {
+		return x.BrokerId
+	}
+	return ""
+}
+
+func (x *ListPlatformAccountsInternalRequest) GetActorId() string {
+	if x != nil {
+		return x.ActorId
+	}
+	return ""
+}
+
+type ListPlatformAccountsInternalResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Accounts      []*PlatformAccount     `protobuf:"bytes,1,rep,name=accounts,proto3" json:"accounts,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPlatformAccountsInternalResponse) Reset() {
+	*x = ListPlatformAccountsInternalResponse{}
+	mi := &file_account_v1_account_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPlatformAccountsInternalResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPlatformAccountsInternalResponse) ProtoMessage() {}
+
+func (x *ListPlatformAccountsInternalResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPlatformAccountsInternalResponse.ProtoReflect.Descriptor instead.
+func (*ListPlatformAccountsInternalResponse) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *ListPlatformAccountsInternalResponse) GetAccounts() []*PlatformAccount {
+	if x != nil {
+		return x.Accounts
+	}
+	return nil
+}
+
+type CreatePlatformAccountInternalRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ServiceToken  string                 `protobuf:"bytes,1,opt,name=service_token,json=serviceToken,proto3" json:"service_token,omitempty"`
+	ActorUsername string                 `protobuf:"bytes,2,opt,name=actor_username,json=actorUsername,proto3" json:"actor_username,omitempty"`
+	ActorId       string                 `protobuf:"bytes,3,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
+	BrokerId      string                 `protobuf:"bytes,4,opt,name=broker_id,json=brokerId,proto3" json:"broker_id,omitempty"`
+	Username      string                 `protobuf:"bytes,5,opt,name=username,proto3" json:"username,omitempty"`
+	Password      string                 `protobuf:"bytes,6,opt,name=password,proto3" json:"password,omitempty"`
+	CreatedSource string                 `protobuf:"bytes,7,opt,name=created_source,json=createdSource,proto3" json:"created_source,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreatePlatformAccountInternalRequest) Reset() {
+	*x = CreatePlatformAccountInternalRequest{}
+	mi := &file_account_v1_account_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreatePlatformAccountInternalRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreatePlatformAccountInternalRequest) ProtoMessage() {}
+
+func (x *CreatePlatformAccountInternalRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreatePlatformAccountInternalRequest.ProtoReflect.Descriptor instead.
+func (*CreatePlatformAccountInternalRequest) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *CreatePlatformAccountInternalRequest) GetServiceToken() string {
+	if x != nil {
+		return x.ServiceToken
+	}
+	return ""
+}
+
+func (x *CreatePlatformAccountInternalRequest) GetActorUsername() string {
+	if x != nil {
+		return x.ActorUsername
+	}
+	return ""
+}
+
+func (x *CreatePlatformAccountInternalRequest) GetActorId() string {
+	if x != nil {
+		return x.ActorId
+	}
+	return ""
+}
+
+func (x *CreatePlatformAccountInternalRequest) GetBrokerId() string {
+	if x != nil {
+		return x.BrokerId
+	}
+	return ""
+}
+
+func (x *CreatePlatformAccountInternalRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *CreatePlatformAccountInternalRequest) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
+func (x *CreatePlatformAccountInternalRequest) GetCreatedSource() string {
+	if x != nil {
+		return x.CreatedSource
+	}
+	return ""
+}
+
+type MutatePlatformAccountInternalRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ServiceToken  string                 `protobuf:"bytes,1,opt,name=service_token,json=serviceToken,proto3" json:"service_token,omitempty"`
+	ActorUsername string                 `protobuf:"bytes,2,opt,name=actor_username,json=actorUsername,proto3" json:"actor_username,omitempty"`
+	ActorId       string                 `protobuf:"bytes,3,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
+	BrokerId      string                 `protobuf:"bytes,4,opt,name=broker_id,json=brokerId,proto3" json:"broker_id,omitempty"`
+	Username      string                 `protobuf:"bytes,5,opt,name=username,proto3" json:"username,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MutatePlatformAccountInternalRequest) Reset() {
+	*x = MutatePlatformAccountInternalRequest{}
+	mi := &file_account_v1_account_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MutatePlatformAccountInternalRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MutatePlatformAccountInternalRequest) ProtoMessage() {}
+
+func (x *MutatePlatformAccountInternalRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MutatePlatformAccountInternalRequest.ProtoReflect.Descriptor instead.
+func (*MutatePlatformAccountInternalRequest) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *MutatePlatformAccountInternalRequest) GetServiceToken() string {
+	if x != nil {
+		return x.ServiceToken
+	}
+	return ""
+}
+
+func (x *MutatePlatformAccountInternalRequest) GetActorUsername() string {
+	if x != nil {
+		return x.ActorUsername
+	}
+	return ""
+}
+
+func (x *MutatePlatformAccountInternalRequest) GetActorId() string {
+	if x != nil {
+		return x.ActorId
+	}
+	return ""
+}
+
+func (x *MutatePlatformAccountInternalRequest) GetBrokerId() string {
+	if x != nil {
+		return x.BrokerId
+	}
+	return ""
+}
+
+func (x *MutatePlatformAccountInternalRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+type ResetPlatformAccountPasswordInternalRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ServiceToken  string                 `protobuf:"bytes,1,opt,name=service_token,json=serviceToken,proto3" json:"service_token,omitempty"`
+	ActorUsername string                 `protobuf:"bytes,2,opt,name=actor_username,json=actorUsername,proto3" json:"actor_username,omitempty"`
+	ActorId       string                 `protobuf:"bytes,3,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
+	BrokerId      string                 `protobuf:"bytes,4,opt,name=broker_id,json=brokerId,proto3" json:"broker_id,omitempty"`
+	Username      string                 `protobuf:"bytes,5,opt,name=username,proto3" json:"username,omitempty"`
+	Password      string                 `protobuf:"bytes,6,opt,name=password,proto3" json:"password,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResetPlatformAccountPasswordInternalRequest) Reset() {
+	*x = ResetPlatformAccountPasswordInternalRequest{}
+	mi := &file_account_v1_account_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResetPlatformAccountPasswordInternalRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResetPlatformAccountPasswordInternalRequest) ProtoMessage() {}
+
+func (x *ResetPlatformAccountPasswordInternalRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResetPlatformAccountPasswordInternalRequest.ProtoReflect.Descriptor instead.
+func (*ResetPlatformAccountPasswordInternalRequest) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *ResetPlatformAccountPasswordInternalRequest) GetServiceToken() string {
+	if x != nil {
+		return x.ServiceToken
+	}
+	return ""
+}
+
+func (x *ResetPlatformAccountPasswordInternalRequest) GetActorUsername() string {
+	if x != nil {
+		return x.ActorUsername
+	}
+	return ""
+}
+
+func (x *ResetPlatformAccountPasswordInternalRequest) GetActorId() string {
+	if x != nil {
+		return x.ActorId
+	}
+	return ""
+}
+
+func (x *ResetPlatformAccountPasswordInternalRequest) GetBrokerId() string {
+	if x != nil {
+		return x.BrokerId
+	}
+	return ""
+}
+
+func (x *ResetPlatformAccountPasswordInternalRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *ResetPlatformAccountPasswordInternalRequest) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
+type UpdatePlatformAccountBrokerInternalRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ServiceToken  string                 `protobuf:"bytes,1,opt,name=service_token,json=serviceToken,proto3" json:"service_token,omitempty"`
+	ActorUsername string                 `protobuf:"bytes,2,opt,name=actor_username,json=actorUsername,proto3" json:"actor_username,omitempty"`
+	Username      string                 `protobuf:"bytes,3,opt,name=username,proto3" json:"username,omitempty"`
+	BrokerId      string                 `protobuf:"bytes,4,opt,name=broker_id,json=brokerId,proto3" json:"broker_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdatePlatformAccountBrokerInternalRequest) Reset() {
+	*x = UpdatePlatformAccountBrokerInternalRequest{}
+	mi := &file_account_v1_account_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdatePlatformAccountBrokerInternalRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdatePlatformAccountBrokerInternalRequest) ProtoMessage() {}
+
+func (x *UpdatePlatformAccountBrokerInternalRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdatePlatformAccountBrokerInternalRequest.ProtoReflect.Descriptor instead.
+func (*UpdatePlatformAccountBrokerInternalRequest) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *UpdatePlatformAccountBrokerInternalRequest) GetServiceToken() string {
+	if x != nil {
+		return x.ServiceToken
+	}
+	return ""
+}
+
+func (x *UpdatePlatformAccountBrokerInternalRequest) GetActorUsername() string {
+	if x != nil {
+		return x.ActorUsername
+	}
+	return ""
+}
+
+func (x *UpdatePlatformAccountBrokerInternalRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *UpdatePlatformAccountBrokerInternalRequest) GetBrokerId() string {
+	if x != nil {
+		return x.BrokerId
+	}
+	return ""
+}
+
+type PlatformAccountResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Account       *PlatformAccount       `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlatformAccountResponse) Reset() {
+	*x = PlatformAccountResponse{}
+	mi := &file_account_v1_account_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlatformAccountResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlatformAccountResponse) ProtoMessage() {}
+
+func (x *PlatformAccountResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlatformAccountResponse.ProtoReflect.Descriptor instead.
+func (*PlatformAccountResponse) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *PlatformAccountResponse) GetAccount() *PlatformAccount {
+	if x != nil {
+		return x.Account
+	}
+	return nil
+}
+
+type IssueBrokerDelegatedSessionInternalRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ServiceToken   string                 `protobuf:"bytes,1,opt,name=service_token,json=serviceToken,proto3" json:"service_token,omitempty"`
+	BrokerId       string                 `protobuf:"bytes,2,opt,name=broker_id,json=brokerId,proto3" json:"broker_id,omitempty"`
+	TargetUsername string                 `protobuf:"bytes,3,opt,name=target_username,json=targetUsername,proto3" json:"target_username,omitempty"`
+	ActorId        string                 `protobuf:"bytes,4,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *IssueBrokerDelegatedSessionInternalRequest) Reset() {
+	*x = IssueBrokerDelegatedSessionInternalRequest{}
+	mi := &file_account_v1_account_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IssueBrokerDelegatedSessionInternalRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IssueBrokerDelegatedSessionInternalRequest) ProtoMessage() {}
+
+func (x *IssueBrokerDelegatedSessionInternalRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IssueBrokerDelegatedSessionInternalRequest.ProtoReflect.Descriptor instead.
+func (*IssueBrokerDelegatedSessionInternalRequest) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *IssueBrokerDelegatedSessionInternalRequest) GetServiceToken() string {
+	if x != nil {
+		return x.ServiceToken
+	}
+	return ""
+}
+
+func (x *IssueBrokerDelegatedSessionInternalRequest) GetBrokerId() string {
+	if x != nil {
+		return x.BrokerId
+	}
+	return ""
+}
+
+func (x *IssueBrokerDelegatedSessionInternalRequest) GetTargetUsername() string {
+	if x != nil {
+		return x.TargetUsername
+	}
+	return ""
+}
+
+func (x *IssueBrokerDelegatedSessionInternalRequest) GetActorId() string {
+	if x != nil {
+		return x.ActorId
+	}
+	return ""
+}
+
+type IssueBrokerDelegatedSessionInternalResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionToken  string                 `protobuf:"bytes,1,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
+	Username      string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
+	Permission    string                 `protobuf:"bytes,3,opt,name=permission,proto3" json:"permission,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IssueBrokerDelegatedSessionInternalResponse) Reset() {
+	*x = IssueBrokerDelegatedSessionInternalResponse{}
+	mi := &file_account_v1_account_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IssueBrokerDelegatedSessionInternalResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IssueBrokerDelegatedSessionInternalResponse) ProtoMessage() {}
+
+func (x *IssueBrokerDelegatedSessionInternalResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IssueBrokerDelegatedSessionInternalResponse.ProtoReflect.Descriptor instead.
+func (*IssueBrokerDelegatedSessionInternalResponse) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *IssueBrokerDelegatedSessionInternalResponse) GetSessionToken() string {
+	if x != nil {
+		return x.SessionToken
+	}
+	return ""
+}
+
+func (x *IssueBrokerDelegatedSessionInternalResponse) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *IssueBrokerDelegatedSessionInternalResponse) GetPermission() string {
+	if x != nil {
+		return x.Permission
+	}
+	return ""
+}
+
+type GetAdminAccountSummaryInternalRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ServiceToken  string                 `protobuf:"bytes,1,opt,name=service_token,json=serviceToken,proto3" json:"service_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetAdminAccountSummaryInternalRequest) Reset() {
+	*x = GetAdminAccountSummaryInternalRequest{}
+	mi := &file_account_v1_account_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetAdminAccountSummaryInternalRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetAdminAccountSummaryInternalRequest) ProtoMessage() {}
+
+func (x *GetAdminAccountSummaryInternalRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetAdminAccountSummaryInternalRequest.ProtoReflect.Descriptor instead.
+func (*GetAdminAccountSummaryInternalRequest) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *GetAdminAccountSummaryInternalRequest) GetServiceToken() string {
+	if x != nil {
+		return x.ServiceToken
+	}
+	return ""
+}
+
+type OwnerAccountRow struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	BrokerId      string                 `protobuf:"bytes,2,opt,name=broker_id,json=brokerId,proto3" json:"broker_id,omitempty"`
+	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	Permission    string                 `protobuf:"bytes,4,opt,name=permission,proto3" json:"permission,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OwnerAccountRow) Reset() {
+	*x = OwnerAccountRow{}
+	mi := &file_account_v1_account_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OwnerAccountRow) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OwnerAccountRow) ProtoMessage() {}
+
+func (x *OwnerAccountRow) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OwnerAccountRow.ProtoReflect.Descriptor instead.
+func (*OwnerAccountRow) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *OwnerAccountRow) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *OwnerAccountRow) GetBrokerId() string {
+	if x != nil {
+		return x.BrokerId
+	}
+	return ""
+}
+
+func (x *OwnerAccountRow) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *OwnerAccountRow) GetPermission() string {
+	if x != nil {
+		return x.Permission
+	}
+	return ""
+}
+
+type GetAdminAccountSummaryInternalResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Owners        []*OwnerAccountRow     `protobuf:"bytes,1,rep,name=owners,proto3" json:"owners,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetAdminAccountSummaryInternalResponse) Reset() {
+	*x = GetAdminAccountSummaryInternalResponse{}
+	mi := &file_account_v1_account_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetAdminAccountSummaryInternalResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetAdminAccountSummaryInternalResponse) ProtoMessage() {}
+
+func (x *GetAdminAccountSummaryInternalResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_account_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetAdminAccountSummaryInternalResponse.ProtoReflect.Descriptor instead.
+func (*GetAdminAccountSummaryInternalResponse) Descriptor() ([]byte, []int) {
+	return file_account_v1_account_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *GetAdminAccountSummaryInternalResponse) GetOwners() []*OwnerAccountRow {
+	if x != nil {
+		return x.Owners
+	}
+	return nil
+}
+
 var File_account_v1_account_proto protoreflect.FileDescriptor
 
 const file_account_v1_account_proto_rawDesc = "" +
@@ -3790,7 +4650,77 @@ const file_account_v1_account_proto_rawDesc = "" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12#\n" +
-	"\rerror_message\x18\x04 \x01(\tR\ferrorMessage2\x92\x16\n" +
+	"\rerror_message\x18\x04 \x01(\tR\ferrorMessage\"\xa6\x02\n" +
+	"\x0fPlatformAccount\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
+	"\n" +
+	"permission\x18\x02 \x01(\tR\n" +
+	"permission\x12\x1b\n" +
+	"\tbroker_id\x18\x03 \x01(\tR\bbrokerId\x12\x16\n" +
+	"\x06status\x18\x04 \x01(\tR\x06status\x12%\n" +
+	"\x0ecreated_source\x18\x05 \x01(\tR\rcreatedSource\x12\x1d\n" +
+	"\n" +
+	"created_by\x18\x06 \x01(\tR\tcreatedBy\x12!\n" +
+	"\fauth_version\x18\a \x01(\x03R\vauthVersion\x129\n" +
+	"\n" +
+	"deleted_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tdeletedAt\"\xa9\x01\n" +
+	"#ListPlatformAccountsInternalRequest\x12#\n" +
+	"\rservice_token\x18\x01 \x01(\tR\fserviceToken\x12%\n" +
+	"\x0eactor_username\x18\x02 \x01(\tR\ractorUsername\x12\x1b\n" +
+	"\tbroker_id\x18\x03 \x01(\tR\bbrokerId\x12\x19\n" +
+	"\bactor_id\x18\x04 \x01(\tR\aactorId\"_\n" +
+	"$ListPlatformAccountsInternalResponse\x127\n" +
+	"\baccounts\x18\x01 \x03(\v2\x1b.account.v1.PlatformAccountR\baccounts\"\x89\x02\n" +
+	"$CreatePlatformAccountInternalRequest\x12#\n" +
+	"\rservice_token\x18\x01 \x01(\tR\fserviceToken\x12%\n" +
+	"\x0eactor_username\x18\x02 \x01(\tR\ractorUsername\x12\x19\n" +
+	"\bactor_id\x18\x03 \x01(\tR\aactorId\x12\x1b\n" +
+	"\tbroker_id\x18\x04 \x01(\tR\bbrokerId\x12\x1a\n" +
+	"\busername\x18\x05 \x01(\tR\busername\x12\x1a\n" +
+	"\bpassword\x18\x06 \x01(\tR\bpassword\x12%\n" +
+	"\x0ecreated_source\x18\a \x01(\tR\rcreatedSource\"\xc6\x01\n" +
+	"$MutatePlatformAccountInternalRequest\x12#\n" +
+	"\rservice_token\x18\x01 \x01(\tR\fserviceToken\x12%\n" +
+	"\x0eactor_username\x18\x02 \x01(\tR\ractorUsername\x12\x19\n" +
+	"\bactor_id\x18\x03 \x01(\tR\aactorId\x12\x1b\n" +
+	"\tbroker_id\x18\x04 \x01(\tR\bbrokerId\x12\x1a\n" +
+	"\busername\x18\x05 \x01(\tR\busername\"\xe9\x01\n" +
+	"+ResetPlatformAccountPasswordInternalRequest\x12#\n" +
+	"\rservice_token\x18\x01 \x01(\tR\fserviceToken\x12%\n" +
+	"\x0eactor_username\x18\x02 \x01(\tR\ractorUsername\x12\x19\n" +
+	"\bactor_id\x18\x03 \x01(\tR\aactorId\x12\x1b\n" +
+	"\tbroker_id\x18\x04 \x01(\tR\bbrokerId\x12\x1a\n" +
+	"\busername\x18\x05 \x01(\tR\busername\x12\x1a\n" +
+	"\bpassword\x18\x06 \x01(\tR\bpassword\"\xb1\x01\n" +
+	"*UpdatePlatformAccountBrokerInternalRequest\x12#\n" +
+	"\rservice_token\x18\x01 \x01(\tR\fserviceToken\x12%\n" +
+	"\x0eactor_username\x18\x02 \x01(\tR\ractorUsername\x12\x1a\n" +
+	"\busername\x18\x03 \x01(\tR\busername\x12\x1b\n" +
+	"\tbroker_id\x18\x04 \x01(\tR\bbrokerId\"P\n" +
+	"\x17PlatformAccountResponse\x125\n" +
+	"\aaccount\x18\x01 \x01(\v2\x1b.account.v1.PlatformAccountR\aaccount\"\xb2\x01\n" +
+	"*IssueBrokerDelegatedSessionInternalRequest\x12#\n" +
+	"\rservice_token\x18\x01 \x01(\tR\fserviceToken\x12\x1b\n" +
+	"\tbroker_id\x18\x02 \x01(\tR\bbrokerId\x12'\n" +
+	"\x0ftarget_username\x18\x03 \x01(\tR\x0etargetUsername\x12\x19\n" +
+	"\bactor_id\x18\x04 \x01(\tR\aactorId\"\x8e\x01\n" +
+	"+IssueBrokerDelegatedSessionInternalResponse\x12#\n" +
+	"\rsession_token\x18\x01 \x01(\tR\fsessionToken\x12\x1a\n" +
+	"\busername\x18\x02 \x01(\tR\busername\x12\x1e\n" +
+	"\n" +
+	"permission\x18\x03 \x01(\tR\n" +
+	"permission\"L\n" +
+	"%GetAdminAccountSummaryInternalRequest\x12#\n" +
+	"\rservice_token\x18\x01 \x01(\tR\fserviceToken\"\x82\x01\n" +
+	"\x0fOwnerAccountRow\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x1b\n" +
+	"\tbroker_id\x18\x02 \x01(\tR\bbrokerId\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12\x1e\n" +
+	"\n" +
+	"permission\x18\x04 \x01(\tR\n" +
+	"permission\"]\n" +
+	"&GetAdminAccountSummaryInternalResponse\x123\n" +
+	"\x06owners\x18\x01 \x03(\v2\x1b.account.v1.OwnerAccountRowR\x06owners2\xa7\x1f\n" +
 	"\x0eAccountService\x12<\n" +
 	"\x05Login\x12\x18.account.v1.LoginRequest\x1a\x19.account.v1.LoginResponse\x12Z\n" +
 	"\x0fValidateSession\x12\".account.v1.ValidateSessionRequest\x1a#.account.v1.ValidateSessionResponse\x12f\n" +
@@ -3816,7 +4746,16 @@ const file_account_v1_account_proto_rawDesc = "" +
 	"\x15GetAICredentialSecret\x12\".account.v1.GetAICredentialRequest\x1a&.account.v1.AICredentialSecretResponse\x12i\n" +
 	"\x18UpdateAICredentialStatus\x12+.account.v1.UpdateAICredentialStatusRequest\x1a .account.v1.AICredentialResponse\x12x\n" +
 	"\x19GetTradingAccountFeeRates\x12,.account.v1.GetTradingAccountFeeRatesRequest\x1a-.account.v1.GetTradingAccountFeeRatesResponse\x12z\n" +
-	"\x1aSyncTradingAccountFeeRates\x12-.account.v1.SyncTradingAccountFeeRatesRequest\x1a-.account.v1.GetTradingAccountFeeRatesResponseB,Z*selfquant/backend/gen/account/v1;accountv1b\x06proto3"
+	"\x1aSyncTradingAccountFeeRates\x12-.account.v1.SyncTradingAccountFeeRatesRequest\x1a-.account.v1.GetTradingAccountFeeRatesResponse\x12\x81\x01\n" +
+	"\x1cListPlatformAccountsInternal\x12/.account.v1.ListPlatformAccountsInternalRequest\x1a0.account.v1.ListPlatformAccountsInternalResponse\x12v\n" +
+	"\x1dCreatePlatformAccountInternal\x120.account.v1.CreatePlatformAccountInternalRequest\x1a#.account.v1.PlatformAccountResponse\x12w\n" +
+	"\x1eDisablePlatformAccountInternal\x120.account.v1.MutatePlatformAccountInternalRequest\x1a#.account.v1.PlatformAccountResponse\x12w\n" +
+	"\x1eRestorePlatformAccountInternal\x120.account.v1.MutatePlatformAccountInternalRequest\x1a#.account.v1.PlatformAccountResponse\x12v\n" +
+	"\x1dDeletePlatformAccountInternal\x120.account.v1.MutatePlatformAccountInternalRequest\x1a#.account.v1.PlatformAccountResponse\x12\x84\x01\n" +
+	"$ResetPlatformAccountPasswordInternal\x127.account.v1.ResetPlatformAccountPasswordInternalRequest\x1a#.account.v1.PlatformAccountResponse\x12\x82\x01\n" +
+	"#UpdatePlatformAccountBrokerInternal\x126.account.v1.UpdatePlatformAccountBrokerInternalRequest\x1a#.account.v1.PlatformAccountResponse\x12\x96\x01\n" +
+	"#IssueBrokerDelegatedSessionInternal\x126.account.v1.IssueBrokerDelegatedSessionInternalRequest\x1a7.account.v1.IssueBrokerDelegatedSessionInternalResponse\x12\x87\x01\n" +
+	"\x1eGetAdminAccountSummaryInternal\x121.account.v1.GetAdminAccountSummaryInternalRequest\x1a2.account.v1.GetAdminAccountSummaryInternalResponseB,Z*selfquant/backend/gen/account/v1;accountv1b\x06proto3"
 
 var (
 	file_account_v1_account_proto_rawDescOnce sync.Once
@@ -3830,143 +4769,178 @@ func file_account_v1_account_proto_rawDescGZIP() []byte {
 	return file_account_v1_account_proto_rawDescData
 }
 
-var file_account_v1_account_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
+var file_account_v1_account_proto_msgTypes = make([]protoimpl.MessageInfo, 60)
 var file_account_v1_account_proto_goTypes = []any{
-	(*LoginRequest)(nil),                               // 0: account.v1.LoginRequest
-	(*LoginResponse)(nil),                              // 1: account.v1.LoginResponse
-	(*ValidateSessionRequest)(nil),                     // 2: account.v1.ValidateSessionRequest
-	(*ValidateSessionResponse)(nil),                    // 3: account.v1.ValidateSessionResponse
-	(*TradingAccount)(nil),                             // 4: account.v1.TradingAccount
-	(*MarketFeeRate)(nil),                              // 5: account.v1.MarketFeeRate
-	(*GetTradingAccountFeeRatesRequest)(nil),           // 6: account.v1.GetTradingAccountFeeRatesRequest
-	(*SyncTradingAccountFeeRatesRequest)(nil),          // 7: account.v1.SyncTradingAccountFeeRatesRequest
-	(*GetTradingAccountFeeRatesResponse)(nil),          // 8: account.v1.GetTradingAccountFeeRatesResponse
-	(*ListTradingAccountsRequest)(nil),                 // 9: account.v1.ListTradingAccountsRequest
-	(*ListTradingAccountsResponse)(nil),                // 10: account.v1.ListTradingAccountsResponse
-	(*CreateTradingAccountRequest)(nil),                // 11: account.v1.CreateTradingAccountRequest
-	(*CreateTradingAccountResponse)(nil),               // 12: account.v1.CreateTradingAccountResponse
-	(*CreatePolymarketTradingAccountRequest)(nil),      // 13: account.v1.CreatePolymarketTradingAccountRequest
-	(*CreatePolymarketTradingAccountResponse)(nil),     // 14: account.v1.CreatePolymarketTradingAccountResponse
-	(*GetPolymarketCredentialsRequest)(nil),            // 15: account.v1.GetPolymarketCredentialsRequest
-	(*GetPolymarketCredentialsResponse)(nil),           // 16: account.v1.GetPolymarketCredentialsResponse
-	(*DeleteTradingAccountRequest)(nil),                // 17: account.v1.DeleteTradingAccountRequest
-	(*DeleteTradingAccountResponse)(nil),               // 18: account.v1.DeleteTradingAccountResponse
-	(*PortfolioPosition)(nil),                          // 19: account.v1.PortfolioPosition
-	(*TradingAccountSnapshot)(nil),                     // 20: account.v1.TradingAccountSnapshot
-	(*GetTradingAccountSnapshotRequest)(nil),           // 21: account.v1.GetTradingAccountSnapshotRequest
-	(*GetTradingAccountSnapshotResponse)(nil),          // 22: account.v1.GetTradingAccountSnapshotResponse
-	(*ProductGroupPosition)(nil),                       // 23: account.v1.ProductGroupPosition
-	(*ProductGroupSnapshot)(nil),                       // 24: account.v1.ProductGroupSnapshot
-	(*GetProductGroupSnapshotRequest)(nil),             // 25: account.v1.GetProductGroupSnapshotRequest
-	(*GetProductGroupSnapshotResponse)(nil),            // 26: account.v1.GetProductGroupSnapshotResponse
-	(*GetProductAccountSnapshotsInternalRequest)(nil),  // 27: account.v1.GetProductAccountSnapshotsInternalRequest
-	(*GetProductAccountSnapshotsInternalResponse)(nil), // 28: account.v1.GetProductAccountSnapshotsInternalResponse
-	(*SyncProductTradeFillsInternalRequest)(nil),       // 29: account.v1.SyncProductTradeFillsInternalRequest
-	(*TradeFillSyncResult)(nil),                        // 30: account.v1.TradeFillSyncResult
-	(*SyncProductTradeFillsInternalResponse)(nil),      // 31: account.v1.SyncProductTradeFillsInternalResponse
-	(*GetTradingCredentialsRequest)(nil),               // 32: account.v1.GetTradingCredentialsRequest
-	(*GetTradingCredentialsInternalRequest)(nil),       // 33: account.v1.GetTradingCredentialsInternalRequest
-	(*GetTradingCredentialsResponse)(nil),              // 34: account.v1.GetTradingCredentialsResponse
-	(*GetTradingAccountMetaRequest)(nil),               // 35: account.v1.GetTradingAccountMetaRequest
-	(*GetTradingAccountMetaResponse)(nil),              // 36: account.v1.GetTradingAccountMetaResponse
-	(*InspectTradingReadinessRequest)(nil),             // 37: account.v1.InspectTradingReadinessRequest
-	(*InspectTradingReadinessResponse)(nil),            // 38: account.v1.InspectTradingReadinessResponse
-	(*AICredential)(nil),                               // 39: account.v1.AICredential
-	(*GetAICredentialRequest)(nil),                     // 40: account.v1.GetAICredentialRequest
-	(*UpsertAICredentialRequest)(nil),                  // 41: account.v1.UpsertAICredentialRequest
-	(*DeleteAICredentialRequest)(nil),                  // 42: account.v1.DeleteAICredentialRequest
-	(*DeleteAICredentialResponse)(nil),                 // 43: account.v1.DeleteAICredentialResponse
-	(*AICredentialResponse)(nil),                       // 44: account.v1.AICredentialResponse
-	(*AICredentialSecretResponse)(nil),                 // 45: account.v1.AICredentialSecretResponse
-	(*UpdateAICredentialStatusRequest)(nil),            // 46: account.v1.UpdateAICredentialStatusRequest
-	(*timestamppb.Timestamp)(nil),                      // 47: google.protobuf.Timestamp
+	(*LoginRequest)(nil),                                // 0: account.v1.LoginRequest
+	(*LoginResponse)(nil),                               // 1: account.v1.LoginResponse
+	(*ValidateSessionRequest)(nil),                      // 2: account.v1.ValidateSessionRequest
+	(*ValidateSessionResponse)(nil),                     // 3: account.v1.ValidateSessionResponse
+	(*TradingAccount)(nil),                              // 4: account.v1.TradingAccount
+	(*MarketFeeRate)(nil),                               // 5: account.v1.MarketFeeRate
+	(*GetTradingAccountFeeRatesRequest)(nil),            // 6: account.v1.GetTradingAccountFeeRatesRequest
+	(*SyncTradingAccountFeeRatesRequest)(nil),           // 7: account.v1.SyncTradingAccountFeeRatesRequest
+	(*GetTradingAccountFeeRatesResponse)(nil),           // 8: account.v1.GetTradingAccountFeeRatesResponse
+	(*ListTradingAccountsRequest)(nil),                  // 9: account.v1.ListTradingAccountsRequest
+	(*ListTradingAccountsResponse)(nil),                 // 10: account.v1.ListTradingAccountsResponse
+	(*CreateTradingAccountRequest)(nil),                 // 11: account.v1.CreateTradingAccountRequest
+	(*CreateTradingAccountResponse)(nil),                // 12: account.v1.CreateTradingAccountResponse
+	(*CreatePolymarketTradingAccountRequest)(nil),       // 13: account.v1.CreatePolymarketTradingAccountRequest
+	(*CreatePolymarketTradingAccountResponse)(nil),      // 14: account.v1.CreatePolymarketTradingAccountResponse
+	(*GetPolymarketCredentialsRequest)(nil),             // 15: account.v1.GetPolymarketCredentialsRequest
+	(*GetPolymarketCredentialsResponse)(nil),            // 16: account.v1.GetPolymarketCredentialsResponse
+	(*DeleteTradingAccountRequest)(nil),                 // 17: account.v1.DeleteTradingAccountRequest
+	(*DeleteTradingAccountResponse)(nil),                // 18: account.v1.DeleteTradingAccountResponse
+	(*PortfolioPosition)(nil),                           // 19: account.v1.PortfolioPosition
+	(*TradingAccountSnapshot)(nil),                      // 20: account.v1.TradingAccountSnapshot
+	(*GetTradingAccountSnapshotRequest)(nil),            // 21: account.v1.GetTradingAccountSnapshotRequest
+	(*GetTradingAccountSnapshotResponse)(nil),           // 22: account.v1.GetTradingAccountSnapshotResponse
+	(*ProductGroupPosition)(nil),                        // 23: account.v1.ProductGroupPosition
+	(*ProductGroupSnapshot)(nil),                        // 24: account.v1.ProductGroupSnapshot
+	(*GetProductGroupSnapshotRequest)(nil),              // 25: account.v1.GetProductGroupSnapshotRequest
+	(*GetProductGroupSnapshotResponse)(nil),             // 26: account.v1.GetProductGroupSnapshotResponse
+	(*GetProductAccountSnapshotsInternalRequest)(nil),   // 27: account.v1.GetProductAccountSnapshotsInternalRequest
+	(*GetProductAccountSnapshotsInternalResponse)(nil),  // 28: account.v1.GetProductAccountSnapshotsInternalResponse
+	(*SyncProductTradeFillsInternalRequest)(nil),        // 29: account.v1.SyncProductTradeFillsInternalRequest
+	(*TradeFillSyncResult)(nil),                         // 30: account.v1.TradeFillSyncResult
+	(*SyncProductTradeFillsInternalResponse)(nil),       // 31: account.v1.SyncProductTradeFillsInternalResponse
+	(*GetTradingCredentialsRequest)(nil),                // 32: account.v1.GetTradingCredentialsRequest
+	(*GetTradingCredentialsInternalRequest)(nil),        // 33: account.v1.GetTradingCredentialsInternalRequest
+	(*GetTradingCredentialsResponse)(nil),               // 34: account.v1.GetTradingCredentialsResponse
+	(*GetTradingAccountMetaRequest)(nil),                // 35: account.v1.GetTradingAccountMetaRequest
+	(*GetTradingAccountMetaResponse)(nil),               // 36: account.v1.GetTradingAccountMetaResponse
+	(*InspectTradingReadinessRequest)(nil),              // 37: account.v1.InspectTradingReadinessRequest
+	(*InspectTradingReadinessResponse)(nil),             // 38: account.v1.InspectTradingReadinessResponse
+	(*AICredential)(nil),                                // 39: account.v1.AICredential
+	(*GetAICredentialRequest)(nil),                      // 40: account.v1.GetAICredentialRequest
+	(*UpsertAICredentialRequest)(nil),                   // 41: account.v1.UpsertAICredentialRequest
+	(*DeleteAICredentialRequest)(nil),                   // 42: account.v1.DeleteAICredentialRequest
+	(*DeleteAICredentialResponse)(nil),                  // 43: account.v1.DeleteAICredentialResponse
+	(*AICredentialResponse)(nil),                        // 44: account.v1.AICredentialResponse
+	(*AICredentialSecretResponse)(nil),                  // 45: account.v1.AICredentialSecretResponse
+	(*UpdateAICredentialStatusRequest)(nil),             // 46: account.v1.UpdateAICredentialStatusRequest
+	(*PlatformAccount)(nil),                             // 47: account.v1.PlatformAccount
+	(*ListPlatformAccountsInternalRequest)(nil),         // 48: account.v1.ListPlatformAccountsInternalRequest
+	(*ListPlatformAccountsInternalResponse)(nil),        // 49: account.v1.ListPlatformAccountsInternalResponse
+	(*CreatePlatformAccountInternalRequest)(nil),        // 50: account.v1.CreatePlatformAccountInternalRequest
+	(*MutatePlatformAccountInternalRequest)(nil),        // 51: account.v1.MutatePlatformAccountInternalRequest
+	(*ResetPlatformAccountPasswordInternalRequest)(nil), // 52: account.v1.ResetPlatformAccountPasswordInternalRequest
+	(*UpdatePlatformAccountBrokerInternalRequest)(nil),  // 53: account.v1.UpdatePlatformAccountBrokerInternalRequest
+	(*PlatformAccountResponse)(nil),                     // 54: account.v1.PlatformAccountResponse
+	(*IssueBrokerDelegatedSessionInternalRequest)(nil),  // 55: account.v1.IssueBrokerDelegatedSessionInternalRequest
+	(*IssueBrokerDelegatedSessionInternalResponse)(nil), // 56: account.v1.IssueBrokerDelegatedSessionInternalResponse
+	(*GetAdminAccountSummaryInternalRequest)(nil),       // 57: account.v1.GetAdminAccountSummaryInternalRequest
+	(*OwnerAccountRow)(nil),                             // 58: account.v1.OwnerAccountRow
+	(*GetAdminAccountSummaryInternalResponse)(nil),      // 59: account.v1.GetAdminAccountSummaryInternalResponse
+	(*timestamppb.Timestamp)(nil),                       // 60: google.protobuf.Timestamp
 }
 var file_account_v1_account_proto_depIdxs = []int32{
-	47, // 0: account.v1.TradingAccount.created_at:type_name -> google.protobuf.Timestamp
-	47, // 1: account.v1.TradingAccount.updated_at:type_name -> google.protobuf.Timestamp
+	60, // 0: account.v1.TradingAccount.created_at:type_name -> google.protobuf.Timestamp
+	60, // 1: account.v1.TradingAccount.updated_at:type_name -> google.protobuf.Timestamp
 	5,  // 2: account.v1.TradingAccount.spot_fee:type_name -> account.v1.MarketFeeRate
 	5,  // 3: account.v1.TradingAccount.contract_fee:type_name -> account.v1.MarketFeeRate
-	47, // 4: account.v1.TradingAccount.fee_updated_at:type_name -> google.protobuf.Timestamp
+	60, // 4: account.v1.TradingAccount.fee_updated_at:type_name -> google.protobuf.Timestamp
 	5,  // 5: account.v1.GetTradingAccountFeeRatesResponse.spot_fee:type_name -> account.v1.MarketFeeRate
 	5,  // 6: account.v1.GetTradingAccountFeeRatesResponse.contract_fee:type_name -> account.v1.MarketFeeRate
-	47, // 7: account.v1.GetTradingAccountFeeRatesResponse.fee_updated_at:type_name -> google.protobuf.Timestamp
+	60, // 7: account.v1.GetTradingAccountFeeRatesResponse.fee_updated_at:type_name -> google.protobuf.Timestamp
 	4,  // 8: account.v1.ListTradingAccountsResponse.items:type_name -> account.v1.TradingAccount
 	4,  // 9: account.v1.CreateTradingAccountResponse.account:type_name -> account.v1.TradingAccount
 	4,  // 10: account.v1.CreatePolymarketTradingAccountResponse.account:type_name -> account.v1.TradingAccount
-	47, // 11: account.v1.PortfolioPosition.end_time:type_name -> google.protobuf.Timestamp
+	60, // 11: account.v1.PortfolioPosition.end_time:type_name -> google.protobuf.Timestamp
 	19, // 12: account.v1.TradingAccountSnapshot.positions:type_name -> account.v1.PortfolioPosition
-	47, // 13: account.v1.TradingAccountSnapshot.source_updated_at:type_name -> google.protobuf.Timestamp
+	60, // 13: account.v1.TradingAccountSnapshot.source_updated_at:type_name -> google.protobuf.Timestamp
 	20, // 14: account.v1.GetTradingAccountSnapshotResponse.snapshot:type_name -> account.v1.TradingAccountSnapshot
-	47, // 15: account.v1.GetTradingAccountSnapshotResponse.server_time:type_name -> google.protobuf.Timestamp
+	60, // 15: account.v1.GetTradingAccountSnapshotResponse.server_time:type_name -> google.protobuf.Timestamp
 	23, // 16: account.v1.ProductGroupSnapshot.positions:type_name -> account.v1.ProductGroupPosition
-	47, // 17: account.v1.ProductGroupSnapshot.source_updated_at:type_name -> google.protobuf.Timestamp
+	60, // 17: account.v1.ProductGroupSnapshot.source_updated_at:type_name -> google.protobuf.Timestamp
 	24, // 18: account.v1.GetProductGroupSnapshotResponse.snapshot:type_name -> account.v1.ProductGroupSnapshot
-	47, // 19: account.v1.GetProductGroupSnapshotResponse.server_time:type_name -> google.protobuf.Timestamp
+	60, // 19: account.v1.GetProductGroupSnapshotResponse.server_time:type_name -> google.protobuf.Timestamp
 	20, // 20: account.v1.GetProductAccountSnapshotsInternalResponse.snapshots:type_name -> account.v1.TradingAccountSnapshot
-	47, // 21: account.v1.GetProductAccountSnapshotsInternalResponse.server_time:type_name -> google.protobuf.Timestamp
-	47, // 22: account.v1.SyncProductTradeFillsInternalRequest.through_time:type_name -> google.protobuf.Timestamp
-	47, // 23: account.v1.TradeFillSyncResult.synced_through:type_name -> google.protobuf.Timestamp
+	60, // 21: account.v1.GetProductAccountSnapshotsInternalResponse.server_time:type_name -> google.protobuf.Timestamp
+	60, // 22: account.v1.SyncProductTradeFillsInternalRequest.through_time:type_name -> google.protobuf.Timestamp
+	60, // 23: account.v1.TradeFillSyncResult.synced_through:type_name -> google.protobuf.Timestamp
 	30, // 24: account.v1.SyncProductTradeFillsInternalResponse.results:type_name -> account.v1.TradeFillSyncResult
-	47, // 25: account.v1.SyncProductTradeFillsInternalResponse.server_time:type_name -> google.protobuf.Timestamp
-	47, // 26: account.v1.AICredential.last_tested_at:type_name -> google.protobuf.Timestamp
-	47, // 27: account.v1.AICredential.created_at:type_name -> google.protobuf.Timestamp
-	47, // 28: account.v1.AICredential.updated_at:type_name -> google.protobuf.Timestamp
+	60, // 25: account.v1.SyncProductTradeFillsInternalResponse.server_time:type_name -> google.protobuf.Timestamp
+	60, // 26: account.v1.AICredential.last_tested_at:type_name -> google.protobuf.Timestamp
+	60, // 27: account.v1.AICredential.created_at:type_name -> google.protobuf.Timestamp
+	60, // 28: account.v1.AICredential.updated_at:type_name -> google.protobuf.Timestamp
 	39, // 29: account.v1.AICredentialResponse.credential:type_name -> account.v1.AICredential
-	0,  // 30: account.v1.AccountService.Login:input_type -> account.v1.LoginRequest
-	2,  // 31: account.v1.AccountService.ValidateSession:input_type -> account.v1.ValidateSessionRequest
-	9,  // 32: account.v1.AccountService.ListTradingAccounts:input_type -> account.v1.ListTradingAccountsRequest
-	11, // 33: account.v1.AccountService.CreateTradingAccount:input_type -> account.v1.CreateTradingAccountRequest
-	13, // 34: account.v1.AccountService.CreatePolymarketTradingAccount:input_type -> account.v1.CreatePolymarketTradingAccountRequest
-	15, // 35: account.v1.AccountService.GetPolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
-	15, // 36: account.v1.AccountService.RefreshPolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
-	15, // 37: account.v1.AccountService.InvalidatePolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
-	15, // 38: account.v1.AccountService.ActivatePolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
-	17, // 39: account.v1.AccountService.DeleteTradingAccount:input_type -> account.v1.DeleteTradingAccountRequest
-	21, // 40: account.v1.AccountService.GetTradingAccountSnapshot:input_type -> account.v1.GetTradingAccountSnapshotRequest
-	25, // 41: account.v1.AccountService.GetProductGroupSnapshot:input_type -> account.v1.GetProductGroupSnapshotRequest
-	27, // 42: account.v1.AccountService.GetProductAccountSnapshotsInternal:input_type -> account.v1.GetProductAccountSnapshotsInternalRequest
-	29, // 43: account.v1.AccountService.SyncProductTradeFillsInternal:input_type -> account.v1.SyncProductTradeFillsInternalRequest
-	32, // 44: account.v1.AccountService.GetTradingCredentials:input_type -> account.v1.GetTradingCredentialsRequest
-	33, // 45: account.v1.AccountService.GetTradingCredentialsInternal:input_type -> account.v1.GetTradingCredentialsInternalRequest
-	35, // 46: account.v1.AccountService.GetTradingAccountMeta:input_type -> account.v1.GetTradingAccountMetaRequest
-	37, // 47: account.v1.AccountService.InspectTradingReadiness:input_type -> account.v1.InspectTradingReadinessRequest
-	40, // 48: account.v1.AccountService.GetAICredential:input_type -> account.v1.GetAICredentialRequest
-	41, // 49: account.v1.AccountService.UpsertAICredential:input_type -> account.v1.UpsertAICredentialRequest
-	42, // 50: account.v1.AccountService.DeleteAICredential:input_type -> account.v1.DeleteAICredentialRequest
-	40, // 51: account.v1.AccountService.GetAICredentialSecret:input_type -> account.v1.GetAICredentialRequest
-	46, // 52: account.v1.AccountService.UpdateAICredentialStatus:input_type -> account.v1.UpdateAICredentialStatusRequest
-	6,  // 53: account.v1.AccountService.GetTradingAccountFeeRates:input_type -> account.v1.GetTradingAccountFeeRatesRequest
-	7,  // 54: account.v1.AccountService.SyncTradingAccountFeeRates:input_type -> account.v1.SyncTradingAccountFeeRatesRequest
-	1,  // 55: account.v1.AccountService.Login:output_type -> account.v1.LoginResponse
-	3,  // 56: account.v1.AccountService.ValidateSession:output_type -> account.v1.ValidateSessionResponse
-	10, // 57: account.v1.AccountService.ListTradingAccounts:output_type -> account.v1.ListTradingAccountsResponse
-	12, // 58: account.v1.AccountService.CreateTradingAccount:output_type -> account.v1.CreateTradingAccountResponse
-	14, // 59: account.v1.AccountService.CreatePolymarketTradingAccount:output_type -> account.v1.CreatePolymarketTradingAccountResponse
-	16, // 60: account.v1.AccountService.GetPolymarketCredentials:output_type -> account.v1.GetPolymarketCredentialsResponse
-	16, // 61: account.v1.AccountService.RefreshPolymarketCredentials:output_type -> account.v1.GetPolymarketCredentialsResponse
-	18, // 62: account.v1.AccountService.InvalidatePolymarketCredentials:output_type -> account.v1.DeleteTradingAccountResponse
-	18, // 63: account.v1.AccountService.ActivatePolymarketCredentials:output_type -> account.v1.DeleteTradingAccountResponse
-	18, // 64: account.v1.AccountService.DeleteTradingAccount:output_type -> account.v1.DeleteTradingAccountResponse
-	22, // 65: account.v1.AccountService.GetTradingAccountSnapshot:output_type -> account.v1.GetTradingAccountSnapshotResponse
-	26, // 66: account.v1.AccountService.GetProductGroupSnapshot:output_type -> account.v1.GetProductGroupSnapshotResponse
-	28, // 67: account.v1.AccountService.GetProductAccountSnapshotsInternal:output_type -> account.v1.GetProductAccountSnapshotsInternalResponse
-	31, // 68: account.v1.AccountService.SyncProductTradeFillsInternal:output_type -> account.v1.SyncProductTradeFillsInternalResponse
-	34, // 69: account.v1.AccountService.GetTradingCredentials:output_type -> account.v1.GetTradingCredentialsResponse
-	34, // 70: account.v1.AccountService.GetTradingCredentialsInternal:output_type -> account.v1.GetTradingCredentialsResponse
-	36, // 71: account.v1.AccountService.GetTradingAccountMeta:output_type -> account.v1.GetTradingAccountMetaResponse
-	38, // 72: account.v1.AccountService.InspectTradingReadiness:output_type -> account.v1.InspectTradingReadinessResponse
-	44, // 73: account.v1.AccountService.GetAICredential:output_type -> account.v1.AICredentialResponse
-	44, // 74: account.v1.AccountService.UpsertAICredential:output_type -> account.v1.AICredentialResponse
-	43, // 75: account.v1.AccountService.DeleteAICredential:output_type -> account.v1.DeleteAICredentialResponse
-	45, // 76: account.v1.AccountService.GetAICredentialSecret:output_type -> account.v1.AICredentialSecretResponse
-	44, // 77: account.v1.AccountService.UpdateAICredentialStatus:output_type -> account.v1.AICredentialResponse
-	8,  // 78: account.v1.AccountService.GetTradingAccountFeeRates:output_type -> account.v1.GetTradingAccountFeeRatesResponse
-	8,  // 79: account.v1.AccountService.SyncTradingAccountFeeRates:output_type -> account.v1.GetTradingAccountFeeRatesResponse
-	55, // [55:80] is the sub-list for method output_type
-	30, // [30:55] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	60, // 30: account.v1.PlatformAccount.deleted_at:type_name -> google.protobuf.Timestamp
+	47, // 31: account.v1.ListPlatformAccountsInternalResponse.accounts:type_name -> account.v1.PlatformAccount
+	47, // 32: account.v1.PlatformAccountResponse.account:type_name -> account.v1.PlatformAccount
+	58, // 33: account.v1.GetAdminAccountSummaryInternalResponse.owners:type_name -> account.v1.OwnerAccountRow
+	0,  // 34: account.v1.AccountService.Login:input_type -> account.v1.LoginRequest
+	2,  // 35: account.v1.AccountService.ValidateSession:input_type -> account.v1.ValidateSessionRequest
+	9,  // 36: account.v1.AccountService.ListTradingAccounts:input_type -> account.v1.ListTradingAccountsRequest
+	11, // 37: account.v1.AccountService.CreateTradingAccount:input_type -> account.v1.CreateTradingAccountRequest
+	13, // 38: account.v1.AccountService.CreatePolymarketTradingAccount:input_type -> account.v1.CreatePolymarketTradingAccountRequest
+	15, // 39: account.v1.AccountService.GetPolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
+	15, // 40: account.v1.AccountService.RefreshPolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
+	15, // 41: account.v1.AccountService.InvalidatePolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
+	15, // 42: account.v1.AccountService.ActivatePolymarketCredentials:input_type -> account.v1.GetPolymarketCredentialsRequest
+	17, // 43: account.v1.AccountService.DeleteTradingAccount:input_type -> account.v1.DeleteTradingAccountRequest
+	21, // 44: account.v1.AccountService.GetTradingAccountSnapshot:input_type -> account.v1.GetTradingAccountSnapshotRequest
+	25, // 45: account.v1.AccountService.GetProductGroupSnapshot:input_type -> account.v1.GetProductGroupSnapshotRequest
+	27, // 46: account.v1.AccountService.GetProductAccountSnapshotsInternal:input_type -> account.v1.GetProductAccountSnapshotsInternalRequest
+	29, // 47: account.v1.AccountService.SyncProductTradeFillsInternal:input_type -> account.v1.SyncProductTradeFillsInternalRequest
+	32, // 48: account.v1.AccountService.GetTradingCredentials:input_type -> account.v1.GetTradingCredentialsRequest
+	33, // 49: account.v1.AccountService.GetTradingCredentialsInternal:input_type -> account.v1.GetTradingCredentialsInternalRequest
+	35, // 50: account.v1.AccountService.GetTradingAccountMeta:input_type -> account.v1.GetTradingAccountMetaRequest
+	37, // 51: account.v1.AccountService.InspectTradingReadiness:input_type -> account.v1.InspectTradingReadinessRequest
+	40, // 52: account.v1.AccountService.GetAICredential:input_type -> account.v1.GetAICredentialRequest
+	41, // 53: account.v1.AccountService.UpsertAICredential:input_type -> account.v1.UpsertAICredentialRequest
+	42, // 54: account.v1.AccountService.DeleteAICredential:input_type -> account.v1.DeleteAICredentialRequest
+	40, // 55: account.v1.AccountService.GetAICredentialSecret:input_type -> account.v1.GetAICredentialRequest
+	46, // 56: account.v1.AccountService.UpdateAICredentialStatus:input_type -> account.v1.UpdateAICredentialStatusRequest
+	6,  // 57: account.v1.AccountService.GetTradingAccountFeeRates:input_type -> account.v1.GetTradingAccountFeeRatesRequest
+	7,  // 58: account.v1.AccountService.SyncTradingAccountFeeRates:input_type -> account.v1.SyncTradingAccountFeeRatesRequest
+	48, // 59: account.v1.AccountService.ListPlatformAccountsInternal:input_type -> account.v1.ListPlatformAccountsInternalRequest
+	50, // 60: account.v1.AccountService.CreatePlatformAccountInternal:input_type -> account.v1.CreatePlatformAccountInternalRequest
+	51, // 61: account.v1.AccountService.DisablePlatformAccountInternal:input_type -> account.v1.MutatePlatformAccountInternalRequest
+	51, // 62: account.v1.AccountService.RestorePlatformAccountInternal:input_type -> account.v1.MutatePlatformAccountInternalRequest
+	51, // 63: account.v1.AccountService.DeletePlatformAccountInternal:input_type -> account.v1.MutatePlatformAccountInternalRequest
+	52, // 64: account.v1.AccountService.ResetPlatformAccountPasswordInternal:input_type -> account.v1.ResetPlatformAccountPasswordInternalRequest
+	53, // 65: account.v1.AccountService.UpdatePlatformAccountBrokerInternal:input_type -> account.v1.UpdatePlatformAccountBrokerInternalRequest
+	55, // 66: account.v1.AccountService.IssueBrokerDelegatedSessionInternal:input_type -> account.v1.IssueBrokerDelegatedSessionInternalRequest
+	57, // 67: account.v1.AccountService.GetAdminAccountSummaryInternal:input_type -> account.v1.GetAdminAccountSummaryInternalRequest
+	1,  // 68: account.v1.AccountService.Login:output_type -> account.v1.LoginResponse
+	3,  // 69: account.v1.AccountService.ValidateSession:output_type -> account.v1.ValidateSessionResponse
+	10, // 70: account.v1.AccountService.ListTradingAccounts:output_type -> account.v1.ListTradingAccountsResponse
+	12, // 71: account.v1.AccountService.CreateTradingAccount:output_type -> account.v1.CreateTradingAccountResponse
+	14, // 72: account.v1.AccountService.CreatePolymarketTradingAccount:output_type -> account.v1.CreatePolymarketTradingAccountResponse
+	16, // 73: account.v1.AccountService.GetPolymarketCredentials:output_type -> account.v1.GetPolymarketCredentialsResponse
+	16, // 74: account.v1.AccountService.RefreshPolymarketCredentials:output_type -> account.v1.GetPolymarketCredentialsResponse
+	18, // 75: account.v1.AccountService.InvalidatePolymarketCredentials:output_type -> account.v1.DeleteTradingAccountResponse
+	18, // 76: account.v1.AccountService.ActivatePolymarketCredentials:output_type -> account.v1.DeleteTradingAccountResponse
+	18, // 77: account.v1.AccountService.DeleteTradingAccount:output_type -> account.v1.DeleteTradingAccountResponse
+	22, // 78: account.v1.AccountService.GetTradingAccountSnapshot:output_type -> account.v1.GetTradingAccountSnapshotResponse
+	26, // 79: account.v1.AccountService.GetProductGroupSnapshot:output_type -> account.v1.GetProductGroupSnapshotResponse
+	28, // 80: account.v1.AccountService.GetProductAccountSnapshotsInternal:output_type -> account.v1.GetProductAccountSnapshotsInternalResponse
+	31, // 81: account.v1.AccountService.SyncProductTradeFillsInternal:output_type -> account.v1.SyncProductTradeFillsInternalResponse
+	34, // 82: account.v1.AccountService.GetTradingCredentials:output_type -> account.v1.GetTradingCredentialsResponse
+	34, // 83: account.v1.AccountService.GetTradingCredentialsInternal:output_type -> account.v1.GetTradingCredentialsResponse
+	36, // 84: account.v1.AccountService.GetTradingAccountMeta:output_type -> account.v1.GetTradingAccountMetaResponse
+	38, // 85: account.v1.AccountService.InspectTradingReadiness:output_type -> account.v1.InspectTradingReadinessResponse
+	44, // 86: account.v1.AccountService.GetAICredential:output_type -> account.v1.AICredentialResponse
+	44, // 87: account.v1.AccountService.UpsertAICredential:output_type -> account.v1.AICredentialResponse
+	43, // 88: account.v1.AccountService.DeleteAICredential:output_type -> account.v1.DeleteAICredentialResponse
+	45, // 89: account.v1.AccountService.GetAICredentialSecret:output_type -> account.v1.AICredentialSecretResponse
+	44, // 90: account.v1.AccountService.UpdateAICredentialStatus:output_type -> account.v1.AICredentialResponse
+	8,  // 91: account.v1.AccountService.GetTradingAccountFeeRates:output_type -> account.v1.GetTradingAccountFeeRatesResponse
+	8,  // 92: account.v1.AccountService.SyncTradingAccountFeeRates:output_type -> account.v1.GetTradingAccountFeeRatesResponse
+	49, // 93: account.v1.AccountService.ListPlatformAccountsInternal:output_type -> account.v1.ListPlatformAccountsInternalResponse
+	54, // 94: account.v1.AccountService.CreatePlatformAccountInternal:output_type -> account.v1.PlatformAccountResponse
+	54, // 95: account.v1.AccountService.DisablePlatformAccountInternal:output_type -> account.v1.PlatformAccountResponse
+	54, // 96: account.v1.AccountService.RestorePlatformAccountInternal:output_type -> account.v1.PlatformAccountResponse
+	54, // 97: account.v1.AccountService.DeletePlatformAccountInternal:output_type -> account.v1.PlatformAccountResponse
+	54, // 98: account.v1.AccountService.ResetPlatformAccountPasswordInternal:output_type -> account.v1.PlatformAccountResponse
+	54, // 99: account.v1.AccountService.UpdatePlatformAccountBrokerInternal:output_type -> account.v1.PlatformAccountResponse
+	56, // 100: account.v1.AccountService.IssueBrokerDelegatedSessionInternal:output_type -> account.v1.IssueBrokerDelegatedSessionInternalResponse
+	59, // 101: account.v1.AccountService.GetAdminAccountSummaryInternal:output_type -> account.v1.GetAdminAccountSummaryInternalResponse
+	68, // [68:102] is the sub-list for method output_type
+	34, // [34:68] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_account_v1_account_proto_init() }
@@ -3985,7 +4959,7 @@ func file_account_v1_account_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_account_v1_account_proto_rawDesc), len(file_account_v1_account_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   47,
+			NumMessages:   60,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -36,11 +36,56 @@ func TestServiceLoginAndValidate(t *testing.T) {
 	if session.Username != "admin" || session.Permission != "admin" || session.Token == "" {
 		t.Fatalf("session=%+v", session)
 	}
-	validated, err := service.ValidateSession(session.Token)
+	validated, err := service.ValidateSession(context.Background(), session.Token)
 	if err != nil || validated.Username != "admin" {
 		t.Fatalf("validated=%+v err=%v", validated, err)
 	}
 	if _, err := service.Login(context.Background(), "admin", "bad"); err != ErrInvalidCredentials {
 		t.Fatalf("err=%v", err)
 	}
+}
+
+func TestServiceRejectsInactiveAndStaleAuthVersion(t *testing.T) {
+	hash, err := HashPassword("admin123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := NewTokenService("test-secret", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := &mutableAccounts{account: Account{
+		Username: "user", PasswordHash: hash, Permission: "user",
+		Status: AccountStatusActive, AuthVersion: 1,
+	}}
+	service := NewService(accounts, tokens)
+	session, err := service.Login(context.Background(), "user", "admin123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts.account.Status = AccountStatusDisabled
+	service.invalidateAccountStatus("user")
+	if _, err := service.ValidateSession(context.Background(), session.Token); err != ErrInvalidToken {
+		t.Fatalf("disabled validate err=%v", err)
+	}
+	if _, err := service.Login(context.Background(), "user", "admin123"); err != ErrInvalidCredentials {
+		t.Fatalf("disabled login err=%v", err)
+	}
+	accounts.account.Status = AccountStatusActive
+	accounts.account.AuthVersion = 2
+	service.invalidateAccountStatus("user")
+	if _, err := service.ValidateSession(context.Background(), session.Token); err != ErrInvalidToken {
+		t.Fatalf("stale auth version err=%v", err)
+	}
+}
+
+type mutableAccounts struct {
+	account Account
+}
+
+func (m *mutableAccounts) GetByUsername(_ context.Context, username string) (Account, error) {
+	if username != m.account.Username {
+		return Account{}, ErrNotFound
+	}
+	return m.account, nil
 }

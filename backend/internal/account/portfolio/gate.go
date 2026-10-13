@@ -92,12 +92,13 @@ func (a *gateAdapter) Snapshot(ctx context.Context, credentials Credentials) (Sn
 	}
 	for _, settle := range []string{"usdt", "btc"} {
 		var positions []struct {
-			Contract      string            `json:"contract"`
-			Size          flexDecimalString `json:"size"`
-			EntryPrice    flexDecimalString `json:"entry_price"`
-			MarkPrice     flexDecimalString `json:"mark_price"`
-			UnrealisedPnl flexDecimalString `json:"unrealised_pnl"`
-			Value         flexDecimalString `json:"value"`
+			Contract         string            `json:"contract"`
+			Size             flexDecimalString `json:"size"`
+			EntryPrice       flexDecimalString `json:"entry_price"`
+			MarkPrice        flexDecimalString `json:"mark_price"`
+			LiquidationPrice flexDecimalString `json:"liq_price"`
+			UnrealisedPnl    flexDecimalString `json:"unrealised_pnl"`
+			Value            flexDecimalString `json:"value"`
 		}
 		path := "/api/v4/futures/" + settle + "/positions"
 		if err := a.get(ctx, path, credentials, &positions); err != nil {
@@ -124,8 +125,9 @@ func (a *gateAdapter) Snapshot(ctx context.Context, credentials Credentials) (Sn
 			result.Positions = append(result.Positions, Position{
 				Key: "gate:" + symbol + ":" + side, Kind: "cex", Exchange: "Gate", Symbol: symbol, Side: side,
 				NotionalUSD: notional.String(), Size: size.Abs().String(), EntryPrice: string(item.EntryPrice),
-				MarkPrice: string(item.MarkPrice), UnrealizedPnL: string(item.UnrealisedPnl),
-				WireSymbol: item.Contract, ProductCategory: settle,
+				MarkPrice: string(item.MarkPrice), LiquidationPrice: string(item.LiquidationPrice),
+				UnrealizedPnL: string(item.UnrealisedPnl),
+				WireSymbol:    item.Contract, ProductCategory: settle,
 			})
 		}
 	}
