@@ -98,8 +98,8 @@ func (a *bybitAdapter) Snapshot(ctx context.Context, credentials Credentials) (S
 				RetCode int    `json:"retCode"`
 				RetMsg  string `json:"retMsg"`
 				Result  struct {
-					NextPageCursor string                                                                                   `json:"nextPageCursor"`
-					List           []struct{ Symbol, Side, Size, AvgPrice, MarkPrice, PositionValue, UnrealisedPnl string } `json:"list"`
+					NextPageCursor string                                                                                             `json:"nextPageCursor"`
+					List           []struct{ Symbol, Side, Size, AvgPrice, MarkPrice, LiqPrice, PositionValue, UnrealisedPnl string } `json:"list"`
 				} `json:"result"`
 			}
 			if err := a.get(ctx, "/v5/position/list?"+q.Encode(), credentials, &wire); err != nil {
@@ -125,7 +125,7 @@ func (a *bybitAdapter) Snapshot(ctx context.Context, credentials Credentials) (S
 				result.Positions = append(result.Positions, Position{
 					Key: "bybit:" + symbol + ":" + side, Kind: "cex", Exchange: "Bybit", Symbol: symbol, Side: side,
 					NotionalUSD: notional.String(), Size: size.String(), EntryPrice: position.AvgPrice,
-					MarkPrice: position.MarkPrice, UnrealizedPnL: position.UnrealisedPnl,
+					MarkPrice: position.MarkPrice, LiquidationPrice: position.LiqPrice, UnrealizedPnL: position.UnrealisedPnl,
 					WireSymbol: position.Symbol, ProductCategory: category,
 				})
 			}

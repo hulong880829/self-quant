@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -14,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
+	"selfquant/backend/internal/account/portfolio"
 	"selfquant/backend/internal/database"
 	"selfquant/backend/internal/trader/exchange"
 )
@@ -70,6 +73,17 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 		created.LegBVenueBaselineBasePosition != "-8" ||
 		!created.VenueBaselineCapturedAt.Equal(input.VenueBaselineCapturedAt) {
 		t.Fatalf("baseline was not persisted: %+v", created)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE trader_arbitrage_combinations
+		SET estimated_trading_fee=1.25, metrics_quality='estimated'
+		WHERE id=$1::uuid`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	withFinalMetrics, err := repository.GetArbitrageCombinationByOwner(ctx, "admin", created.ID)
+	if err != nil || withFinalMetrics.EstimatedTradingFee != "1.25" ||
+		withFinalMetrics.MetricsQuality != "estimated" {
+		t.Fatalf("final metrics read model=%+v err=%v", withFinalMetrics, err)
 	}
 	conflicting := input
 	conflicting.ID = uuid.NewString()
@@ -253,8 +267,7 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 	auditMessage := arbitragePositionAuditErrorPrefix + " leg_a=0.01 leg_b=0"
 	auditMarked, err := repository.UpdateArbitragePositionAudit(
 		ctx, created.ID, arbitrageVersion(t, ctx, pool, created.ID),
-		"0.01", "0", "0.01", "0", true, auditMessage,
-	)
+		"0.01", "0", "0.01", "0", true, auditMessage, "", "")
 	if err != nil || !auditMarked.PositionUncertain ||
 		auditMarked.RuntimeState != "position_uncertain" ||
 		!strings.HasPrefix(auditMarked.ErrorMessage, arbitragePositionAuditErrorPrefix) {
@@ -262,16 +275,14 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 	}
 	auditMarked, err = repository.UpdateArbitragePositionAudit(
 		ctx, created.ID, auditMarked.Version, "0.02", "0", "0.02", "0", true,
-		arbitragePositionAuditErrorPrefix+" leg_a=0.02 leg_b=0",
-	)
+		arbitragePositionAuditErrorPrefix+" leg_a=0.02 leg_b=0", "", "")
 	if err != nil || !strings.HasPrefix(
 		auditMarked.ErrorMessage, arbitragePositionAuditErrorPrefix,
 	) {
 		t.Fatalf("repeated audit marked=%+v err=%v", auditMarked, err)
 	}
 	auditCleared, err := repository.UpdateArbitragePositionAudit(
-		ctx, created.ID, auditMarked.Version, "0", "0", "0", "0", false, "",
-	)
+		ctx, created.ID, auditMarked.Version, "0", "0", "0", "0", false, "", "", "")
 	if err != nil || auditCleared.PositionUncertain ||
 		auditCleared.RuntimeState != "monitoring" || auditCleared.ErrorMessage != "" {
 		t.Fatalf("audit cleared=%+v err=%v", auditCleared, err)
@@ -303,8 +314,7 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 	}
 	orderUncertain, err := repository.UpdateArbitragePositionAudit(
 		ctx, created.ID, arbitrageVersion(t, ctx, pool, created.ID),
-		"0", "0", "0", "0", false, "",
-	)
+		"0", "0", "0", "0", false, "", "", "")
 	if err != nil || !orderUncertain.PositionUncertain ||
 		orderUncertain.ErrorMessage != orderUncertainMessage {
 		t.Fatalf("order uncertain=%+v err=%v", orderUncertain, err)
@@ -503,6 +513,31 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 			"other combination arbitrage orders=%+v err=%v",
 			otherCombinationOrders, err,
 		)
+	}
+	historyOrders, nextOrderCursor, err := repository.ListArbitrageOrderHistory(
+		ctx, "admin", created.ID, ArbitrageHistoryQuery{Limit: 1},
+	)
+	if err != nil || len(historyOrders) != 1 || historyOrders[0].ID != order.ID ||
+		nextOrderCursor != "" {
+		t.Fatalf("order history=%+v next=%q err=%v", historyOrders, nextOrderCursor, err)
+	}
+	otherOwnerHistory, _, err := repository.ListArbitrageOrderHistory(
+		ctx, "other-owner", created.ID, ArbitrageHistoryQuery{Limit: 10},
+	)
+	if err != nil || len(otherOwnerHistory) != 0 {
+		t.Fatalf("other owner history=%+v err=%v", otherOwnerHistory, err)
+	}
+	executionHistory, _, err := repository.ListArbitrageExecutionHistory(
+		ctx, created.ID, ArbitrageHistoryQuery{Limit: 10, ExecutionID: execution.ID},
+	)
+	if err != nil || len(executionHistory) != 1 || executionHistory[0].ID != execution.ID {
+		t.Fatalf("execution history=%+v err=%v", executionHistory, err)
+	}
+	eventHistory, _, err := repository.ListArbitrageEventHistory(
+		ctx, created.ID, ArbitrageHistoryQuery{Limit: 10},
+	)
+	if err != nil || len(eventHistory) == 0 || !eventHistory[0].PayloadObject {
+		t.Fatalf("event history=%+v err=%v", eventHistory, err)
 	}
 	recentOrders, err := repository.ListRecentSubmittedArbitrageOrders(
 		ctx, "admin", created.ID, 10,
@@ -736,8 +771,7 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 	}
 	clearedOrderUncertain, err := repository.UpdateArbitragePositionAudit(
 		ctx, created.ID, arbitrageVersion(t, ctx, pool, created.ID),
-		"0.01", "-0.009", "0", "0", false, "",
-	)
+		"0.01", "-0.009", "0", "0", false, "", "", "")
 	if err != nil || clearedOrderUncertain.PositionUncertain ||
 		clearedOrderUncertain.RuntimeState != "monitoring" ||
 		clearedOrderUncertain.ErrorMessage != "" {
@@ -761,8 +795,7 @@ func TestArbitrageRepositoryIntegration(t *testing.T) {
 	}
 	notCleared, err := repository.UpdateArbitragePositionAudit(
 		ctx, created.ID, arbitrageVersion(t, ctx, pool, created.ID),
-		"0.01", "-0.009", "0", "0", false, "",
-	)
+		"0.01", "-0.009", "0", "0", false, "", "", "")
 	var deferred *ArbitragePositionAuditDeferredError
 	if !errors.As(err, &deferred) ||
 		deferred.Reason != ArbitragePositionAuditDeferredReconcileFailure {
@@ -939,14 +972,12 @@ func TestArbitragePositionAuditSafetyIntegration(t *testing.T) {
 		}
 		item, _ = repository.GetArbitrageCombinationByOwner(ctx, "admin", item.ID)
 		notCleared, err := repository.UpdateArbitragePositionAudit(
-			ctx, item.ID, item.Version, "10", "-10", "0.0001", "0", false, "",
-		)
+			ctx, item.ID, item.Version, "10", "-10", "0.0001", "0", false, "", "", "")
 		if err != nil || !notCleared.PositionUncertain {
 			t.Fatalf("nonzero sticky state cleared=%+v err=%v", notCleared, err)
 		}
 		cleared, err := repository.UpdateArbitragePositionAudit(
-			ctx, item.ID, notCleared.Version, "10", "-10", "0", "0", false, "",
-		)
+			ctx, item.ID, notCleared.Version, "10", "-10", "0", "0", false, "", "", "")
 		if err != nil || cleared.PositionUncertain ||
 			cleared.RuntimeState != "monitoring" || cleared.ErrorMessage != "" {
 			t.Fatalf("sticky state not cleared=%+v err=%v", cleared, err)
@@ -967,8 +998,7 @@ func TestArbitragePositionAuditSafetyIntegration(t *testing.T) {
 		item, _ = repository.GetArbitrageCombinationByOwner(ctx, "admin", item.ID)
 		cleared, err := repository.UpdateArbitragePositionAudit(
 			ctx, item.ID, item.Version, "10.0001", "-10",
-			"0.0001", "0", false, "",
-		)
+			"0.0001", "0", false, "", "", "")
 		if err != nil || cleared.PositionUncertain ||
 			cleared.RuntimeState != "monitoring" || cleared.ErrorMessage != "" {
 			t.Fatalf("sub-threshold risk not cleared=%+v err=%v", cleared, err)
@@ -1019,8 +1049,7 @@ func TestArbitragePositionAuditSafetyIntegration(t *testing.T) {
 			}
 			item, _ = repository.GetArbitrageCombinationByOwner(ctx, "admin", item.ID)
 			kept, err := repository.UpdateArbitragePositionAudit(
-				ctx, item.ID, item.Version, "10", "-10", "0", "0", false, "",
-			)
+				ctx, item.ID, item.Version, "10", "-10", "0", "0", false, "", "", "")
 			if err != nil || !kept.PositionUncertain || kept.ErrorMessage != risk {
 				t.Fatalf("risk %q was cleared: item=%+v err=%v", risk, kept, err)
 			}
@@ -1050,8 +1079,7 @@ func TestArbitragePositionAuditSafetyIntegration(t *testing.T) {
 				_, err := repository.UpdateArbitragePositionAudit(
 					ctx, item.ID, arbitrageVersion(t, ctx, pool, item.ID),
 					"11", "-10", "1", "0", true,
-					arbitragePositionAuditErrorPrefix+" transient",
-				)
+					arbitragePositionAuditErrorPrefix+" transient", "", "")
 				return err
 			},
 			ArbitragePositionAuditDeferredActiveExecution,
@@ -1093,8 +1121,7 @@ func TestArbitragePositionAuditSafetyIntegration(t *testing.T) {
 		}
 		assertAuditDeferredReason(t, func() error {
 			_, err := repository.UpdateArbitragePositionAudit(
-				ctx, item.ID, item.Version, "10", "-10", "0", "0", false, "",
-			)
+				ctx, item.ID, item.Version, "10", "-10", "0", "0", false, "", "", "")
 			return err
 		}, ArbitragePositionAuditDeferredActiveOrder)
 		if _, err := pool.Exec(ctx, `
@@ -1114,8 +1141,7 @@ func TestArbitragePositionAuditSafetyIntegration(t *testing.T) {
 		}
 		assertAuditDeferredReason(t, func() error {
 			_, err := repository.UpdateArbitragePositionAudit(
-				ctx, item.ID, item.Version, "10", "-10", "0", "0", false, "",
-			)
+				ctx, item.ID, item.Version, "10", "-10", "0", "0", false, "", "", "")
 			return err
 		}, ArbitragePositionAuditDeferredReconcileFailure)
 	})
@@ -1132,8 +1158,7 @@ func TestArbitragePositionAuditSafetyIntegration(t *testing.T) {
 		assertAuditDeferredReason(t, func() error {
 			_, err := repository.UpdateArbitragePositionAudit(
 				ctx, item.ID, item.Version, "99", "-99", "88", "-88", true,
-				arbitragePositionAuditErrorPrefix+" stale write",
-			)
+				arbitragePositionAuditErrorPrefix+" stale write", "", "")
 			return err
 		}, ArbitragePositionAuditDeferredVersionConflict)
 		after, err := repository.GetArbitrageCombinationByOwner(ctx, "admin", item.ID)
@@ -1237,8 +1262,7 @@ func TestArbitragePositionAuditSafetyIntegration(t *testing.T) {
 			_, auditErr := repository.UpdateArbitragePositionAudit(
 				context.Background(), item.ID, item.Version,
 				"99", "-99", "88", "-88", true,
-				arbitragePositionAuditErrorPrefix+" stale concurrent snapshot",
-			)
+				arbitragePositionAuditErrorPrefix+" stale concurrent snapshot", "", "")
 			result <- auditErr
 		}()
 		select {
@@ -1298,8 +1322,7 @@ func TestArbitragePositionAuditSafetyIntegration(t *testing.T) {
 				}
 			}
 			cleared, err := repository.UpdateArbitragePositionAudit(
-				ctx, item.ID, item.Version, "10", "-10", "0.0001", "0", false, "",
-			)
+				ctx, item.ID, item.Version, "10", "-10", "0.0001", "0", false, "", "", "")
 			wantRuntime := "closing"
 			if status == "closed" {
 				wantRuntime = "monitoring"
@@ -1519,8 +1542,7 @@ func TestArbitragePositionAuditManualInterventionRecoverIntegration(t *testing.T
 	auditZero := func(t *testing.T, item ArbitrageCombination, uncertain bool) (ArbitrageCombination, error) {
 		t.Helper()
 		return repository.UpdateArbitragePositionAudit(
-			ctx, item.ID, item.Version, "0", "0", "0", "0", uncertain, "",
-		)
+			ctx, item.ID, item.Version, "0", "0", "0", "0", uncertain, "", "", "")
 	}
 
 	t.Run("soph leftover recovers to monitoring", func(t *testing.T) {
@@ -1552,8 +1574,7 @@ func TestArbitragePositionAuditManualInterventionRecoverIntegration(t *testing.T
 			_ = completeAsk(t, item.ID)
 			item = markManual(t, "")
 			kept, err := repository.UpdateArbitragePositionAudit(
-				ctx, item.ID, item.Version, "1", "0", diffs[0], diffs[1], false, "",
-			)
+				ctx, item.ID, item.Version, "1", "0", diffs[0], diffs[1], false, "", "", "")
 			if err != nil || kept.RuntimeState != "manual_intervention" {
 				t.Fatalf("diffs=%v kept=%+v err=%v", diffs, kept, err)
 			}
@@ -3234,6 +3255,390 @@ func TestArbitrageRecomputePairedFillsExcludeResidualIncludeNullRole(t *testing.
 	})
 }
 
+func TestArbitrageRecomputeLastCloseClipClosingAllocatesResidual(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	repository, pool, cleanup := openArbitrageIntegrationRepo(t, ctx, "trader_last_close_residual")
+	defer cleanup()
+
+	accountA, instrumentA := insertArbitrageFixture(t, ctx, pool, "binance", "BTCUSDT")
+	accountB, instrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "BTC-USDT-SWAP")
+	created, inserted, err := repository.CreateArbitrageCombination(
+		ctx, integrationArbitrageCombination(accountA, instrumentA, accountB, instrumentB),
+	)
+	if err != nil || !inserted {
+		t.Fatalf("create inserted=%v err=%v", inserted, err)
+	}
+	input := integrationArbitrageExecution(created.ID, "bid")
+	execution, claimed, err := repository.ClaimArbitrageExecution(ctx, input)
+	if err != nil || !claimed {
+		t.Fatalf("claim claimed=%v err=%v", claimed, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE trader_arbitrage_combinations
+		SET execution_mode='maker_then_hedge'
+		WHERE id=$1::uuid`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE trader_arbitrage_executions
+		SET last_close_clip=TRUE, position_effect='close', reduce_only=TRUE
+		WHERE id=$1::uuid`, execution.ID); err != nil {
+		t.Fatal(err)
+	}
+	created, err = repository.MarkArbitrageClosing(ctx, created.OwnerUsername, created.ID)
+	if err != nil || created.Status != "closing" {
+		t.Fatalf("closing status=%s err=%v", created.Status, err)
+	}
+
+	insertFilledArbitrageOrder(t, ctx, repository, Order{
+		IdempotencyKey: "last-close-maker", OwnerUsername: "admin",
+		TradingAccountID: accountA, ProductName: "ARBITRAGE", Exchange: "binance",
+		InstrumentID: instrumentA, ContractType: "perpetual", ExchangeSymbol: "BTCUSDT",
+		BaseAsset: "BTC", QuoteAsset: "USDT", Side: "sell", OrderType: "market",
+		Quantity: "28", RequestFingerprint: "last-close-maker-fp",
+		ArbitrageExecutionID: execution.ID, ArbitrageLeg: "a", ArbitrageRole: "maker",
+	}, "28")
+	insertFilledArbitrageOrder(t, ctx, repository, Order{
+		IdempotencyKey: "last-close-residual", OwnerUsername: "admin",
+		TradingAccountID: accountB, ProductName: "ARBITRAGE", Exchange: "okx",
+		InstrumentID: instrumentB, ContractType: "perpetual", ExchangeSymbol: "BTC-USDT-SWAP",
+		BaseAsset: "BTC", QuoteAsset: "USDT", Side: "buy", OrderType: "market",
+		Quantity: "40", RequestFingerprint: "last-close-residual-fp",
+		ArbitrageExecutionID: execution.ID, ArbitrageLeg: "b", ArbitrageRole: "residual",
+	}, "40")
+	insertFilledArbitrageOrder(t, ctx, repository, Order{
+		IdempotencyKey: "last-close-maker-residual", OwnerUsername: "admin",
+		TradingAccountID: accountA, ProductName: "ARBITRAGE", Exchange: "binance",
+		InstrumentID: instrumentA, ContractType: "perpetual", ExchangeSymbol: "BTCUSDT",
+		BaseAsset: "BTC", QuoteAsset: "USDT", Side: "sell", OrderType: "market",
+		Quantity: "3", RequestFingerprint: "last-close-maker-residual-fp",
+		ArbitrageExecutionID: execution.ID, ArbitrageLeg: "a", ArbitrageRole: "residual",
+	}, "3")
+	insertFilledArbitrageOrder(t, ctx, repository, Order{
+		IdempotencyKey: "last-close-wrong-side", OwnerUsername: "admin",
+		TradingAccountID: accountB, ProductName: "ARBITRAGE", Exchange: "okx",
+		InstrumentID: instrumentB, ContractType: "perpetual", ExchangeSymbol: "BTC-USDT-SWAP",
+		BaseAsset: "BTC", QuoteAsset: "USDT", Side: "sell", OrderType: "market",
+		Quantity: "5", RequestFingerprint: "last-close-wrong-side-fp",
+		ArbitrageExecutionID: execution.ID, ArbitrageLeg: "b", ArbitrageRole: "residual",
+	}, "5")
+
+	combo, err := repository.RecomputeArbitrageBasePositionsForExecution(ctx, execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executions, err := repository.ListArbitrageExecutions(ctx, created.ID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := executionByID(t, executions, execution.ID)
+	if !parseDecimal(got.LegAFilledQuantity).Equal(decimal.NewFromInt(28)) ||
+		!parseDecimal(got.LegBFilledQuantity).Equal(decimal.NewFromInt(28)) {
+		t.Fatalf("allocated fills=%+v", got)
+	}
+	wantA := decimal.NewFromInt(-28).Sub(decimal.NewFromInt(3))
+	wantB := decimal.NewFromInt(40).Sub(decimal.NewFromInt(5))
+	if !parseDecimal(combo.LegABasePosition).Equal(wantA) ||
+		!parseDecimal(combo.LegBBasePosition).Equal(wantB) {
+		t.Fatalf("combo ledger a=%s b=%s want a=%s b=%s",
+			combo.LegABasePosition, combo.LegBBasePosition, wantA, wantB)
+	}
+
+	if err := repository.RecordLastCloseResidualRecovered(
+		ctx, created.ID, execution.ID, "28", "40", "28",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.RecordLastCloseResidualRecovered(
+		ctx, created.ID, execution.ID, "28", "40", "28",
+	); err != nil {
+		t.Fatal(err)
+	}
+	events, err := repository.ListArbitrageEvents(ctx, created.ID, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered := 0
+	for _, event := range events {
+		if event.Type == lastCloseResidualRecoveredEvent {
+			recovered++
+		}
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered events=%d all=%v", recovered, events)
+	}
+
+	got.Status = "completed"
+	if _, err := repository.UpdateArbitrageExecution(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE trader_arbitrage_combinations
+		SET position_uncertain=TRUE,runtime_state='position_uncertain'
+		WHERE id=$1::uuid`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := repository.ListArbitrageCombinationsForPositionAudit(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range listed {
+		if item.ID == created.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("completed last-close execution should be auditable")
+	}
+}
+
+func markLastCloseResidualAuditLock(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	repository *Repository,
+	id string,
+	circuitOpen bool,
+) ArbitrageCombination {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		UPDATE trader_arbitrage_combinations
+		SET position_uncertain=TRUE,
+		    runtime_state='position_uncertain',
+		    error_message=$2,
+		    circuit_open=$3,
+		    version=version+1
+		WHERE id=$1::uuid`,
+		id, ErrArbitrageUnsafeHedge.Error(), circuitOpen,
+	); err != nil {
+		t.Fatal(err)
+	}
+	item, err := repository.GetArbitrageCombinationByOwner(ctx, "admin", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return item
+}
+
+func TestArbitrageRecomputeSimultaneousMarketLastCloseKeepsFills(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	repository, pool, cleanup := openArbitrageIntegrationRepo(t, ctx, "trader_market_last_close")
+	defer cleanup()
+
+	accountA, instrumentA := insertArbitrageFixture(t, ctx, pool, "binance", "BTCUSDT")
+	accountB, instrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "BTC-USDT-SWAP")
+	created, inserted, err := repository.CreateArbitrageCombination(
+		ctx, integrationArbitrageCombination(accountA, instrumentA, accountB, instrumentB),
+	)
+	if err != nil || !inserted || created.ExecutionMode != "simultaneous_market" {
+		t.Fatalf("create mode=%s inserted=%v err=%v", created.ExecutionMode, inserted, err)
+	}
+	execution, claimed, err := repository.ClaimArbitrageExecution(
+		ctx, integrationArbitrageExecution(created.ID, "bid"),
+	)
+	if err != nil || !claimed {
+		t.Fatalf("claim claimed=%v err=%v", claimed, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE trader_arbitrage_executions
+		SET last_close_clip=TRUE, position_effect='close', reduce_only=TRUE,
+		    leg_a_filled_quantity=0, leg_b_filled_quantity=0
+		WHERE id=$1::uuid`, execution.ID); err != nil {
+		t.Fatal(err)
+	}
+	created, err = repository.MarkArbitrageClosing(ctx, created.OwnerUsername, created.ID)
+	if err != nil || created.Status != "closing" {
+		t.Fatalf("closing status=%s err=%v", created.Status, err)
+	}
+	insertFilledArbitrageOrder(t, ctx, repository, Order{
+		IdempotencyKey: "market-a-20", OwnerUsername: "admin",
+		TradingAccountID: accountA, ProductName: "ARBITRAGE", Exchange: "binance",
+		InstrumentID: instrumentA, ContractType: "perpetual", ExchangeSymbol: "BTCUSDT",
+		BaseAsset: "BTC", QuoteAsset: "USDT", Side: "sell", OrderType: "market",
+		Quantity: "20", RequestFingerprint: "market-a-20-fp",
+		ArbitrageExecutionID: execution.ID, ArbitrageLeg: "a", ArbitrageRole: "market",
+	}, "20")
+	partial, insertedPartial, err := repository.CreateIntent(ctx, Order{
+		IdempotencyKey: "market-a-canceled", OwnerUsername: "admin",
+		TradingAccountID: accountA, ProductName: "ARBITRAGE", Exchange: "binance",
+		InstrumentID: instrumentA, ContractType: "perpetual", ExchangeSymbol: "BTCUSDT",
+		BaseAsset: "BTC", QuoteAsset: "USDT", Side: "sell", OrderType: "market",
+		Quantity: "17", RequestFingerprint: "market-a-canceled-fp",
+		ArbitrageExecutionID: execution.ID, ArbitrageLeg: "a", ArbitrageRole: "market",
+	})
+	if err != nil || !insertedPartial {
+		t.Fatalf("partial inserted=%v err=%v", insertedPartial, err)
+	}
+	if _, err := repository.UpdateResult(ctx, partial.ID, VenueResult{
+		Status: "canceled", FilledQuantity: "17", AveragePrice: "100",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	insertFilledArbitrageOrder(t, ctx, repository, Order{
+		IdempotencyKey: "market-b-37", OwnerUsername: "admin",
+		TradingAccountID: accountB, ProductName: "ARBITRAGE", Exchange: "okx",
+		InstrumentID: instrumentB, ContractType: "perpetual", ExchangeSymbol: "BTC-USDT-SWAP",
+		BaseAsset: "BTC", QuoteAsset: "USDT", Side: "buy", OrderType: "market",
+		Quantity: "37", RequestFingerprint: "market-b-37-fp",
+		ArbitrageExecutionID: execution.ID, ArbitrageLeg: "b", ArbitrageRole: "market",
+	}, "37")
+
+	if _, err := repository.RecomputeArbitrageBasePositionsForExecution(ctx, execution.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.RecomputeArbitrageBasePositionsForExecution(ctx, execution.ID); err != nil {
+		t.Fatal(err)
+	}
+	executions, err := repository.ListArbitrageExecutions(ctx, created.ID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := executionByID(t, executions, execution.ID)
+	if !parseDecimal(got.LegAFilledQuantity).Equal(decimal.NewFromInt(37)) ||
+		!parseDecimal(got.LegBFilledQuantity).Equal(decimal.NewFromInt(37)) {
+		t.Fatalf("fills=%s/%s", got.LegAFilledQuantity, got.LegBFilledQuantity)
+	}
+}
+
+func TestLastCloseResidualAuditUnlocksExactZeroAfterRecovered(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	repository, pool, cleanup := openArbitrageIntegrationRepo(t, ctx, "trader_last_close_audit_unlock")
+	defer cleanup()
+
+	accountA, instrumentA := insertArbitrageFixture(t, ctx, pool, "binance", "BTCUSDT")
+	accountB, instrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "BTC-USDT-SWAP")
+	created, inserted, err := repository.CreateArbitrageCombination(
+		ctx, integrationArbitrageCombination(accountA, instrumentA, accountB, instrumentB),
+	)
+	if err != nil || !inserted {
+		t.Fatalf("create inserted=%v err=%v", inserted, err)
+	}
+	input := integrationArbitrageExecution(created.ID, "bid")
+	execution, claimed, err := repository.ClaimArbitrageExecution(ctx, input)
+	if err != nil || !claimed {
+		t.Fatalf("claim claimed=%v err=%v", claimed, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE trader_arbitrage_executions
+		SET last_close_clip=TRUE, position_effect='close', reduce_only=TRUE, status='completed'
+		WHERE id=$1::uuid`, execution.ID); err != nil {
+		t.Fatal(err)
+	}
+	created, err = repository.MarkArbitrageClosing(ctx, created.OwnerUsername, created.ID)
+	if err != nil || created.Status != "closing" {
+		t.Fatalf("closing status=%s err=%v", created.Status, err)
+	}
+	if err := repository.RecordLastCloseResidualRecovered(
+		ctx, created.ID, execution.ID, "28", "28", "28",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	item := markLastCloseResidualAuditLock(t, ctx, pool, repository, created.ID, false)
+	unlocked, err := repository.UpdateArbitragePositionAudit(
+		ctx, item.ID, item.Version, "1.4", "-2", "0", "0", false, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unlocked.PositionUncertain || unlocked.RuntimeState != "closing" ||
+		unlocked.ErrorMessage != "" || unlocked.Status != "closing" {
+		t.Fatalf("604 should unlock: %+v", unlocked)
+	}
+
+	again, err := repository.UpdateArbitragePositionAudit(
+		ctx, unlocked.ID, unlocked.Version, "1.4", "-2", "0", "0", false, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.PositionUncertain || again.RuntimeState != "closing" || again.ErrorMessage != "" {
+		t.Fatalf("second audit must stay unlocked: %+v", again)
+	}
+
+	t.Run("no_recovered_event_stays_locked", func(t *testing.T) {
+		locked := markLastCloseResidualAuditLock(t, ctx, pool, repository, created.ID, false)
+		if _, err := pool.Exec(ctx, `
+			DELETE FROM trader_arbitrage_events
+			WHERE execution_id=$1::uuid AND event_type=$2`,
+			execution.ID, lastCloseResidualRecoveredEvent,
+		); err != nil {
+			t.Fatal(err)
+		}
+		kept, err := repository.UpdateArbitragePositionAudit(
+			ctx, locked.ID, locked.Version, "1.4", "-2", "0", "0", false, "", "", "")
+		if err != nil || !kept.PositionUncertain ||
+			kept.ErrorMessage != ErrArbitrageUnsafeHedge.Error() {
+			t.Fatalf("missing event cleared lock: %+v err=%v", kept, err)
+		}
+	})
+
+	t.Run("recovered_event_on_old_sequence_stays_locked", func(t *testing.T) {
+		if err := repository.RecordLastCloseResidualRecovered(
+			ctx, created.ID, execution.ID, "28", "28", "28",
+		); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO trader_arbitrage_executions (
+				id,combination_id,direction,sequence,status,
+				trigger_ask_spread_bps,trigger_bid_spread_bps,
+				trigger_leg_a_bid,trigger_leg_a_ask,trigger_leg_b_bid,trigger_leg_b_ask,
+				target_base_quantity,requested_notional,position_effect,reduce_only,last_close_clip,
+				leg_a_filled_quantity,leg_b_filled_quantity,delta_notional,
+				hedge_sequence,attempt,error_message
+			) VALUES (
+				$1::uuid,$2::uuid,'bid',
+				(SELECT max(sequence)+1 FROM trader_arbitrage_executions WHERE combination_id=$2::uuid),
+				'completed',12,-8,100,101,99,102,1,102,'close',TRUE,TRUE,0,0,0,0,1,''
+			)`, uuid.NewString(), created.ID); err != nil {
+			t.Fatal(err)
+		}
+		locked := markLastCloseResidualAuditLock(t, ctx, pool, repository, created.ID, false)
+		kept, err := repository.UpdateArbitragePositionAudit(
+			ctx, locked.ID, locked.Version, "1.4", "-2", "0", "0", false, "", "", "")
+		if err != nil || !kept.PositionUncertain ||
+			kept.ErrorMessage != ErrArbitrageUnsafeHedge.Error() {
+			t.Fatalf("stale recovered event cleared lock: %+v err=%v", kept, err)
+		}
+	})
+
+	t.Run("nonzero_difference_stays_locked", func(t *testing.T) {
+		if _, err := pool.Exec(ctx, `
+			DELETE FROM trader_arbitrage_executions
+			WHERE combination_id=$1::uuid AND id<>$2::uuid`,
+			created.ID, execution.ID,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.RecordLastCloseResidualRecovered(
+			ctx, created.ID, execution.ID, "28", "28", "28",
+		); err != nil {
+			t.Fatal(err)
+		}
+		locked := markLastCloseResidualAuditLock(t, ctx, pool, repository, created.ID, false)
+		kept, err := repository.UpdateArbitragePositionAudit(
+			ctx, locked.ID, locked.Version, "1.4", "-2", "0.1", "0", false, "", "", "")
+		if err != nil || !kept.PositionUncertain ||
+			kept.ErrorMessage != ErrArbitrageUnsafeHedge.Error() {
+			t.Fatalf("nonzero diff cleared lock: %+v err=%v", kept, err)
+		}
+	})
+
+	t.Run("circuit_open_stays_locked", func(t *testing.T) {
+		locked := markLastCloseResidualAuditLock(t, ctx, pool, repository, created.ID, true)
+		kept, err := repository.UpdateArbitragePositionAudit(
+			ctx, locked.ID, locked.Version, "1.4", "-2", "0", "0", false, "", "", "")
+		if err != nil || !kept.PositionUncertain || !kept.CircuitOpen ||
+			kept.ErrorMessage != ErrArbitrageUnsafeHedge.Error() {
+			t.Fatalf("circuit_open cleared lock: %+v err=%v", kept, err)
+		}
+	})
+}
+
 func TestFailLastCloseClipUnbalancedFailClosedAndClosedComboRollback(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -3322,7 +3727,11 @@ func TestFailLastCloseClipUnbalancedFailClosedAndClosedComboRollback(t *testing.
 		t.Fatalf("idempotent events=%+v", events)
 	}
 
-	closedInput := integrationArbitrageCombination(accountA, instrumentA, accountB, instrumentB)
+	closedAccountA, closedInstrumentA := insertArbitrageFixture(t, ctx, pool, "binance", "ETHUSDT")
+	closedAccountB, closedInstrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "ETH-USDT-SWAP")
+	closedInput := integrationArbitrageCombination(
+		closedAccountA, closedInstrumentA, closedAccountB, closedInstrumentB,
+	)
 	closedInput.ID = uuid.NewString()
 	closedInput.IdempotencyKey = "arb-last-close-closed"
 	closedInput.RequestFingerprint = "arb-last-close-closed-fp"
@@ -3373,5 +3782,181 @@ func TestFailLastCloseClipUnbalancedFailClosedAndClosedComboRollback(t *testing.
 		if event.Type == "last_close_clip_unbalanced" {
 			t.Fatalf("closed combo events=%+v", closedEvents)
 		}
+	}
+}
+
+func TestArbitrageCombinationIdempotencyReuseAndFingerprint(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := fmt.Sprintf("trader_arb_idem_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE") }()
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err := database.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	accountA, instrumentA := insertArbitrageFixture(t, ctx, pool, "binance", "BTCUSDT")
+	accountB, instrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "BTC-USDT-SWAP")
+	repository := NewRepository(pool)
+	input := integrationArbitrageCombination(accountA, instrumentA, accountB, instrumentB)
+	input.IdempotencyKey = "arb-idem-reuse"
+	input.RequestFingerprint = "arb-idem-fp"
+	created, inserted, err := repository.CreateArbitrageCombination(ctx, input)
+	if err != nil || !inserted {
+		t.Fatalf("create inserted=%v err=%v", inserted, err)
+	}
+	replay := input
+	replay.ID = uuid.NewString()
+	reused, inserted, err := repository.CreateArbitrageCombination(ctx, replay)
+	if err != nil || inserted || reused.ID != created.ID {
+		t.Fatalf("reuse inserted=%v id=%s want=%s err=%v", inserted, reused.ID, created.ID, err)
+	}
+	conflict := input
+	conflict.ID = uuid.NewString()
+	conflict.RequestFingerprint = "arb-idem-other"
+	conflicted, inserted, err := repository.CreateArbitrageCombination(ctx, conflict)
+	if err != nil || inserted || conflicted.ID != created.ID {
+		t.Fatalf(
+			"fingerprint replay inserted=%v id=%s err=%v",
+			inserted, conflicted.ID, err,
+		)
+	}
+	if conflicted.RequestFingerprint != "arb-idem-fp" {
+		t.Fatalf("fingerprint overwritten: %s", conflicted.RequestFingerprint)
+	}
+	existing, err := repository.GetArbitrageCombinationByIdempotencyKey(ctx, "admin", input.IdempotencyKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if existing.RequestFingerprint == conflict.RequestFingerprint {
+		t.Fatal("expected fingerprint mismatch")
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM trader_arbitrage_combinations WHERE idempotency_key=$1`,
+		input.IdempotencyKey,
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("combination count=%d want=1", count)
+	}
+}
+
+func TestArbitrageServiceIdempotencyReuseAndFingerprint(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := fmt.Sprintf("trader_arb_svc_idem_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE") }()
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err := database.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	accountA, instrumentA := insertArbitrageFixture(t, ctx, pool, "gate", "BEAT_USDT")
+	accountB, instrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "BEAT-USDT-SWAP")
+	catalog := arbitrageServiceCatalog{items: map[int64]Instrument{
+		instrumentA: readyArbitrageInstrument(instrumentA, "gate", "perpetual", "BEAT_USDT"),
+		instrumentB: readyArbitrageInstrument(instrumentB, "okx", "perpetual", "BEAT-USDT-SWAP"),
+	}}
+	credentials := arbitrageServiceCredentials{
+		owner: "admin",
+		items: map[int64]Credentials{
+			accountA: {
+				TradingAccountID: accountA, ProductName: "ARB", AccountName: "gate-main", Exchange: "gate",
+			},
+			accountB: {
+				TradingAccountID: accountB, ProductName: "ARB", AccountName: "okx-main", Exchange: "okx",
+			},
+		},
+	}
+	repository := NewRepository(pool)
+	adapterA := &stubAdapter{positionMode: exchange.PositionModeOneWay}
+	adapterB := &stubAdapter{positionMode: exchange.PositionModeOneWay}
+	service := NewService(
+		repository,
+		catalog,
+		credentials,
+		exchange.NewTestRegistry(map[string]exchange.Adapter{"gate": adapterA, "okx": adapterB}),
+		time.Second,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	service.ConfigureArbitrage(repository)
+	service.ConfigureArbitragePositionSnapshots(&arbitrageBaselineSnapshots{
+		calls: map[string]int{},
+		snapshots: map[string]portfolio.Snapshot{
+			"gate": {AvailableFundsUSD: "1000000"},
+			"okx":  {AvailableFundsUSD: "1000000"},
+		},
+	})
+	input := CreateArbitrageInput{
+		Token: "token", LegATradingAccountID: accountA, LegAInstrumentID: instrumentA,
+		LegBTradingAccountID: accountB, LegBInstrumentID: instrumentB,
+		AskThresholdBps: "12", BidThresholdBps: "-8",
+		TargetNotional: "10000", ExecutionMode: "simultaneous_market", MakerLeg: "a",
+		IdempotencyKey: "arb-svc-idem",
+	}
+	first, err := service.CreateArbitrageCombination(ctx, input)
+	if err != nil {
+		t.Fatalf("first err=%v", err)
+	}
+	second, err := service.CreateArbitrageCombination(ctx, input)
+	if err != nil || second.ID != first.ID {
+		t.Fatalf("replay id=%s want=%s err=%v", second.ID, first.ID, err)
+	}
+	conflict := input
+	conflict.TargetNotional = "20000"
+	if _, err := service.CreateArbitrageCombination(ctx, conflict); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("conflict err=%v", err)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM trader_arbitrage_combinations WHERE idempotency_key=$1`,
+		input.IdempotencyKey,
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("combination count=%d want=1", count)
 	}
 }

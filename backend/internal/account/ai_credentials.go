@@ -49,7 +49,7 @@ func (s *Service) GetAICredential(
 	token string,
 	provider string,
 ) (AICredentialView, error) {
-	session, provider, err := s.aiCredentialSession(token, provider)
+	session, provider, err := s.aiCredentialSession(ctx, token, provider)
 	if err != nil {
 		return AICredentialView{}, err
 	}
@@ -66,7 +66,7 @@ func (s *Service) UpsertAICredential(
 	provider string,
 	apiKey string,
 ) (AICredentialView, error) {
-	session, provider, err := s.aiCredentialSession(token, provider)
+	session, provider, err := s.aiCredentialSession(ctx, token, provider)
 	if err != nil {
 		return AICredentialView{}, err
 	}
@@ -95,7 +95,7 @@ func (s *Service) DeleteAICredential(
 	token string,
 	provider string,
 ) error {
-	session, provider, err := s.aiCredentialSession(token, provider)
+	session, provider, err := s.aiCredentialSession(ctx, token, provider)
 	if err != nil {
 		return err
 	}
@@ -107,7 +107,7 @@ func (s *Service) GetAICredentialSecret(
 	token string,
 	provider string,
 ) (AICredentialSecret, error) {
-	session, provider, err := s.aiCredentialSession(token, provider)
+	session, provider, err := s.aiCredentialSession(ctx, token, provider)
 	if err != nil {
 		return AICredentialSecret{}, err
 	}
@@ -129,7 +129,7 @@ func (s *Service) UpdateAICredentialStatus(
 	credentialStatus string,
 	lastError string,
 ) (AICredentialView, error) {
-	session, provider, err := s.aiCredentialSession(token, provider)
+	session, provider, err := s.aiCredentialSession(ctx, token, provider)
 	if err != nil {
 		return AICredentialView{}, err
 	}
@@ -153,10 +153,11 @@ func (s *Service) UpdateAICredentialStatus(
 }
 
 func (s *Service) aiCredentialSession(
+	ctx context.Context,
 	token string,
 	provider string,
 ) (Session, string, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return Session{}, "", err
 	}

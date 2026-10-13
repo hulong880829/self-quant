@@ -19,22 +19,27 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	TraderService_ListInstruments_FullMethodName            = "/trader.v1.TraderService/ListInstruments"
-	TraderService_ApplyAccountProfile_FullMethodName        = "/trader.v1.TraderService/ApplyAccountProfile"
-	TraderService_PlaceOrder_FullMethodName                 = "/trader.v1.TraderService/PlaceOrder"
-	TraderService_GetOrder_FullMethodName                   = "/trader.v1.TraderService/GetOrder"
-	TraderService_ListOrders_FullMethodName                 = "/trader.v1.TraderService/ListOrders"
-	TraderService_CancelOrder_FullMethodName                = "/trader.v1.TraderService/CancelOrder"
-	TraderService_CreateTwap_FullMethodName                 = "/trader.v1.TraderService/CreateTwap"
-	TraderService_GetTwap_FullMethodName                    = "/trader.v1.TraderService/GetTwap"
-	TraderService_ListTwaps_FullMethodName                  = "/trader.v1.TraderService/ListTwaps"
-	TraderService_ListTwapOrders_FullMethodName             = "/trader.v1.TraderService/ListTwapOrders"
-	TraderService_CancelTwap_FullMethodName                 = "/trader.v1.TraderService/CancelTwap"
-	TraderService_CreateArbitrageCombination_FullMethodName = "/trader.v1.TraderService/CreateArbitrageCombination"
-	TraderService_UpdateArbitrageCombination_FullMethodName = "/trader.v1.TraderService/UpdateArbitrageCombination"
-	TraderService_GetArbitrageCombination_FullMethodName    = "/trader.v1.TraderService/GetArbitrageCombination"
-	TraderService_ListArbitrageCombinations_FullMethodName  = "/trader.v1.TraderService/ListArbitrageCombinations"
-	TraderService_CloseArbitrageCombination_FullMethodName  = "/trader.v1.TraderService/CloseArbitrageCombination"
+	TraderService_ListInstruments_FullMethodName                    = "/trader.v1.TraderService/ListInstruments"
+	TraderService_ApplyAccountProfile_FullMethodName                = "/trader.v1.TraderService/ApplyAccountProfile"
+	TraderService_PlaceOrder_FullMethodName                         = "/trader.v1.TraderService/PlaceOrder"
+	TraderService_GetOrder_FullMethodName                           = "/trader.v1.TraderService/GetOrder"
+	TraderService_ListOrders_FullMethodName                         = "/trader.v1.TraderService/ListOrders"
+	TraderService_CancelOrder_FullMethodName                        = "/trader.v1.TraderService/CancelOrder"
+	TraderService_CreateTwap_FullMethodName                         = "/trader.v1.TraderService/CreateTwap"
+	TraderService_GetTwap_FullMethodName                            = "/trader.v1.TraderService/GetTwap"
+	TraderService_ListTwaps_FullMethodName                          = "/trader.v1.TraderService/ListTwaps"
+	TraderService_ListTwapOrders_FullMethodName                     = "/trader.v1.TraderService/ListTwapOrders"
+	TraderService_CancelTwap_FullMethodName                         = "/trader.v1.TraderService/CancelTwap"
+	TraderService_CreateArbitrageCombination_FullMethodName         = "/trader.v1.TraderService/CreateArbitrageCombination"
+	TraderService_UpdateArbitrageCombination_FullMethodName         = "/trader.v1.TraderService/UpdateArbitrageCombination"
+	TraderService_GetArbitrageCombination_FullMethodName            = "/trader.v1.TraderService/GetArbitrageCombination"
+	TraderService_ListArbitrageCombinations_FullMethodName          = "/trader.v1.TraderService/ListArbitrageCombinations"
+	TraderService_CloseArbitrageCombination_FullMethodName          = "/trader.v1.TraderService/CloseArbitrageCombination"
+	TraderService_PreflightArbitrageCombination_FullMethodName      = "/trader.v1.TraderService/PreflightArbitrageCombination"
+	TraderService_ListArbitrageCombinationOrders_FullMethodName     = "/trader.v1.TraderService/ListArbitrageCombinationOrders"
+	TraderService_ListArbitrageCombinationExecutions_FullMethodName = "/trader.v1.TraderService/ListArbitrageCombinationExecutions"
+	TraderService_ListArbitrageCombinationEvents_FullMethodName     = "/trader.v1.TraderService/ListArbitrageCombinationEvents"
+	TraderService_GetArbitrageCountsByOwnerInternal_FullMethodName  = "/trader.v1.TraderService/GetArbitrageCountsByOwnerInternal"
 )
 
 // TraderServiceClient is the client API for TraderService service.
@@ -57,6 +62,11 @@ type TraderServiceClient interface {
 	GetArbitrageCombination(ctx context.Context, in *GetArbitrageCombinationRequest, opts ...grpc.CallOption) (*GetArbitrageCombinationResponse, error)
 	ListArbitrageCombinations(ctx context.Context, in *ListArbitrageCombinationsRequest, opts ...grpc.CallOption) (*ListArbitrageCombinationsResponse, error)
 	CloseArbitrageCombination(ctx context.Context, in *CloseArbitrageCombinationRequest, opts ...grpc.CallOption) (*CloseArbitrageCombinationResponse, error)
+	PreflightArbitrageCombination(ctx context.Context, in *PreflightArbitrageCombinationRequest, opts ...grpc.CallOption) (*PreflightArbitrageCombinationResponse, error)
+	ListArbitrageCombinationOrders(ctx context.Context, in *ListArbitrageCombinationOrdersRequest, opts ...grpc.CallOption) (*ListArbitrageCombinationOrdersResponse, error)
+	ListArbitrageCombinationExecutions(ctx context.Context, in *ListArbitrageCombinationExecutionsRequest, opts ...grpc.CallOption) (*ListArbitrageCombinationExecutionsResponse, error)
+	ListArbitrageCombinationEvents(ctx context.Context, in *ListArbitrageCombinationEventsRequest, opts ...grpc.CallOption) (*ListArbitrageCombinationEventsResponse, error)
+	GetArbitrageCountsByOwnerInternal(ctx context.Context, in *GetArbitrageCountsByOwnerInternalRequest, opts ...grpc.CallOption) (*GetArbitrageCountsByOwnerInternalResponse, error)
 }
 
 type traderServiceClient struct {
@@ -227,6 +237,56 @@ func (c *traderServiceClient) CloseArbitrageCombination(ctx context.Context, in 
 	return out, nil
 }
 
+func (c *traderServiceClient) PreflightArbitrageCombination(ctx context.Context, in *PreflightArbitrageCombinationRequest, opts ...grpc.CallOption) (*PreflightArbitrageCombinationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreflightArbitrageCombinationResponse)
+	err := c.cc.Invoke(ctx, TraderService_PreflightArbitrageCombination_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *traderServiceClient) ListArbitrageCombinationOrders(ctx context.Context, in *ListArbitrageCombinationOrdersRequest, opts ...grpc.CallOption) (*ListArbitrageCombinationOrdersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListArbitrageCombinationOrdersResponse)
+	err := c.cc.Invoke(ctx, TraderService_ListArbitrageCombinationOrders_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *traderServiceClient) ListArbitrageCombinationExecutions(ctx context.Context, in *ListArbitrageCombinationExecutionsRequest, opts ...grpc.CallOption) (*ListArbitrageCombinationExecutionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListArbitrageCombinationExecutionsResponse)
+	err := c.cc.Invoke(ctx, TraderService_ListArbitrageCombinationExecutions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *traderServiceClient) ListArbitrageCombinationEvents(ctx context.Context, in *ListArbitrageCombinationEventsRequest, opts ...grpc.CallOption) (*ListArbitrageCombinationEventsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListArbitrageCombinationEventsResponse)
+	err := c.cc.Invoke(ctx, TraderService_ListArbitrageCombinationEvents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *traderServiceClient) GetArbitrageCountsByOwnerInternal(ctx context.Context, in *GetArbitrageCountsByOwnerInternalRequest, opts ...grpc.CallOption) (*GetArbitrageCountsByOwnerInternalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetArbitrageCountsByOwnerInternalResponse)
+	err := c.cc.Invoke(ctx, TraderService_GetArbitrageCountsByOwnerInternal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TraderServiceServer is the server API for TraderService service.
 // All implementations must embed UnimplementedTraderServiceServer
 // for forward compatibility.
@@ -247,6 +307,11 @@ type TraderServiceServer interface {
 	GetArbitrageCombination(context.Context, *GetArbitrageCombinationRequest) (*GetArbitrageCombinationResponse, error)
 	ListArbitrageCombinations(context.Context, *ListArbitrageCombinationsRequest) (*ListArbitrageCombinationsResponse, error)
 	CloseArbitrageCombination(context.Context, *CloseArbitrageCombinationRequest) (*CloseArbitrageCombinationResponse, error)
+	PreflightArbitrageCombination(context.Context, *PreflightArbitrageCombinationRequest) (*PreflightArbitrageCombinationResponse, error)
+	ListArbitrageCombinationOrders(context.Context, *ListArbitrageCombinationOrdersRequest) (*ListArbitrageCombinationOrdersResponse, error)
+	ListArbitrageCombinationExecutions(context.Context, *ListArbitrageCombinationExecutionsRequest) (*ListArbitrageCombinationExecutionsResponse, error)
+	ListArbitrageCombinationEvents(context.Context, *ListArbitrageCombinationEventsRequest) (*ListArbitrageCombinationEventsResponse, error)
+	GetArbitrageCountsByOwnerInternal(context.Context, *GetArbitrageCountsByOwnerInternalRequest) (*GetArbitrageCountsByOwnerInternalResponse, error)
 	mustEmbedUnimplementedTraderServiceServer()
 }
 
@@ -304,6 +369,21 @@ func (UnimplementedTraderServiceServer) ListArbitrageCombinations(context.Contex
 }
 func (UnimplementedTraderServiceServer) CloseArbitrageCombination(context.Context, *CloseArbitrageCombinationRequest) (*CloseArbitrageCombinationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CloseArbitrageCombination not implemented")
+}
+func (UnimplementedTraderServiceServer) PreflightArbitrageCombination(context.Context, *PreflightArbitrageCombinationRequest) (*PreflightArbitrageCombinationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PreflightArbitrageCombination not implemented")
+}
+func (UnimplementedTraderServiceServer) ListArbitrageCombinationOrders(context.Context, *ListArbitrageCombinationOrdersRequest) (*ListArbitrageCombinationOrdersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListArbitrageCombinationOrders not implemented")
+}
+func (UnimplementedTraderServiceServer) ListArbitrageCombinationExecutions(context.Context, *ListArbitrageCombinationExecutionsRequest) (*ListArbitrageCombinationExecutionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListArbitrageCombinationExecutions not implemented")
+}
+func (UnimplementedTraderServiceServer) ListArbitrageCombinationEvents(context.Context, *ListArbitrageCombinationEventsRequest) (*ListArbitrageCombinationEventsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListArbitrageCombinationEvents not implemented")
+}
+func (UnimplementedTraderServiceServer) GetArbitrageCountsByOwnerInternal(context.Context, *GetArbitrageCountsByOwnerInternalRequest) (*GetArbitrageCountsByOwnerInternalResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetArbitrageCountsByOwnerInternal not implemented")
 }
 func (UnimplementedTraderServiceServer) mustEmbedUnimplementedTraderServiceServer() {}
 func (UnimplementedTraderServiceServer) testEmbeddedByValue()                       {}
@@ -614,6 +694,96 @@ func _TraderService_CloseArbitrageCombination_Handler(srv interface{}, ctx conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TraderService_PreflightArbitrageCombination_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreflightArbitrageCombinationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TraderServiceServer).PreflightArbitrageCombination(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TraderService_PreflightArbitrageCombination_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TraderServiceServer).PreflightArbitrageCombination(ctx, req.(*PreflightArbitrageCombinationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TraderService_ListArbitrageCombinationOrders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListArbitrageCombinationOrdersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TraderServiceServer).ListArbitrageCombinationOrders(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TraderService_ListArbitrageCombinationOrders_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TraderServiceServer).ListArbitrageCombinationOrders(ctx, req.(*ListArbitrageCombinationOrdersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TraderService_ListArbitrageCombinationExecutions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListArbitrageCombinationExecutionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TraderServiceServer).ListArbitrageCombinationExecutions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TraderService_ListArbitrageCombinationExecutions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TraderServiceServer).ListArbitrageCombinationExecutions(ctx, req.(*ListArbitrageCombinationExecutionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TraderService_ListArbitrageCombinationEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListArbitrageCombinationEventsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TraderServiceServer).ListArbitrageCombinationEvents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TraderService_ListArbitrageCombinationEvents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TraderServiceServer).ListArbitrageCombinationEvents(ctx, req.(*ListArbitrageCombinationEventsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TraderService_GetArbitrageCountsByOwnerInternal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetArbitrageCountsByOwnerInternalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TraderServiceServer).GetArbitrageCountsByOwnerInternal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TraderService_GetArbitrageCountsByOwnerInternal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TraderServiceServer).GetArbitrageCountsByOwnerInternal(ctx, req.(*GetArbitrageCountsByOwnerInternalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TraderService_ServiceDesc is the grpc.ServiceDesc for TraderService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -684,6 +854,26 @@ var TraderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CloseArbitrageCombination",
 			Handler:    _TraderService_CloseArbitrageCombination_Handler,
+		},
+		{
+			MethodName: "PreflightArbitrageCombination",
+			Handler:    _TraderService_PreflightArbitrageCombination_Handler,
+		},
+		{
+			MethodName: "ListArbitrageCombinationOrders",
+			Handler:    _TraderService_ListArbitrageCombinationOrders_Handler,
+		},
+		{
+			MethodName: "ListArbitrageCombinationExecutions",
+			Handler:    _TraderService_ListArbitrageCombinationExecutions_Handler,
+		},
+		{
+			MethodName: "ListArbitrageCombinationEvents",
+			Handler:    _TraderService_ListArbitrageCombinationEvents_Handler,
+		},
+		{
+			MethodName: "GetArbitrageCountsByOwnerInternal",
+			Handler:    _TraderService_GetArbitrageCountsByOwnerInternal_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

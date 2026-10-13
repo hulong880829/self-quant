@@ -166,16 +166,15 @@ resolve the MDS package dependencies. A future OMS-only transport package may
 extract it as `self_quant::transport`; that split is not part of this contract
 version.
 
-## Gateway and recording are separate protocols
+## Gateway is a separate protocol
 
-The WebSocket Gateway and `.sqrec.zst` files do not change this SHM contract.
-Gateway frames use `SQGW` and file containers use `SQRC`; neither may be
-presented as a shared-memory `SQMD` record. AggBbo Gateway payloads explicitly
-identify the embedded fixed SQMD payload format. Compact AggOrderBook
-Gateway/file payloads serialize only effective levels and have their own
-version.
+The WebSocket Gateway does not change this SHM contract.
+Gateway frames use `SQGW` and must not be presented as a shared-memory `SQMD`
+record. AggBbo Gateway payloads explicitly identify the embedded fixed SQMD
+payload format. Compact AggOrderBook Gateway payloads serialize only effective
+levels and have their own version.
 
-Gateway and recorder recovery consume the reader's reset generation. They never
-hold a shared-ring read lease, advance a ring cursor, or invoke
-`resync_to_latest()`. Therefore enabling either service cannot alter producer,
+Gateway recovery consumes the reader's reset generation. It never
+holds a shared-ring read lease, advances a ring cursor, or invokes
+`resync_to_latest()`. Therefore enabling the gateway cannot alter producer,
 aggregator, or other reader behavior.

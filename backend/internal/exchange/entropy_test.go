@@ -27,10 +27,25 @@ func TestEntropySupportedContractTypesExcludeSpot(t *testing.T) {
 }
 
 func TestHyperliquidPerpDexesExcludeEntropy(t *testing.T) {
-	for _, dex := range hyperliquidPerpDexes {
+	raw := []json.RawMessage{
+		[]byte("null"),
+		[]byte(`{"name":"xyz"}`),
+		[]byte(`{"name":"flx"}`),
+		[]byte(`{"name":"km"}`),
+		[]byte(`{"name":"para"}`),
+		[]byte(`{"name":"io"}`),
+	}
+	dexes, err := hyperliquidDexNames(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dex := range dexes {
 		if dex == entropyDex {
-			t.Fatal("hyperliquidPerpDexes must not include io")
+			t.Fatalf("dexes=%v", dexes)
 		}
+	}
+	if len(dexes) != 5 || dexes[0] != "" || dexes[1] != "xyz" {
+		t.Fatalf("dexes=%v", dexes)
 	}
 }
 
@@ -102,6 +117,10 @@ func TestEntropyHTTPUsesDexIOAndRejectsEmptyCatalog(t *testing.T) {
 	var metaBody string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		body, _ := io.ReadAll(request.Body)
+		if strings.Contains(string(body), `"type":"perpCategories"`) {
+			_, _ = writer.Write([]byte(`[]`))
+			return
+		}
 		metaBody = string(body)
 		if !strings.Contains(string(body), `"dex":"io"`) {
 			http.Error(writer, "missing dex", http.StatusBadRequest)
@@ -235,6 +254,10 @@ func TestEntropySyncInstrumentsStampsExchange(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Errorf("decode: %v", err)
 			http.Error(writer, "bad", http.StatusBadRequest)
+			return
+		}
+		if payload.Type == "perpCategories" {
+			_, _ = writer.Write([]byte(`[]`))
 			return
 		}
 		if payload.Type != "metaAndAssetCtxs" || payload.Dex != entropyDex {

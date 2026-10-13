@@ -777,6 +777,103 @@ func TestGateSetLeverageUsesCrossMarginMode(t *testing.T) {
 	})
 }
 
+func TestGateSetLeverageChineseContractSignature(t *testing.T) {
+	const (
+		decodedPath = "/api/v4/futures/usdt/positions/龙虾_USDT/set_leverage"
+		encodedPath = "/api/v4/futures/usdt/positions/%E9%BE%99%E8%99%BE_USDT/set_leverage"
+		query       = "leverage=4&margin_mode=cross"
+		secret      = "secret"
+	)
+	var (
+		gotURI, gotPath, gotQuery, timestamp, sign string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		gotURI = request.RequestURI
+		gotPath = request.URL.Path
+		gotQuery = request.URL.RawQuery
+		timestamp = request.Header.Get("Timestamp")
+		sign = request.Header.Get("SIGN")
+		_ = json.NewEncoder(writer).Encode(map[string]any{"leverage": "4"})
+	}))
+	defer server.Close()
+	_, err := newGate(server.Client(), server.URL).(LeverageSetter).SetLeverage(
+		context.Background(),
+		Credentials{APIKey: "key", APISecret: secret},
+		Instrument{
+			Exchange: "gate", ContractType: "perpetual", ExchangeSymbol: "龙虾USDT",
+			BaseAsset: "龙虾", QuoteAsset: "USDT",
+			Metadata: map[string]any{"contract": "龙虾_USDT"},
+		},
+		decimal.NewFromInt(4),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotURI, encodedPath) {
+		t.Fatalf("RequestURI=%s", gotURI)
+	}
+	if strings.Contains(gotURI, "龙虾") {
+		t.Fatalf("RequestURI must stay percent-encoded: %s", gotURI)
+	}
+	if gotPath != decodedPath {
+		t.Fatalf("path=%s", gotPath)
+	}
+	if gotQuery != query {
+		t.Fatalf("query=%s", gotQuery)
+	}
+	decodedPayload := "POST\n" + decodedPath + "\n" + query + "\n" + sha512Hex(nil) + "\n" + timestamp
+	if sign != hmacHex512(secret, decodedPayload) {
+		t.Fatalf("SIGN=%s want decoded-path HMAC", sign)
+	}
+	encodedPayload := "POST\n" + encodedPath + "\n" + query + "\n" + sha512Hex(nil) + "\n" + timestamp
+	if sign == hmacHex512(secret, encodedPayload) {
+		t.Fatal("SIGN still matches percent-encoded path")
+	}
+}
+
+func TestGateSetLeverageASCIIContractSignature(t *testing.T) {
+	const (
+		query  = "leverage=4&margin_mode=cross"
+		secret = "secret"
+	)
+	for _, contract := range []string{"BTC_USDT", "ONE_USDT"} {
+		t.Run(contract, func(t *testing.T) {
+			wantPath := "/api/v4/futures/usdt/positions/" + contract + "/set_leverage"
+			var gotPath, gotQuery, timestamp, sign string
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				gotPath = request.URL.Path
+				gotQuery = request.URL.RawQuery
+				timestamp = request.Header.Get("Timestamp")
+				sign = request.Header.Get("SIGN")
+				_ = json.NewEncoder(writer).Encode(map[string]any{"leverage": "4"})
+			}))
+			defer server.Close()
+			_, err := newGate(server.Client(), server.URL).(LeverageSetter).SetLeverage(
+				context.Background(),
+				Credentials{APIKey: "key", APISecret: secret},
+				Instrument{
+					Exchange: "gate", ContractType: "perpetual", ExchangeSymbol: contract,
+					Metadata: map[string]any{"contract": contract},
+				},
+				decimal.NewFromInt(4),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotPath != wantPath {
+				t.Fatalf("path=%s", gotPath)
+			}
+			if gotQuery != query {
+				t.Fatalf("query=%s", gotQuery)
+			}
+			payload := "POST\n" + wantPath + "\n" + query + "\n" + sha512Hex(nil) + "\n" + timestamp
+			if sign != hmacHex512(secret, payload) {
+				t.Fatalf("SIGN=%s", sign)
+			}
+		})
+	}
+}
+
 func TestSetLeverageWithoutCapacityDoesNotGet(t *testing.T) {
 	t.Run("okx", func(t *testing.T) {
 		var log requestLog
@@ -1012,15 +1109,20 @@ func (l *requestLog) wrap(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (l *requestLog) snapshot() requestLog {
+type requestLogSnapshot struct {
+	gets, posts int
+	paths       []string
+}
+
+func (l *requestLog) snapshot() requestLogSnapshot {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return requestLog{
+	return requestLogSnapshot{
 		gets: l.gets, posts: l.posts, paths: append([]string(nil), l.paths...),
 	}
 }
 
-func assertOnlyLeveragePOST(t *testing.T, log requestLog, path string) {
+func assertOnlyLeveragePOST(t *testing.T, log requestLogSnapshot, path string) {
 	t.Helper()
 	if log.gets != 0 || log.posts != 1 {
 		t.Fatalf("gets=%d posts=%d paths=%v", log.gets, log.posts, log.paths)
@@ -1037,7 +1139,7 @@ func binanceSetLeverage(
 	t *testing.T,
 	client *http.Client,
 	handler http.HandlerFunc,
-) (LeverageApplyResult, error, requestLog) {
+) (LeverageApplyResult, error, requestLogSnapshot) {
 	t.Helper()
 	var log requestLog
 	server := httptest.NewServer(log.wrap(handler))
@@ -1054,7 +1156,7 @@ func binanceSetLeverage(
 	return result, err, log.snapshot()
 }
 
-func asterSetLeverage(t *testing.T, body map[string]any) (LeverageApplyResult, error, requestLog) {
+func asterSetLeverage(t *testing.T, body map[string]any) (LeverageApplyResult, error, requestLogSnapshot) {
 	t.Helper()
 	var log requestLog
 	server := httptest.NewServer(log.wrap(func(writer http.ResponseWriter, _ *http.Request) {

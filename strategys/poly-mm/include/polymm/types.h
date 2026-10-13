@@ -3,6 +3,8 @@
 #include <array>
 #include <cstdint>
 
+#include "strategyframe/types.h"
+
 namespace polymm {
 
 enum class Outcome : std::uint8_t { Up = 1, Down = 2 };
@@ -49,6 +51,11 @@ struct SidecarEvent {
 
 struct Parameters {
   std::uint32_t account_id{};
+  strategyframe::Venue venue{strategyframe::Venue::Unknown};
+  strategyframe::ProductType product{strategyframe::ProductType::Unknown};
+  strategyframe::InstrumentSymbol up_symbol{};
+  strategyframe::InstrumentSymbol down_symbol{};
+  std::uint64_t window_ns{};
   std::uint64_t up_instrument_id{};
   std::uint64_t down_instrument_id{};
   std::uint32_t vol_lookback_ms{30'000};

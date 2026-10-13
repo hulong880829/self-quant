@@ -173,4 +173,119 @@ func TestArbitrageBatchRepositoryIntegration(t *testing.T) {
 			t.Fatalf("closing skip=%+v", closing)
 		}
 	})
+
+	t.Run("idle runtime states recover and protected states skip", func(t *testing.T) {
+		resetRunning := func(runtimeState string) ArbitrageCombination {
+			t.Helper()
+			if _, err := pool.Exec(ctx, `
+				UPDATE trader_arbitrage_combinations SET
+					status='running',runtime_state=$2,market_data_stale=FALSE,
+					position_uncertain=FALSE,error_message='',
+					current_ask_spread_bps=1,current_bid_spread_bps=-1
+				WHERE id=$1::uuid`, created.ID, runtimeState); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := repository.GetArbitrageCombinationByOwner(ctx, "admin", created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return loaded
+		}
+		write := func(loaded ArbitrageCombination, ask, bid string, seq uint64) []arbitrageMarketSnapshotBatchItem {
+			t.Helper()
+			items, err := repository.BatchUpdateArbitrageMarketSnapshots(ctx, []arbitrageMarketSnapshotWrite{{
+				CombinationID:     loaded.ID,
+				AskSpread:         ask,
+				BidSpread:         bid,
+				ExpectedVersion:   loaded.Version,
+				ExpectedUpdatedAt: loaded.UpdatedAt,
+				Sequence:          seq,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 1 {
+				t.Fatalf("items=%+v", items)
+			}
+			return items
+		}
+
+		seq := uint64(10)
+		for _, state := range []string{"opportunity_gone", "repricing"} {
+			loaded := resetRunning(state)
+			version := loaded.Version
+			items := write(loaded, "15", "-6", seq)
+			seq++
+			if !items[0].Applied || items[0].RuntimeState != "monitoring" ||
+				items[0].AskSpread != "15" || items[0].BidSpread != "-6" ||
+				items[0].Version != version {
+				t.Fatalf("%s applied=%+v", state, items[0])
+			}
+			current, err := repository.GetArbitrageCombinationByOwner(ctx, "admin", created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.RuntimeState != "monitoring" || current.Version != version ||
+				current.CurrentAskSpreadBps != "15" || current.CurrentBidSpreadBps != "-6" {
+				t.Fatalf("%s persisted=%+v", state, current)
+			}
+		}
+
+		for _, state := range []string{
+			"maker_open", "maker_canceling", "hedging", "reconciling",
+			"backoff", "hedge_deferred_dust", "position_uncertain", "manual_intervention",
+		} {
+			loaded := resetRunning(state)
+			items := write(loaded, "20", "-3", seq)
+			seq++
+			if items[0].Applied || items[0].RuntimeState != state {
+				t.Fatalf("%s skip=%+v", state, items[0])
+			}
+			if items[0].AskSpread == "20" || items[0].BidSpread == "-3" {
+				t.Fatalf("%s spreads overwritten=%+v", state, items[0])
+			}
+		}
+
+		if _, err := pool.Exec(ctx, `
+			UPDATE trader_arbitrage_combinations SET
+				status='closing',runtime_state='closing',market_data_stale=FALSE,
+				current_ask_spread_bps=1,current_bid_spread_bps=-1
+			WHERE id=$1::uuid`, created.ID); err != nil {
+			t.Fatal(err)
+		}
+		closing, err := repository.GetArbitrageCombinationByOwner(ctx, "admin", created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		items := write(closing, "21", "-2", seq)
+		seq++
+		if items[0].Applied || items[0].Status != "closing" || items[0].RuntimeState != "closing" ||
+			items[0].AskSpread != "1" {
+			t.Fatalf("closing skip=%+v", items[0])
+		}
+
+		loaded := resetRunning("opportunity_gone")
+		execution, claimed, err := repository.ClaimArbitrageExecution(
+			ctx, integrationArbitrageExecution(created.ID, "ask"),
+		)
+		if err != nil || !claimed {
+			t.Fatalf("claim claimed=%v err=%v", claimed, err)
+		}
+		if _, err := pool.Exec(ctx, `
+			UPDATE trader_arbitrage_combinations
+			SET runtime_state='opportunity_gone',market_data_stale=FALSE,
+			    current_ask_spread_bps=1,current_bid_spread_bps=-1
+			WHERE id=$1::uuid`, created.ID); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err = repository.GetArbitrageCombinationByOwner(ctx, "admin", created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		items = write(loaded, "22", "-4", seq)
+		if items[0].Applied || items[0].RuntimeState != "opportunity_gone" ||
+			items[0].AskSpread != "1" {
+			t.Fatalf("live execution skip=%+v execution=%s", items[0], execution.ID)
+		}
+	})
 }

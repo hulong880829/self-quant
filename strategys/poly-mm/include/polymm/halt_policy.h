@@ -27,6 +27,13 @@ namespace polymm {
   return HaltPhase::StopOpening;
 }
 
+[[nodiscard]] inline HaltPhase resume_after_fairprice(
+    HaltPhase phase, bool paused_by_fairprice) noexcept {
+  return paused_by_fairprice && phase == HaltPhase::StopOpening
+             ? HaltPhase::Running
+             : phase;
+}
+
 [[nodiscard]] inline HaltPhase begin_flattening(HaltPhase) noexcept {
   return HaltPhase::Flattening;
 }

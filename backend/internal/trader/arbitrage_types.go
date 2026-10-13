@@ -38,6 +38,7 @@ type ArbitrageCombination struct {
 	ExitAnnualizedRate                string
 	ExitAfterSeconds                  int
 	EarlyExitFunding8hAnnualizedFloor string
+	EarlyExitLiquidationDistancePct   string
 	TargetReachedAt                   time.Time
 	ScheduledExitAt                   time.Time
 	OneShotPhase                      string
@@ -58,6 +59,8 @@ type ArbitrageCombination struct {
 	LegBUnrealizedPnl                 string
 	RealizedSpreadPnl                 string
 	EstimatedFundingPnl               string
+	EstimatedTradingFee               string
+	MetricsQuality                    string
 	NotionalExposureSeconds           string
 	HoldingSeconds                    string
 	ExposureUpdatedAt                 time.Time
@@ -95,6 +98,14 @@ type ArbitrageCombination struct {
 	UpdatedAt                         time.Time
 	ClosedAt                          time.Time
 	MetricsCalculatedAt               time.Time
+	FinalMetricsStatus                string
+	FinalMetricsRetryCount            int
+	FinalMetricsLastError             string
+	FinalMetricsNextRetryAt           time.Time
+	FinalMetricsRetryFinite           bool
+	FinalMetricsCompletedAt           time.Time
+	LegALiquidationDistancePct        string
+	LegBLiquidationDistancePct        string
 }
 
 type ArbitrageValuation struct {
@@ -172,7 +183,52 @@ type ArbitrageEvent struct {
 	ExecutionID   string
 	Type          string
 	Message       string
+	Payload       map[string]any
+	PayloadObject bool
 	CreatedAt     time.Time
+}
+
+type ArbitrageHistoryQuery struct {
+	Limit       int
+	Cursor      string
+	From        time.Time
+	To          time.Time
+	ExecutionID string
+}
+
+type PreflightDecimal struct {
+	Value  string
+	Status string
+}
+
+type PreflightLeg struct {
+	AvailableFunds      PreflightDecimal
+	RequiredMargin      PreflightDecimal
+	EstimatedFee        PreflightDecimal
+	MinQuantity         PreflightDecimal
+	MinNotional         PreflightDecimal
+	QuantityStep        PreflightDecimal
+	RoundedBaseQuantity PreflightDecimal
+}
+
+type PreflightWarning struct {
+	Code     string
+	Message  string
+	Leg      string
+	Exchange string
+}
+
+type ArbitragePreflight struct {
+	Executable bool
+	CheckedAt  time.Time
+	ExpiresAt  time.Time
+	LegA       PreflightLeg
+	LegB       PreflightLeg
+	Warnings   []PreflightWarning
+	Code       string
+	Message    string
+	Leg        string
+	Exchange   string
 }
 
 type CreateArbitrageInput struct {
@@ -195,14 +251,36 @@ type CreateArbitrageInput struct {
 	ExitAnnualizedRate                string
 	ExitAfterSeconds                  int
 	EarlyExitFunding8hAnnualizedFloor string
+	EarlyExitLiquidationDistancePct   string
 }
 
 type UpdateArbitrageInput struct {
-	Token           string
-	CombinationID   string
-	AskThresholdBps *string
-	BidThresholdBps *string
-	TargetNotional  *string
+	Token                             string
+	CombinationID                     string
+	AskThresholdBps                   *string
+	BidThresholdBps                   *string
+	TargetNotional                    *string
+	ExitAfterSeconds                  *int
+	ExitAnnualizedRate                *string
+	EarlyExitFunding8hAnnualizedFloor *string
+	EarlyExitLiquidationDistancePct   *string
+}
+
+type arbitrageMetricsQuotes struct {
+	MidA      string
+	MidB      string
+	BidA      string
+	AskA      string
+	BidB      string
+	AskB      string
+	ReceivedA time.Time
+	ReceivedB time.Time
+}
+
+type exitRequest struct {
+	Requested bool
+	Version   int64
+	Reason    string
 }
 
 type ArbitrageBBO struct {
@@ -306,6 +384,12 @@ type arbitrageStore interface {
 	ApplyCircuitOpenExternalReconcile(
 		context.Context, circuitOpenExternalReconcileRequest,
 	) (ArbitrageCombination, bool, error)
+	ClaimCircuitRecoveryExecution(
+		context.Context, ClaimCircuitRecoveryExecutionInput,
+	) (ArbitrageExecution, bool, error)
+	CompleteCircuitOpenRecovery(
+		context.Context, circuitOpenRecoveryCloseRequest,
+	) (ArbitrageCombination, bool, error)
 	RecordArbitrageFailure(context.Context, string, string) (ArbitrageCombination, error)
 	AppendArbitrageEvent(context.Context, string, string, string, map[string]any) error
 	DeleteExpiredArbitrageCombinations(context.Context, time.Time, int) (int64, error)
@@ -321,6 +405,21 @@ type arbitrageOneShotStore interface {
 	ArbitrageDustOrderGate(
 		context.Context, string, time.Time,
 	) (liveOrder, unreconciled, liveExecution bool, err error)
+	ClaimOneShotFinalFlattenExecution(
+		context.Context, OneShotFinalFlattenClaim,
+	) (ArbitrageExecution, bool, error)
+	FinalizeOneShotFinalFlattenExecution(
+		context.Context, string,
+	) (oneShotFinalFlattenFinalizeResult, error)
+}
+
+type arbitrageFinalMetricsStore interface {
+	PersistFinalArbitragePositionMetrics(
+		context.Context, string, int64, bool, time.Time,
+	) (ArbitrageCombination, error)
+	MarkArbitrageClosedAndScheduleFinalMetrics(
+		context.Context, string, int64,
+	) (ArbitrageCombination, bool, error)
 }
 
 type arbitrageIdempotencyStore interface {
@@ -351,6 +450,35 @@ type arbitrageCloseFailureStore interface {
 	RecordArbitrageCloseFailure(
 		context.Context, string, string, string,
 	) (ArbitrageCombination, error)
+}
+
+type ClaimCircuitRecoveryExecutionInput struct {
+	ExpectedVersion   int64
+	FailedExecutionID string
+	Execution         ArbitrageExecution
+}
+
+type circuitOpenRecoveryCloseRequest struct {
+	CombinationID     string
+	ExecutionID       string
+	ExpectedVersion   int64
+	Kind              string
+	EventType         string
+	VenueA            decimal.Decimal
+	VenueB            decimal.Decimal
+	MarkA             decimal.Decimal
+	MarkB             decimal.Decimal
+	InstrumentA       Instrument
+	InstrumentB       Instrument
+	ObservedAt        time.Time
+	RecoveryStartedAt time.Time
+	OrderSumA         decimal.Decimal
+	OrderSumB         decimal.Decimal
+	LegAFilled        string
+	LegBFilled        string
+	DeltaNotional     string
+	TurnoverDelta     string
+	Payload           map[string]any
 }
 
 type circuitOpenExternalReconcileRequest struct {

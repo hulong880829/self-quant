@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +93,7 @@ func TestArbitrageRunModePersistenceAndClaimAbort(t *testing.T) {
 			exit_after_seconds=3600,
 			exit_annualized_rate=NULL,
 			one_shot_phase='waiting_exit',
+			scheduled_exit_at=now() - interval '1 second',
 			status='running'
 		WHERE id=$1::uuid`, created.ID); err != nil {
 		t.Fatal(err)
@@ -261,6 +263,248 @@ func TestArbitrageRunModePersistenceAndClaimAbort(t *testing.T) {
 	}
 }
 
+func TestCreateArbitrageCombinationExitAfterSecondsTyping(t *testing.T) {
+	ctx, pool := openArbitrageRunModeTestDB(t)
+	repository := NewRepository(pool)
+
+	t.Run("spread_null_period", func(t *testing.T) {
+		accountA, instrumentA := insertArbitrageFixture(t, ctx, pool, "binance", "NULLPERAUSDT")
+		accountB, instrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "NULLPERB-USDT")
+		input := integrationArbitrageCombination(accountA, instrumentA, accountB, instrumentB)
+		input.IdempotencyKey = "arb-spread-null-period"
+		input.RequestFingerprint = "arb-spread-null-period-fp"
+		input.ExitAfterSeconds = 0
+		created, inserted, err := repository.CreateArbitrageCombination(ctx, input)
+		if err != nil {
+			if strings.Contains(err.Error(), "42P08") {
+				t.Fatalf("spread create hit untyped NULL: %v", err)
+			}
+			t.Fatal(err)
+		}
+		if !inserted {
+			t.Fatal("spread create not inserted")
+		}
+		assertExitPeriodColumns(t, ctx, pool, created.ID, true, true, 0)
+	})
+
+	t.Run("one_shot_time_scheduled_exit", func(t *testing.T) {
+		accountA, instrumentA := insertArbitrageFixture(t, ctx, pool, "binance", "SCHEDAUSDT")
+		accountB, instrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "SCHEDB-USDT")
+		input := integrationArbitrageCombination(accountA, instrumentA, accountB, instrumentB)
+		input.IdempotencyKey = "arb-oneshot-86400"
+		input.RequestFingerprint = "arb-oneshot-86400-fp"
+		input.RunMode = "one_shot"
+		input.EntryDirection = "ask"
+		input.ExitPolicy = "time"
+		input.ExitAfterSeconds = 86400
+		input.OneShotPhase = "building_target"
+		created, inserted, err := repository.CreateArbitrageCombination(ctx, input)
+		if err != nil || !inserted {
+			t.Fatalf("inserted=%v err=%v", inserted, err)
+		}
+		assertExitPeriodColumns(t, ctx, pool, created.ID, false, false, 86400)
+	})
+
+	t.Run("idempotent_replay", func(t *testing.T) {
+		accountA, instrumentA := insertArbitrageFixture(t, ctx, pool, "binance", "IDEMAUSDT")
+		accountB, instrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "IDEMB-USDT")
+		input := integrationArbitrageCombination(accountA, instrumentA, accountB, instrumentB)
+		input.IdempotencyKey = "arb-spread-idem-replay"
+		input.RequestFingerprint = "arb-spread-idem-replay-fp"
+		created, inserted, err := repository.CreateArbitrageCombination(ctx, input)
+		if err != nil || !inserted {
+			t.Fatalf("create inserted=%v err=%v", inserted, err)
+		}
+		replay := input
+		replay.ID = uuid.NewString()
+		reused, inserted, err := repository.CreateArbitrageCombination(ctx, replay)
+		if err != nil || inserted || reused.ID != created.ID {
+			t.Fatalf("reuse inserted=%v id=%s want=%s err=%v", inserted, reused.ID, created.ID, err)
+		}
+	})
+}
+
+func TestOneShotTimeCreateAndPatchEnablement(t *testing.T) {
+	ctx, pool := openArbitrageRunModeTestDB(t)
+	repository := NewRepository(pool)
+	accountA, instrumentA := insertArbitrageFixture(t, ctx, pool, "binance", "TIMEAUSDT")
+	accountB, instrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "TIMEB-USDT")
+	input := integrationArbitrageCombination(accountA, instrumentA, accountB, instrumentB)
+	input.IdempotencyKey = "arb-time-create"
+	input.RequestFingerprint = "arb-time-create-fp"
+	input.RunMode = "one_shot"
+	input.EntryDirection = "ask"
+	input.ExitPolicy = "time"
+	input.ExitAfterSeconds = 86400
+	input.ExitAnnualizedRate = "0.15"
+	input.EarlyExitFunding8hAnnualizedFloor = "0.05"
+	input.EarlyExitLiquidationDistancePct = "20"
+	input.OneShotPhase = "building_target"
+	created, inserted, err := repository.CreateArbitrageCombination(ctx, input)
+	if err != nil || !inserted {
+		t.Fatalf("inserted=%v err=%v", inserted, err)
+	}
+	if created.ScheduledExitAt.IsZero() {
+		t.Fatal("scheduled_exit_at is zero")
+	}
+	period := created.ScheduledExitAt.Sub(created.CreatedAt)
+	if period < 86399*time.Second || period > 86401*time.Second {
+		t.Fatalf("scheduled_exit_at=%s created_at=%s period=%s", created.ScheduledExitAt, created.CreatedAt, period)
+	}
+	rate := "0.20"
+	updated, err := repository.UpdateArbitrageCombinationConfig(ctx, "admin", created.ID, UpdateArbitrageInput{
+		ExitAnnualizedRate: &rate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ExitAnnualizedRate != "0.2" && updated.ExitAnnualizedRate != "0.20" {
+		t.Fatalf("rate=%q", updated.ExitAnnualizedRate)
+	}
+	target := "12000"
+	exitAfter := 14400
+	liquidationDistance := "15"
+	updated, err = repository.UpdateArbitrageCombinationConfig(
+		ctx, "admin", created.ID,
+		UpdateArbitrageInput{
+			TargetNotional:                  &target,
+			ExitAfterSeconds:                &exitAfter,
+			EarlyExitLiquidationDistancePct: &liquidationDistance,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantScheduled := created.CreatedAt.Add(4 * time.Hour)
+	if updated.TargetNotional != target ||
+		updated.EarlyExitLiquidationDistancePct != liquidationDistance ||
+		!updated.CreatedAt.Equal(created.CreatedAt) ||
+		!updated.ScheduledExitAt.Equal(wantScheduled) {
+		t.Fatalf("updated=%+v want scheduled=%s", updated, wantScheduled)
+	}
+	persisted, err := repository.GetArbitrageCombinationByOwner(
+		ctx, "admin", created.ID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.TargetNotional != target ||
+		persisted.EarlyExitLiquidationDistancePct != liquidationDistance ||
+		!persisted.ScheduledExitAt.Equal(wantScheduled) {
+		t.Fatalf("persisted=%+v want scheduled=%s", persisted, wantScheduled)
+	}
+	enable := "0.12"
+	blankA, blankInstrumentA := insertArbitrageFixture(t, ctx, pool, "binance", "TIMEBLANKUSDT")
+	blankB, blankInstrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "TIMEBLANK-USDT")
+	blank := integrationArbitrageCombination(blankA, blankInstrumentA, blankB, blankInstrumentB)
+	blank.IdempotencyKey = "arb-time-no-rate"
+	blank.RequestFingerprint = "arb-time-no-rate-fp"
+	blank.RunMode = "one_shot"
+	blank.EntryDirection = "ask"
+	blank.ExitPolicy = "time"
+	blank.ExitAfterSeconds = 3600
+	blank.OneShotPhase = "building_target"
+	createdBlank, inserted, err := repository.CreateArbitrageCombination(ctx, blank)
+	if err != nil || !inserted {
+		t.Fatalf("blank inserted=%v err=%v", inserted, err)
+	}
+	if _, err := repository.UpdateArbitrageCombinationConfig(ctx, "admin", createdBlank.ID, UpdateArbitrageInput{
+		ExitAnnualizedRate: &enable,
+	}); !errors.Is(err, ErrArbitrageConfigInvalid) {
+		t.Fatalf("enable after create err=%v", err)
+	}
+}
+
+func TestOneShotBuildingTargetTimeExitAndFinalZeroFill(t *testing.T) {
+	ctx, pool := openArbitrageRunModeTestDB(t)
+	repository := NewRepository(pool)
+	accountA, instrumentA := insertArbitrageFixture(t, ctx, pool, "binance", "ZEROAUSDT")
+	accountB, instrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "ZEROB-USDT")
+	input := integrationArbitrageCombination(accountA, instrumentA, accountB, instrumentB)
+	input.IdempotencyKey = "arb-zero-fill"
+	input.RequestFingerprint = "arb-zero-fill-fp"
+	input.RunMode = "one_shot"
+	input.EntryDirection = "ask"
+	input.ExitPolicy = "time"
+	input.ExitAfterSeconds = 3600
+	input.OneShotPhase = "building_target"
+	created, inserted, err := repository.CreateArbitrageCombination(ctx, input)
+	if err != nil || !inserted {
+		t.Fatalf("inserted=%v err=%v", inserted, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE trader_arbitrage_combinations SET
+			scheduled_exit_at=now() - interval '1 second',
+			leg_a_base_position=0,
+			leg_b_base_position=0
+		WHERE id=$1::uuid`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	version := arbitrageVersion(t, ctx, pool, created.ID)
+	exiting, applied, err := repository.MarkOneShotExiting(ctx, created.ID, version, "time", nil)
+	if err != nil || !applied {
+		t.Fatalf("building_target time exit applied=%v err=%v", applied, err)
+	}
+	listed, err := repository.ListRunningArbitrageCombinationsForMetrics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range listed {
+		if item.ID == created.ID {
+			t.Fatal("exiting combination listed for periodic metrics")
+		}
+	}
+	exited, applied, err := repository.MarkOneShotExited(ctx, created.ID, exiting.Version)
+	if err != nil || !applied {
+		t.Fatalf("zero-fill exited applied=%v err=%v", applied, err)
+	}
+	if exited.OneShotPhase != "exited" || exited.FinalMetricsStatus != finalMetricsPending {
+		t.Fatalf("exited=%+v", exited)
+	}
+	persisted, err := repository.PersistFinalArbitragePositionMetrics(
+		ctx, created.ID, exited.Version, false, time.Time{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.CombinedPositionAnnualized != "" {
+		t.Fatalf("zero-fill annualized=%q", persisted.CombinedPositionAnnualized)
+	}
+	if persisted.FinalMetricsStatus != finalMetricsCompleted || persisted.Version != exited.Version {
+		t.Fatalf("persisted=%+v", persisted)
+	}
+}
+
+func TestMarkArbitrageClosedAfterFinalMetricsCAS(t *testing.T) {
+	ctx, pool := openArbitrageRunModeTestDB(t)
+	repository := NewRepository(pool)
+	accountA, instrumentA := insertArbitrageFixture(t, ctx, pool, "binance", "CLOSEAUSDT")
+	accountB, instrumentB := insertArbitrageFixture(t, ctx, pool, "okx", "CLOSEB-USDT")
+	input := integrationArbitrageCombination(accountA, instrumentA, accountB, instrumentB)
+	input.IdempotencyKey = "arb-closed-cas"
+	input.RequestFingerprint = "arb-closed-cas-fp"
+	created, inserted, err := repository.CreateArbitrageCombination(ctx, input)
+	if err != nil || !inserted {
+		t.Fatalf("inserted=%v err=%v", inserted, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE trader_arbitrage_combinations SET status='closing' WHERE id=$1::uuid`,
+		created.ID); err != nil {
+		t.Fatal(err)
+	}
+	version := arbitrageVersion(t, ctx, pool, created.ID)
+	closed, applied, err := repository.MarkArbitrageClosedAndScheduleFinalMetrics(ctx, created.ID, version)
+	if err != nil || !applied {
+		t.Fatalf("applied=%v err=%v", applied, err)
+	}
+	if closed.Status != "closed" || closed.Version != version+1 {
+		t.Fatalf("closed=%+v", closed)
+	}
+	if _, applied, err := repository.MarkArbitrageClosedAndScheduleFinalMetrics(ctx, created.ID, version); err != nil || applied {
+		t.Fatalf("stale version applied=%v err=%v", applied, err)
+	}
+}
+
 func openArbitrageRunModeTestDB(t *testing.T) (context.Context, *pgxpool.Pool) {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -297,6 +541,53 @@ func openArbitrageRunModeTestDB(t *testing.T) (context.Context, *pgxpool.Pool) {
 	return ctx, pool
 }
 
+func assertExitPeriodColumns(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	combinationID string,
+	wantExitNull bool,
+	wantScheduledNull bool,
+	wantSeconds int,
+) {
+	t.Helper()
+	var exitNull, scheduledNull bool
+	var seconds *int
+	var createdAt, scheduledAt *time.Time
+	if err := pool.QueryRow(ctx, `
+		SELECT
+			exit_after_seconds IS NULL,
+			scheduled_exit_at IS NULL,
+			exit_after_seconds,
+			created_at,
+			scheduled_exit_at
+		FROM trader_arbitrage_combinations
+		WHERE id=$1::uuid`, combinationID,
+	).Scan(&exitNull, &scheduledNull, &seconds, &createdAt, &scheduledAt); err != nil {
+		t.Fatal(err)
+	}
+	if exitNull != wantExitNull || scheduledNull != wantScheduledNull {
+		t.Fatalf(
+			"exit_after_seconds NULL=%v want=%v scheduled_exit_at NULL=%v want=%v",
+			exitNull, wantExitNull, scheduledNull, wantScheduledNull,
+		)
+	}
+	if wantExitNull {
+		return
+	}
+	if seconds == nil || *seconds != wantSeconds {
+		t.Fatalf("exit_after_seconds=%v want=%d", seconds, wantSeconds)
+	}
+	if createdAt == nil || scheduledAt == nil {
+		t.Fatal("created_at or scheduled_exit_at missing")
+	}
+	period := scheduledAt.Sub(*createdAt)
+	want := time.Duration(wantSeconds) * time.Second
+	if period < want-time.Second || period > want+time.Second {
+		t.Fatalf("scheduled_exit_at=%s created_at=%s period=%s want=%s", scheduledAt, createdAt, period, want)
+	}
+}
+
 func TestMarkOneShotExitedWithDustCAS(t *testing.T) {
 	ctx, pool := openArbitrageRunModeTestDB(t)
 	repository := NewRepository(pool)
@@ -319,7 +610,6 @@ func TestMarkOneShotExitedWithDustCAS(t *testing.T) {
 			one_shot_phase='exiting',
 			leg_a_base_position=0,
 			leg_b_base_position=-10,
-			carry_base_quantity=-10,
 			runtime_state='monitoring',
 			position_uncertain=false
 		WHERE id=$1::uuid`, created.ID); err != nil {

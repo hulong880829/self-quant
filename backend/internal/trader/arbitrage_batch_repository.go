@@ -136,11 +136,12 @@ func (r *Repository) BatchUpdateArbitrageMarketSnapshots(
 			UPDATE trader_arbitrage_combinations c SET
 				current_ask_spread_bps=NULLIF(incoming.ask,'')::numeric,
 				current_bid_spread_bps=NULLIF(incoming.bid,'')::numeric,
+				runtime_state='monitoring',
 				updated_at=now()
 			FROM incoming
 			WHERE c.id=incoming.id
 			  AND c.status='running'
-			  AND c.runtime_state='monitoring'
+			  AND c.runtime_state IN ('monitoring','repricing','opportunity_gone')
 			  AND c.market_data_stale=FALSE
 			  AND c.version=incoming.version
 			  AND c.updated_at=incoming.updated_at

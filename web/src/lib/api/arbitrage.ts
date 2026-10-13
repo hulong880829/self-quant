@@ -67,6 +67,7 @@ export interface ArbitrageCombination {
   scheduledExitAt: string;
   oneShotPhase: ArbitrageOneShotPhase;
   earlyExitFunding8hAnnualizedFloor: string;
+  earlyExitLiquidationDistancePct: string;
   legABasePosition: string;
   legBBasePosition: string;
   carryBaseQuantity: string;
@@ -95,6 +96,8 @@ export interface ArbitrageCombination {
   legAPositionDifference: string;
   legBPositionDifference: string;
   lastPositionReconciledAt: string;
+  legALiquidationDistancePct: string | null;
+  legBLiquidationDistancePct: string | null;
   preferredLeg: ArbitragePreferredLeg;
   executionMode: ArbitrageExecutionMode;
   askSpreadBps: string | null;
@@ -157,12 +160,17 @@ export interface CreateArbitrageCombinationInput {
   exitAnnualizedRate: string;
   exitAfterSeconds: number;
   earlyExitFunding8hAnnualizedFloor: string;
+  earlyExitLiquidationDistancePct: string;
 }
 
 export type UpdateArbitrageCombinationInput =
   | { targetNotional: string }
   | { askThresholdBps: string }
-  | { bidThresholdBps: string };
+  | { bidThresholdBps: string }
+  | { exitAfterSeconds: number }
+  | { exitAnnualizedRate: string }
+  | { earlyExitFunding8hAnnualizedFloor: string }
+  | { earlyExitLiquidationDistancePct: string };
 
 export class ArbitrageCreateFailure extends Error {
   code: string;
@@ -450,6 +458,14 @@ export function mapArbitrageCombination(
       `${path}.lastPositionReconciledAt`,
       true,
     ),
+    legALiquidationDistancePct: nullableDecimalString(
+      item.legALiquidationDistancePct ?? null,
+      `${path}.legALiquidationDistancePct`,
+    ),
+    legBLiquidationDistancePct: nullableDecimalString(
+      item.legBLiquidationDistancePct ?? null,
+      `${path}.legBLiquidationDistancePct`,
+    ),
     runMode: oneOf(
       item.runMode || "spread",
       ["spread", "one_shot"],
@@ -497,6 +513,11 @@ export function mapArbitrageCombination(
       `${path}.earlyExitFunding8hAnnualizedFloor`,
       true,
     ),
+    earlyExitLiquidationDistancePct: text(
+      item.earlyExitLiquidationDistancePct ?? "",
+      `${path}.earlyExitLiquidationDistancePct`,
+      true,
+    ),
     preferredLeg: oneOf(item.preferredLeg, ["a", "b"], `${path}.preferredLeg`),
     executionMode: oneOf(
       item.executionMode,
@@ -516,6 +537,51 @@ export function mapArbitrageCombination(
     createdAt: text(item.createdAt, `${path}.createdAt`),
     updatedAt: text(item.updatedAt, `${path}.updatedAt`),
     closedAt: text(item.closedAt, `${path}.closedAt`, true),
+  };
+}
+
+export function formatRunningDuration(
+  createdAt: string,
+  closedAt: string,
+  status: string,
+  now: Date,
+): string {
+  const start = Date.parse(createdAt);
+  if (!Number.isFinite(start)) return "-";
+  const end = status === "closed" ? Date.parse(closedAt) : now.getTime();
+  if (!Number.isFinite(end) || end < start) return "-";
+  const hours = Math.floor((end - start) / 3_600_000);
+  return `${Math.floor(hours / 24)}天${hours % 24}小时`;
+}
+
+export type LiquidationDistanceLine = {
+  label: "A" | "B";
+  text: string;
+  negative: boolean;
+};
+
+export function formatLiquidationDistance(input: {
+  label: "A" | "B";
+  exchange: string;
+  contractType: string;
+  venueBasePosition: string;
+  distancePct: string | null;
+}): LiquidationDistanceLine | null {
+  if (input.contractType !== "perpetual") return null;
+  const prefix = `${input.label} ${input.exchange}`;
+  const position = Number(input.venueBasePosition);
+  const distance =
+    input.distancePct === null ? Number.NaN : Number(input.distancePct);
+  if (!Number.isFinite(position) || position === 0 || !Number.isFinite(distance)) {
+    return { label: input.label, text: `${prefix} -`, negative: false };
+  }
+  const magnitude = Math.abs(distance).toFixed(2);
+  const signed =
+    distance > 0 ? `+${magnitude}%` : distance < 0 ? `-${magnitude}%` : `${magnitude}%`;
+  return {
+    label: input.label,
+    text: `${prefix} ${signed}`,
+    negative: distance < 0,
   };
 }
 

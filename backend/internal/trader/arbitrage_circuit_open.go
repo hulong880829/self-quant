@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/shopspring/decimal"
 	"selfquant/backend/internal/account/portfolio"
@@ -16,137 +15,8 @@ var errCircuitOpenOrderMismatch = errors.New("persisted order does not match ven
 func (e *ArbitrageExecutor) ReconcileCircuitOpen(
 	ctx context.Context,
 	combination ArbitrageCombination,
-	execution ArbitrageExecution,
 ) error {
-	if e == nil || e.store == nil {
-		return nil
-	}
-	if !combination.CircuitOpen || combination.Status != "running" {
-		return nil
-	}
-	if e.catalog == nil || e.credentials == nil || e.venues == nil || e.portfolios == nil {
-		e.logger.Info("circuit open reconcile skipped",
-			"combination_id", combination.ID, "reason", "dependencies_unavailable")
-		return nil
-	}
-	timeout := e.timeout
-	if timeout <= 0 {
-		timeout = 12 * time.Second
-	}
-	queryCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	orders, err := e.store.ListArbitrageOrders(
-		queryCtx, combination.OwnerUsername, combination.ID,
-	)
-	if err != nil {
-		return err
-	}
-	var current []Order
-	for _, order := range orders {
-		if order.ArbitrageExecutionID == execution.ID {
-			current = append(current, order)
-			continue
-		}
-		if !terminalStatus(order.Status) || order.ReconcileFailures > 0 {
-			e.logger.Info("circuit open reconcile skipped",
-				"combination_id", combination.ID, "reason", "other_orders_unconfirmed")
-			return nil
-		}
-	}
-
-	instrumentA, credentialsA, adapterA, err := e.executionDependencies(
-		queryCtx, combination.OwnerUsername, combination.LegA,
-	)
-	if err != nil {
-		return err
-	}
-	if credentialsA.Exchange == "" {
-		credentialsA.Exchange = combination.LegA.Exchange
-	}
-	instrumentB, credentialsB, adapterB, err := e.executionDependencies(
-		queryCtx, combination.OwnerUsername, combination.LegB,
-	)
-	if err != nil {
-		return err
-	}
-	if credentialsB.Exchange == "" {
-		credentialsB.Exchange = combination.LegB.Exchange
-	}
-	for _, order := range current {
-		if terminalStatus(order.Status) {
-			continue
-		}
-		instrument, credentials, adapter := instrumentA, credentialsA, adapterA
-		if order.ArbitrageLeg == "b" {
-			instrument, credentials, adapter = instrumentB, credentialsB, adapterB
-		}
-		if _, confirmErr := e.confirmCircuitOpenOrder(
-			queryCtx, credentials, instrument, adapter, order,
-		); confirmErr != nil {
-			e.logger.Info("circuit open reconcile skipped",
-				"combination_id", combination.ID, "order_id", order.ID,
-				"reason", "order_unconfirmed", "error", confirmErr)
-			return nil
-		}
-	}
-
-	snapshotA, err := e.circuitOpenAccountSnapshot(queryCtx, credentialsA)
-	if err != nil {
-		return err
-	}
-	snapshotB, err := e.circuitOpenAccountSnapshot(queryCtx, credentialsB)
-	if err != nil {
-		return err
-	}
-	venueA, err := venueBasePosition(snapshotA, combination.LegA, instrumentA)
-	if err != nil {
-		return err
-	}
-	venueB, err := venueBasePosition(snapshotB, combination.LegB, instrumentB)
-	if err != nil {
-		return err
-	}
-	markA := e.circuitOpenMark(combination.LegA, snapshotA)
-	markB := e.circuitOpenMark(combination.LegB, snapshotB)
-	if !markA.IsPositive() || !markB.IsPositive() {
-		e.logger.Info("circuit open reconcile skipped",
-			"combination_id", combination.ID, "reason", "valuation_incomplete")
-		return nil
-	}
-
-	applied, ok, err := e.store.ApplyCircuitOpenExternalReconcile(
-		ctx, circuitOpenExternalReconcileRequest{
-			CombinationID:   combination.ID,
-			ExecutionID:     execution.ID,
-			ExpectedVersion: combination.Version,
-			VenueA:          venueA,
-			VenueB:          venueB,
-			MarkA:           markA,
-			MarkB:           markB,
-			InstrumentA:     instrumentA,
-			InstrumentB:     instrumentB,
-		},
-	)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		e.logger.Info("circuit open reconcile skipped",
-			"combination_id", combination.ID, "reason", "recover_gates")
-		return nil
-	}
-	e.logger.Info("circuit open externally reconciled",
-		"combination_id", applied.ID,
-		"execution_id", execution.ID,
-		"position_notional", applied.PositionNotional,
-		"target_notional", applied.TargetNotional,
-		"over_target", arbitragePositionOverTarget(
-			parseDecimal(applied.PositionNotional),
-			parsePositiveDecimal(applied.TargetNotional),
-		),
-		"carry", applied.CarryBaseQuantity)
-	return nil
+	return e.recoverCircuitOpen(ctx, combination)
 }
 
 func (e *ArbitrageExecutor) confirmCircuitOpenOrder(
@@ -156,6 +26,9 @@ func (e *ArbitrageExecutor) confirmCircuitOpenOrder(
 	adapter exchange.Adapter,
 	order Order,
 ) (Order, error) {
+	if explicitVenueRejectedZeroFill(order) || confirmedAbsentReliableZeroFill(order) {
+		return order, nil
+	}
 	if e.orderStreams != nil {
 		e.restFallbacks.Add(1)
 	}

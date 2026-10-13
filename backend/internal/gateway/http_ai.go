@@ -394,9 +394,8 @@ func (h *Handler) aiSession(
 	writer http.ResponseWriter,
 	request *http.Request,
 ) (string, bool) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return "", false
 	}
 	return token, true

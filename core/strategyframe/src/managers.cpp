@@ -566,6 +566,35 @@ struct PositionManager::Impl {
   std::vector<AccountId> dedup_accounts;
   std::vector<std::uint32_t> dedup_index;
   std::size_t dedup_index_mask;
+  std::array<AccountPositionState, 8> accounts{};
+
+  AccountPositionState* account_state(AccountId account) noexcept {
+    if (account == 0) return nullptr;
+    for (auto& item : accounts) {
+      if (item.account_id == account) return &item;
+    }
+    for (auto& item : accounts) {
+      if (item.account_id == 0) {
+        item.account_id = account;
+        item.mutation_epoch = 1;
+        item.last_committed_snapshot_epoch = 0;
+        return &item;
+      }
+    }
+    return nullptr;
+  }
+
+  const AccountPositionState* account_state(AccountId account) const noexcept {
+    if (account == 0) return nullptr;
+    for (const auto& item : accounts) {
+      if (item.account_id == account) return &item;
+    }
+    return nullptr;
+  }
+
+  void bump_account(AccountId account) noexcept {
+    if (auto* state = account_state(account)) ++state->mutation_epoch;
+  }
 };
 
 PositionManager::PositionManager(std::size_t capacity,
@@ -620,6 +649,7 @@ Error PositionManager::apply_fill(
   if (remembered != Error::Ok) return remembered;
   if (next == 0) {
     if (dense != kEmpty) impl_->erase(dense);
+    impl_->bump_account(account_id);
     return Error::Ok;
   }
   if (dense == kEmpty) {
@@ -637,6 +667,7 @@ Error PositionManager::apply_fill(
   PositionView& position = impl_->views[dense];
   position.quantity.value = next;
   position.generation = generation;
+  impl_->bump_account(account_id);
   return Error::Ok;
 }
 
@@ -650,6 +681,112 @@ void PositionManager::retire_instrument(
       ++dense;
     }
   }
+}
+
+Error PositionManager::update_account_snapshot(
+    AccountId account_id, std::span<const PositionView> positions) noexcept {
+  if (account_id == 0) return Error::InvalidArgument;
+  std::size_t incoming = 0;
+  for (const PositionView& value : positions) {
+    if (value.account_id != account_id) return Error::InvalidArgument;
+    if (value.quantity.value == 0) continue;
+    ++incoming;
+  }
+  std::size_t others = 0;
+  for (std::size_t index = 0; index < impl_->count; ++index) {
+    if (impl_->views[index].account_id != account_id) ++others;
+  }
+  if (others + incoming > impl_->capacity) return Error::CapacityExceeded;
+  std::uint32_t dense = 0;
+  while (dense < impl_->count) {
+    if (impl_->views[dense].account_id == account_id) {
+      impl_->erase(dense);
+    } else {
+      ++dense;
+    }
+  }
+  for (const PositionView& value : positions) {
+    if (value.quantity.value == 0) continue;
+    if (impl_->find_index(value.account_id, value.instrument_id, value.side) !=
+        kEmpty) {
+      return Error::InvalidState;
+    }
+    const auto slot = static_cast<std::uint32_t>(impl_->count);
+    impl_->views[slot] = value;
+    if (!impl_->add_index(value, slot)) return Error::CapacityExceeded;
+    ++impl_->count;
+  }
+  return Error::Ok;
+}
+
+Error PositionManager::update_instrument_snapshot(
+    AccountId account_id, InstrumentId instrument_id,
+    std::span<const PositionView> positions) noexcept {
+  if (account_id == 0 || instrument_id == 0) return Error::InvalidArgument;
+  for (const PositionView& value : positions) {
+    if (value.account_id != account_id ||
+        value.instrument_id != instrument_id) {
+      return Error::InvalidArgument;
+    }
+  }
+  std::uint32_t dense = 0;
+  while (dense < impl_->count) {
+    if (impl_->views[dense].account_id == account_id &&
+        impl_->views[dense].instrument_id == instrument_id) {
+      impl_->erase(dense);
+    } else {
+      ++dense;
+    }
+  }
+  for (const PositionView& value : positions) {
+    if (value.quantity.value == 0) continue;
+    if (impl_->count == impl_->capacity) return Error::CapacityExceeded;
+    const auto slot = static_cast<std::uint32_t>(impl_->count);
+    impl_->views[slot] = value;
+    if (!impl_->add_index(value, slot)) return Error::CapacityExceeded;
+    ++impl_->count;
+  }
+  return Error::Ok;
+}
+
+Error PositionManager::commit_query_snapshot(
+    AccountId account_id, std::uint64_t query_epoch) noexcept {
+  auto* state = impl_->account_state(account_id);
+  if (state == nullptr) return Error::CapacityExceeded;
+  if (state->mutation_epoch != query_epoch) return Error::NotReady;
+  ++state->mutation_epoch;
+  state->last_committed_snapshot_epoch = state->mutation_epoch;
+  return Error::Ok;
+}
+
+std::uint64_t PositionManager::ensure_account_epoch(
+    AccountId account_id) noexcept {
+  auto* state = impl_->account_state(account_id);
+  return state == nullptr ? 0 : state->mutation_epoch;
+}
+
+std::uint64_t PositionManager::mutation_epoch(
+    AccountId account_id) const noexcept {
+  const auto* state = impl_->account_state(account_id);
+  return state == nullptr ? 0 : state->mutation_epoch;
+}
+
+std::uint64_t PositionManager::last_committed_snapshot_epoch(
+    AccountId account_id) const noexcept {
+  const auto* state = impl_->account_state(account_id);
+  return state == nullptr ? 0 : state->last_committed_snapshot_epoch;
+}
+
+bool PositionManager::snapshot_confirms_zero(
+    AccountId account_id, InstrumentId instrument_id) const noexcept {
+  const auto* state = impl_->account_state(account_id);
+  if (state == nullptr || state->last_committed_snapshot_epoch == 0 ||
+      state->last_committed_snapshot_epoch != state->mutation_epoch) {
+    return false;
+  }
+  const auto found = find(account_id, instrument_id, PositionSide::Net);
+  if (!found) return found.error == Error::NotFound;
+  return found.value.quantity.value == 0;
 }
 
 Error PositionManager::replace_snapshot(

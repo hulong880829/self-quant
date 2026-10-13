@@ -40,15 +40,20 @@ wire::HeaderFields header(md::InstrumentId id, std::uint64_t sequence,
 std::vector<std::byte> catalog(md::InstrumentId id,
                                md::ProductType product =
                                    md::ProductType::Perpetual,
-                               std::string_view symbol = "BTCUSDT") {
+                               std::string_view symbol = "BTCUSDT",
+                               md::Venue venue = md::Venue::Binance,
+                               std::string_view venue_symbol = "") {
   md::InstrumentCatalog value{};
   value.instrument_id = id;
-  value.venue = md::Venue::Binance;
+  value.venue = venue;
   value.product_type = product;
   value.price_scale = 2;
   value.quantity_scale = 3;
   assert(symbol.size() < value.canonical_symbol.size());
   std::memcpy(value.canonical_symbol.data(), symbol.data(), symbol.size());
+  assert(venue_symbol.size() < value.venue_symbol.size());
+  std::memcpy(value.venue_symbol.data(), venue_symbol.data(),
+              venue_symbol.size());
   return encode([&](std::span<std::byte> destination) {
     return wire::EncodeInstrumentCatalog(destination, header(id, 1), value);
   });
@@ -124,12 +129,15 @@ struct CapturedRow {
   std::string product;
   std::string symbol;
   std::int64_t bid_price{};
+  std::uint64_t instrument_id{};
+  std::string venue_symbol;
 };
 
-CapturedRow decode_row(std::span<const std::byte> body) {
+CapturedRow decode_row(std::span<const std::byte> body,
+                        std::string_view expected_venue = "binance") {
   std::size_t offset{};
   (void)read_pod<std::int64_t>(body, offset);
-  assert(read_string(body, offset) == "binance");
+  assert(read_string(body, offset) == expected_venue);
   CapturedRow row;
   row.product = read_string(body, offset);
   row.symbol = read_string(body, offset);
@@ -139,6 +147,8 @@ CapturedRow decode_row(std::span<const std::byte> body) {
   (void)read_pod<std::int64_t>(body, offset);
   (void)read_pod<std::uint8_t>(body, offset);
   (void)read_pod<std::uint8_t>(body, offset);
+  row.instrument_id = read_pod<std::uint64_t>(body, offset);
+  row.venue_symbol = read_string(body, offset);
   assert(offset == body.size());
   return row;
 }
@@ -311,11 +321,64 @@ void test_origin_tagged_ticker_and_decode_failure_metric() {
   assert(rows[0].bid_price == 40'000);
 }
 
+void test_equity_bbo_and_rejected_selectors() {
+  auto rejected = options();
+  rejected.selectors = {{md::Venue::Ibkr, md::ProductType::Spot}};
+  mds::record::ClickHouseBboRecorder rejected_recorder(std::move(rejected));
+  assert(!rejected_recorder.start());
+  assert(rejected_recorder.error().find(
+             "invalid ClickHouse BBO recorder options") != std::string::npos);
+
+  auto binance_equity = options();
+  binance_equity.selectors = {
+      {md::Venue::Binance, md::ProductType::Equity}};
+  mds::record::ClickHouseBboRecorder binance_equity_recorder(
+      std::move(binance_equity));
+  assert(!binance_equity_recorder.start());
+
+  std::mutex rows_mutex;
+  std::vector<CapturedRow> rows;
+  auto configured = options();
+  configured.table = "equity_bbo";
+  configured.selectors = {{md::Venue::Ibkr, md::ProductType::Equity}};
+  configured.request =
+      [&](std::string_view query, std::span<const std::byte> body,
+          std::string &) {
+        if (!query.starts_with("INSERT")) return true;
+        assert(query.find("equity_bbo") != std::string_view::npos);
+        assert(query.find("instrument_id") != std::string_view::npos);
+        assert(query.find("venue_symbol") != std::string_view::npos);
+        std::lock_guard lock(rows_mutex);
+        rows.push_back(decode_row(body, "ibkr"));
+        return true;
+      };
+  mds::record::ClickHouseBboRecorder recorder(std::move(configured));
+  assert(recorder.start());
+  const auto instrument =
+      catalog(404, md::ProductType::Equity, "AAPL", md::Venue::Ibkr, "265598");
+  recorder.consume(instrument, 1'000'000'000ULL);
+  recorder.consume(bbo(404, 2, 19'050), 1'000'000'001ULL);
+  recorder.sample(2'000'000'000ULL, 2'000'000'000ULL);
+  assert(wait_for(recorder, 1));
+  recorder.sample(8'000'000'000ULL, 8'000'000'000ULL);
+  std::this_thread::sleep_for(50ms);
+  assert(recorder.metrics().stale_skips >= 1);
+  recorder.stop();
+  std::lock_guard lock(rows_mutex);
+  assert(rows.size() == 1);
+  assert(rows[0].product == "equity");
+  assert(rows[0].symbol == "AAPL");
+  assert(rows[0].bid_price == 19'050);
+  assert(rows[0].instrument_id == 404);
+  assert(rows[0].venue_symbol == "265598");
+}
+
 }  // namespace
 
 int main() {
   test_retry();
   test_stale_cutoff_and_product_isolation();
   test_origin_tagged_ticker_and_decode_failure_metric();
+  test_equity_bbo_and_rejected_selectors();
   return 0;
 }

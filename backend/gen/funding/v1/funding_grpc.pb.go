@@ -19,11 +19,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	FundingService_ListFundingRates_FullMethodName         = "/funding.v1.FundingService/ListFundingRates"
-	FundingService_BatchGetFundingRates_FullMethodName     = "/funding.v1.FundingService/BatchGetFundingRates"
-	FundingService_ListFundingSpreads_FullMethodName       = "/funding.v1.FundingService/ListFundingSpreads"
-	FundingService_ListFundingOpportunities_FullMethodName = "/funding.v1.FundingService/ListFundingOpportunities"
-	FundingService_GetFundingHistory_FullMethodName        = "/funding.v1.FundingService/GetFundingHistory"
+	FundingService_ListFundingRates_FullMethodName              = "/funding.v1.FundingService/ListFundingRates"
+	FundingService_BatchGetFundingRates_FullMethodName          = "/funding.v1.FundingService/BatchGetFundingRates"
+	FundingService_ListFundingSpreads_FullMethodName            = "/funding.v1.FundingService/ListFundingSpreads"
+	FundingService_ListFundingOpportunities_FullMethodName      = "/funding.v1.FundingService/ListFundingOpportunities"
+	FundingService_GetFundingHistory_FullMethodName             = "/funding.v1.FundingService/GetFundingHistory"
+	FundingService_ListTradefiPerpsOpportunities_FullMethodName = "/funding.v1.FundingService/ListTradefiPerpsOpportunities"
 )
 
 // FundingServiceClient is the client API for FundingService service.
@@ -35,6 +36,7 @@ type FundingServiceClient interface {
 	ListFundingSpreads(ctx context.Context, in *ListFundingSpreadsRequest, opts ...grpc.CallOption) (*ListFundingSpreadsResponse, error)
 	ListFundingOpportunities(ctx context.Context, in *ListFundingOpportunitiesRequest, opts ...grpc.CallOption) (*ListFundingOpportunitiesResponse, error)
 	GetFundingHistory(ctx context.Context, in *GetFundingHistoryRequest, opts ...grpc.CallOption) (*GetFundingHistoryResponse, error)
+	ListTradefiPerpsOpportunities(ctx context.Context, in *ListTradefiPerpsOpportunitiesRequest, opts ...grpc.CallOption) (*ListTradefiPerpsOpportunitiesResponse, error)
 }
 
 type fundingServiceClient struct {
@@ -95,6 +97,16 @@ func (c *fundingServiceClient) GetFundingHistory(ctx context.Context, in *GetFun
 	return out, nil
 }
 
+func (c *fundingServiceClient) ListTradefiPerpsOpportunities(ctx context.Context, in *ListTradefiPerpsOpportunitiesRequest, opts ...grpc.CallOption) (*ListTradefiPerpsOpportunitiesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTradefiPerpsOpportunitiesResponse)
+	err := c.cc.Invoke(ctx, FundingService_ListTradefiPerpsOpportunities_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // FundingServiceServer is the server API for FundingService service.
 // All implementations must embed UnimplementedFundingServiceServer
 // for forward compatibility.
@@ -104,6 +116,7 @@ type FundingServiceServer interface {
 	ListFundingSpreads(context.Context, *ListFundingSpreadsRequest) (*ListFundingSpreadsResponse, error)
 	ListFundingOpportunities(context.Context, *ListFundingOpportunitiesRequest) (*ListFundingOpportunitiesResponse, error)
 	GetFundingHistory(context.Context, *GetFundingHistoryRequest) (*GetFundingHistoryResponse, error)
+	ListTradefiPerpsOpportunities(context.Context, *ListTradefiPerpsOpportunitiesRequest) (*ListTradefiPerpsOpportunitiesResponse, error)
 	mustEmbedUnimplementedFundingServiceServer()
 }
 
@@ -128,6 +141,9 @@ func (UnimplementedFundingServiceServer) ListFundingOpportunities(context.Contex
 }
 func (UnimplementedFundingServiceServer) GetFundingHistory(context.Context, *GetFundingHistoryRequest) (*GetFundingHistoryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetFundingHistory not implemented")
+}
+func (UnimplementedFundingServiceServer) ListTradefiPerpsOpportunities(context.Context, *ListTradefiPerpsOpportunitiesRequest) (*ListTradefiPerpsOpportunitiesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListTradefiPerpsOpportunities not implemented")
 }
 func (UnimplementedFundingServiceServer) mustEmbedUnimplementedFundingServiceServer() {}
 func (UnimplementedFundingServiceServer) testEmbeddedByValue()                        {}
@@ -240,6 +256,24 @@ func _FundingService_GetFundingHistory_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FundingService_ListTradefiPerpsOpportunities_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTradefiPerpsOpportunitiesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FundingServiceServer).ListTradefiPerpsOpportunities(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FundingService_ListTradefiPerpsOpportunities_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FundingServiceServer).ListTradefiPerpsOpportunities(ctx, req.(*ListTradefiPerpsOpportunitiesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // FundingService_ServiceDesc is the grpc.ServiceDesc for FundingService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -266,6 +300,10 @@ var FundingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetFundingHistory",
 			Handler:    _FundingService_GetFundingHistory_Handler,
+		},
+		{
+			MethodName: "ListTradefiPerpsOpportunities",
+			Handler:    _FundingService_ListTradefiPerpsOpportunities_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

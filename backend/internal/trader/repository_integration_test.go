@@ -2,6 +2,7 @@ package trader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"selfquant/backend/internal/database"
+	"selfquant/backend/internal/trader/exchange"
 )
 
 func TestCreateIntentIntegration(t *testing.T) {
@@ -160,5 +162,63 @@ func TestCreateIntentIntegration(t *testing.T) {
 	}
 	if fillCount != 2 {
 		t.Fatalf("fill count=%d want=2", fillCount)
+	}
+
+	conflictInput := input
+	conflictInput.ID = ""
+	conflictInput.ClientOrderID = ""
+	conflictInput.RequestFingerprint = "other-fingerprint"
+	replayedConflict, inserted, err := repository.CreateIntent(ctx, conflictInput)
+	if err != nil || inserted || replayedConflict.ID != created.ID {
+		t.Fatalf(
+			"different fingerprint inserted=%v id=%s want=%s err=%v",
+			inserted, replayedConflict.ID, created.ID, err,
+		)
+	}
+	if replayedConflict.RequestFingerprint != "direct-fingerprint" {
+		t.Fatalf("fingerprint overwritten: %s", replayedConflict.RequestFingerprint)
+	}
+	var orderCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM trader_orders WHERE idempotency_key=$1`, input.IdempotencyKey,
+	).Scan(&orderCount); err != nil {
+		t.Fatal(err)
+	}
+	if orderCount != 1 {
+		t.Fatalf("order count=%d want=1", orderCount)
+	}
+
+	instrument := testInstrument()
+	instrument.ID = instrumentID
+	adapter := &stubAdapter{place: exchange.Result{VenueOrderID: "v1", Status: "open"}}
+	service := NewService(
+		repository,
+		stubCatalog{item: instrument},
+		stubCredentials{owner: "admin", item: Credentials{
+			TradingAccountID: accountID, ProductName: "Direct", Exchange: "binance", AccountName: "main",
+		}},
+		exchange.NewTestRegistry(map[string]exchange.Adapter{"binance": adapter}),
+		time.Second,
+		nil,
+	)
+	firstOrder, err := service.PlaceOrder(ctx, PlaceOrderInput{
+		Token: "tok", TradingAccountID: accountID, InstrumentID: instrumentID, Side: "buy",
+		OrderType: "limit", Quantity: "0.001", Price: "100.0", IdempotencyKey: "svc-idem-key",
+	})
+	if err != nil {
+		t.Fatalf("service first: %+v err=%v", firstOrder, err)
+	}
+	secondOrder, err := service.PlaceOrder(ctx, PlaceOrderInput{
+		Token: "tok", TradingAccountID: accountID, InstrumentID: instrumentID, Side: "buy",
+		OrderType: "limit", Quantity: "0.001", Price: "100.0", IdempotencyKey: "svc-idem-key",
+	})
+	if err != nil || secondOrder.ID != firstOrder.ID || adapter.calls != 1 {
+		t.Fatalf("service replay: %+v calls=%d err=%v", secondOrder, adapter.calls, err)
+	}
+	if _, err := service.PlaceOrder(ctx, PlaceOrderInput{
+		Token: "tok", TradingAccountID: accountID, InstrumentID: instrumentID, Side: "sell",
+		OrderType: "limit", Quantity: "0.001", Price: "100.0", IdempotencyKey: "svc-idem-key",
+	}); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("service conflict err=%v", err)
 	}
 }

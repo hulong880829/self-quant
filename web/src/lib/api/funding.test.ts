@@ -10,6 +10,7 @@ import {
   mapFundingHistoryResponse,
   mapFundingRatesLookupResponse,
   mapFundingSpreadsResponse,
+  mapTradefiPerpsResponse,
 } from "./funding";
 
 function fundingWire(overrides: Record<string, unknown> = {}) {
@@ -310,5 +311,79 @@ describe("funding spread mapping and ETag", () => {
         },
       }),
     );
+  });
+});
+
+function tradefiWire(primaryExchange: unknown, symbol = "AAPL", conId = "265598") {
+  const spot: Record<string, unknown> = {
+    exchange: "IBKR",
+    conId,
+    localSymbol: symbol,
+    tradingClass: symbol,
+  };
+  if (primaryExchange !== undefined) {
+    spot.primaryExchange = primaryExchange;
+  }
+  return {
+    id: `${symbol}-${conId}`,
+    stockSymbol: symbol,
+    spot,
+    perpetual: {
+      exchange: "Binance",
+      exchangeSymbol: `${symbol}USDT`,
+      baseAsset: symbol,
+      quoteAsset: "USDT",
+    },
+    fundingRate: "0.0001",
+    perpetualFundingAnnualized: "0.11",
+    nextFundingAt: "2026-10-08T08:00:00Z",
+    fundingIntervalSeconds: 28800,
+    turnover24hUsd: "5000000",
+    volume24hBase: "10",
+    positionQuantity: "1",
+    positionNotionalUsd: "2000000",
+    cumulative24h: "0.002",
+    cumulative7d: "0.01",
+    sourceUpdatedAt: "2026-10-08T01:00:00Z",
+    verifiedAt: "2026-10-08T01:00:00Z",
+  };
+}
+
+function tradefiResponse(rows: unknown[]) {
+  return {
+    data: rows,
+    meta: {
+      total: rows.length,
+      snapshotVersion: "tradefi-1",
+      serverTime: "2026-10-08T01:00:00Z",
+    },
+  };
+}
+
+describe("tradefi perps mapping", () => {
+  it("keeps NASDAQ and accepts an empty primary exchange", () => {
+    const snapshot = mapTradefiPerpsResponse(
+      tradefiResponse([
+        tradefiWire("NASDAQ"),
+        tradefiWire("", "XAUUSD", "69067924"),
+        tradefiWire(null, "EURUSD", "12087792"),
+        tradefiWire(undefined, "USDJPY", "15016062"),
+      ]),
+    );
+    expect(snapshot.meta.total).toBe(snapshot.data.length);
+    expect(snapshot.data.map((row) => [row.stockSymbol, row.primaryExchange, row.conId])).toEqual([
+      ["AAPL", "NASDAQ", "265598"],
+      ["XAUUSD", "", "69067924"],
+      ["EURUSD", "", "12087792"],
+      ["USDJPY", "", "15016062"],
+    ]);
+  });
+
+  it("rejects a primary exchange that is not a string", () => {
+    for (const value of [1, ["NASDAQ"], { exchange: "NASDAQ" }]) {
+      expect(() => mapTradefiPerpsResponse(tradefiResponse([tradefiWire(value)]))).toThrow(
+        /primaryExchange 必须是字符串/,
+      );
+    }
   });
 });

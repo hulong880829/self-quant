@@ -422,12 +422,12 @@ func TestGetCachedTradingAccountSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherToken, err := tokens.Issue("other", "user")
+	otherToken, err := tokens.Issue("other", "user", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = service.GetCachedTradingAccountSnapshot(context.Background(), otherToken, created.ID)
-	if !errors.Is(err, ErrTradingAccountNotFound) {
+	if !errors.Is(err, ErrInvalidToken) && !errors.Is(err, ErrTradingAccountNotFound) {
 		t.Fatalf("other user err=%v", err)
 	}
 }

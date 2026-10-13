@@ -12,6 +12,7 @@ service FundingService {
   rpc ListFundingSpreads(ListFundingSpreadsRequest) returns (ListFundingSpreadsResponse);
   rpc ListFundingOpportunities(ListFundingOpportunitiesRequest) returns (ListFundingOpportunitiesResponse);
   rpc GetFundingHistory(GetFundingHistoryRequest) returns (GetFundingHistoryResponse);
+  rpc ListTradefiPerpsOpportunities(ListTradefiPerpsOpportunitiesRequest) returns (ListTradefiPerpsOpportunitiesResponse);
 }
 
 message ListFundingRatesRequest {}
@@ -184,4 +185,52 @@ message GetFundingHistoryRequest {
 
 message GetFundingHistoryResponse {
   repeated FundingHistoryPoint items = 1;
+}
+
+message ListTradefiPerpsOpportunitiesRequest {}
+
+message TradefiPerpLeg {
+  string exchange = 1;
+  string exchange_symbol = 2;
+  string base_asset = 3;
+  string quote_asset = 4;
+  string funding_rate = 5;
+  string perpetual_funding_annualized = 6;
+  int32 funding_interval_seconds = 7;
+  google.protobuf.Timestamp next_funding_at = 8;
+  string volume_24h_base = 9;
+  string turnover_24h_usd = 10;
+  string position_quantity = 11;
+  string position_notional_usd = 12;
+  optional string next_funding_rate = 13;
+  string cumulative_24h = 14;
+  string cumulative_7d = 15;
+  optional bool history_24h_complete = 16;
+  optional bool history_7d_complete = 17;
+  google.protobuf.Timestamp source_updated_at = 18;
+  bool stale = 19;
+}
+
+message TradefiSpotLeg {
+  string exchange = 1;
+  string symbol = 2;
+  int64 con_id = 3;
+  string primary_exchange = 4;
+  string local_symbol = 5;
+  string trading_class = 6;
+}
+
+message TradefiPerpsOpportunity {
+  string stock_symbol = 1;
+  TradefiSpotLeg spot = 2;
+  TradefiPerpLeg perpetual = 3;
+  google.protobuf.Timestamp verified_at = 4;
+  string price_multiplier = 5;
+}
+
+message ListTradefiPerpsOpportunitiesResponse {
+  repeated TradefiPerpsOpportunity items = 1;
+  int32 total = 2;
+  string snapshot_version = 3;
+  google.protobuf.Timestamp server_time = 4;
 }

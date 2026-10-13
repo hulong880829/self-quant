@@ -173,7 +173,8 @@ func TestNormalizeArbitrageInputOneShotEntryDirection(t *testing.T) {
 		TargetNotional:     "1000",
 		ExecutionMode:      "maker_then_hedge",
 		RunMode:            "one_shot",
-		ExitPolicy:         "annualized",
+		ExitPolicy:         "time",
+		ExitAfterSeconds:   86400,
 		ExitAnnualizedRate: "0.15",
 	}
 
@@ -238,7 +239,8 @@ func TestNormalizeArbitrageInputOneShotIgnoresThresholds(t *testing.T) {
 		TargetNotional:     "1000",
 		ExecutionMode:      "maker_then_hedge",
 		RunMode:            "one_shot",
-		ExitPolicy:         "annualized",
+		ExitPolicy:         "time",
+		ExitAfterSeconds:   86400,
 		ExitAnnualizedRate: "0.15",
 	}
 	cases := []struct {
@@ -291,6 +293,22 @@ func TestNormalizeArbitrageInputOneShotHoldTime(t *testing.T) {
 	input.ExitAfterSeconds = 123
 	if _, err := normalizeArbitrageInput(input); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("err=%v", err)
+	}
+	annualizedOnly := base
+	annualizedOnly.ExitPolicy = "annualized"
+	annualizedOnly.ExitAnnualizedRate = "0.15"
+	if _, err := normalizeArbitrageInput(annualizedOnly); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("annualized-only policy err=%v", err)
+	}
+	withRate := base
+	withRate.ExitAfterSeconds = 86400
+	withRate.ExitAnnualizedRate = "0.15"
+	got, err := normalizeArbitrageInput(withRate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExitPolicy != "time" || got.ExitAnnualizedRate != "0.15" {
+		t.Fatalf("time+rate got=%+v", got)
 	}
 }
 
@@ -1088,6 +1106,19 @@ func TestLastCloseClipMustMatchFills(t *testing.T) {
 	if lastCloseClipMustMatchFills(combo, execution) {
 		t.Fatal("non-flattening last-clip must not require fill match")
 	}
+	flattenCombo := lastClipCloseCombination("bid")
+	flattenCombo.Status = "running"
+	flattenCombo.RunMode = "one_shot"
+	flattenCombo.OneShotPhase = "exiting"
+	flattenExecution := execution
+	flattenExecution.ID = "flatten-exec"
+	orders := []Order{{
+		ArbitrageExecutionID: flattenExecution.ID,
+		IdempotencyKey:       oneShotFinalFlattenIdempotencyKey(flattenExecution.ID, "a"),
+	}}
+	if lastCloseClipMustMatchFillsOrders(flattenCombo, flattenExecution, orders) {
+		t.Fatal("one-shot final flatten must not require matching fills")
+	}
 }
 
 func TestCloseFlattenQuantityUsesMarketStep(t *testing.T) {
@@ -1211,8 +1242,16 @@ func TestEvaluateOneShotDustResidualFiveAcceptedTwentyUnsafe(t *testing.T) {
 		InstrumentA: instrument, InstrumentB: instrument,
 		PriceB: decimal.NewFromInt(1),
 	})
-	if accepted != oneShotDustAccepted {
+	if accepted != oneShotDustRetry {
 		t.Fatalf("5U verdict=%s", accepted)
+	}
+	stepZero := oneShotDustTestCombo("exiting", "0", "-0.4", "-0.4")
+	if got := evaluateOneShotDust(oneShotDustInput{
+		Combination: stepZero, Phase: "exiting",
+		InstrumentA: instrument, InstrumentB: instrument,
+		PriceB: decimal.NewFromInt(1),
+	}); got != oneShotDustAccepted {
+		t.Fatalf("step-zero verdict=%s", got)
 	}
 	combo20 := oneShotDustTestCombo("exiting", "0", "-20", "-20")
 	if got := evaluateOneShotDust(oneShotDustInput{

@@ -342,9 +342,60 @@ Event RequestAndAwait(LiveTransport& transport, std::uint64_t id,
   return Await(transport);
 }
 
+void TestWebsocketConnectTimeoutDeadline() {
+  SSL_CTX* raw = SSL_CTX_new(TLS_client_method());
+  Require(raw != nullptr, "hanging websocket client context");
+  net::SharedSslContext context(raw, net::SslCtxDeleter{});
+  SSL_CTX_set_min_proto_version(raw, TLS1_2_VERSION);
+  SSL_CTX_set_verify(raw, SSL_VERIFY_NONE, nullptr);
+
+  const int listener = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  Require(listener >= 0, "hanging websocket listener");
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = 0;
+  Require(::bind(listener, reinterpret_cast<sockaddr*>(&address),
+                 sizeof(address)) == 0 &&
+              ::listen(listener, 1) == 0,
+          "hanging websocket bind");
+  socklen_t length = sizeof(address);
+  Require(::getsockname(listener, reinterpret_cast<sockaddr*>(&address),
+                        &length) == 0,
+          "hanging websocket port");
+  const std::string service = std::to_string(ntohs(address.sin_port));
+
+  oms::exchange::live::Config config{};
+  config.rest = {"127.0.0.1", service};
+  config.websocket = config.rest;
+  LiveTransport transport(context, config);
+  LiveTransport::PolymarketAdapter adapter(
+      transport, std::chrono::seconds(5), "/ws/user", "",
+      std::chrono::seconds(10));
+  Require(adapter.request_timeout() == std::chrono::seconds(5),
+          "REST timeout getter");
+  Require(adapter.websocket_connect_timeout() == std::chrono::seconds(10),
+          "WSS timeout getter");
+
+  const auto before = LiveTransport::Clock::now();
+  Require(adapter.request_reconnect() == oms::exchange::AdapterResult::Ok,
+          "request_reconnect start");
+  const auto after = LiveTransport::Clock::now();
+  const auto due_ns = transport.next_deadline_ns();
+  Require(due_ns != 0, "websocket deadline was not published");
+  const auto due =
+      LiveTransport::Clock::time_point(std::chrono::nanoseconds(due_ns));
+  Require(due >= before + std::chrono::seconds(10) - 200ms &&
+              due <= after + std::chrono::seconds(10) + 200ms,
+          "request_reconnect deadline is not ~10s");
+  Require(due >= before + 6s, "request_reconnect still used REST 5s");
+  ::close(listener);
+}
+
 }  // namespace
 
 int main() {
+  TestWebsocketConnectTimeoutDeadline();
   Certificate identity;
   LoopbackServer server(identity);
   oms::exchange::live::Config config{};

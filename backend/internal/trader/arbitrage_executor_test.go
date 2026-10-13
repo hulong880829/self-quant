@@ -43,6 +43,20 @@ type executorFailStore struct {
 		AppendEvent(context.Context, string, string, map[string]any) error
 		GetByOwner(context.Context, string, string) (Order, error)
 	}
+	flattenFinalizeCalls  int
+	exited                bool
+	exitedWithDust        bool
+	persistFinalCalls     int
+	persistFinalErr       error
+	closedAfterMetrics    int
+	runtimeUpdates        int
+	claimCircuitCalls     int
+	lastCircuitClaim      ClaimCircuitRecoveryExecutionInput
+	completeCircuitCalls  int
+	completeCircuitOK     bool
+	completeCircuitErr    error
+	lastCircuitClose      circuitOpenRecoveryCloseRequest
+	positionFromBaseCalls int
 }
 
 type makerHedgeStore struct {
@@ -183,6 +197,10 @@ func (s *executorFailStore) UpdateArbitrageExecution(
 		return ArbitrageExecution{}, ErrArbitrageExecutionTerminal
 	}
 	s.execution = execution
+	if s.activeExecution != nil && s.activeExecution.ID == execution.ID {
+		copied := execution
+		s.activeExecution = &copied
+	}
 	for index := range s.executions {
 		if s.executions[index].ID == execution.ID {
 			if terminalArbitrageExecutionStatus(s.executions[index].Status) &&
@@ -240,8 +258,49 @@ func (s *executorFailStore) UpdateArbitrageCombinationRuntime(
 ) (ArbitrageCombination, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.runtimeUpdates++
 	s.combo = item
 	return item, nil
+}
+
+func (s *executorFailStore) PersistFinalArbitragePositionMetrics(
+	_ context.Context, id string, expectedVersion int64, _ bool, _ time.Time,
+) (ArbitrageCombination, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.persistFinalCalls++
+	if s.persistFinalErr != nil {
+		return s.combo, s.persistFinalErr
+	}
+	if s.combo.ID == "" {
+		s.combo.ID = id
+	}
+	if expectedVersion != 0 {
+		s.combo.Version = expectedVersion
+	}
+	return s.combo, nil
+}
+
+func (s *executorFailStore) MarkArbitrageClosedAndScheduleFinalMetrics(
+	_ context.Context, id string, expectedVersion int64,
+) (ArbitrageCombination, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.combo.ID != id || s.combo.Version != expectedVersion || s.combo.Status != "closing" {
+		return s.combo, false, nil
+	}
+	s.closedAfterMetrics++
+	s.combo.Status = "closed"
+	s.combo.Version++
+	if strings.EqualFold(s.combo.RunMode, "one_shot") {
+		s.combo.OneShotPhase = "exited"
+	}
+	if s.combo.FinalMetricsStatus != finalMetricsCompleted {
+		s.combo.FinalMetricsStatus = finalMetricsPending
+		s.combo.FinalMetricsRetryFinite = true
+		s.combo.FinalMetricsNextRetryAt = time.Now().UTC()
+	}
+	return s.combo, true, nil
 }
 
 func (s *executorFailStore) FinalizeConfirmedAbsentZeroFillExecution(
@@ -270,6 +329,108 @@ func (s *executorFailStore) GetActiveArbitrageExecution(
 		return *s.activeExecution, nil
 	}
 	return ArbitrageExecution{}, ErrNotFound
+}
+
+func (s *executorFailStore) ClaimArbitrageExecution(
+	_ context.Context, _ ArbitrageExecution,
+) (ArbitrageExecution, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.combo.RuntimeState == "manual_intervention" || s.combo.CircuitOpen {
+		return ArbitrageExecution{}, false, nil
+	}
+	return ArbitrageExecution{}, false, nil
+}
+
+func (s *executorFailStore) ClaimCircuitRecoveryExecution(
+	_ context.Context, in ClaimCircuitRecoveryExecutionInput,
+) (ArbitrageExecution, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.claimCircuitCalls++
+	s.lastCircuitClaim = in
+	if s.combo.Version != in.ExpectedVersion || s.combo.Status != "running" ||
+		!s.combo.CircuitOpen || arbitrageFlattening(s.combo) {
+		return ArbitrageExecution{}, false, nil
+	}
+	phase := strings.ToLower(strings.TrimSpace(s.combo.OneShotPhase))
+	if phase == "waiting_exit" || phase == "exiting" || phase == "exited" {
+		return ArbitrageExecution{}, false, nil
+	}
+	if s.activeExecution != nil && !terminalArbitrageExecutionStatus(s.activeExecution.Status) {
+		return ArbitrageExecution{}, false, nil
+	}
+	var failed ArbitrageExecution
+	foundFailed := false
+	for _, item := range s.executions {
+		if item.ID == in.FailedExecutionID {
+			failed = item
+			foundFailed = true
+			break
+		}
+	}
+	if !foundFailed && s.execution.ID == in.FailedExecutionID {
+		failed = s.execution
+		foundFailed = true
+	}
+	if !foundFailed {
+		return ArbitrageExecution{}, false, nil
+	}
+	if _, ok := quoteRecoveryOrder(failed, s.orders); !ok {
+		return ArbitrageExecution{}, false, nil
+	}
+	for _, order := range s.orders {
+		if circuitOrderNeedsConfirm(order) {
+			return ArbitrageExecution{}, false, nil
+		}
+	}
+	execution := in.Execution
+	if execution.ID == "" {
+		execution.ID = newCircuitRecoveryID()
+	}
+	execution.Status = "claimed"
+	s.executions = append(s.executions, execution)
+	copied := execution
+	s.activeExecution = &copied
+	s.execution = execution
+	s.combo.Version++
+	return execution, true, nil
+}
+
+func (s *executorFailStore) CompleteCircuitOpenRecovery(
+	_ context.Context, request circuitOpenRecoveryCloseRequest,
+) (ArbitrageCombination, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completeCircuitCalls++
+	s.lastCircuitClose = request
+	if !s.completeCircuitOK {
+		return s.combo, false, s.completeCircuitErr
+	}
+	if s.combo.Version != request.ExpectedVersion || !s.combo.CircuitOpen ||
+		terminalArbitrageExecutionStatus(s.execution.Status) ||
+		!circuitRecoverySnapshotFresh(request.RecoveryStartedAt, request.ObservedAt, time.Now().UTC()) {
+		return s.combo, false, nil
+	}
+	if request.Kind == circuitCloseFilled {
+		s.execution.LegAFilledQuantity = request.LegAFilled
+		s.execution.LegBFilledQuantity = request.LegBFilled
+		s.execution.DeltaNotional = request.DeltaNotional
+	}
+	s.execution.Status = "completed"
+	s.execution.ErrorMessage = ""
+	s.combo.CircuitOpen = false
+	s.combo.RuntimeState = "monitoring"
+	s.combo.PositionUncertain = false
+	s.combo.ErrorMessage = ""
+	s.combo.Version++
+	if s.activeExecution != nil && s.activeExecution.ID == s.execution.ID {
+		copied := s.execution
+		s.activeExecution = &copied
+	}
+	s.eventTypes = append(s.eventTypes, request.EventType)
+	s.eventPayloads = append(s.eventPayloads, request.Payload)
+	return s.combo, true, nil
 }
 
 func (s *executorFailStore) FailLastCloseClipUnbalanced(
@@ -649,6 +810,160 @@ func (s *executorFailStore) ListArbitrageOrders(
 	return items, nil
 }
 
+func (s *executorFailStore) ClaimOneShotFinalFlattenExecution(
+	_ context.Context, claim OneShotFinalFlattenClaim,
+) (ArbitrageExecution, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !validateOneShotFinalFlattenClaim(s.combo, claim, time.Now().UTC()) {
+		return ArbitrageExecution{}, false, nil
+	}
+	execution := claim.Execution
+	s.execution = execution
+	copied := execution
+	s.activeExecution = &copied
+	return execution, true, nil
+}
+
+func (s *executorFailStore) FinalizeOneShotFinalFlattenExecution(
+	_ context.Context, executionID string,
+) (oneShotFinalFlattenFinalizeResult, error) {
+	orders, err := s.ListArbitrageOrders(context.Background(), "", "")
+	if err != nil {
+		return oneShotFinalFlattenFinalizeResult{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flattenFinalizeCalls++
+	execution := s.execution
+	if s.activeExecution != nil && s.activeExecution.ID == executionID {
+		execution = *s.activeExecution
+	}
+	if !oneShotFinalFlattenOrdersTerminal(orders, executionID) {
+		return oneShotFinalFlattenFinalizeResult{
+			Combination: s.combo, Execution: execution,
+		}, ErrArbitrageReconciling
+	}
+	if terminalArbitrageExecutionStatus(execution.Status) {
+		return oneShotFinalFlattenFinalizeResult{
+			Combination: s.combo, Execution: execution,
+		}, nil
+	}
+	s.combo = applyOneShotFinalFlattenLedger(s.combo, orders, executionID)
+	fillA, fillB, notional := oneShotFinalFlattenFillTotals(orders, executionID)
+	execution.LegAFilledQuantity = fillA.String()
+	execution.LegBFilledQuantity = fillB.String()
+	execution.DeltaNotional = notional.String()
+	if fillA.IsPositive() || fillB.IsPositive() {
+		execution.Status = "completed"
+	} else {
+		execution.Status = "failed"
+	}
+	execution.ClosedAt = time.Now().UTC()
+	if notional.IsPositive() {
+		s.combo.CumulativeTurnoverNotional = parseDecimal(s.combo.CumulativeTurnoverNotional).
+			Add(notional.Abs()).String()
+	}
+	s.execution = execution
+	copied := execution
+	s.activeExecution = &copied
+	for index := range s.executions {
+		if s.executions[index].ID == execution.ID {
+			s.executions[index] = execution
+		}
+	}
+	return oneShotFinalFlattenFinalizeResult{
+		Combination: s.combo, Execution: execution, Applied: true,
+	}, nil
+}
+
+func (s *executorFailStore) MarkOneShotWaitingExit(
+	_ context.Context, id string, version int64, scheduled time.Time,
+) (ArbitrageCombination, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.combo.ID != id || s.combo.Version != version {
+		return s.combo, false, nil
+	}
+	s.combo.OneShotPhase = "waiting_exit"
+	s.combo.ScheduledExitAt = scheduled
+	s.combo.Version++
+	return s.combo, true, nil
+}
+
+func (s *executorFailStore) MarkOneShotExiting(
+	_ context.Context, id string, version int64, _ string, _ map[string]any,
+) (ArbitrageCombination, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.combo.ID != id || s.combo.Version != version {
+		return s.combo, false, nil
+	}
+	s.combo.OneShotPhase = "exiting"
+	s.combo.Version++
+	return s.combo, true, nil
+}
+
+func (s *executorFailStore) MarkOneShotExited(
+	_ context.Context, id string, version int64,
+) (ArbitrageCombination, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.combo.ID != id || s.combo.Version != version ||
+		s.combo.Status != "running" || s.combo.OneShotPhase != "exiting" ||
+		!combinationLooksFlat(s.combo) {
+		return s.combo, false, nil
+	}
+	s.combo.OneShotPhase = "exited"
+	s.combo.Version++
+	s.exited = true
+	if s.combo.FinalMetricsStatus != finalMetricsCompleted {
+		s.combo.FinalMetricsStatus = finalMetricsPending
+		s.combo.FinalMetricsRetryFinite = true
+	}
+	return s.combo, true, nil
+}
+
+func (s *executorFailStore) MarkOneShotExitedWithDust(
+	_ context.Context, id string, version int64, expectedA, expectedB, expectedCarry string,
+) (ArbitrageCombination, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.combo.ID != id || s.combo.Version != version ||
+		s.combo.Status != "running" || s.combo.RunMode != "one_shot" ||
+		s.combo.OneShotPhase != "exiting" ||
+		s.combo.PositionUncertain {
+		return s.combo, false, nil
+	}
+	if !parseDecimal(s.combo.LegABasePosition).Equal(parseDecimal(expectedA)) ||
+		!parseDecimal(s.combo.LegBBasePosition).Equal(parseDecimal(expectedB)) ||
+		!parseDecimal(s.combo.CarryBaseQuantity).Equal(parseDecimal(expectedCarry)) {
+		return s.combo, false, nil
+	}
+	s.combo.OneShotPhase = "exited"
+	s.combo.Version++
+	s.exitedWithDust = true
+	if s.combo.FinalMetricsStatus != finalMetricsCompleted {
+		s.combo.FinalMetricsStatus = finalMetricsPartial
+		s.combo.FinalMetricsRetryFinite = false
+		s.combo.FinalMetricsLastError = oneShotDustMetricsSkipped
+		s.combo.FinalMetricsCompletedAt = time.Time{}
+	}
+	return s.combo, true, nil
+}
+
+func (s *executorFailStore) ArbitrageDustOrderGate(
+	context.Context, string, time.Time,
+) (liveOrder, unreconciled, liveExecution bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeExecution != nil &&
+		!terminalArbitrageExecutionStatus(s.activeExecution.Status) {
+		liveExecution = true
+	}
+	return false, false, liveExecution, nil
+}
+
 func (s *executorFailStore) ListArbitrageExecutions(
 	context.Context, string, int,
 ) ([]ArbitrageExecution, error) {
@@ -665,6 +980,47 @@ func (s *executorFailStore) AppendArbitrageEvent(
 	s.events++
 	s.eventTypes = append(s.eventTypes, eventType)
 	s.eventPayloads = append(s.eventPayloads, payload)
+	return nil
+}
+
+func (s *executorFailStore) RecordLastCloseRecoveryBlocked(
+	_ context.Context, _, _, eventType string,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch eventType {
+	case lastCloseRecoveryOrderNotTerminalEvent, lastCloseRecoveryFillMismatchEvent:
+	default:
+		return ErrInvalidArgument
+	}
+	for _, existing := range s.eventTypes {
+		if existing == eventType {
+			return nil
+		}
+	}
+	s.events++
+	s.eventTypes = append(s.eventTypes, eventType)
+	s.eventPayloads = append(s.eventPayloads, map[string]any{"event": eventType})
+	return nil
+}
+
+func (s *executorFailStore) RecordLastCloseResidualRecovered(
+	_ context.Context, _, _ string, makerFill, residualFill, effectiveHedgeFill string,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, eventType := range s.eventTypes {
+		if eventType == lastCloseResidualRecoveredEvent {
+			return nil
+		}
+	}
+	s.events++
+	s.eventTypes = append(s.eventTypes, lastCloseResidualRecoveredEvent)
+	s.eventPayloads = append(s.eventPayloads, map[string]any{
+		"makerFill":          makerFill,
+		"residualFill":       residualFill,
+		"effectiveHedgeFill": effectiveHedgeFill,
+	})
 	return nil
 }
 
@@ -696,7 +1052,33 @@ func (s *executorFailStore) syncPairedExecutionFills(ctx context.Context, execut
 	if err != nil {
 		return
 	}
-	legA, legB, found := pairedArbitrageFillTotals(orders, executionID)
+	s.mu.Lock()
+	combo := s.combo
+	execution := s.execution
+	if s.activeExecution != nil && s.activeExecution.ID == executionID {
+		execution = *s.activeExecution
+	} else if execution.ID != executionID {
+		for _, item := range s.executions {
+			if item.ID == executionID {
+				execution = item
+				break
+			}
+		}
+	}
+	s.mu.Unlock()
+	var legA, legB decimal.Decimal
+	var found bool
+	if execution.ID == executionID && lastCloseClipClosingEligible(combo, execution) {
+		if strings.EqualFold(strings.TrimSpace(combo.ExecutionMode), "simultaneous_market") {
+			legA, legB, found = aggregateSimultaneousMarketLastCloseFills(executionID, orders)
+		} else {
+			alloc := allocateLastCloseClipResidualFills(orders, combo, execution)
+			found = alloc.Found
+			legA, legB = alloc.FillA, alloc.FillB
+		}
+	} else {
+		legA, legB, found = pairedArbitrageFillTotals(orders, executionID)
+	}
 	if !found {
 		return
 	}
@@ -721,6 +1103,7 @@ func (s *executorFailStore) UpdateArbitragePositionFromBase(
 ) (ArbitrageCombination, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.positionFromBaseCalls++
 	return s.combo, nil
 }
 
@@ -784,14 +1167,27 @@ func (s *closeOrderStore) CreateIntent(
 	if order.Status == "" {
 		order.Status = "pending"
 	}
+	if order.CreatedAt.IsZero() {
+		order.CreatedAt = time.Now().UTC()
+	}
+	order.UpdatedAt = time.Now().UTC()
 	s.orders = append(s.orders, order)
 	return order, true, nil
 }
 
 func (s *closeOrderStore) CreateArbitrageIntents(
-	_ context.Context, orders []Order,
+	ctx context.Context, orders []Order,
 ) ([]Order, []bool, error) {
-	return orders, make([]bool, len(orders)), nil
+	stored := make([]Order, len(orders))
+	created := make([]bool, len(orders))
+	for index, order := range orders {
+		item, inserted, err := s.CreateIntent(ctx, order)
+		if err != nil {
+			return nil, nil, err
+		}
+		stored[index], created[index] = item, inserted
+	}
+	return stored, created, nil
 }
 
 func (s *closeOrderStore) GetByOwner(
@@ -834,6 +1230,7 @@ func (s *closeOrderStore) UpdateResult(
 		}
 		s.orders[index].ErrorCode = result.ErrorCode
 		s.orders[index].ErrorMessage = result.ErrorMessage
+		s.orders[index].UpdatedAt = time.Now().UTC()
 		return s.orders[index], nil
 	}
 	return Order{}, ErrNotFound
@@ -950,6 +1347,32 @@ func (a *flattenVenueAdapter) snapshot() []exchange.OrderRequest {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]exchange.OrderRequest(nil), a.requests...)
+}
+
+func seedLastClipMakerOrder(
+	t *testing.T,
+	store *postOnlyOrderStore,
+	executionID, owner, quantity, exchangeName string,
+) {
+	t.Helper()
+	order := Order{
+		OwnerUsername:        owner,
+		ArbitrageExecutionID: executionID,
+		ArbitrageRole:        "maker",
+		ArbitrageLeg:         "a",
+		IdempotencyKey:       "arb:" + executionID + ":a:maker:0",
+		Status:               "filled",
+		Quantity:             quantity,
+		FilledQuantity:       quantity,
+		Side:                 "sell",
+		OrderType:            "limit",
+		TradingAccountID:     1,
+		Exchange:             exchangeName,
+		InstrumentID:         101,
+	}
+	if _, _, err := store.CreateIntent(context.Background(), order); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestArbitrageExecutorRiskLimitWithoutExposureIsSilent(t *testing.T) {
@@ -1234,6 +1657,7 @@ func TestArbitrageExecutorOneShotExitingRejectKeepsRunningAndBacksOff(t *testing
 		},
 	}
 	service := NewService(orderStore, nil, nil, nil, time.Second, nil)
+	seedLastClipMakerOrder(t, orderStore, "exec-one-shot-exit-reject", combo.OwnerUsername, "20", "bybit")
 	executor := NewArbitrageExecutor(
 		store, orderStore, service,
 		silentRiskCatalog{101: instrumentA, 202: instrumentB},
@@ -1304,6 +1728,33 @@ func TestArbitrageExecutorCloseDoesNotRequireFailedStatus(t *testing.T) {
 	}
 	if store.combo.Status != "closed" {
 		t.Fatalf("status=%s", store.combo.Status)
+	}
+}
+
+func TestArbitrageExecutorClosePersistsFinalMetricsBeforeCAS(t *testing.T) {
+	combo := ArbitrageCombination{
+		ID: "46c5b9e3-3fdd-4930-b529-c2d902b61736", OwnerUsername: "admin",
+		Status: "closing", Version: 9,
+	}
+	store := &executorFailStore{combo: combo}
+	executor := NewArbitrageExecutor(
+		store, nil, nil, nil, nil, nil, nil, "", time.Second, 0, 0, 0, time.Second, nil,
+	)
+	executor.ConfigureFinalMetrics(store)
+	if err := executor.CloseCombination(context.Background(), combo); err != nil {
+		t.Fatal(err)
+	}
+	if store.persistFinalCalls != 0 || store.closedAfterMetrics != 1 {
+		t.Fatalf("persist=%d closed=%d", store.persistFinalCalls, store.closedAfterMetrics)
+	}
+	if store.combo.FinalMetricsStatus != finalMetricsPending {
+		t.Fatalf("metrics=%s", store.combo.FinalMetricsStatus)
+	}
+	if store.runtimeUpdates != 0 {
+		t.Fatalf("closed must not use runtime update: %d", store.runtimeUpdates)
+	}
+	if store.combo.Status != "closed" || store.combo.Version != 10 {
+		t.Fatalf("combo=%+v", store.combo)
 	}
 }
 
@@ -1983,17 +2434,11 @@ func TestArbitrageExecutorCloseFlattensOwnedZeroMinusTen(t *testing.T) {
 	if err := executor.CloseCombination(context.Background(), combo); err != nil {
 		t.Fatal(err)
 	}
-	if store.combo.Status != "closed" {
+	if store.combo.Status != "closing" {
 		t.Fatalf("status=%s", store.combo.Status)
 	}
-	if len(adapterA.snapshot()) != 0 {
-		t.Fatalf("leg a places=%d", len(adapterA.snapshot()))
-	}
-	requests := adapterB.snapshot()
-	if len(requests) != 1 || requests[0].Side != "buy" ||
-		requests[0].OrderType != "market" || !requests[0].ReduceOnly ||
-		requests[0].Quantity != "10" {
-		t.Fatalf("leg b request=%+v", requests)
+	if len(adapterA.snapshot()) != 0 || len(adapterB.snapshot()) != 0 {
+		t.Fatalf("naked places a=%d b=%d", len(adapterA.snapshot()), len(adapterB.snapshot()))
 	}
 }
 
@@ -2006,18 +2451,11 @@ func TestArbitrageExecutorCloseFlattensOwnedSameSignBothLegs(t *testing.T) {
 	if err := executor.CloseCombination(context.Background(), combo); err != nil {
 		t.Fatal(err)
 	}
-	if store.combo.Status != "closed" {
+	if store.combo.Status != "closing" {
 		t.Fatalf("status=%s", store.combo.Status)
 	}
-	requestsA := adapterA.snapshot()
-	requestsB := adapterB.snapshot()
-	if len(requestsA) != 1 || requestsA[0].Side != "sell" ||
-		!requestsA[0].ReduceOnly || requestsA[0].Quantity != "5" {
-		t.Fatalf("leg a request=%+v", requestsA)
-	}
-	if len(requestsB) != 1 || requestsB[0].Side != "sell" ||
-		!requestsB[0].ReduceOnly || requestsB[0].Quantity != "10" {
-		t.Fatalf("leg b request=%+v", requestsB)
+	if len(adapterA.snapshot()) != 0 || len(adapterB.snapshot()) != 0 {
+		t.Fatalf("naked places a=%d b=%d", len(adapterA.snapshot()), len(adapterB.snapshot()))
 	}
 }
 
@@ -2082,26 +2520,14 @@ func TestArbitrageExecutorCloseFlattensPairedTinyUnequalLegs(t *testing.T) {
 	if err := executor.CloseCombination(context.Background(), combo); err != nil {
 		t.Fatal(err)
 	}
-	if store.combo.Status != "closed" {
+	if store.combo.Status != "closing" {
 		t.Fatalf("status=%s", store.combo.Status)
 	}
 	if combo.LegBPositionDifference != "3e-16" {
 		t.Fatalf("difference mutated: %s", combo.LegBPositionDifference)
 	}
-	requestsA := adapterA.snapshot()
-	requestsB := adapterB.snapshot()
-	if len(requestsA) != 1 || requestsA[0].Side != "sell" ||
-		!requestsA[0].ReduceOnly || requestsA[0].Quantity != "0.5" {
-		t.Fatalf("leg a request=%+v", requestsA)
-	}
-	if len(requestsB) != 1 || requestsB[0].Side != "buy" ||
-		!requestsB[0].ReduceOnly || requestsB[0].Quantity != "0.57" {
-		t.Fatalf("leg b request=%+v", requestsB)
-	}
-	for _, request := range append(requestsA, requestsB...) {
-		if request.Side == "buy" && request.Quantity == "0.07" {
-			t.Fatalf("must not buy leftover carry: %+v", request)
-		}
+	if len(adapterA.snapshot()) != 0 || len(adapterB.snapshot()) != 0 {
+		t.Fatalf("naked places a=%d b=%d", len(adapterA.snapshot()), len(adapterB.snapshot()))
 	}
 }
 
@@ -2159,18 +2585,11 @@ func TestArbitrageExecutorCloseHandoffKeyAllowsPairedTinyLeftover(t *testing.T) 
 	if err := executor.CloseCombination(context.Background(), combo); err != nil {
 		t.Fatal(err)
 	}
-	if store.combo.Status != "closed" {
+	if store.combo.Status != "closing" {
 		t.Fatalf("status=%s", store.combo.Status)
 	}
-	requestsA := adapterA.snapshot()
-	requestsB := adapterB.snapshot()
-	if len(requestsA) != 1 || requestsA[0].Side != "sell" ||
-		!requestsA[0].ReduceOnly || requestsA[0].Quantity != "1" {
-		t.Fatalf("leg a request=%+v", requestsA)
-	}
-	if len(requestsB) != 1 || requestsB[0].Side != "buy" ||
-		!requestsB[0].ReduceOnly || requestsB[0].Quantity != "2.2" {
-		t.Fatalf("leg b request=%+v", requestsB)
+	if len(adapterA.snapshot()) != 0 || len(adapterB.snapshot()) != 0 {
+		t.Fatalf("naked places a=%d b=%d", len(adapterA.snapshot()), len(adapterB.snapshot()))
 	}
 }
 
@@ -2534,14 +2953,11 @@ func TestArbitrageExecutorCloseSkipsZeroAfterStep(t *testing.T) {
 	if err := executor.CloseCombination(context.Background(), combo); err != nil {
 		t.Fatal(err)
 	}
-	if store.combo.Status != "closed" {
+	if store.combo.Status != "closing" {
 		t.Fatalf("status=%s", store.combo.Status)
 	}
-	if len(adapterA.snapshot()) != 0 {
-		t.Fatalf("leg a should skip zero after step, places=%d", len(adapterA.snapshot()))
-	}
-	if len(adapterB.snapshot()) != 1 {
-		t.Fatalf("leg b places=%d", len(adapterB.snapshot()))
+	if len(adapterA.snapshot()) != 0 || len(adapterB.snapshot()) != 0 {
+		t.Fatalf("naked places a=%d b=%d", len(adapterA.snapshot()), len(adapterB.snapshot()))
 	}
 }
 
@@ -2554,16 +2970,16 @@ func TestArbitrageExecutorClosePlaceFailureKeepsClosed(t *testing.T) {
 	if err := executor.CloseCombination(context.Background(), combo); err != nil {
 		t.Fatal(err)
 	}
-	if store.combo.Status != "closed" {
+	if store.combo.Status != "closing" {
 		t.Fatalf("status=%s", store.combo.Status)
 	}
-	if len(adapterA.snapshot()) != 1 || len(adapterB.snapshot()) != 1 {
-		t.Fatalf("places a=%d b=%d", len(adapterA.snapshot()), len(adapterB.snapshot()))
+	if len(adapterA.snapshot()) != 0 || len(adapterB.snapshot()) != 0 {
+		t.Fatalf("naked places a=%d b=%d", len(adapterA.snapshot()), len(adapterB.snapshot()))
 	}
 }
 
 func TestArbitrageExecutorCloseWriteFailurePlacesNothing(t *testing.T) {
-	combo := ownedTinyCloseCombo("0", "-10")
+	combo := closeFlattenReadyCombo()
 	store := &failClosedWriteStore{
 		closeOrderStore: &closeOrderStore{executorFailStore: &executorFailStore{combo: combo}},
 	}
@@ -2596,14 +3012,11 @@ func TestArbitrageExecutorCloseFlattenSkipsInvalidVenueQuantity(t *testing.T) {
 	if err := executor.CloseCombination(context.Background(), combo); err != nil {
 		t.Fatal(err)
 	}
-	if store.combo.Status != "closed" {
+	if store.combo.Status != "closing" {
 		t.Fatalf("status=%s", store.combo.Status)
 	}
-	if len(adapterA.snapshot()) != 1 {
-		t.Fatalf("leg a places=%d", len(adapterA.snapshot()))
-	}
-	if len(adapterB.snapshot()) != 0 {
-		t.Fatalf("leg b should skip invalid venue quantity, places=%d", len(adapterB.snapshot()))
+	if len(adapterA.snapshot()) != 0 || len(adapterB.snapshot()) != 0 {
+		t.Fatalf("naked places a=%d b=%d", len(adapterA.snapshot()), len(adapterB.snapshot()))
 	}
 }
 
@@ -2980,6 +3393,90 @@ func TestCompleteExecutionLastCloseClipUnbalancedFills(t *testing.T) {
 	}
 }
 
+func TestCompleteExecutionSimultaneousMarketLastCloseKeepsFills(t *testing.T) {
+	combo := lastClipCloseCombination("bid")
+	combo.Status = "closing"
+	combo.ExecutionMode = "simultaneous_market"
+	execution := &ArbitrageExecution{
+		ID: "exec-market-37", CombinationID: combo.ID,
+		Status: "hedging", Direction: "bid", PositionEffect: "close",
+		ReduceOnly: true, LastCloseClip: true,
+		LegAFilledQuantity: "1", LegBFilledQuantity: "1",
+	}
+	orders := []Order{
+		{
+			ID: "m-a", ArbitrageExecutionID: execution.ID, ArbitrageRole: "market",
+			ArbitrageLeg: "a", Status: "filled", FilledQuantity: "37", Side: "sell",
+		},
+		{
+			ID: "m-b", ArbitrageExecutionID: execution.ID, ArbitrageRole: "market",
+			ArbitrageLeg: "b", Status: "filled", FilledQuantity: "37", Side: "buy",
+		},
+		{
+			ID: "other", ArbitrageExecutionID: "other-exec", ArbitrageRole: "market",
+			ArbitrageLeg: "a", Status: "filled", FilledQuantity: "9", Side: "sell",
+		},
+	}
+	store := &executorFailStore{
+		combo: combo, execution: *execution, activeExecution: execution, orders: orders,
+	}
+	executor := NewArbitrageExecutor(
+		store, nil, nil, nil, nil, nil, nil, "",
+		time.Second, 0, 0, 0, time.Second, nil,
+	)
+	if err := executor.completeExecution(context.Background(), combo, execution, decimal.NewFromInt(1)); err != nil {
+		t.Fatal(err)
+	}
+	if execution.Status != "completed" ||
+		execution.LegAFilledQuantity != "37" || execution.LegBFilledQuantity != "37" {
+		t.Fatalf("execution=%+v", execution)
+	}
+	found := false
+	for i, eventType := range store.eventTypes {
+		if eventType != "execution_completed" {
+			continue
+		}
+		found = true
+		if store.eventPayloads[i]["positionDelta"] != "-37" {
+			t.Fatalf("payload=%v", store.eventPayloads[i])
+		}
+	}
+	if !found {
+		t.Fatalf("events=%v", store.eventTypes)
+	}
+
+	unbalanced := &ArbitrageExecution{
+		ID: "exec-market-unbalanced", CombinationID: combo.ID,
+		Status: "hedging", Direction: "bid", PositionEffect: "close",
+		ReduceOnly: true, LastCloseClip: true,
+	}
+	unbalancedOrders := []Order{
+		{
+			ID: "u-a", ArbitrageExecutionID: unbalanced.ID, ArbitrageRole: "market",
+			ArbitrageLeg: "a", Status: "filled", FilledQuantity: "37", Side: "sell",
+		},
+		{
+			ID: "u-b", ArbitrageExecutionID: unbalanced.ID, ArbitrageRole: "market",
+			ArbitrageLeg: "b", Status: "canceled", FilledQuantity: "20", Side: "buy",
+		},
+	}
+	unbalancedStore := &executorFailStore{
+		combo: combo, execution: *unbalanced, activeExecution: unbalanced, orders: unbalancedOrders,
+	}
+	unbalancedExecutor := NewArbitrageExecutor(
+		unbalancedStore, nil, nil, nil, nil, nil, nil, "",
+		time.Second, 0, 0, 0, time.Second, nil,
+	)
+	if err := unbalancedExecutor.completeExecution(
+		context.Background(), combo, unbalanced, decimal.NewFromInt(1),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if unbalanced.Status == "completed" || unbalanced.Status != "failed" {
+		t.Fatalf("unbalanced=%+v", unbalanced)
+	}
+}
+
 func TestPairedArbitrageFillTotalsExcludeResidualIncludeNullAndEmpty(t *testing.T) {
 	orders := []Order{
 		{ArbitrageExecutionID: "exec-1", ArbitrageLeg: "a", ArbitrageRole: "maker", FilledQuantity: "10401"},
@@ -3035,6 +3532,7 @@ func TestOneShotExitingLastClipHedgeSkipsMinNotional(t *testing.T) {
 		FilledQuantity: "10", AveragePrice: "0.2435",
 	}}
 	service := NewService(orderStore, nil, nil, nil, time.Second, nil)
+	seedLastClipMakerOrder(t, orderStore, "one-shot-exit-last-clip", combo.OwnerUsername, "10", "gate")
 	executor := NewArbitrageExecutor(
 		store, orderStore, service,
 		silentRiskCatalog{101: makerInstrument, 202: hedgeInstrument},
@@ -3103,6 +3601,7 @@ func TestOneShotExitingLastClipHedgeRejectDoesNotComplete(t *testing.T) {
 		},
 	}
 	service := NewService(orderStore, nil, nil, nil, time.Second, nil)
+	seedLastClipMakerOrder(t, orderStore, "one-shot-exit-last-clip-reject", combo.OwnerUsername, "10", "gate")
 	executor := NewArbitrageExecutor(
 		store, orderStore, service,
 		silentRiskCatalog{101: makerInstrument, 202: hedgeInstrument},

@@ -39,6 +39,20 @@ enum class LevelParseError : std::uint8_t {
   Scale,
   Price,
   Quantity,
+  Skip,
+};
+
+enum class DecimalParseResult : std::uint8_t {
+  Ok,
+  ExcessScale,
+  Invalid,
+  Overflow,
+};
+
+enum class ExcessScalePolicy : std::uint8_t {
+  Reject,
+  Floor,
+  Ceil,
 };
 
 std::string_view level_error_name(LevelParseError value) noexcept {
@@ -55,6 +69,8 @@ std::string_view level_error_name(LevelParseError value) noexcept {
     return "price";
   case LevelParseError::Quantity:
     return "quantity";
+  case LevelParseError::Skip:
+    return "skip";
   }
   return "unknown";
 }
@@ -108,10 +124,11 @@ std::string gate_subscription(std::string_view channel,
   return result;
 }
 
-bool unsigned_decimal_to_fixed(std::string_view value, std::uint8_t scale,
-                               std::int64_t &result) noexcept {
+DecimalParseResult parse_decimal_to_fixed(
+    std::string_view value, std::uint8_t scale, ExcessScalePolicy policy,
+    std::int64_t &result) noexcept {
   if (value.empty() || scale > 18) {
-    return false;
+    return DecimalParseResult::Invalid;
   }
   bool negative = false;
   std::size_t cursor = 0;
@@ -119,10 +136,11 @@ bool unsigned_decimal_to_fixed(std::string_view value, std::uint8_t scale,
     negative = true;
     cursor = 1;
   } else if (value.front() == '+') {
-    return false;
+    return DecimalParseResult::Invalid;
   }
   bool decimal = false;
   bool digit = false;
+  bool excess_nonzero = false;
   std::size_t fractional = 0;
   std::uint64_t parsed = 0;
   constexpr auto maximum =
@@ -131,24 +149,24 @@ bool unsigned_decimal_to_fixed(std::string_view value, std::uint8_t scale,
     const char character = value[cursor];
     if (character == '.') {
       if (decimal || !digit) {
-        return false;
+        return DecimalParseResult::Invalid;
       }
       decimal = true;
       continue;
     }
     if (character < '0' || character > '9') {
-      return false;
+      return DecimalParseResult::Invalid;
     }
     digit = true;
     if (decimal && fractional >= scale) {
       if (character != '0') {
-        return false;
+        excess_nonzero = true;
       }
       continue;
     }
     const auto next = static_cast<std::uint64_t>(character - '0');
     if (parsed > (maximum - next) / 10U) {
-      return false;
+      return DecimalParseResult::Overflow;
     }
     parsed = parsed * 10U + next;
     if (decimal) {
@@ -156,18 +174,35 @@ bool unsigned_decimal_to_fixed(std::string_view value, std::uint8_t scale,
     }
   }
   if (!digit || (decimal && value.back() == '.')) {
-    return false;
+    return DecimalParseResult::Invalid;
   }
   while (fractional < scale) {
     if (parsed > maximum / 10U) {
-      return false;
+      return DecimalParseResult::Overflow;
     }
     parsed *= 10U;
     ++fractional;
   }
+  if (excess_nonzero) {
+    if (policy == ExcessScalePolicy::Reject) {
+      return DecimalParseResult::ExcessScale;
+    }
+    if (policy == ExcessScalePolicy::Ceil) {
+      if (parsed >= maximum) {
+        return DecimalParseResult::Overflow;
+      }
+      ++parsed;
+    }
+  }
   result = negative ? -static_cast<std::int64_t>(parsed)
                     : static_cast<std::int64_t>(parsed);
-  return true;
+  return DecimalParseResult::Ok;
+}
+
+bool unsigned_decimal_to_fixed(std::string_view value, std::uint8_t scale,
+                               std::int64_t &result) noexcept {
+  return parse_decimal_to_fixed(value, scale, ExcessScalePolicy::Reject,
+                                result) == DecimalParseResult::Ok;
 }
 
 bool scale_for_decimal(std::string_view value, std::uint8_t &scale) noexcept {
@@ -269,8 +304,12 @@ bool scaled_value(simdjson::dom::element value, std::uint8_t scale,
 bool parse_quantity(simdjson::dom::element raw, const GateScales &scales,
                     std::int64_t &quantity) noexcept {
   if (!scales.contracts) {
-    return unsigned_decimal_to_fixed(decimal_text(raw), scales.quantity,
-                                     quantity);
+    if (parse_decimal_to_fixed(decimal_text(raw), scales.quantity,
+                               ExcessScalePolicy::Floor,
+                               quantity) != DecimalParseResult::Ok) {
+      return false;
+    }
+    return quantity >= 0;
   }
   std::int64_t contracts = 0;
   if (!scaled_value(raw, scales.contract_size_scale, contracts) ||
@@ -325,10 +364,14 @@ LevelParseError parse_gate_level(simdjson::dom::element raw,
   }
 
   const auto price_text = decimal_text(price);
-  if (!unsigned_decimal_to_fixed(price_text, scales.price, level.price)) {
-    return decimal_scale_mismatch(price_text, scales.price)
-               ? LevelParseError::Scale
-               : LevelParseError::Price;
+  const auto price_status = parse_decimal_to_fixed(
+      price_text, scales.price, ExcessScalePolicy::Reject, level.price);
+  if (price_status != DecimalParseResult::Ok) {
+    if (price_status == DecimalParseResult::ExcessScale) {
+      return scales.contracts ? LevelParseError::Scale
+                              : LevelParseError::Skip;
+    }
+    return LevelParseError::Price;
   }
   if (!parse_quantity(quantity, scales, level.quantity) ||
       level.quantity == std::numeric_limits<std::int64_t>::min()) {
@@ -488,33 +531,42 @@ class GateAdapter final : public VenueAdapter {
           error.clear();
           return true;
         }
-        if (!unsigned_decimal_to_fixed(
-                bid_text, scales.price, event.bid.price) ||
-            !unsigned_decimal_to_fixed(
-                ask_text, scales.price, event.ask.price)) {
-          error =
-              decimal_scale_mismatch(bid_text, scales.price) ||
-                      decimal_scale_mismatch(ask_text, scales.price)
-                  ? "invalid Gate BBO reason=scale field=price"
-                  : "invalid Gate BBO price";
+        const auto bid_price_policy = scales.contracts
+                                          ? ExcessScalePolicy::Reject
+                                          : ExcessScalePolicy::Floor;
+        const auto ask_price_policy = scales.contracts
+                                          ? ExcessScalePolicy::Reject
+                                          : ExcessScalePolicy::Ceil;
+        const auto bid_price_status = parse_decimal_to_fixed(
+            bid_text, scales.price, bid_price_policy, event.bid.price);
+        const auto ask_price_status = parse_decimal_to_fixed(
+            ask_text, scales.price, ask_price_policy, event.ask.price);
+        if (bid_price_status != DecimalParseResult::Ok ||
+            ask_price_status != DecimalParseResult::Ok) {
+          const bool invalid_or_overflow =
+              bid_price_status == DecimalParseResult::Invalid ||
+              bid_price_status == DecimalParseResult::Overflow ||
+              ask_price_status == DecimalParseResult::Invalid ||
+              ask_price_status == DecimalParseResult::Overflow;
+          error = invalid_or_overflow
+                      ? "invalid Gate BBO price"
+                      : "invalid Gate BBO reason=scale field=price";
           return false;
         }
-        utils::md::Level bid_quantity;
-        utils::md::Level ask_quantity;
-        const auto bid_result = parse_gate_level_pair(
-            bid_raw, bid_quantity_raw, scales, bid_quantity);
-        if (bid_result != LevelParseError::None) {
-          set_level_error(error, "BBO", symbol, "bid", bid_result);
+        if (!parse_quantity(bid_quantity_raw, scales, event.bid.quantity) ||
+            event.bid.quantity ==
+                std::numeric_limits<std::int64_t>::min()) {
+          set_level_error(error, "BBO", symbol, "bid",
+                          LevelParseError::Quantity);
           return false;
         }
-        const auto ask_result = parse_gate_level_pair(
-            ask_raw, ask_quantity_raw, scales, ask_quantity);
-        if (ask_result != LevelParseError::None) {
-          set_level_error(error, "BBO", symbol, "ask", ask_result);
+        if (!parse_quantity(ask_quantity_raw, scales, event.ask.quantity) ||
+            event.ask.quantity ==
+                std::numeric_limits<std::int64_t>::min()) {
+          set_level_error(error, "BBO", symbol, "ask",
+                          LevelParseError::Quantity);
           return false;
         }
-        event.bid.quantity = bid_quantity.quantity;
-        event.ask.quantity = ask_quantity.quantity;
         if (event.bid.price <= 0 || event.bid.quantity <= 0 ||
             event.ask.price <= 0 || event.ask.quantity <= 0) {
           event.reset();
@@ -993,31 +1045,19 @@ class GateAdapter final : public VenueAdapter {
       std::vector<utils::md::Level> &output) const {
     output.clear();
     for (auto value : raw) {
+      utils::md::Level level;
+      const auto parsed = parse_gate_level(value, scales, level);
+      if (parsed == LevelParseError::Skip) {
+        continue;
+      }
+      if (parsed != LevelParseError::None) {
+        return parsed;
+      }
       if (output.size() >= maximum_levels_ ||
           output.size() >= output.capacity()) {
         return LevelParseError::Capacity;
       }
-      utils::md::Level level;
-      const auto parsed = parse_gate_level(value, scales, level);
-      if (parsed != LevelParseError::None) {
-        return parsed;
-      }
       output.push_back(level);
-    }
-    return LevelParseError::None;
-  }
-
-  static LevelParseError parse_gate_level_pair(
-      simdjson::dom::element price, simdjson::dom::element quantity,
-      const GateScales &scales, utils::md::Level &level) {
-    const auto price_text = decimal_text(price);
-    if (!unsigned_decimal_to_fixed(price_text, scales.price, level.price)) {
-      return decimal_scale_mismatch(price_text, scales.price)
-                 ? LevelParseError::Scale
-                 : LevelParseError::Price;
-    }
-    if (!parse_quantity(quantity, scales, level.quantity)) {
-      return LevelParseError::Quantity;
     }
     return LevelParseError::None;
   }

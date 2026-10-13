@@ -32,6 +32,7 @@ type FundingServer struct {
 	rankings      *ranking.SnapshotStore
 	published     map[string]bool
 	spreadEnabled map[string]bool
+	tradefi       *funding.TradefiSnapshotStore
 }
 
 func NewFundingServer(
@@ -54,10 +55,49 @@ func NewFundingServer(
 	return server
 }
 
+func (s *FundingServer) WithTradefi(snapshots *funding.TradefiSnapshotStore) *FundingServer {
+	s.tradefi = snapshots
+	return s
+}
+
 func (s *FundingServer) WithPublication(published, spread map[string]bool) *FundingServer {
 	s.published = published
 	s.spreadEnabled = spread
 	return s
+}
+
+func (s *FundingServer) ListTradefiPerpsOpportunities(
+	_ context.Context, _ *fundingv1.ListTradefiPerpsOpportunitiesRequest,
+) (*fundingv1.ListTradefiPerpsOpportunitiesResponse, error) {
+	var snapshot funding.TradefiSnapshot
+	if s.tradefi != nil {
+		snapshot = s.tradefi.Get()
+	}
+	now := time.Now().UTC()
+	response := &fundingv1.ListTradefiPerpsOpportunitiesResponse{
+		Items:           make([]*fundingv1.TradefiPerpsOpportunity, 0, len(snapshot.Rows)),
+		Total:           int32(len(snapshot.Rows)),
+		SnapshotVersion: snapshot.Version,
+		ServerTime:      timestamppb.New(now),
+	}
+	for _, row := range snapshot.Rows {
+		multiplier := row.PriceMultiplier
+		if multiplier <= 0 {
+			multiplier = 1
+		}
+		response.Items = append(response.Items, &fundingv1.TradefiPerpsOpportunity{
+			StockSymbol: row.StockSymbol,
+			VerifiedAt:  timestamppb.New(row.VerifiedAt),
+			Spot: &fundingv1.TradefiSpotLeg{
+				Exchange: "ibkr", Symbol: row.StockSymbol, ConId: row.ConID,
+				PrimaryExchange: row.PrimaryExchange, LocalSymbol: row.LocalSymbol,
+				TradingClass: row.TradingClass,
+			},
+			Perpetual:       tradefiPerpToProto(row, now, s.staleAfter),
+			PriceMultiplier: decimal(multiplier),
+		})
+	}
+	return response, nil
 }
 
 func (s *FundingServer) ListFundingRates(_ context.Context, _ *fundingv1.ListFundingRatesRequest) (*fundingv1.ListFundingRatesResponse, error) {
@@ -379,6 +419,32 @@ func (s *FundingServer) GetFundingHistory(
 	return response, nil
 }
 
+func tradefiPerpToProto(row funding.TradefiRow, now time.Time, staleAfter time.Duration) *fundingv1.TradefiPerpLeg {
+	leg := &fundingv1.TradefiPerpLeg{
+		Exchange: row.Exchange, ExchangeSymbol: row.ExchangeSymbol,
+		BaseAsset: row.BaseAsset, QuoteAsset: row.QuoteAsset,
+		FundingRate:                decimal(row.FundingRate),
+		PerpetualFundingAnnualized: decimal(row.AnnualizedRate),
+		FundingIntervalSeconds:     int32(row.IntervalHours * 3600),
+		NextFundingAt:              timestamppb.New(row.NextFundingAt),
+		Volume_24HBase:             decimal(row.Volume24hBase),
+		Turnover_24HUsd:            decimal(row.Turnover24hUSD),
+		PositionQuantity:           decimal(row.PositionQuantity),
+		PositionNotionalUsd:        decimal(row.PositionNotionalUSD),
+		Cumulative_24H:             decimal(row.Cumulative24h),
+		Cumulative_7D:              decimal(row.Cumulative7d),
+		History_24HComplete:        row.History24hComplete,
+		History_7DComplete:         row.History7dComplete,
+		SourceUpdatedAt:            timestamppb.New(row.SourceUpdatedAt),
+		Stale:                      funding.IsStale(row.SourceUpdatedAt, now, staleAfter),
+	}
+	if row.NextRate != nil {
+		value := decimal(*row.NextRate)
+		leg.NextFundingRate = &value
+	}
+	return leg
+}
+
 func rateToProto(item funding.Rate, now time.Time, staleAfter time.Duration) *fundingv1.FundingRate {
 	rate := &fundingv1.FundingRate{
 		Exchange:               item.Exchange,
@@ -401,7 +467,7 @@ func rateToProto(item funding.Rate, now time.Time, staleAfter time.Duration) *fu
 		Cumulative_24H:         decimal(item.Cumulative24h),
 		Cumulative_7D:          decimal(item.Cumulative7d),
 		SourceUpdatedAt:        timestamppb.New(item.SourceUpdatedAt),
-		Stale:                  item.SourceUpdatedAt.IsZero() || now.Sub(item.SourceUpdatedAt) > staleAfter,
+		Stale:                  funding.IsStale(item.SourceUpdatedAt, now, staleAfter),
 		History_24HComplete:    item.History24hComplete,
 		History_7DComplete:     item.History7dComplete,
 		VenueContractType:      venueContractType(item.VenueContractType),

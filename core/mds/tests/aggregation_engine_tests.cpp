@@ -907,6 +907,103 @@ void test_venue_ingest_generation_barrier_and_stale_rejection() {
   assert(ingest.bbo()->header.book_generation == 2);
 }
 
+void test_venue_ingest_reset_reseeds_from_new_generation_catalog() {
+  using namespace utils::md;
+  using namespace utils::md::wire;
+  mds::agg::VenueIngest ingest(
+      {Venue::Bitget, ProductType::Spot, "BTCUSDT"}, 32);
+  std::uint64_t ring_sequence{};
+  std::uint64_t bus_sequence{};
+
+  Instrument instrument{};
+  instrument.instrument_id = 7;
+  instrument.venue = Venue::Bitget;
+  instrument.product_type = ProductType::Spot;
+  instrument.price_scale = 2;
+  instrument.quantity_scale = 3;
+  instrument.tick_size = 1;
+  instrument.lot_size = 1;
+  std::copy_n("BTCUSDT", 7, instrument.canonical_symbol.begin());
+
+  InstrumentCatalog catalog{};
+  catalog.instrument_id = instrument.instrument_id;
+  catalog.venue = instrument.venue;
+  catalog.product_type = instrument.product_type;
+  catalog.price_scale = instrument.price_scale;
+  catalog.quantity_scale = instrument.quantity_scale;
+  catalog.tick_size = instrument.tick_size;
+  std::copy_n("BTCUSDT", 7, catalog.canonical_symbol.begin());
+
+  HeaderFields fields{};
+  fields.instrument_id = instrument.instrument_id;
+  fields.bus_seq = ++bus_sequence;
+  fields.book_generation = 1;
+  fields.state = BookState::Building;
+  std::array<std::byte, sizeof(InstrumentCatalogRecord)> catalog_bytes{};
+  assert(EncodeInstrumentCatalog(catalog_bytes, fields, catalog));
+  assert(ingest.consume(
+             ++ring_sequence,
+             static_cast<std::uint32_t>(MessageType::InstrumentCatalog),
+             catalog_bytes, 1'000) == mds::agg::IngestResult::Ignored);
+
+  fields.bus_seq = ++bus_sequence;
+  std::array<std::byte, sizeof(InstrumentUpdateRecord)> instrument_bytes{};
+  assert(EncodeInstrument(instrument_bytes, fields, instrument));
+  assert(ingest.consume(
+             ++ring_sequence,
+             static_cast<std::uint32_t>(MessageType::InstrumentUpdate),
+             instrument_bytes, 2'000) == mds::agg::IngestResult::Instrument);
+
+  fields.bus_seq = ++bus_sequence;
+  fields.source_seq = 1;
+  fields.state = BookState::Live;
+  std::array<std::byte, sizeof(BboRecord)> bbo_bytes{};
+  assert(EncodeBbo(bbo_bytes, fields, {10'000, 1}, {10'100, 2}));
+  assert(ingest.consume(
+             ++ring_sequence, static_cast<std::uint32_t>(MessageType::Bbo),
+             bbo_bytes, 3'000) == mds::agg::IngestResult::Bbo);
+  assert(ingest.bbo() != nullptr);
+
+  ingest.reset();
+  assert(ingest.bbo() == nullptr);
+  assert(ingest.instrument() == nullptr);
+
+  fields.bus_seq = ++bus_sequence;
+  fields.source_seq = 0;
+  fields.book_generation = 2;
+  fields.state = BookState::Building;
+  assert(EncodeInstrumentCatalog(catalog_bytes, fields, catalog));
+  assert(ingest.consume(
+             ++ring_sequence,
+             static_cast<std::uint32_t>(MessageType::InstrumentCatalog),
+             catalog_bytes, 4'000) == mds::agg::IngestResult::Ignored);
+
+  fields.bus_seq = ++bus_sequence;
+  assert(EncodeInstrument(instrument_bytes, fields, instrument));
+  assert(ingest.consume(
+             ++ring_sequence,
+             static_cast<std::uint32_t>(MessageType::InstrumentUpdate),
+             instrument_bytes, 5'000) == mds::agg::IngestResult::Instrument);
+
+  fields.bus_seq = ++bus_sequence;
+  fields.source_seq = 1;
+  fields.state = BookState::Live;
+  assert(EncodeBbo(bbo_bytes, fields, {10'010, 1}, {10'110, 2}));
+  assert(ingest.consume(
+             ++ring_sequence, static_cast<std::uint32_t>(MessageType::Bbo),
+             bbo_bytes, 6'000) == mds::agg::IngestResult::Bbo);
+  assert(ingest.bbo() != nullptr);
+  assert(ingest.bbo()->header.book_generation == 2);
+
+  fields.bus_seq = ++bus_sequence;
+  fields.source_seq = 2;
+  fields.book_generation = 1;
+  assert(EncodeBbo(bbo_bytes, fields, {9'000, 1}, {9'100, 2}));
+  assert(ingest.consume(
+             ++ring_sequence, static_cast<std::uint32_t>(MessageType::Bbo),
+             bbo_bytes, 7'000) == mds::agg::IngestResult::NeedResync);
+}
+
 void test_venue_ingest_refines_flagged_snapshot_tick() {
   const auto load_snapshot = [](mds::agg::VenueIngest &ingest,
                                 std::uint8_t instrument_flags) {
@@ -1223,6 +1320,7 @@ int main() {
   test_timestamp_slot_and_hot_path_allocations();
   test_venue_ingest_bbo_and_sequence_gap();
   test_venue_ingest_generation_barrier_and_stale_rejection();
+  test_venue_ingest_reset_reseeds_from_new_generation_catalog();
   test_venue_ingest_refines_flagged_snapshot_tick();
   test_per_symbol_and_multiplex_aggregate_parity();
   return 0;

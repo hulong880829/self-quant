@@ -328,6 +328,8 @@ IngestResult VenueIngest::consume(
   }
   case utils::md::MessageType::AggBbo:
   case utils::md::MessageType::AggOrderBook:
+  case utils::md::MessageType::FairPrice:
+  case utils::md::MessageType::FairPriceV2:
     return IngestResult::Ignored;
   }
   return IngestResult::Invalid;

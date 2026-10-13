@@ -22,12 +22,9 @@ std::filesystem::path write_temp(std::string_view content,
 }
 
 std::string config_with(std::string_view segments,
-                        std::string_view gateway = {},
-                        std::string_view recording = {}) {
+                        std::string_view gateway = {}) {
   return "segments:\n" + std::string(segments) +
-         (gateway.empty() ? "" : "gateway:\n" + std::string(gateway)) +
-         (recording.empty() ? ""
-                            : "recording:\n" + std::string(recording));
+         (gateway.empty() ? "" : "gateway:\n" + std::string(gateway));
 }
 
 constexpr std::string_view kBbo =
@@ -53,9 +50,11 @@ int main() {
   assert(example.value.ingestion.stale_after_ms == 5000);
   assert(example.value.ingestion.hard_reset_after_ms == 10000);
   assert(example.value.ingestion.max_drain_records == 512);
-  assert(example.value.recording.sample_interval_ms == 200);
-  assert(example.value.recording.retention_hours == 24);
-  assert(example.value.recording.depth == 50);
+  assert(example.value.clickhouse_aggregate.options.catalog_scope ==
+         "prod-agg");
+  assert(example.value.clickhouse_aggregate.options.sample_interval_ms ==
+         200);
+  assert(example.value.clickhouse_aggregate.options.depth == 50);
   assert(example.value.segments[0].selector.kind ==
          mds::consumer::SelectorKind::All);
 
@@ -207,30 +206,13 @@ int main() {
       "removed-tls");
   assert(!mds::consumer::load_config(removed_tls.string(), true, false));
 
-  const auto retention = write_temp(
-      config_with(kBook, {},
-                  "  output_directory: /tmp\n"
-                  "  retention: 25h\n"
-                  "  min_free_disk_bytes: 0\n"),
-      "retention");
-  assert(!mds::consumer::load_config(retention.string(), false, true));
-
-  const auto record = write_temp(
-      config_with(kBook, {},
-                  "  output_directory: /tmp\n"
-                  "  sample_interval_ms: 200\n"
-                  "  retention: 24h\n"
-                  "  depth: 50\n"
-                  "  shard_hours: 1\n"
-                  "  min_free_disk_bytes: 0\n"),
-      "record");
-  const auto loaded_record =
-      mds::consumer::load_config(record.string(), false, true);
-  assert(bool(loaded_record) == mds::consumer::recording_available());
-  if (!loaded_record) {
-    assert(loaded_record.error == mds::api::ErrorCode::InvalidConfig);
-    assert(loaded_record.message.find("libzstd-dev") != std::string::npos);
-  }
+  const auto leftover_recording = write_temp(
+      config_with(kBbo) +
+          "recording:\n"
+          "  output_directory: /tmp\n",
+      "leftover-recording");
+  assert(!mds::consumer::load_config(leftover_recording.string(), false,
+                                     false));
 
   const auto clickhouse = write_temp(
       "clickhouse_bbo:\n"
@@ -242,7 +224,7 @@ int main() {
       "    - {venue: binance, product: perpetual, shard: 0}\n",
       "clickhouse");
   const auto loaded_clickhouse =
-      mds::consumer::load_config(clickhouse.string(), false, false, true);
+      mds::consumer::load_config(clickhouse.string(), false, true);
   assert(loaded_clickhouse);
   assert(loaded_clickhouse.value.clickhouse_bbo.segments.size() == 1);
   assert(loaded_clickhouse.value.clickhouse_bbo.segments[0] ==
@@ -253,7 +235,7 @@ int main() {
          2500);
 
   const auto aster_lighter = mds::consumer::load_config(
-      MDS_ASTER_LIGHTER_CONSUMER_CONFIG, false, false, true);
+      MDS_ASTER_LIGHTER_CONSUMER_CONFIG, false, true);
   verify(static_cast<bool>(aster_lighter),
          "Aster/Lighter ClickHouse config must load");
   verify(aster_lighter.value.clickhouse_bbo.segments.size() == 8,
@@ -277,8 +259,7 @@ int main() {
       "    - {venue: binance, product: perpetual, shard: 0}\n",
       "clickhouse-legacy");
   const auto loaded_clickhouse_legacy =
-      mds::consumer::load_config(clickhouse_legacy.string(), false, false,
-                                 true);
+      mds::consumer::load_config(clickhouse_legacy.string(), false, true);
   assert(loaded_clickhouse_legacy);
   assert(loaded_clickhouse_legacy.value.clickhouse_bbo.options
              .sample_interval_ms == 1000);
@@ -292,8 +273,7 @@ int main() {
       "  selectors:\n"
       "    - {venue: all, product: perpetual, shard: 0}\n",
       "clickhouse-all");
-  assert(!mds::consumer::load_config(clickhouse_all.string(), false, false,
-                                     true));
+  assert(!mds::consumer::load_config(clickhouse_all.string(), false, true));
 
   const auto clickhouse_poly = write_temp(
       "clickhouse_bbo:\n"
@@ -302,7 +282,60 @@ int main() {
       "  selectors:\n"
       "    - {venue: polymarket, product: binary-option, shard: 0}\n",
       "clickhouse-poly");
-  assert(!mds::consumer::load_config(clickhouse_poly.string(), false, false,
+  assert(!mds::consumer::load_config(clickhouse_poly.string(), false, true));
+
+  const auto clickhouse_ibkr = write_temp(
+      "clickhouse_bbo:\n"
+      "  host: clickhouse.test\n"
+      "  shm_prefix: /selfquant.mds.ibkr\n"
+      "  table: equity_bbo\n"
+      "  selectors:\n"
+      "    - {venue: ibkr, product: equity, shard: 0}\n",
+      "clickhouse-ibkr");
+  const auto loaded_ibkr =
+      mds::consumer::load_config(clickhouse_ibkr.string(), false, true);
+  assert(loaded_ibkr);
+  assert(loaded_ibkr.value.clickhouse_bbo.segments.size() == 1);
+  assert(loaded_ibkr.value.clickhouse_bbo.segments[0] ==
+         "/selfquant.mds.ibkr.ibkr.equity.ticker.shard0.2");
+
+  const auto clickhouse_ibkr_unified = write_temp(
+      "clickhouse_bbo:\n"
+      "  host: clickhouse.test\n"
+      "  shm_prefix: /selfquant.mds.bbo\n"
+      "  table: crypto_bbo\n"
+      "  selectors:\n"
+      "    - {venue: ibkr, product: equity, shard: 0}\n",
+      "clickhouse-ibkr-unified");
+  const auto loaded_ibkr_unified =
+      mds::consumer::load_config(clickhouse_ibkr_unified.string(), false, true);
+  assert(loaded_ibkr_unified);
+  assert(loaded_ibkr_unified.value.clickhouse_bbo.segments.size() == 1);
+  assert(loaded_ibkr_unified.value.clickhouse_bbo.segments[0] ==
+         "/selfquant.mds.bbo.ibkr.equity.ticker.shard0.2");
+  assert(loaded_ibkr.value.clickhouse_bbo.options.selectors[0].venue ==
+         utils::md::Venue::Ibkr);
+  assert(loaded_ibkr.value.clickhouse_bbo.options.selectors[0].product ==
+         utils::md::ProductType::Equity);
+
+  const auto clickhouse_ibkr_spot = write_temp(
+      "clickhouse_bbo:\n"
+      "  host: clickhouse.test\n"
+      "  shm_prefix: /test\n"
+      "  selectors:\n"
+      "    - {venue: ibkr, product: spot, shard: 0}\n",
+      "clickhouse-ibkr-spot");
+  assert(!mds::consumer::load_config(clickhouse_ibkr_spot.string(), false,
+                                     true));
+
+  const auto clickhouse_binance_equity = write_temp(
+      "clickhouse_bbo:\n"
+      "  host: clickhouse.test\n"
+      "  shm_prefix: /test\n"
+      "  selectors:\n"
+      "    - {venue: binance, product: equity, shard: 0}\n",
+      "clickhouse-binance-equity");
+  assert(!mds::consumer::load_config(clickhouse_binance_equity.string(), false,
                                      true));
 
   const auto clickhouse_fast = write_temp(
@@ -313,8 +346,7 @@ int main() {
       "  selectors:\n"
       "    - {venue: binance, product: perpetual, shard: 0}\n",
       "clickhouse-fast");
-  assert(!mds::consumer::load_config(clickhouse_fast.string(), false, false,
-                                     true));
+  assert(!mds::consumer::load_config(clickhouse_fast.string(), false, true));
 
   const auto clickhouse_no_stale_cutoff = write_temp(
       "clickhouse_bbo:\n"
@@ -325,7 +357,53 @@ int main() {
       "    - {venue: binance, product: perpetual, shard: 0}\n",
       "clickhouse-no-stale-cutoff");
   assert(!mds::consumer::load_config(clickhouse_no_stale_cutoff.string(),
-                                     false, false, true));
+                                     false, true));
+
+  const std::string aggregate_ok =
+      "clickhouse_aggregate:\n"
+      "  host: 127.0.0.1\n"
+      "  catalog_scope: prod-agg\n"
+      "  password_env: CLICKHOUSE_PASSWORD\n";
+  const auto gateway_aggregate = write_temp(
+      config_with(kBbo, auth) + aggregate_ok, "gw-agg");
+  const auto loaded_gateway_aggregate = mds::consumer::load_config(
+      gateway_aggregate.string(), true, false, true);
+  assert(loaded_gateway_aggregate);
+  assert(loaded_gateway_aggregate.value.clickhouse_aggregate.options
+             .bbo_table == "aggregate_bbo_history");
+
+  const auto bad_table = write_temp(
+      config_with(kBbo) +
+          "clickhouse_aggregate:\n"
+          "  host: 127.0.0.1\n"
+          "  catalog_scope: prod-agg\n"
+          "  password_env: CLICKHOUSE_PASSWORD\n"
+          "  bbo_table: agg-bbo\n",
+      "agg-bad-table");
+  assert(!mds::consumer::load_config(bad_table.string(), false, false, true));
+
+  const auto bad_scope = write_temp(
+      config_with(kBbo) +
+          "clickhouse_aggregate:\n"
+          "  host: 127.0.0.1\n"
+          "  catalog_scope: \"\"\n"
+          "  password_env: CLICKHOUSE_PASSWORD\n",
+      "agg-bad-scope");
+  assert(!mds::consumer::load_config(bad_scope.string(), false, false, true));
+
+  const auto bad_queue = write_temp(
+      config_with(kBbo) +
+          "clickhouse_aggregate:\n"
+          "  host: 127.0.0.1\n"
+          "  catalog_scope: prod-agg\n"
+          "  password_env: CLICKHOUSE_PASSWORD\n"
+          "  orderbook_queue_rows: 20000\n",
+      "agg-bad-queue");
+  assert(!mds::consumer::load_config(bad_queue.string(), false, false, true));
+
+  const auto missing_aggregate = write_temp(config_with(kBbo), "agg-missing");
+  assert(!mds::consumer::load_config(missing_aggregate.string(), false, false,
+                                     true));
 
   std::filesystem::remove(bbo_only_path);
   std::filesystem::remove(multiplex_path);
@@ -340,13 +418,20 @@ int main() {
   std::filesystem::remove(public_without_auth);
   std::filesystem::remove(loopback_without_auth);
   std::filesystem::remove(removed_tls);
-  std::filesystem::remove(retention);
-  std::filesystem::remove(record);
+  std::filesystem::remove(leftover_recording);
   std::filesystem::remove(clickhouse);
   std::filesystem::remove(clickhouse_legacy);
   std::filesystem::remove(clickhouse_all);
   std::filesystem::remove(clickhouse_poly);
+  std::filesystem::remove(clickhouse_ibkr);
+  std::filesystem::remove(clickhouse_ibkr_spot);
+  std::filesystem::remove(clickhouse_binance_equity);
   std::filesystem::remove(clickhouse_fast);
   std::filesystem::remove(clickhouse_no_stale_cutoff);
+  std::filesystem::remove(gateway_aggregate);
+  std::filesystem::remove(bad_table);
+  std::filesystem::remove(bad_scope);
+  std::filesystem::remove(bad_queue);
+  std::filesystem::remove(missing_aggregate);
   return 0;
 }

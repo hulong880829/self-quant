@@ -62,7 +62,7 @@ bool InitialRoute(const InstrumentInit& source,
   routing.tick_size = instrument.tick_size;
   routing.lot_size = instrument.lot_size;
   if (routing.kind == ExecutionRouteKind::Polymarket) {
-    routing.signature_type = source.polymarket_signature_type;
+    routing.signature_type = 0;
     routing.negative_risk = source.polymarket_negative_risk;
     routing.outcome = source.polymarket_outcome;
     routing.taker_delay_ms = source.polymarket_taker_delay_ms;

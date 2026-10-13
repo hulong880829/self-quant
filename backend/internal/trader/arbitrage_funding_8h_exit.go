@@ -12,8 +12,13 @@ type funding8hExitStore interface {
 	MarkOneShotExiting(context.Context, string, int64, string, map[string]any) (ArbitrageCombination, bool, error)
 }
 
+type oneShotExitSignaler interface {
+	SignalOneShotExit(id string, version int64, reason string)
+}
+
 type ArbitrageFunding8hExitWorker struct {
 	store        funding8hExitStore
+	exitSignal   oneShotExitSignaler
 	interval     time.Duration
 	queryTimeout time.Duration
 	now          func() time.Time
@@ -35,6 +40,13 @@ func NewArbitrageFunding8hExitWorker(
 		now:          func() time.Time { return time.Now().UTC() },
 		logger:       logger,
 	}
+}
+
+func (w *ArbitrageFunding8hExitWorker) ConfigureExitSignal(signaler oneShotExitSignaler) {
+	if w == nil {
+		return
+	}
+	w.exitSignal = signaler
 }
 
 func (w *ArbitrageFunding8hExitWorker) Run(ctx context.Context) {
@@ -92,6 +104,9 @@ func (w *ArbitrageFunding8hExitWorker) runOnce(ctx context.Context) {
 		result := evaluateFunding8hExit(*combo, windowStart, windowEnd)
 		if !result.OK || !result.Trigger {
 			continue
+		}
+		if w.exitSignal != nil {
+			w.exitSignal.SignalOneShotExit(combo.ID, combo.Version, "funding_8h_floor")
 		}
 		_, applied, markErr := w.store.MarkOneShotExiting(
 			ctx, combo.ID, combo.Version, "funding_8h_floor",

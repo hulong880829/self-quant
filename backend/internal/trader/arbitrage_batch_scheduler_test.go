@@ -273,6 +273,69 @@ func TestSnapshotReceiptIgnoresOlderSequence(t *testing.T) {
 	}
 }
 
+func TestSnapshotReceiptRecoversOpportunityGoneToMonitoring(t *testing.T) {
+	scheduler := &ArbitrageScheduler{}
+	updated := time.Unix(40, 0).UTC()
+	runtime := &arbitrageRuntime{
+		combination: ArbitrageCombination{
+			ID: "combo-1", Status: "running", RuntimeState: "opportunity_gone",
+			Version: 4, MarketDataStale: false,
+		},
+		generation: 1,
+	}
+	runtime.snapshotNotice.Store(&snapshotFlushNotice{
+		generation: 1, seq: 5, applied: true,
+		item: arbitrageMarketSnapshotBatchItem{
+			Version: 4, Status: "running", RuntimeState: "monitoring",
+			MarketDataStale: false, UpdatedAt: updated,
+			AskSpread: "12", BidSpread: "-8",
+		},
+	})
+	if scheduler.applySnapshotReceipt(context.Background(), runtime) {
+		t.Fatal("applied receipt should not stop")
+	}
+	if runtime.combination.RuntimeState != "monitoring" ||
+		runtime.combination.CurrentAskSpreadBps != "12" ||
+		runtime.combination.CurrentBidSpreadBps != "-8" ||
+		runtime.combination.MarketDataStale ||
+		!runtime.lastSnapshotUpdatedAt.Equal(updated) {
+		t.Fatalf("receipt not applied: %+v", runtime.combination)
+	}
+}
+
+func TestSnapshotReceiptAppliedStaleVersionReloadsWithoutOverlay(t *testing.T) {
+	item := ArbitrageCombination{
+		ID: "combo-1", OwnerUsername: "admin", Status: "running",
+		RuntimeState: "position_uncertain", Version: 9, UpdatedAt: time.Unix(50, 0).UTC(),
+	}
+	store := &dryRunStore{item: item}
+	scheduler := &ArbitrageScheduler{store: store}
+	runtime := &arbitrageRuntime{
+		combination: ArbitrageCombination{
+			ID: "combo-1", OwnerUsername: "admin", Status: "running",
+			RuntimeState: "position_uncertain", Version: 9,
+		},
+		generation: 1,
+	}
+	runtime.snapshotNotice.Store(&snapshotFlushNotice{
+		generation: 1, seq: 6, applied: true,
+		item: arbitrageMarketSnapshotBatchItem{
+			Version: 8, Status: "running", RuntimeState: "monitoring",
+			AskSpread: "12", BidSpread: "-8", UpdatedAt: time.Unix(40, 0).UTC(),
+		},
+	})
+	if scheduler.applySnapshotReceipt(context.Background(), runtime) {
+		t.Fatal("reload should not stop running combination")
+	}
+	if runtime.combination.RuntimeState != "position_uncertain" ||
+		runtime.combination.Version != 9 {
+		t.Fatalf("stale applied overlayed memory: %+v", runtime.combination)
+	}
+	if store.refreshes != 1 {
+		t.Fatalf("refreshes=%d", store.refreshes)
+	}
+}
+
 func TestSnapshotSkippedVersionReloadsCombination(t *testing.T) {
 	item := ArbitrageCombination{
 		ID: "combo-1", OwnerUsername: "admin", Status: "running",

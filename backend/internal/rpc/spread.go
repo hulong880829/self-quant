@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	shopspring "github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -33,11 +34,25 @@ func (s *SpreadServer) GetBasisSpreadHistory(
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "range is required")
 	}
+	var multiplier shopspring.Decimal
+	if text := strings.TrimSpace(request.GetPriceMultiplier()); text != "" {
+		parsed, parseErr := shopspring.NewFromString(text)
+		if parseErr != nil {
+			return nil, status.Error(codes.InvalidArgument, "price multiplier is invalid")
+		}
+		multiplier = parsed
+	}
 	history, err := s.service.GetHistory(ctx, spread.HistoryRequest{
 		Venue: request.GetVenue(), CompareVenue: request.GetCompareVenue(),
 		BaseAsset: request.GetBaseAsset(), QuoteAsset: request.GetQuoteAsset(),
 		VenueCanonicalSymbol:        request.GetVenueCanonicalSymbol(),
 		CompareVenueCanonicalSymbol: request.GetCompareVenueCanonicalSymbol(),
+		VenueExchangeSymbol:         request.GetVenueExchangeSymbol(),
+		CompareExchangeSymbol:       request.GetCompareExchangeSymbol(),
+		VenueProduct:                request.GetVenueProduct(),
+		CompareVenueProduct:         request.GetCompareVenueProduct(),
+		IdentityMode:                request.GetIdentityMode(),
+		PriceMultiplier:             multiplier,
 		Range:                       parsedRange,
 	})
 	if err != nil {

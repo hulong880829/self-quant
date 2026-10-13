@@ -1,0 +1,37 @@
+# IBKR L1 producer. Shares the crypto BBO prefix so one mds_shm_consumer
+# records both. Paper Gateway shadow should run for 24h before any live cutover.
+# con_id is optional: 0 (omitted) resolves through ContractDetails.
+ibkr:
+  host: 127.0.0.1
+  port: 4002
+  client_id: 31
+  connect_timeout_ms: 10000
+  reconnect_initial_ms: 1000
+  reconnect_max_ms: 30000
+  heartbeat_interval_ms: 1000
+  market_data_mode: LIVE_ONLY
+  # Final subscription cap after filtering. Extra candidates are truncated,
+  # never rejected at load time.
+  max_subscriptions: 90
+  subscribe_pacing_per_second: 20
+
+# Optional stock thresholds. Omit a key to disable that filter.
+# min_average_volume_90d is shares/day. min_market_cap_usd is USD.
+# selection:
+#   min_average_volume_90d: 1000000
+#   min_market_cap_usd: 1000000000
+
+shared_memory:
+  prefix: /selfquant.mds.bbo
+  backend: POSIX_SHM
+  mode: OVERWRITE_OLDEST
+  ring_layout: multiplex
+  shard_count: 1
+  multiplex_ring_bytes: 1048576
+  max_record_bytes: 65536
+  max_readers: 8
+  unlink_on_shutdown: true
+
+subscriptions:
+  - canonical_symbol: AAPL
+    primary_exchange: NASDAQ

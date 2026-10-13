@@ -30,6 +30,8 @@ type gateContract struct {
 	OrderSizeMax       bybitString `json:"order_size_max"`
 	MarketOrderSizeMax bybitString `json:"market_order_size_max"`
 	EnableDecimal      bool        `json:"enable_decimal"`
+	ContractType       string      `json:"contract_type"`
+	IsPreMarket        bool        `json:"is_pre_market"`
 }
 
 type gateSpotPair struct {
@@ -116,7 +118,7 @@ func parseGateSettlementInstruments(items []gateContract, settle string) []Instr
 			model = "inverse"
 		}
 		metadata := instrumentMetadata(item, model, "contracts")
-		result = append(result, Instrument{
+		parsed := Instrument{
 			Exchange: "gate", ExchangeSymbol: item.Name,
 			BaseAsset: base, QuoteAsset: quote, GlobalSymbol: GlobalSymbol(base, quote),
 			IntervalHours: interval, SettleAsset: strings.ToUpper(settle),
@@ -130,9 +132,34 @@ func parseGateSettlementInstruments(items []gateContract, settle string) []Instr
 			MarketMaxQuantity: marketMaxQuantity, MarketMaxQuantityStatus: marketMaxQuantityStatus,
 			MarketMinNotionalStatus: ConstraintNotApplicable,
 			Metadata:                metadata, SourceUpdatedAt: time.Now().UTC(),
-		})
+		}
+		parsed.SetUnderlying(gateUnderlying(item, base, quote))
+		result = append(result, parsed)
 	}
 	return result
+}
+
+func gateUnderlying(item gateContract, base, quote string) UnderlyingReference {
+	source := "gate.contracts.contract_type=" + strings.ToLower(strings.TrimSpace(item.ContractType))
+	if item.IsPreMarket {
+		return PreMarketReference(base, source)
+	}
+	switch strings.ToLower(strings.TrimSpace(item.ContractType)) {
+	case "stocks":
+		return TradfiCandidate(AssetClassStock, base, quote, source)
+	case "forex":
+		pairBase, pairQuote, ok := SplitFXPair(base)
+		if !ok {
+			return UnderlyingReference{AssetClass: AssetClassFX, Symbol: base, Source: source}
+		}
+		return FXReference(pairBase, pairQuote, quote, source)
+	case "commodities", "metals":
+		return CommodityReference(base, "USD", source)
+	case "indices":
+		return UnderlyingReference{AssetClass: AssetClassIndex, Symbol: base, Source: source}
+	default:
+		return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: base, Source: source}
+	}
 }
 
 func (g *Gate) SyncInstruments(ctx context.Context, contractType string) ([]Instrument, error) {
@@ -152,9 +179,27 @@ func (g *Gate) SyncInstruments(ctx context.Context, contractType string) ([]Inst
 		if err := g.client.get(ctx, "/api/v4/futures/"+settle+"/contracts", nil, &payload); err != nil {
 			return nil, err
 		}
-		all = append(all, parseGateSettlementInstruments(payload, settle)...)
+		parsed := parseGateSettlementInstruments(payload, settle)
+		if settle == "usdt" {
+			parsed = g.attachGateConstituents(ctx, parsed)
+		}
+		all = append(all, parsed...)
 	}
 	return all, nil
+}
+
+func (g *Gate) attachGateConstituents(ctx context.Context, items []Instrument) []Instrument {
+	for index := range items {
+		if items[index].Underlying.AssetClass != AssetClassStock || items[index].Underlying.PreMarket || items[index].Underlying.Routable() {
+			continue
+		}
+		var payload struct {
+			Constituents []ConstituentRow `json:"constituents"`
+		}
+		err := g.client.get(ctx, "/api/v4/futures/usdt/index_constituents/"+url.PathEscape(items[index].ExchangeSymbol), nil, &payload)
+		items[index].Metadata = attachConstituentEvidence(items[index].Metadata, err, payload.Constituents)
+	}
+	return items
 }
 
 type gateTicker struct {

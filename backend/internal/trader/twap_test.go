@@ -1,6 +1,8 @@
 package trader
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -96,5 +98,97 @@ func TestNormalizeTwapRejectsImpossibleMaxAndTimeout(t *testing.T) {
 	}, now)
 	if err != ErrInvalidArgument {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+type capturingTwapStore struct {
+	job TwapJob
+}
+
+func (s *capturingTwapStore) CreateTwap(_ context.Context, job TwapJob) (TwapJob, bool, error) {
+	if s.job.IdempotencyKey != "" && s.job.IdempotencyKey == job.IdempotencyKey {
+		return s.job, false, nil
+	}
+	s.job = job
+	return job, true, nil
+}
+
+func (s *capturingTwapStore) GetTwapByOwner(context.Context, string, string) (TwapJob, error) {
+	return TwapJob{}, ErrNotFound
+}
+
+func (s *capturingTwapStore) GetTwap(context.Context, string) (TwapJob, error) {
+	return TwapJob{}, ErrNotFound
+}
+
+func (s *capturingTwapStore) ListTwaps(
+	context.Context, string, int64, string, string, int, string,
+) ([]TwapJob, string, error) {
+	return nil, "", nil
+}
+
+func (s *capturingTwapStore) ListTwapOrders(context.Context, string, string) ([]Order, error) {
+	return nil, nil
+}
+
+func (s *capturingTwapStore) LeaseDueTwaps(context.Context, int, time.Duration) ([]TwapJob, error) {
+	return nil, nil
+}
+
+func (s *capturingTwapStore) RefreshTwapProgress(context.Context, string) (TwapJob, error) {
+	return TwapJob{}, ErrNotFound
+}
+
+func (s *capturingTwapStore) UpdateTwapSchedule(
+	context.Context, string, string, int, int, time.Time, string, string,
+) (TwapJob, error) {
+	return TwapJob{}, ErrNotFound
+}
+
+func (s *capturingTwapStore) CloseTwap(context.Context, string, string, string) (TwapJob, error) {
+	return TwapJob{}, ErrNotFound
+}
+
+func (s *capturingTwapStore) AppendTwapEvent(context.Context, string, string, map[string]any) error {
+	return nil
+}
+
+func (s *capturingTwapStore) DeleteClosedTwaps(context.Context, time.Time, int) (int64, error) {
+	return 0, nil
+}
+
+func TestCreateTwapIdempotentAndConflict(t *testing.T) {
+	instrument := testInstrument()
+	instrument.MarketMinNotionalStatus = exchange.ConstraintNotApplicable
+	service := NewService(
+		newMemoryStore(),
+		stubCatalog{item: instrument},
+		stubCredentials{owner: "admin", item: Credentials{
+			TradingAccountID: 3, ProductName: "TWAP", Exchange: "binance", AccountName: "main",
+		}},
+		exchange.NewTestRegistry(map[string]exchange.Adapter{"binance": &stubAdapter{}}),
+		time.Second,
+		nil,
+	)
+	store := &capturingTwapStore{}
+	service.ConfigureTwap(store)
+	start := time.Now().UTC().Add(time.Minute)
+	input := CreateTwapInput{
+		Token: "tok", TradingAccountID: 3, InstrumentID: 7, Side: "buy",
+		TotalQuantity: "1", StartAt: start, EndAt: start.Add(time.Hour),
+		IntervalSeconds: 60, ExecutionType: "market", IdempotencyKey: "twap-same",
+	}
+	first, err := service.CreateTwap(context.Background(), input)
+	if err != nil {
+		t.Fatalf("first err=%v", err)
+	}
+	second, err := service.CreateTwap(context.Background(), input)
+	if err != nil || second.ID != first.ID {
+		t.Fatalf("replay id=%s want=%s err=%v", second.ID, first.ID, err)
+	}
+	conflict := input
+	conflict.TotalQuantity = "2"
+	if _, err := service.CreateTwap(context.Background(), conflict); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("conflict err=%v", err)
 	}
 }

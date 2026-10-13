@@ -4,6 +4,7 @@ package trader.v1;
 
 option go_package = "selfquant/backend/gen/trader/v1;traderv1";
 
+import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
 service TraderService {
@@ -23,6 +24,11 @@ service TraderService {
   rpc GetArbitrageCombination(GetArbitrageCombinationRequest) returns (GetArbitrageCombinationResponse);
   rpc ListArbitrageCombinations(ListArbitrageCombinationsRequest) returns (ListArbitrageCombinationsResponse);
   rpc CloseArbitrageCombination(CloseArbitrageCombinationRequest) returns (CloseArbitrageCombinationResponse);
+  rpc PreflightArbitrageCombination(PreflightArbitrageCombinationRequest) returns (PreflightArbitrageCombinationResponse);
+  rpc ListArbitrageCombinationOrders(ListArbitrageCombinationOrdersRequest) returns (ListArbitrageCombinationOrdersResponse);
+  rpc ListArbitrageCombinationExecutions(ListArbitrageCombinationExecutionsRequest) returns (ListArbitrageCombinationExecutionsResponse);
+  rpc ListArbitrageCombinationEvents(ListArbitrageCombinationEventsRequest) returns (ListArbitrageCombinationEventsResponse);
+  rpc GetArbitrageCountsByOwnerInternal(GetArbitrageCountsByOwnerInternalRequest) returns (GetArbitrageCountsByOwnerInternalResponse);
 }
 
 message Instrument {
@@ -343,6 +349,25 @@ message ArbitrageCombination {
   google.protobuf.Timestamp scheduled_exit_at = 63;
   string one_shot_phase = 64;
   string early_exit_funding_8h_annualized_floor = 65;
+  string leg_a_liquidation_distance_pct = 66;
+  string leg_b_liquidation_distance_pct = 67;
+  string early_exit_liquidation_distance_pct = 68;
+  ArbitrageFinalMetrics final_metrics = 69;
+}
+
+message ArbitrageFinalMetrics {
+  string status = 1;
+  google.protobuf.Timestamp completed_at = 2;
+  int32 retry_count = 3;
+  string last_error = 4;
+  string realized_spread_pnl = 5;
+  string estimated_funding_pnl = 6;
+  string estimated_trading_fee = 7;
+  string combined_position_annualized = 8;
+  string metrics_quality = 9;
+  string holding_seconds = 10;
+  string notional_exposure_seconds = 11;
+  google.protobuf.Timestamp calculated_at = 12;
 }
 
 message ArbitrageCreateFailure {
@@ -374,6 +399,7 @@ message CreateArbitrageCombinationRequest {
   string exit_annualized_rate = 19;
   int32 exit_after_seconds = 20;
   string early_exit_funding_8h_annualized_floor = 21;
+  string early_exit_liquidation_distance_pct = 22;
 }
 
 message CreateArbitrageCombinationResponse {
@@ -388,6 +414,10 @@ message UpdateArbitrageCombinationRequest {
   optional string ask_threshold_bps = 3;
   optional string bid_threshold_bps = 4;
   optional string target_notional = 5;
+  optional int32 exit_after_seconds = 7;
+  optional string exit_annualized_rate = 8;
+  optional string early_exit_funding_8h_annualized_floor = 9;
+  optional string early_exit_liquidation_distance_pct = 10;
 }
 
 message UpdateArbitrageCombinationResponse {
@@ -427,6 +457,102 @@ message ArbitrageEvent {
   string type = 2;
   string message = 3;
   google.protobuf.Timestamp created_at = 4;
+  string execution_id = 5;
+  google.protobuf.Struct payload = 6;
+}
+
+message PreflightArbitrageCombinationRequest {
+  string token = 1;
+  int64 leg_a_trading_account_id = 2;
+  int64 leg_a_instrument_id = 3;
+  int64 leg_b_trading_account_id = 4;
+  int64 leg_b_instrument_id = 5;
+  string ask_threshold_bps = 6;
+  string bid_threshold_bps = 7;
+  string target_notional = 8;
+  string execution_mode = 9;
+  string maker_leg = 10;
+  string run_mode = 11;
+  string entry_direction = 12;
+  string leg_a_leverage = 13;
+  string leg_b_leverage = 14;
+  string exit_policy = 15;
+  string exit_annualized_rate = 16;
+  int32 exit_after_seconds = 17;
+  string early_exit_funding_8h_annualized_floor = 18;
+  string early_exit_liquidation_distance_pct = 19;
+}
+
+message PreflightDecimal {
+  string value = 1;
+  string status = 2;
+}
+
+message PreflightLeg {
+  PreflightDecimal available_funds = 1;
+  PreflightDecimal required_margin = 2;
+  PreflightDecimal estimated_fee = 3;
+  PreflightDecimal min_quantity = 4;
+  PreflightDecimal min_notional = 5;
+  PreflightDecimal quantity_step = 6;
+  PreflightDecimal rounded_base_quantity = 7;
+}
+
+message PreflightWarning {
+  string code = 1;
+  string message = 2;
+  string leg = 3;
+  string exchange = 4;
+}
+
+message PreflightArbitrageCombinationResponse {
+  bool executable = 1;
+  google.protobuf.Timestamp checked_at = 2;
+  google.protobuf.Timestamp expires_at = 3;
+  PreflightLeg leg_a = 4;
+  PreflightLeg leg_b = 5;
+  repeated PreflightWarning warnings = 6;
+  string code = 7;
+  string message = 8;
+  string leg = 9;
+  string exchange = 10;
+}
+
+message ListArbitrageCombinationHistoryRequest {
+  string token = 1;
+  string combination_id = 2;
+  int32 limit = 3;
+  string cursor = 4;
+  google.protobuf.Timestamp from = 5;
+  google.protobuf.Timestamp to = 6;
+  string execution_id = 7;
+}
+
+message ListArbitrageCombinationOrdersRequest {
+  ListArbitrageCombinationHistoryRequest query = 1;
+}
+
+message ListArbitrageCombinationExecutionsRequest {
+  ListArbitrageCombinationHistoryRequest query = 1;
+}
+
+message ListArbitrageCombinationEventsRequest {
+  ListArbitrageCombinationHistoryRequest query = 1;
+}
+
+message ListArbitrageCombinationOrdersResponse {
+  repeated Order items = 1;
+  string next_cursor = 2;
+}
+
+message ListArbitrageCombinationExecutionsResponse {
+  repeated ArbitrageExecution items = 1;
+  string next_cursor = 2;
+}
+
+message ListArbitrageCombinationEventsResponse {
+  repeated ArbitrageEvent items = 1;
+  string next_cursor = 2;
 }
 
 message ListArbitrageCombinationsRequest {
@@ -450,4 +576,20 @@ message CloseArbitrageCombinationRequest {
 
 message CloseArbitrageCombinationResponse {
   ArbitrageCombination combination = 1;
+}
+
+message GetArbitrageCountsByOwnerInternalRequest {
+  string service_token = 1;
+}
+
+message OwnerArbitrageCounts {
+  string owner_username = 1;
+  int64 running = 2;
+  int64 closing = 3;
+  int64 closed = 4;
+  int64 failed = 5;
+}
+
+message GetArbitrageCountsByOwnerInternalResponse {
+  repeated OwnerArbitrageCounts items = 1;
 }

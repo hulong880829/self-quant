@@ -33,6 +33,9 @@ int main(int argc, char** argv) {
   strategyframe::StrategyRunner<polymm::PolyMm> runner(
       std::move(loaded.value), polymm::PolyMm{&exit_code});
   const auto result = runner.run();
+  std::cerr << "poly-mm exiting strategy_exit_code=" << exit_code
+            << " runtime_error=" << static_cast<unsigned>(result)
+            << " strategy_error_exit=" << (exit_code != 0 ? 1 : 0) << '\n';
   if (exit_code != 0) return exit_code;
   if (result != strategyframe::Error::Ok) {
     std::cerr << "poly-mm stopped with error "

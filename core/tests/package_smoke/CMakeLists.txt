@@ -16,12 +16,6 @@ if(TARGET self_quant::mds)
   target_link_libraries(mds_package_consumer PRIVATE self_quant::mds)
 endif()
 
-if(TARGET self_quant::mds_record)
-  add_executable(mds_record_package_consumer mds_record_consumer.cpp)
-  target_link_libraries(mds_record_package_consumer PRIVATE
-    self_quant::mds_record)
-endif()
-
 if(TARGET self_quant::oms)
   add_executable(oms_package_consumer oms_consumer.cpp)
   target_link_libraries(oms_package_consumer PRIVATE self_quant::oms)

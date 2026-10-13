@@ -891,6 +891,13 @@ class VenueConnection::Impl {
     return publishers[id % publishers.size()].get();
   }
 
+  static bool can_republish_current_generation(
+      const SymbolRuntime &symbol) noexcept {
+    return symbol.metadata_ready &&
+           symbol.instrument.instrument_id != 0 &&
+           symbol.catalog_generation == symbol.generation;
+  }
+
   bool publish_catalog_barrier(SymbolRuntime &symbol) {
     auto header = make_header(symbol.instrument.instrument_id,
                               symbol.generation, 0, 0,
@@ -914,6 +921,9 @@ class VenueConnection::Impl {
 
   bool republish_ticker_state(
       SymbolRuntime &symbol, publish::WirePublisher &publisher) {
+    if (!can_republish_current_generation(symbol)) {
+      return true;
+    }
     auto header = make_header(
         symbol.instrument.instrument_id, symbol.generation,
         symbol.last_ticker_sequence, 0,
@@ -936,6 +946,9 @@ class VenueConnection::Impl {
 
   bool republish_book_state(
       SymbolRuntime &symbol, publish::WirePublisher &publisher) {
+    if (!can_republish_current_generation(symbol)) {
+      return true;
+    }
     auto header = make_header(
         symbol.instrument.instrument_id, symbol.generation,
         symbol.last_book_sequence, 0,
@@ -4106,8 +4119,8 @@ class VenueConnection::Impl {
               now_ns, timeout_ns);
         }
       }
-      if (options_.venue == Venue::Polymarket &&
-          symbol.metadata_ready &&
+      if (symbol.metadata_ready &&
+          symbol.instrument.instrument_id != 0 &&
           symbol.catalog_generation != symbol.generation) {
         (void)publish_catalog_barrier(symbol);
       }
@@ -4117,8 +4130,11 @@ class VenueConnection::Impl {
         continue;
       }
       for (auto &symbol : symbols_) {
-        if (symbol.ticker_publisher == publisher.get() &&
-            !republish_ticker_state(symbol, *publisher)) {
+        if (symbol.ticker_publisher != publisher.get() ||
+            !can_republish_current_generation(symbol)) {
+          continue;
+        }
+        if (!republish_ticker_state(symbol, *publisher)) {
           return;
         }
       }
@@ -4128,23 +4144,30 @@ class VenueConnection::Impl {
         continue;
       }
       for (auto &symbol : symbols_) {
-        if (symbol.book_publisher == publisher.get() &&
-            !republish_book_state(symbol, *publisher)) {
+        if (symbol.book_publisher != publisher.get() ||
+            !can_republish_current_generation(symbol)) {
+          continue;
+        }
+        if (!republish_book_state(symbol, *publisher)) {
           return;
         }
       }
     }
     for (auto &symbol : symbols_) {
       if (symbol.owned_ticker_publisher &&
-          symbol.ticker_publisher->poll_reader_change() &&
-          !republish_ticker_state(
-              symbol, *symbol.ticker_publisher)) {
-        return;
+          symbol.ticker_publisher->poll_reader_change()) {
+        if (can_republish_current_generation(symbol) &&
+            !republish_ticker_state(
+                symbol, *symbol.ticker_publisher)) {
+          return;
+        }
       }
       if (symbol.owned_book_publisher &&
-          symbol.book_publisher->poll_reader_change() &&
-          !republish_book_state(symbol, *symbol.book_publisher)) {
-        return;
+          symbol.book_publisher->poll_reader_change()) {
+        if (can_republish_current_generation(symbol) &&
+            !republish_book_state(symbol, *symbol.book_publisher)) {
+          return;
+        }
       }
     }
     if (reclaim) {
@@ -4538,6 +4561,7 @@ class VenueConnection::Impl {
       symbol.ws_snapshot_recovery.reset_connection();
       symbol.last_ticker_exchange_time_ms = 0;
       symbol.last_book_exchange_time_ms = 0;
+      symbol.latest_bbo.reset();
       symbol.lagging_snapshot_retries.reset();
       symbol.snapshot_quarantined = false;
       symbol.consecutive_snapshot_failures = 0;
@@ -4556,6 +4580,14 @@ class VenueConnection::Impl {
         symbol.recovery_started = now;
       }
       symbol.pending.clear();
+    }
+    for (const auto symbol_index : shard.symbol_indices) {
+      auto &symbol = symbols_[symbol_index];
+      if (symbol.metadata_ready &&
+          symbol.instrument.instrument_id != 0 &&
+          symbol.catalog_generation != symbol.generation) {
+        (void)publish_catalog_barrier(symbol);
+      }
     }
     ++metrics_.reconnects;
     metrics_.last_reconnect_shard = shard.id;

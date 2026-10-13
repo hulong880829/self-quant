@@ -50,7 +50,6 @@ struct BinanceExecutionConfig {
 };
 
 struct PolymarketCredentialView {
-  std::string_view signer_address{};
   std::string_view funder_address{};
   std::string_view private_key{};
   std::string_view api_key{};
@@ -66,6 +65,7 @@ struct PolymarketExecutionConfig {
   bool enabled{};
   VenueEndpointOverrides endpoints{};
   EndpointOverride data_api{};
+  PolymarketSignatureType signature_type{PolymarketSignatureType::Unspecified};
   PolymarketCredentialView credentials{};
   PolymarketCredentialProvider credential_provider{};
   void* credential_context{};

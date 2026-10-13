@@ -2,68 +2,78 @@ package config
 
 import (
 	"fmt"
-	"math"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 type Funding struct {
-	DatabaseURL             string
-	GRPCAddress             string
-	SyncInterval            time.Duration
-	HTTPTimeout             time.Duration
-	InstrumentSyncInterval  time.Duration
-	ClickHouseAddr          string
-	ClickHouseDatabase      string
-	ClickHouseTable         string
-	ClickHouseUser          string
-	ClickHousePassword      string
-	ClickHouseTLS           bool
-	ClickHouseTLSSkip       bool
-	RankingQueryTimeout     time.Duration
-	RankingPoolSize         int
-	RankingInterval         time.Duration
-	RankingTimeout          time.Duration
-	RankingHistoryIncrement time.Duration
-	RankingRateMaxAge       time.Duration
-	RankingEnabled          bool
-	RankingMinuteEnabled    bool
-	RankingHistoryMaxRows   int
-	LogLevel                string
-	Development             bool
-	EnabledExchanges        map[string]bool
-	PublishedExchanges      map[string]bool
-	SpreadEnabledExchanges  map[string]bool
-	RankingEnabledExchanges map[string]bool
-	AsterFundingAPIURL      string
-	LighterFundingAPIURL    string
+	DatabaseURL               string
+	GRPCAddress               string
+	SyncInterval              time.Duration
+	HTTPTimeout               time.Duration
+	InstrumentSyncInterval    time.Duration
+	ClickHouseAddr            string
+	ClickHouseDatabase        string
+	ClickHouseTable           string
+	ClickHouseUser            string
+	ClickHousePassword        string
+	ClickHouseTLS             bool
+	ClickHouseTLSSkip         bool
+	RankingQueryTimeout       time.Duration
+	RankingPoolSize           int
+	RankingInterval           time.Duration
+	RankingTimeout            time.Duration
+	RankingHistoryIncrement   time.Duration
+	RankingRateMaxAge         time.Duration
+	RankingEnabled            bool
+	RankingMinuteEnabled      bool
+	RankingHistoryMaxRows     int
+	LogLevel                  string
+	Development               bool
+	EnabledExchanges          map[string]bool
+	PublishedExchanges        map[string]bool
+	SpreadEnabledExchanges    map[string]bool
+	RankingEnabledExchanges   map[string]bool
+	AsterFundingAPIURL        string
+	LighterFundingAPIURL      string
+	TradefiPerpsEnabled       bool
+	IBKRGatewayAddr           string
+	IBKRDiscoveryClientID     int
+	ArbitrageEnabledExchanges map[string]bool
 }
 
 type Account struct {
-	DatabaseURL           string
-	GRPCAddress           string
-	TokenSecret           string
-	ReportInternalToken   string
-	TraderInternalToken   string
-	TokenTTL              time.Duration
-	CredentialsKey        string
-	PolymarketCLOBURL     string
-	PolymarketDataURL     string
-	BinancePortfolioURL   string
-	OKXAccountURL         string
-	BitgetAccountURL      string
-	BybitAccountURL       string
-	GateAccountURL        string
-	HyperliquidInfoAPIURL string
-	AsterFuturesAPIURL    string
-	LighterAPIURL         string
-	AccountSnapshotTTL    time.Duration
-	HTTPTimeout           time.Duration
-	LogLevel              string
-	Development           bool
+	DatabaseURL            string
+	GRPCAddress            string
+	TokenSecret            string
+	GatewayInternalToken   string
+	AdminInternalToken     string
+	ReportInternalToken    string
+	TraderInternalToken    string
+	TokenTTL               time.Duration
+	CredentialsKey         string
+	PolymarketCLOBURL      string
+	PolymarketDataURL      string
+	BinancePortfolioURL    string
+	OKXAccountURL          string
+	BitgetAccountURL       string
+	BybitAccountURL        string
+	GateAccountURL         string
+	HyperliquidInfoAPIURL  string
+	AsterFuturesAPIURL     string
+	LighterAPIURL          string
+	AccountSnapshotTTL     time.Duration
+	StatusCacheTTL         time.Duration
+	EquitySnapshotInterval time.Duration
+	HTTPTimeout            time.Duration
+	LogLevel               string
+	Development            bool
 }
 
 type Polymarket struct {
@@ -97,9 +107,15 @@ type Gateway struct {
 	TraderGRPCAddress     string
 	AIGRPCAddress         string
 	SpreadGRPCAddress     string
+	JevGRPCAddress        string
+	AdminGRPCAddress      string
 	SessionCookieName     string
 	SessionCookieSecure   bool
 	SessionCookieMaxAge   time.Duration
+	GatewayInternalToken  string
+	BrokerJWTPublicKey    string
+	BrokerAuthCacheTTL    time.Duration
+	CORSOrigin            string
 	LogLevel              string
 }
 
@@ -118,6 +134,74 @@ type Spread struct {
 	CacheTTL           time.Duration
 	LogLevel           string
 	Development        bool
+}
+
+type Jev struct {
+	DatabaseURL                 string
+	GRPCAddress                 string
+	FundingGRPCAddress          string
+	ClickHouseAddr              string
+	ClickHouseDatabase          string
+	ClickHouseTable             string
+	ClickHouseUser              string
+	ClickHousePassword          string
+	ClickHouseTLS               bool
+	ClickHouseTLSSkip           bool
+	QueryTimeout                time.Duration
+	PoolSize                    int
+	Enabled                     bool
+	TypeSafeAPIKey              string
+	TypeSafeBaseURL             string
+	TypeSafeModel               string
+	TypeSafeTimeout             time.Duration
+	CycleInterval               time.Duration
+	FillWait                    time.Duration
+	BBOMaxAge                   time.Duration
+	FundingPriceMaxAge          time.Duration
+	RateMaxAge                  time.Duration
+	MinTurnoverUSD              decimal.Decimal
+	MinDepthUSD                 decimal.Decimal
+	PositionNotionalUSDT        decimal.Decimal
+	PaperRoundTripCostBPS       decimal.Decimal
+	PaperInitialEquity          decimal.Decimal
+	MinExitProbability          decimal.Decimal
+	MaxHoldDuration             time.Duration
+	MaxConcurrentDecisions      int
+	MaxEntryDecisionsPerCycle   int
+	MaxOpenPositions            int
+	USDTUSDCOneToOne            bool
+	BasisLookback               time.Duration
+	BasisForecastHorizon        time.Duration
+	BasisRefreshInterval        time.Duration
+	BasisCacheMaxAge            time.Duration
+	MinExpectedNetReturn24h     decimal.Decimal
+	MinConservativeNetReturn24h decimal.Decimal
+	MinNetProfitProbability     decimal.Decimal
+	MinBasisForecastConfidence  decimal.Decimal
+	MinEnterProbability         decimal.Decimal
+	MinEnterConfidence          decimal.Decimal
+	BasisMatchBandBPS           decimal.Decimal
+	BasisConfidenceSampleTarget int
+	StopLossNetUSDT             decimal.Decimal
+	TakeProfitPadUSDT           decimal.Decimal
+	ExitConfirmCycles           int
+	MissingBBOForceAfter        time.Duration
+	ProbabilitySumTolerance     decimal.Decimal
+	LogLevel                    string
+	Development                 bool
+}
+
+type Admin struct {
+	DatabaseURL          string
+	GRPCAddress          string
+	AccountGRPCAddress   string
+	TraderGRPCAddress    string
+	GatewayInternalToken string
+	AdminInternalToken   string
+	JWTPrivateKeyFile    string
+	AccessTokenTTL       time.Duration
+	LogLevel             string
+	Development          bool
 }
 
 type AI struct {
@@ -167,6 +251,7 @@ type Trader struct {
 	LighterURL                   string
 	HTTPTimeout                  time.Duration
 	InternalToken                string
+	AdminInternalToken           string
 	ReconcileInterval            time.Duration
 	ReconcileBatchSize           int
 	ReconcileWorkers             int
@@ -234,41 +319,6 @@ type Report struct {
 	Development        bool
 }
 
-type AggData struct {
-	HTTPAddress               string
-	RecordingDir              string
-	MDSGatewayURL             string
-	MDSGatewayToken           string
-	AllowedOrigins            []string
-	BrowserToken              string
-	MaxClients                int
-	MaxSubscriptions          int
-	ManifestRefresh           time.Duration
-	StreamInterval            time.Duration
-	SnapshotStaleAfter        time.Duration
-	HistoryWorkers            int
-	HistoryResolution         time.Duration
-	DatabaseURL               string
-	FairPriceEnabled          bool
-	FairPriceDepth            int
-	FairPriceLambdaPerBP      float64
-	FairPriceImbalanceAlpha   float64
-	FairPriceEWMATau          time.Duration
-	FairPriceImpactNotional   float64
-	FairPriceVenueDominance   float64
-	FairPriceStreamInterval   time.Duration
-	FairPriceHeartbeat        time.Duration
-	FairPricePersistEnabled   bool
-	FairPriceSampleInterval   time.Duration
-	FairPriceRetention        time.Duration
-	FairPriceCleanupInterval  time.Duration
-	FairPriceDeleteBatch      int
-	FairPriceDeleteMaxBatches int
-	FairPriceDBTimeout        time.Duration
-	Development               bool
-	LogLevel                  string
-}
-
 func FundingFromEnv() (Funding, error) {
 	c := Funding{
 		DatabaseURL:            env("DATABASE_URL", "postgres://selfquant:selfquant@localhost:5432/selfquant?sslmode=disable"),
@@ -312,8 +362,15 @@ func FundingFromEnv() (Funding, error) {
 			"FUNDING_RANKING_ENABLED_EXCHANGES",
 			defaultFundingCollectionExchanges,
 		)),
-		AsterFundingAPIURL:   env("ASTER_FUNDING_API_URL", "https://fapi.asterdex.com"),
-		LighterFundingAPIURL: env("LIGHTER_FUNDING_API_URL", "https://mainnet.zklighter.elliot.ai"),
+		AsterFundingAPIURL:    env("ASTER_FUNDING_API_URL", "https://fapi.asterdex.com"),
+		LighterFundingAPIURL:  env("LIGHTER_FUNDING_API_URL", "https://mainnet.zklighter.elliot.ai"),
+		TradefiPerpsEnabled:   boolean("TRADEFI_PERPS_ENABLED", false),
+		IBKRGatewayAddr:       env("IBKR_GATEWAY_ADDR", "ib-gateway:4003"),
+		IBKRDiscoveryClientID: positiveInteger("IBKR_DISCOVERY_CLIENT_ID", 30),
+		ArbitrageEnabledExchanges: enabledExchanges(env(
+			"TRADER_ARBITRAGE_ENABLED_EXCHANGES",
+			"binance,okx,bybit,bitget,gate,hyperliquid,aster,lighter",
+		)),
 	}
 	if c.SyncInterval <= 0 || c.HTTPTimeout <= 0 || c.InstrumentSyncInterval <= 0 ||
 		c.RankingQueryTimeout <= 0 || c.RankingPoolSize <= 0 || c.RankingHistoryMaxRows <= 0 ||
@@ -327,7 +384,26 @@ func FundingFromEnv() (Funding, error) {
 	if err := validateFundingExchangeSets(c); err != nil {
 		return c, err
 	}
+	if c.TradefiPerpsEnabled {
+		if err := validateIBKRDiscovery(c.IBKRGatewayAddr, c.IBKRDiscoveryClientID); err != nil {
+			return c, err
+		}
+	}
 	return c, nil
+}
+
+func validateIBKRDiscovery(addr string, clientID int) error {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil || host == "" || port == "" {
+		return fmt.Errorf("IBKR_GATEWAY_ADDR must be host:port")
+	}
+	if clientID <= 0 {
+		return fmt.Errorf("IBKR_DISCOVERY_CLIENT_ID must be a positive integer")
+	}
+	if clientID == 31 {
+		return fmt.Errorf("IBKR_DISCOVERY_CLIENT_ID must not use the C++ producer client id 31")
+	}
+	return nil
 }
 
 const (
@@ -387,27 +463,31 @@ func boolean(key string, fallback bool) bool {
 
 func AccountFromEnv() (Account, error) {
 	c := Account{
-		DatabaseURL:           env("DATABASE_URL", "postgres://selfquant:selfquant@localhost:5432/selfquant?sslmode=disable"),
-		GRPCAddress:           env("ACCOUNT_GRPC_ADDRESS", ":9091"),
-		TokenSecret:           env("ACCOUNT_TOKEN_SECRET", ""),
-		ReportInternalToken:   env("REPORT_INTERNAL_TOKEN", ""),
-		TraderInternalToken:   env("TRADER_INTERNAL_TOKEN", ""),
-		TokenTTL:              duration("ACCOUNT_TOKEN_TTL", 12*time.Hour),
-		CredentialsKey:        env("ACCOUNT_CREDENTIALS_KEY", ""),
-		PolymarketCLOBURL:     env("POLYMARKET_CLOB_URL", "https://clob.polymarket.com"),
-		PolymarketDataURL:     env("POLYMARKET_DATA_URL", "https://data-api.polymarket.com"),
-		BinancePortfolioURL:   env("BINANCE_PORTFOLIO_API_URL", "https://papi.binance.com"),
-		OKXAccountURL:         env("OKX_ACCOUNT_API_URL", "https://www.okx.com"),
-		BitgetAccountURL:      env("BITGET_ACCOUNT_API_URL", "https://api.bitget.com"),
-		BybitAccountURL:       env("BYBIT_ACCOUNT_API_URL", "https://api.bybit.com"),
-		GateAccountURL:        env("GATE_ACCOUNT_API_URL", "https://api.gateio.ws"),
-		HyperliquidInfoAPIURL: env("HYPERLIQUID_INFO_API_URL", "https://api.hyperliquid.xyz"),
-		AsterFuturesAPIURL:    env("ASTER_FUTURES_API_URL", "https://fapi.asterdex.com"),
-		LighterAPIURL:         env("LIGHTER_API_URL", "https://mainnet.zklighter.elliot.ai"),
-		AccountSnapshotTTL:    duration("ACCOUNT_SNAPSHOT_TTL", 3*time.Second),
-		HTTPTimeout:           duration("ACCOUNT_SNAPSHOT_HTTP_TIMEOUT", 8*time.Second),
-		LogLevel:              env("LOG_LEVEL", "info"),
-		Development:           boolean("DEVELOPMENT", false),
+		DatabaseURL:            env("DATABASE_URL", "postgres://selfquant:selfquant@localhost:5432/selfquant?sslmode=disable"),
+		GRPCAddress:            env("ACCOUNT_GRPC_ADDRESS", ":9091"),
+		TokenSecret:            env("ACCOUNT_TOKEN_SECRET", ""),
+		GatewayInternalToken:   env("GATEWAY_INTERNAL_TOKEN", ""),
+		AdminInternalToken:     env("ADMIN_INTERNAL_TOKEN", ""),
+		ReportInternalToken:    env("REPORT_INTERNAL_TOKEN", ""),
+		TraderInternalToken:    env("TRADER_INTERNAL_TOKEN", ""),
+		TokenTTL:               duration("ACCOUNT_TOKEN_TTL", 12*time.Hour),
+		CredentialsKey:         env("ACCOUNT_CREDENTIALS_KEY", ""),
+		PolymarketCLOBURL:      env("POLYMARKET_CLOB_URL", "https://clob.polymarket.com"),
+		PolymarketDataURL:      env("POLYMARKET_DATA_URL", "https://data-api.polymarket.com"),
+		BinancePortfolioURL:    env("BINANCE_PORTFOLIO_API_URL", "https://papi.binance.com"),
+		OKXAccountURL:          env("OKX_ACCOUNT_API_URL", "https://www.okx.com"),
+		BitgetAccountURL:       env("BITGET_ACCOUNT_API_URL", "https://api.bitget.com"),
+		BybitAccountURL:        env("BYBIT_ACCOUNT_API_URL", "https://api.bybit.com"),
+		GateAccountURL:         env("GATE_ACCOUNT_API_URL", "https://api.gateio.ws"),
+		HyperliquidInfoAPIURL:  env("HYPERLIQUID_INFO_API_URL", "https://api.hyperliquid.xyz"),
+		AsterFuturesAPIURL:     env("ASTER_FUTURES_API_URL", "https://fapi.asterdex.com"),
+		LighterAPIURL:          env("LIGHTER_API_URL", "https://mainnet.zklighter.elliot.ai"),
+		AccountSnapshotTTL:     duration("ACCOUNT_SNAPSHOT_TTL", 3*time.Second),
+		StatusCacheTTL:         duration("ACCOUNT_STATUS_CACHE_TTL", 30*time.Second),
+		EquitySnapshotInterval: duration("ACCOUNT_EQUITY_SNAPSHOT_INTERVAL", 5*time.Minute),
+		HTTPTimeout:            duration("ACCOUNT_SNAPSHOT_HTTP_TIMEOUT", 8*time.Second),
+		LogLevel:               env("LOG_LEVEL", "info"),
+		Development:            boolean("DEVELOPMENT", false),
 	}
 	if c.TokenSecret == "" {
 		return c, fmt.Errorf("ACCOUNT_TOKEN_SECRET is required")
@@ -415,13 +495,25 @@ func AccountFromEnv() (Account, error) {
 	if c.CredentialsKey == "" {
 		return c, fmt.Errorf("ACCOUNT_CREDENTIALS_KEY is required")
 	}
+	if c.GatewayInternalToken == "" {
+		return c, fmt.Errorf("GATEWAY_INTERNAL_TOKEN is required")
+	}
+	if c.AdminInternalToken == "" {
+		return c, fmt.Errorf("ADMIN_INTERNAL_TOKEN is required")
+	}
 	if c.ReportInternalToken == "" {
 		return c, fmt.Errorf("REPORT_INTERNAL_TOKEN is required")
 	}
 	if c.TraderInternalToken == "" {
 		return c, fmt.Errorf("TRADER_INTERNAL_TOKEN is required")
 	}
-	if c.TokenTTL <= 0 || c.HTTPTimeout <= 0 || c.AccountSnapshotTTL <= 0 {
+	if err := requireDistinctTokens(
+		c.GatewayInternalToken, c.AdminInternalToken, c.ReportInternalToken, c.TraderInternalToken,
+	); err != nil {
+		return c, err
+	}
+	if c.TokenTTL <= 0 || c.HTTPTimeout <= 0 || c.AccountSnapshotTTL <= 0 ||
+		c.StatusCacheTTL <= 0 || c.EquitySnapshotInterval <= 0 {
 		return c, fmt.Errorf("account durations must be positive")
 	}
 	return c, nil
@@ -467,9 +559,15 @@ func GatewayFromEnv() Gateway {
 		TraderGRPCAddress:     env("TRADER_GRPC_TARGET", "localhost:9095"),
 		AIGRPCAddress:         env("AI_GRPC_TARGET", "localhost:9096"),
 		SpreadGRPCAddress:     env("SPREAD_GRPC_TARGET", "localhost:9097"),
+		JevGRPCAddress:        strings.TrimSpace(os.Getenv("JEV_GRPC_TARGET")),
+		AdminGRPCAddress:      strings.TrimSpace(os.Getenv("ADMIN_GRPC_TARGET")),
 		SessionCookieName:     env("ACCOUNT_SESSION_COOKIE", "sq_session"),
 		SessionCookieSecure:   boolean("ACCOUNT_COOKIE_SECURE", false),
 		SessionCookieMaxAge:   duration("ACCOUNT_TOKEN_TTL", 12*time.Hour),
+		GatewayInternalToken:  strings.TrimSpace(os.Getenv("GATEWAY_INTERNAL_TOKEN")),
+		BrokerJWTPublicKey:    strings.TrimSpace(os.Getenv("BROKER_JWT_PUBLIC_KEY_FILE")),
+		BrokerAuthCacheTTL:    duration("BROKER_AUTH_STATE_CACHE_TTL", 30*time.Second),
+		CORSOrigin:            env("GATEWAY_CORS_ORIGIN", ""),
 		LogLevel:              env("LOG_LEVEL", "info"),
 	}
 }
@@ -539,6 +637,7 @@ func TraderFromEnv() (Trader, error) {
 		LighterURL:                   env("LIGHTER_API_URL", "https://mainnet.zklighter.elliot.ai"),
 		HTTPTimeout:                  duration("TRADER_HTTP_TIMEOUT", 12*time.Second),
 		InternalToken:                strings.TrimSpace(os.Getenv("TRADER_INTERNAL_TOKEN")),
+		AdminInternalToken:           strings.TrimSpace(os.Getenv("ADMIN_INTERNAL_TOKEN")),
 		ReconcileInterval:            duration("TRADER_RECONCILE_INTERVAL", time.Second),
 		ReconcileBatchSize:           positiveInteger("TRADER_RECONCILE_BATCH_SIZE", 20),
 		ReconcileWorkers:             positiveInteger("TRADER_RECONCILE_WORKERS", 3),
@@ -647,6 +746,43 @@ func TraderFromEnv() (Trader, error) {
 	if c.InternalToken == "" {
 		return c, fmt.Errorf("TRADER_INTERNAL_TOKEN is required")
 	}
+	if c.AdminInternalToken == "" {
+		return c, fmt.Errorf("ADMIN_INTERNAL_TOKEN is required")
+	}
+	if err := requireDistinctTokens(c.InternalToken, c.AdminInternalToken); err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
+func AdminFromEnv() (Admin, error) {
+	c := Admin{
+		DatabaseURL:          env("DATABASE_URL", "postgres://selfquant:selfquant@localhost:5432/selfquant?sslmode=disable"),
+		GRPCAddress:          env("ADMIN_GRPC_ADDRESS", ":9099"),
+		AccountGRPCAddress:   env("ACCOUNT_GRPC_TARGET", "localhost:9091"),
+		TraderGRPCAddress:    env("TRADER_GRPC_TARGET", "localhost:9095"),
+		GatewayInternalToken: strings.TrimSpace(os.Getenv("GATEWAY_INTERNAL_TOKEN")),
+		AdminInternalToken:   strings.TrimSpace(os.Getenv("ADMIN_INTERNAL_TOKEN")),
+		JWTPrivateKeyFile:    strings.TrimSpace(os.Getenv("BROKER_JWT_PRIVATE_KEY_FILE")),
+		AccessTokenTTL:       duration("BROKER_ACCESS_TOKEN_TTL", 24*time.Hour),
+		LogLevel:             env("LOG_LEVEL", "info"),
+		Development:          boolean("DEVELOPMENT", false),
+	}
+	if c.GatewayInternalToken == "" {
+		return c, fmt.Errorf("GATEWAY_INTERNAL_TOKEN is required")
+	}
+	if c.AdminInternalToken == "" {
+		return c, fmt.Errorf("ADMIN_INTERNAL_TOKEN is required")
+	}
+	if c.JWTPrivateKeyFile == "" {
+		return c, fmt.Errorf("BROKER_JWT_PRIVATE_KEY_FILE is required")
+	}
+	if err := requireDistinctTokens(c.GatewayInternalToken, c.AdminInternalToken); err != nil {
+		return c, err
+	}
+	if c.AccessTokenTTL <= 0 {
+		return c, fmt.Errorf("BROKER_ACCESS_TOKEN_TTL must be positive")
+	}
 	return c, nil
 }
 
@@ -679,6 +815,158 @@ func SpreadFromEnv() (Spread, error) {
 	return c, nil
 }
 
+func JevFromEnv() (Jev, error) {
+	c := Jev{
+		DatabaseURL:                 env("DATABASE_URL", "postgres://selfquant:selfquant@localhost:5432/selfquant?sslmode=disable"),
+		GRPCAddress:                 env("JEV_GRPC_ADDRESS", ":9098"),
+		FundingGRPCAddress:          env("FUNDING_GRPC_TARGET", "localhost:9090"),
+		ClickHouseAddr:              env("CLICKHOUSE_ADDR", "127.0.0.1:9000"),
+		ClickHouseDatabase:          env("CLICKHOUSE_DATABASE", "market_data"),
+		ClickHouseTable:             env("CLICKHOUSE_TABLE", "crypto_bbo"),
+		ClickHouseUser:              env("CLICKHOUSE_USER", "bbo_writer"),
+		ClickHousePassword:          env("CLICKHOUSE_PASSWORD", env("CLICKHOUSE_BBO_PASSWORD", "")),
+		ClickHouseTLS:               boolean("CLICKHOUSE_TLS", false),
+		ClickHouseTLSSkip:           boolean("CLICKHOUSE_TLS_SKIP_VERIFY", false),
+		QueryTimeout:                duration("CLICKHOUSE_QUERY_TIMEOUT", 5*time.Second),
+		PoolSize:                    positiveInteger("CLICKHOUSE_POOL_SIZE", 8),
+		Enabled:                     boolean("JEV_ENABLED", true),
+		TypeSafeAPIKey:              strings.TrimSpace(os.Getenv("TYPESAFE_API_KEY")),
+		TypeSafeBaseURL:             env("TYPESAFE_BASE_URL", "https://api.typesafe.ai/v1/systemone"),
+		TypeSafeModel:               env("TYPESAFE_MODEL", "jev-latest"),
+		TypeSafeTimeout:             duration("JEV_TYPESAFE_TIMEOUT", 3*time.Second),
+		CycleInterval:               duration("JEV_CYCLE_INTERVAL", 60*time.Second),
+		FillWait:                    duration("JEV_FILL_WAIT", 5*time.Second),
+		BBOMaxAge:                   duration("JEV_BBO_MAX_AGE", 60*time.Second),
+		FundingPriceMaxAge:          duration("JEV_FUNDING_PRICE_MAX_AGE", 60*time.Second),
+		RateMaxAge:                  duration("JEV_RATE_MAX_AGE", 15*time.Minute),
+		MaxHoldDuration:             duration("JEV_MAX_HOLD_DURATION", 72*time.Hour),
+		MaxConcurrentDecisions:      positiveInteger("JEV_MAX_CONCURRENT_DECISIONS", 2),
+		MaxEntryDecisionsPerCycle:   positiveInteger("JEV_MAX_ENTRY_DECISIONS_PER_CYCLE", 8),
+		MaxOpenPositions:            positiveInteger("JEV_MAX_OPEN_POSITIONS", 8),
+		USDTUSDCOneToOne:            boolean("JEV_USDT_USDC_ONE_TO_ONE", true),
+		BasisLookback:               duration("JEV_BASIS_LOOKBACK", 7*24*time.Hour),
+		BasisForecastHorizon:        duration("JEV_BASIS_FORECAST_HORIZON", 24*time.Hour),
+		BasisRefreshInterval:        duration("JEV_BASIS_REFRESH_INTERVAL", 10*time.Minute),
+		BasisCacheMaxAge:            duration("JEV_BASIS_CACHE_MAX_AGE", 20*time.Minute),
+		BasisConfidenceSampleTarget: positiveInteger("JEV_BASIS_CONFIDENCE_SAMPLE_TARGET", 48),
+		ExitConfirmCycles:           positiveInteger("JEV_EXIT_CONFIRM_CYCLES", 3),
+		MissingBBOForceAfter:        duration("JEV_MISSING_BBO_FORCE_AFTER", 15*time.Minute),
+		LogLevel:                    env("LOG_LEVEL", "info"),
+		Development:                 boolean("DEVELOPMENT", false),
+	}
+	var err error
+	if c.MinTurnoverUSD, err = positiveDecimalEnv("JEV_MIN_TURNOVER_USD", "1000000"); err != nil {
+		return c, err
+	}
+	if c.MinDepthUSD, err = positiveDecimalEnv("JEV_MIN_DEPTH_USD", "5000"); err != nil {
+		return c, err
+	}
+	if c.PositionNotionalUSDT, err = positiveDecimalEnv("JEV_POSITION_NOTIONAL_USDT", "100"); err != nil {
+		return c, err
+	}
+	if c.PaperRoundTripCostBPS, err = positiveDecimalEnv("JEV_PAPER_ROUND_TRIP_COST_BPS", "12"); err != nil {
+		return c, err
+	}
+	if c.PaperInitialEquity, err = positiveDecimalEnv("JEV_PAPER_INITIAL_EQUITY", "10000"); err != nil {
+		return c, err
+	}
+	if c.MinExitProbability, err = unitIntervalDecimalEnv("JEV_MIN_EXIT_PROBABILITY", "0.6"); err != nil {
+		return c, err
+	}
+	if c.MinExpectedNetReturn24h, err = nonNegativeDecimalEnv("JEV_MIN_EXPECTED_NET_RETURN_24H", "0.002"); err != nil {
+		return c, err
+	}
+	if c.MinConservativeNetReturn24h, err = nonNegativeDecimalEnv("JEV_MIN_CONSERVATIVE_NET_RETURN_24H", "0.0005"); err != nil {
+		return c, err
+	}
+	if c.MinNetProfitProbability, err = unitIntervalDecimalEnv("JEV_MIN_NET_PROFIT_PROBABILITY", "0.60"); err != nil {
+		return c, err
+	}
+	if c.MinBasisForecastConfidence, err = unitIntervalDecimalEnv("JEV_MIN_BASIS_FORECAST_CONFIDENCE", "0.60"); err != nil {
+		return c, err
+	}
+	if c.MinEnterProbability, err = unitIntervalDecimalEnv("JEV_MIN_ENTER_PROBABILITY", "0.70"); err != nil {
+		return c, err
+	}
+	if c.MinEnterConfidence, err = unitIntervalDecimalEnv("JEV_MIN_ENTER_CONFIDENCE", "0.70"); err != nil {
+		return c, err
+	}
+	if c.BasisMatchBandBPS, err = positiveDecimalEnv("JEV_BASIS_MATCH_BAND_BPS", "20"); err != nil {
+		return c, err
+	}
+	if c.StopLossNetUSDT, err = decimalEnv("JEV_STOP_LOSS_NET_USDT", "-1"); err != nil {
+		return c, err
+	}
+	if c.StopLossNetUSDT.IsPositive() {
+		return c, fmt.Errorf("JEV_STOP_LOSS_NET_USDT must be <= 0")
+	}
+	if c.TakeProfitPadUSDT, err = nonNegativeDecimalEnv("JEV_TAKE_PROFIT_PAD_USDT", "0.05"); err != nil {
+		return c, err
+	}
+	if c.ProbabilitySumTolerance, err = unitIntervalDecimalEnv("JEV_PROBABILITY_SUM_TOLERANCE", "0.02"); err != nil {
+		return c, err
+	}
+	if strings.TrimSpace(c.ClickHouseAddr) == "" {
+		return c, fmt.Errorf("CLICKHOUSE_ADDR is required")
+	}
+	if !identifier(c.ClickHouseDatabase) || !identifier(c.ClickHouseTable) {
+		return c, fmt.Errorf("CLICKHOUSE_DATABASE and CLICKHOUSE_TABLE must be identifiers")
+	}
+	if strings.TrimSpace(c.TypeSafeBaseURL) == "" || strings.TrimSpace(c.TypeSafeModel) == "" {
+		return c, fmt.Errorf("TYPESAFE_BASE_URL and TYPESAFE_MODEL are required")
+	}
+	if c.QueryTimeout <= 0 || c.TypeSafeTimeout <= 0 || c.CycleInterval <= 0 ||
+		c.FillWait <= 0 || c.BBOMaxAge <= 0 || c.FundingPriceMaxAge <= 0 ||
+		c.RateMaxAge <= 0 || c.MaxHoldDuration <= 0 || c.MissingBBOForceAfter <= 0 {
+		return c, fmt.Errorf("jev durations must be positive")
+	}
+	if c.PoolSize <= 0 || c.MaxConcurrentDecisions <= 0 || c.MaxEntryDecisionsPerCycle <= 0 ||
+		c.MaxOpenPositions <= 0 || c.BasisConfidenceSampleTarget <= 0 || c.ExitConfirmCycles <= 0 {
+		return c, fmt.Errorf("jev pool and position limits must be positive")
+	}
+	return c, nil
+}
+
+func positiveDecimalEnv(key, fallback string) (decimal.Decimal, error) {
+	parsed, err := decimalEnv(key, fallback)
+	if err != nil || !parsed.IsPositive() {
+		return decimal.Zero, fmt.Errorf("%s must be a decimal > 0", key)
+	}
+	return parsed, nil
+}
+
+func nonNegativeDecimalEnv(key, fallback string) (decimal.Decimal, error) {
+	parsed, err := decimalEnv(key, fallback)
+	if err != nil || parsed.IsNegative() {
+		return decimal.Zero, fmt.Errorf("%s must be a decimal >= 0", key)
+	}
+	return parsed, nil
+}
+
+func decimalEnv(key, fallback string) (decimal.Decimal, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		value = fallback
+	}
+	parsed, err := decimal.NewFromString(value)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("%s must be a decimal", key)
+	}
+	return parsed, nil
+}
+
+func unitIntervalDecimalEnv(key, fallback string) (decimal.Decimal, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		value = fallback
+	}
+	parsed, err := decimal.NewFromString(value)
+	if err != nil || parsed.IsNegative() || parsed.GreaterThan(decimal.NewFromInt(1)) {
+		return decimal.Zero, fmt.Errorf("%s must be a decimal in [0, 1]", key)
+	}
+	return parsed, nil
+}
+
 func identifier(value string) bool {
 	if value == "" {
 		return false
@@ -707,148 +995,6 @@ func ReportFromEnv() (Report, error) {
 	}
 	if _, err := time.LoadLocation(c.Timezone); err != nil {
 		return c, fmt.Errorf("invalid REPORT_TIMEZONE: %w", err)
-	}
-	return c, nil
-}
-
-func AggDataFromEnv() (AggData, error) {
-	c := AggData{
-		HTTPAddress:               env("AGGDATA_HTTP_ADDRESS", "127.0.0.1:9093"),
-		RecordingDir:              env("AGGDATA_RECORDING_DIR", "/tmp/marketdata/crypto"),
-		MDSGatewayURL:             env("AGGDATA_MDS_GATEWAY_URL", "ws://127.0.0.1:9443/v1/market-data"),
-		MDSGatewayToken:           strings.TrimSpace(os.Getenv("MDS_GATEWAY_TOKEN")),
-		BrowserToken:              strings.TrimSpace(os.Getenv("AGGDATA_BROWSER_TOKEN")),
-		MaxClients:                positiveInteger("AGGDATA_MAX_CLIENTS", 128),
-		MaxSubscriptions:          positiveInteger("AGGDATA_MAX_SUBSCRIPTIONS_PER_CLIENT", 16),
-		ManifestRefresh:           duration("AGGDATA_MANIFEST_REFRESH_INTERVAL", time.Second),
-		StreamInterval:            duration("AGGDATA_STREAM_INTERVAL", 50*time.Millisecond),
-		SnapshotStaleAfter:        duration("AGGDATA_SNAPSHOT_STALE_AFTER", 15*time.Second),
-		HistoryWorkers:            positiveInteger("AGGDATA_HISTORY_WORKERS", 1),
-		HistoryResolution:         duration("AGGDATA_HISTORY_RESOLUTION", time.Minute),
-		DatabaseURL:               env("DATABASE_URL", "postgres://selfquant:selfquant@localhost:5432/selfquant?sslmode=disable"),
-		FairPriceEnabled:          boolean("AGGDATA_FAIRPRICE_ENABLED", true),
-		FairPriceDepth:            positiveInteger("AGGDATA_FAIRPRICE_DEPTH", 20),
-		FairPriceLambdaPerBP:      number("AGGDATA_FAIRPRICE_LAMBDA_PER_BP", 0.10),
-		FairPriceImbalanceAlpha:   number("AGGDATA_FAIRPRICE_IMBALANCE_ALPHA", 1),
-		FairPriceEWMATau:          duration("AGGDATA_FAIRPRICE_EWMA_TAU", 500*time.Millisecond),
-		FairPriceImpactNotional:   number("AGGDATA_FAIRPRICE_IMPACT_NOTIONAL", 0),
-		FairPriceVenueDominance:   number("AGGDATA_FAIRPRICE_VENUE_DOMINANCE_RATIO", 0.90),
-		FairPriceStreamInterval:   duration("AGGDATA_FAIRPRICE_STREAM_INTERVAL", 5*time.Millisecond),
-		FairPriceHeartbeat:        duration("AGGDATA_FAIRPRICE_HEARTBEAT", time.Second),
-		FairPricePersistEnabled:   boolean("AGGDATA_FAIRPRICE_PERSIST_ENABLED", true),
-		FairPriceSampleInterval:   duration("AGGDATA_FAIRPRICE_SAMPLE_INTERVAL", time.Second),
-		FairPriceRetention:        duration("AGGDATA_FAIRPRICE_RETENTION", 24*time.Hour),
-		FairPriceCleanupInterval:  duration("AGGDATA_FAIRPRICE_CLEANUP_INTERVAL", 5*time.Minute),
-		FairPriceDeleteBatch:      positiveInteger("AGGDATA_FAIRPRICE_DELETE_BATCH", 10_000),
-		FairPriceDeleteMaxBatches: positiveInteger("AGGDATA_FAIRPRICE_DELETE_MAX_BATCHES", 20),
-		FairPriceDBTimeout:        duration("AGGDATA_FAIRPRICE_DB_TIMEOUT", 5*time.Second),
-		Development:               boolean("DEVELOPMENT", false),
-		LogLevel:                  env("LOG_LEVEL", "info"),
-	}
-	for _, origin := range strings.Split(env("AGGDATA_ALLOWED_ORIGINS", "http://localhost:3000"), ",") {
-		if origin = strings.TrimSpace(origin); origin != "" {
-			parsed, err := url.Parse(origin)
-			if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
-				parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
-				parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-				return c, fmt.Errorf("invalid AGGDATA_ALLOWED_ORIGINS entry %q", origin)
-			}
-			origin = strings.TrimSuffix(origin, "/")
-			c.AllowedOrigins = append(c.AllowedOrigins, origin)
-		}
-	}
-	if strings.TrimSpace(c.RecordingDir) == "" {
-		return c, fmt.Errorf("AGGDATA_RECORDING_DIR is required")
-	}
-	gatewayURL, err := url.Parse(c.MDSGatewayURL)
-	if err != nil || (gatewayURL.Scheme != "ws" && gatewayURL.Scheme != "wss") ||
-		gatewayURL.Host == "" || gatewayURL.User != nil || gatewayURL.Fragment != "" {
-		return c, fmt.Errorf("AGGDATA_MDS_GATEWAY_URL must use ws or wss")
-	}
-	if c.MDSGatewayToken == "" {
-		return c, fmt.Errorf("MDS_GATEWAY_TOKEN is required")
-	}
-	if c.MaxClients <= 0 || c.MaxSubscriptions <= 0 || c.HistoryWorkers <= 0 ||
-		c.ManifestRefresh <= 0 || c.StreamInterval < 10*time.Millisecond ||
-		c.SnapshotStaleAfter <= 0 || c.HistoryResolution <= 0 {
-		return c, fmt.Errorf("aggdata limits and durations must be positive")
-	}
-	if c.FairPriceDepth <= 0 || c.FairPriceDepth > 50 ||
-		c.FairPriceLambdaPerBP < 0 || !finiteNumber(c.FairPriceLambdaPerBP) ||
-		c.FairPriceImbalanceAlpha < 0 || c.FairPriceImbalanceAlpha > 1 ||
-		!finiteNumber(c.FairPriceImbalanceAlpha) ||
-		c.FairPriceEWMATau <= 0 || c.FairPriceImpactNotional < 0 ||
-		!finiteNumber(c.FairPriceImpactNotional) ||
-		c.FairPriceVenueDominance <= 0 || c.FairPriceVenueDominance > 1 ||
-		!finiteNumber(c.FairPriceVenueDominance) ||
-		c.FairPriceStreamInterval < time.Millisecond || c.FairPriceHeartbeat <= 0 {
-		return c, fmt.Errorf("invalid aggdata fair price algorithm or stream configuration")
-	}
-	if c.FairPricePersistEnabled {
-		if strings.TrimSpace(c.DatabaseURL) == "" {
-			return c, fmt.Errorf("DATABASE_URL is required when fair price persistence is enabled")
-		}
-		if c.FairPriceSampleInterval <= 0 || c.FairPriceRetention <= 0 ||
-			c.FairPriceCleanupInterval <= 0 || c.FairPriceDBTimeout <= 0 ||
-			c.FairPriceDeleteBatch <= 0 || c.FairPriceDeleteMaxBatches <= 0 {
-			return c, fmt.Errorf("invalid aggdata fair price persistence configuration")
-		}
-	}
-	if len(c.AllowedOrigins) == 0 {
-		return c, fmt.Errorf("AGGDATA_ALLOWED_ORIGINS must contain at least one origin")
-	}
-	for _, key := range []string{
-		"AGGDATA_MAX_CLIENTS", "AGGDATA_MAX_SUBSCRIPTIONS_PER_CLIENT",
-		"AGGDATA_HISTORY_WORKERS", "AGGDATA_FAIRPRICE_DEPTH",
-		"AGGDATA_FAIRPRICE_DELETE_BATCH", "AGGDATA_FAIRPRICE_DELETE_MAX_BATCHES",
-	} {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			parsed, err := strconv.Atoi(value)
-			if err != nil || parsed <= 0 {
-				return c, fmt.Errorf("%s must be a positive integer", key)
-			}
-		}
-	}
-	for _, key := range []string{
-		"AGGDATA_MANIFEST_REFRESH_INTERVAL", "AGGDATA_HISTORY_RESOLUTION",
-		"AGGDATA_FAIRPRICE_EWMA_TAU", "AGGDATA_FAIRPRICE_STREAM_INTERVAL",
-		"AGGDATA_FAIRPRICE_HEARTBEAT", "AGGDATA_FAIRPRICE_SAMPLE_INTERVAL",
-		"AGGDATA_FAIRPRICE_RETENTION", "AGGDATA_FAIRPRICE_CLEANUP_INTERVAL",
-		"AGGDATA_FAIRPRICE_DB_TIMEOUT",
-	} {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			parsed, err := time.ParseDuration(value)
-			if err != nil {
-				if seconds, secondsErr := strconv.Atoi(value); secondsErr == nil {
-					parsed = time.Duration(seconds) * time.Second
-				} else {
-					return c, fmt.Errorf("%s must be a duration", key)
-				}
-			}
-			if parsed <= 0 {
-				return c, fmt.Errorf("%s must be positive", key)
-			}
-		}
-	}
-	for _, key := range []string{
-		"AGGDATA_FAIRPRICE_LAMBDA_PER_BP", "AGGDATA_FAIRPRICE_IMBALANCE_ALPHA",
-		"AGGDATA_FAIRPRICE_IMPACT_NOTIONAL", "AGGDATA_FAIRPRICE_VENUE_DOMINANCE_RATIO",
-	} {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			parsed, err := strconv.ParseFloat(value, 64)
-			if err != nil || !finiteNumber(parsed) {
-				return c, fmt.Errorf("%s must be a finite number", key)
-			}
-		}
-	}
-	for _, key := range []string{
-		"AGGDATA_FAIRPRICE_ENABLED", "AGGDATA_FAIRPRICE_PERSIST_ENABLED",
-	} {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			if _, err := strconv.ParseBool(value); err != nil {
-				return c, fmt.Errorf("%s must be a boolean", key)
-			}
-		}
 	}
 	return c, nil
 }
@@ -925,6 +1071,17 @@ func number(key string, fallback float64) float64 {
 	return parsed
 }
 
-func finiteNumber(value float64) bool {
-	return !math.IsNaN(value) && !math.IsInf(value, 0)
+func requireDistinctTokens(tokens ...string) error {
+	for i := 0; i < len(tokens); i++ {
+		left := strings.TrimSpace(tokens[i])
+		if left == "" {
+			return fmt.Errorf("internal service tokens must be non-empty")
+		}
+		for j := i + 1; j < len(tokens); j++ {
+			if left == strings.TrimSpace(tokens[j]) {
+				return fmt.Errorf("internal service tokens must be unique")
+			}
+		}
+	}
+	return nil
 }

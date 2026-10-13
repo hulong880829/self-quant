@@ -1,6 +1,7 @@
 #include "net/http_client.h"
 #include "net/epoll_loop.h"
 #include "net/tcp_connector.h"
+#include "net/tls_websocket.h"
 #include "net/websocket_client.h"
 #include "net/websocket_codec.h"
 
@@ -13,7 +14,10 @@
 #include <iostream>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+#include <poll.h>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <sys/epoll.h>
 #include <sys/socket.h>
@@ -216,6 +220,129 @@ void test_http_request_encoding_and_limits() {
   require(!header_limited.feed(bytes("HTTP/1.1 200 OK\r\n"), error) &&
               header_limited.error_code() == HttpParseError::HeaderTooLarge,
           "response header limit was not classified");
+}
+
+int listen_loopback(std::string &service) {
+  const int listener = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  require(listener >= 0, "loopback websocket listener creation failed");
+  int reuse = 1;
+  require(::setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse,
+                       sizeof(reuse)) == 0,
+          "loopback websocket listener reuse failed");
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = 0;
+  require(::bind(listener, reinterpret_cast<sockaddr *>(&address),
+                 sizeof(address)) == 0 &&
+              ::listen(listener, 8) == 0,
+          "loopback websocket listener bind failed");
+  socklen_t length = sizeof(address);
+  require(::getsockname(listener, reinterpret_cast<sockaddr *>(&address),
+                        &length) == 0,
+          "loopback websocket listener port failed");
+  service = std::to_string(ntohs(address.sin_port));
+  return listener;
+}
+
+net::SharedSslContext client_tls_context() {
+  std::string error;
+  net::SharedSslContext context = net::make_client_ssl_context(error);
+  require(context != nullptr, "client TLS context creation failed");
+  return context;
+}
+
+void drive_websocket_until(net::WebSocketClient &client,
+                           net::WebSocketClientState wanted,
+                           const char *message) {
+  using Clock = net::WebSocketClient::Clock;
+  const auto deadline = Clock::now() + std::chrono::seconds(2);
+  while (client.state() != wanted && Clock::now() < deadline &&
+         client.state() != net::WebSocketClientState::Failed &&
+         client.state() != net::WebSocketClientState::TimedOut &&
+         client.state() != net::WebSocketClientState::Closed) {
+    pollfd polled{};
+    polled.fd = client.fd();
+    if ((client.wanted_events() & EPOLLIN) != 0) polled.events |= POLLIN;
+    if ((client.wanted_events() & EPOLLOUT) != 0) polled.events |= POLLOUT;
+    if (polled.fd < 0) break;
+    const int ready = ::poll(&polled, 1, 20);
+    require(ready >= 0, "websocket handshake poll failed");
+    if (ready == 0) continue;
+    std::uint32_t events = 0;
+    if ((polled.revents & POLLIN) != 0) events |= EPOLLIN;
+    if ((polled.revents & POLLOUT) != 0) events |= EPOLLOUT;
+    if ((polled.revents & POLLERR) != 0) events |= EPOLLERR;
+    if ((polled.revents & POLLHUP) != 0) events |= EPOLLHUP;
+    if (events != 0) client.on_event(events);
+  }
+  require(client.state() == wanted, message);
+}
+
+void expect_timeout_preserves_origin(net::WebSocketClient &client,
+                                     net::WebSocketClientState origin,
+                                     const char *message) {
+  require(client.state() == origin, message);
+  const auto past =
+      net::WebSocketClient::Clock::now() + std::chrono::hours(1);
+  require(client.check_timeout(past) == net::WebSocketClientState::TimedOut,
+          "first check_timeout did not enter TimedOut");
+  require(client.state() == net::WebSocketClientState::TimedOut,
+          "state after timeout was not TimedOut");
+  require(client.timeout_origin_state() == origin, message);
+  require(client.check_timeout(past) == net::WebSocketClientState::TimedOut,
+          "second check_timeout left TimedOut");
+  require(client.timeout_origin_state() == origin,
+          "second check_timeout overwrote timeout_origin_state");
+}
+
+void test_websocket_timeout_origin() {
+  using namespace net;
+  using Clock = WebSocketClient::Clock;
+  const auto far_deadline = Clock::now() + std::chrono::hours(1);
+
+  {
+    WebSocketClient client(client_tls_context());
+    require(client.start("192.0.2.1", "9", "/ws", far_deadline),
+            "TCP connecting websocket start failed");
+    expect_timeout_preserves_origin(client, WebSocketClientState::TcpConnecting,
+                                    "TcpConnecting timeout origin");
+    client.reset();
+    require(client.state() == WebSocketClientState::Idle &&
+                client.timeout_origin_state() == WebSocketClientState::Idle,
+            "reset did not clear timeout origin");
+  }
+
+  {
+    std::string service;
+    const int listener = listen_loopback(service);
+    WebSocketClient client(client_tls_context());
+    require(client.start("127.0.0.1", service, "/ws", far_deadline),
+            "TLS handshaking websocket start failed");
+    if (client.state() == WebSocketClientState::TcpConnecting) {
+      drive_websocket_until(client, WebSocketClientState::TlsHandshaking,
+                            "did not reach TlsHandshaking");
+    }
+    expect_timeout_preserves_origin(client, WebSocketClientState::TlsHandshaking,
+                                    "TlsHandshaking timeout origin");
+    ::close(listener);
+  }
+
+  {
+    std::string service;
+    const int listener = listen_loopback(service);
+    WebSocketClient client(client_tls_context());
+    client.set_secure(false);
+    require(client.start("127.0.0.1", service, "/ws", far_deadline),
+            "plain websocket start failed");
+    if (client.state() != WebSocketClientState::ReadingUpgrade) {
+      drive_websocket_until(client, WebSocketClientState::ReadingUpgrade,
+                            "did not reach ReadingUpgrade");
+    }
+    expect_timeout_preserves_origin(client, WebSocketClientState::ReadingUpgrade,
+                                    "ReadingUpgrade timeout origin");
+    ::close(listener);
+  }
 }
 
 void test_websocket_upgrade_header_validation() {
@@ -477,6 +604,7 @@ int main() {
     test_masked_frame_and_partial_write();
     test_http_incremental_parsing();
     test_http_request_encoding_and_limits();
+    test_websocket_timeout_origin();
     test_websocket_upgrade_header_validation();
     test_http_protocol_hardening();
     test_connector_states();

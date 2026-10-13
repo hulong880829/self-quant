@@ -2,6 +2,10 @@
 **/.env
 **/.env.*
 !**/.env.example
+!**/.env.production.example
+/backend/deploy/env/container.shared.env
+/backend/deploy/secrets/*
+!/backend/deploy/secrets/.gitkeep
 
 # C++ / CMake generated files.
 /build/
@@ -19,6 +23,7 @@ compile_commands.json
 /strategys/depend/
 /strategys/*/build*/
 /core/mds/build/
+/third_party/intel-rdfp/
 
 # Go generated files.
 /backend/build/
@@ -40,6 +45,9 @@ compile_commands.json
 !/core/mds/config/aster-lighter.yaml
 !/core/mds/config/aster-lighter-book.yaml
 !/core/mds/config/aster-lighter-clickhouse.yaml
+
+# Local Fairprice runtime config (keep templates).
+/core/fairprice/config/fairprice.yaml
 
 # Repository-root coverage output.
 /coverage/

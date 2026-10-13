@@ -124,6 +124,25 @@ func confirmedAbsentReliableZeroFill(order Order) bool {
 		strictZeroFilledQuantity(order.FilledQuantity)
 }
 
+func explicitVenueRejectedZeroFill(order Order) bool {
+	if !strings.EqualFold(strings.TrimSpace(order.Status), "rejected") {
+		return false
+	}
+	if strings.TrimSpace(order.VenueOrderID) != "" || !strictZeroFilledQuantity(order.FilledQuantity) {
+		return false
+	}
+	code := strings.TrimSpace(order.ErrorCode)
+	if code == "" || code == errorConfirmedAbsentAfterUncertainSubmit {
+		return false
+	}
+	lower := strings.ToLower(code)
+	if strings.Contains(lower, "timeout") || strings.Contains(lower, "uncertain") ||
+		strings.Contains(lower, "unknown") {
+		return false
+	}
+	return true
+}
+
 func filledWithZeroQuantity(order Order) bool {
 	return strings.EqualFold(strings.TrimSpace(order.Status), "filled") &&
 		strictZeroFilledQuantity(order.FilledQuantity)

@@ -2,6 +2,7 @@ package trader
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -261,8 +262,9 @@ func TestPositionMetricsWorkerSamplesAndClosesOnce(t *testing.T) {
 		persistResult: arbitragePositionMetricsPersistResult{
 			Applied: true, ExitBasis: &basis, Combination: combo,
 		},
-		closeApplied: true,
+		annualizedApplied: true,
 	}
+	signaled := &recordingExitSignal{}
 	worker := NewArbitragePositionMetricsWorker(store, stubBBOSource{
 		now: func() time.Time { return current },
 		values: map[marketdata.Key]marketdata.BBO{
@@ -270,6 +272,7 @@ func TestPositionMetricsWorkerSamplesAndClosesOnce(t *testing.T) {
 			keyB: {BidPrice: "88", AskPrice: "90"},
 		},
 	}, slog.Default())
+	worker.ConfigureExitSignal(signaled)
 	worker.refreshAt(context.Background(), current)
 	state, ok := worker.exitStateCopy("combo-1")
 	if !ok || len(state.hits) != 0 {
@@ -279,11 +282,138 @@ func TestPositionMetricsWorkerSamplesAndClosesOnce(t *testing.T) {
 		current = current.Add(time.Second)
 		worker.sampleExits(context.Background(), current)
 	}
-	if store.closeCalls.Load() != 1 || store.lastCloseVer != 3 {
-		t.Fatalf("close calls=%d version=%d", store.closeCalls.Load(), store.lastCloseVer)
+	if store.annualizedCalls.Load() != 1 || store.closeCalls.Load() != 0 {
+		t.Fatalf("annualized=%d legacy=%d", store.annualizedCalls.Load(), store.closeCalls.Load())
+	}
+	if store.lastAnnualizedGuard.BasisVersion != 3 ||
+		!store.lastAnnualizedGuard.ExitAnnualizedRate.Equal(basis.ExitAnnualizedRate) {
+		t.Fatalf("guard=%+v", store.lastAnnualizedGuard)
+	}
+	if signaled.calls != 1 || signaled.version != 4 || signaled.reason != "annualized" {
+		t.Fatalf("signal=%+v", signaled)
 	}
 	if _, ok := worker.exitStateCopy("combo-1"); ok {
 		t.Fatal("exit state should clear after CAS")
+	}
+}
+
+type recordingExitSignal struct {
+	calls   int
+	id      string
+	version int64
+	reason  string
+}
+
+func (r *recordingExitSignal) SignalOneShotExit(id string, version int64, reason string) {
+	r.calls++
+	r.id = id
+	r.version = version
+	r.reason = reason
+}
+
+func TestPositionMetricsWorkerGuardRejectRefreshesImmediately(t *testing.T) {
+	keyA, keyB := metricsTestKeys(t)
+	now := time.Unix(1_800_000_000, 0).UTC()
+	basis := testOneShotExitBasis(now)
+	combo := metricsTestCombo()
+	combo.RunMode = "one_shot"
+	combo.OneShotPhase = "waiting_exit"
+	combo.ExitPolicy = "annualized"
+	combo.ExitAnnualizedRate = "0.10"
+	current := now
+	store := &stubPositionMetricsStore{
+		items: []ArbitrageCombination{combo},
+		persistResult: arbitragePositionMetricsPersistResult{
+			Applied: true, ExitBasis: &basis, Combination: combo,
+		},
+	}
+	worker := NewArbitragePositionMetricsWorker(store, stubBBOSource{
+		now: func() time.Time { return current },
+		values: map[marketdata.Key]marketdata.BBO{
+			keyA: {BidPrice: "110", AskPrice: "112"},
+			keyB: {BidPrice: "88", AskPrice: "90"},
+		},
+	}, slog.Default())
+	worker.refreshAt(context.Background(), current)
+	for i := 0; i < oneShotExitWindowSize; i++ {
+		current = current.Add(time.Second)
+		worker.sampleExits(context.Background(), current)
+	}
+	if store.annualizedCalls.Load() != 1 || store.closeCalls.Load() != 0 {
+		t.Fatalf("annualized=%d legacy=%d", store.annualizedCalls.Load(), store.closeCalls.Load())
+	}
+	if _, ok := worker.exitStateCopy("combo-1"); ok {
+		t.Fatal("rejected guard must drop the sampled window")
+	}
+	worker.mu.Lock()
+	member := worker.members["combo-1"]
+	due := time.Time{}
+	if member != nil {
+		due = member.nextDueAt
+	}
+	worker.mu.Unlock()
+	if member == nil || !due.IsZero() {
+		t.Fatalf("nextDueAt=%s", due)
+	}
+}
+
+func TestPositionMetricsWorkerAnnualizedErrorKeepsWindow(t *testing.T) {
+	keyA, keyB := metricsTestKeys(t)
+	now := time.Unix(1_800_000_000, 0).UTC()
+	basis := testOneShotExitBasis(now)
+	combo := metricsTestCombo()
+	combo.RunMode = "one_shot"
+	combo.OneShotPhase = "waiting_exit"
+	combo.ExitPolicy = "annualized"
+	combo.ExitAnnualizedRate = "0.10"
+	current := now
+	store := &stubPositionMetricsStore{
+		items: []ArbitrageCombination{combo},
+		persistResult: arbitragePositionMetricsPersistResult{
+			Applied: true, ExitBasis: &basis, Combination: combo,
+		},
+		annualizedErr: errors.New("db down"),
+	}
+	worker := NewArbitragePositionMetricsWorker(store, stubBBOSource{
+		now: func() time.Time { return current },
+		values: map[marketdata.Key]marketdata.BBO{
+			keyA: {BidPrice: "110", AskPrice: "112"},
+			keyB: {BidPrice: "88", AskPrice: "90"},
+		},
+	}, slog.Default())
+	worker.refreshAt(context.Background(), current)
+	for i := 0; i < oneShotExitWindowSize; i++ {
+		current = current.Add(time.Second)
+		worker.sampleExits(context.Background(), current)
+	}
+	state, ok := worker.exitStateCopy("combo-1")
+	if !ok || len(state.hits) != oneShotExitWindowSize {
+		t.Fatalf("db error must keep window hits=%v ok=%v", state.hits, ok)
+	}
+	worker.mu.Lock()
+	due := worker.members["combo-1"].nextDueAt
+	worker.mu.Unlock()
+	if due.IsZero() {
+		t.Fatal("db error must not force an immediate metrics refresh")
+	}
+}
+
+func TestOneShotAnnualizedWaitingExitSkipsManualIntervention(t *testing.T) {
+	item := ArbitrageCombination{
+		Status: "running", RunMode: "one_shot", OneShotPhase: "waiting_exit",
+		ExitAnnualizedRate: "2",
+	}
+	if !oneShotAnnualizedWaitingExit(item) {
+		t.Fatal("waiting exit should sample")
+	}
+	item.RuntimeState = "manual_intervention"
+	if oneShotAnnualizedWaitingExit(item) {
+		t.Fatal("manual intervention must not build an annualized window")
+	}
+	item.RuntimeState = "monitoring"
+	item.PositionUncertain = true
+	if oneShotAnnualizedWaitingExit(item) {
+		t.Fatal("uncertain position must not build an annualized window")
 	}
 }
 
@@ -295,6 +425,7 @@ func TestPositionMetricsWorkerDoesNotCloseOnLatestMiss(t *testing.T) {
 	combo.RunMode = "one_shot"
 	combo.OneShotPhase = "waiting_exit"
 	combo.ExitPolicy = "annualized"
+	combo.ExitAnnualizedRate = "0.10"
 	current := now
 	store := &stubPositionMetricsStore{
 		items: []ArbitrageCombination{combo},
@@ -322,8 +453,9 @@ func TestPositionMetricsWorkerDoesNotCloseOnLatestMiss(t *testing.T) {
 		current = current.Add(time.Second)
 		worker.sampleExits(context.Background(), current)
 	}
-	if store.closeCalls.Load() != 0 {
-		t.Fatalf("latest miss closed calls=%d", store.closeCalls.Load())
+	if store.closeCalls.Load() != 0 || store.annualizedCalls.Load() != 0 {
+		t.Fatalf("latest miss closed legacy=%d annualized=%d",
+			store.closeCalls.Load(), store.annualizedCalls.Load())
 	}
 	state, ok := worker.exitStateCopy("combo-1")
 	if !ok || len(state.hits) != 30 || state.hits[29] {
@@ -339,6 +471,7 @@ func TestPositionMetricsWorkerResetsOnStaleBBO(t *testing.T) {
 	combo.RunMode = "one_shot"
 	combo.OneShotPhase = "waiting_exit"
 	combo.ExitPolicy = "annualized"
+	combo.ExitAnnualizedRate = "0.10"
 	store := &stubPositionMetricsStore{
 		items: []ArbitrageCombination{combo},
 		persistResult: arbitragePositionMetricsPersistResult{
@@ -376,6 +509,7 @@ func TestPositionMetricsWorkerAppliedFalseKeepsWindow(t *testing.T) {
 	combo.RunMode = "one_shot"
 	combo.OneShotPhase = "waiting_exit"
 	combo.ExitPolicy = "annualized"
+	combo.ExitAnnualizedRate = "0.10"
 	current := now
 	store := &stubPositionMetricsStore{
 		items: []ArbitrageCombination{combo},
@@ -410,6 +544,7 @@ func TestPositionMetricsWorkerDropsIneligibleExitState(t *testing.T) {
 	combo.RunMode = "one_shot"
 	combo.OneShotPhase = "waiting_exit"
 	combo.ExitPolicy = "annualized"
+	combo.ExitAnnualizedRate = "0.10"
 	store := &stubPositionMetricsStore{
 		items: []ArbitrageCombination{combo},
 		persistResult: arbitragePositionMetricsPersistResult{
@@ -421,12 +556,12 @@ func TestPositionMetricsWorkerDropsIneligibleExitState(t *testing.T) {
 	if _, ok := worker.exitStateCopy("combo-1"); !ok {
 		t.Fatal("expected exit state")
 	}
-	combo.ExitPolicy = "time"
+	combo.ExitAnnualizedRate = ""
 	store.items = []ArbitrageCombination{combo}
 	store.persistResult = arbitragePositionMetricsPersistResult{Applied: true, Combination: combo}
 	worker.refreshAt(context.Background(), now.Add(arbitragePositionMetricsInterval))
 	if _, ok := worker.exitStateCopy("combo-1"); ok {
-		t.Fatal("time-exit combo must drop exit state")
+		t.Fatal("disabled annualized threshold must drop exit state")
 	}
 }
 
@@ -438,6 +573,7 @@ func TestPositionMetricsWorkerStopsSamplingStaleBasis(t *testing.T) {
 	combo.RunMode = "one_shot"
 	combo.OneShotPhase = "waiting_exit"
 	combo.ExitPolicy = "annualized"
+	combo.ExitAnnualizedRate = "0.10"
 	store := &stubPositionMetricsStore{
 		items: []ArbitrageCombination{combo},
 		persistResult: arbitragePositionMetricsPersistResult{

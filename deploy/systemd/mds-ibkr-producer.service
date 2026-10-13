@@ -1,0 +1,15 @@
+[Unit]
+Description=IBKR equity MDS producer
+After=network-online.target
+# Not an independent restart path. Recreating the IBKR ring while
+# mds_shm_consumer is attached loses the consumer mapping. Use
+# core/mds/restart_recoder.sh, which stops the consumer, removes the IBKR
+# ring, and starts one unified consumer.
+
+[Service]
+Type=simple
+Restart=no
+ExecStart=/usr/local/bin/mds_ibkr_producer --config /etc/selfquant/mds_ibkr.yaml
+
+[Install]
+WantedBy=multi-user.target

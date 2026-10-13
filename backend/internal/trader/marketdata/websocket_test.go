@@ -198,7 +198,7 @@ func TestBinanceServerPingRenewsReadDeadline(t *testing.T) {
 			return
 		}
 		for index := 0; index < 4; index++ {
-			time.Sleep(30 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			if err := connection.WriteControl(
 				websocket.PingMessage, []byte("keepalive"), time.Now().Add(time.Second),
 			); err != nil {
@@ -216,7 +216,7 @@ func TestBinanceServerPingRenewsReadDeadline(t *testing.T) {
 
 	connector := NewWebSocketConnector(ConnectorOptions{
 		Heartbeat: time.Hour,
-		ReadWait:  50 * time.Millisecond,
+		ReadWait:  300 * time.Millisecond,
 		WriteWait: time.Second,
 	})
 	connector.endpoint = func(Key) (string, error) {

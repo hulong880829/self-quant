@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -48,6 +50,64 @@ bool WebSocketTerminal(net::WebSocketClientState state) noexcept {
   return state == net::WebSocketClientState::Closed ||
          state == net::WebSocketClientState::TimedOut ||
          state == net::WebSocketClientState::Failed;
+}
+
+const char* WebSocketStateName(net::WebSocketClientState state) noexcept {
+  switch (state) {
+    case net::WebSocketClientState::Idle:
+      return "idle";
+    case net::WebSocketClientState::TcpConnecting:
+      return "tcp_connecting";
+    case net::WebSocketClientState::TlsHandshaking:
+      return "tls_handshaking";
+    case net::WebSocketClientState::SendingUpgrade:
+      return "sending_upgrade";
+    case net::WebSocketClientState::ReadingUpgrade:
+      return "reading_upgrade";
+    case net::WebSocketClientState::Open:
+      return "open";
+    case net::WebSocketClientState::Closing:
+      return "closing";
+    case net::WebSocketClientState::Closed:
+      return "closed";
+    case net::WebSocketClientState::TimedOut:
+      return "timed_out";
+    case net::WebSocketClientState::Failed:
+      return "failed";
+  }
+  return "unknown";
+}
+
+bool ContainsIgnoreCase(std::string_view haystack,
+                        std::string_view needle) noexcept {
+  if (needle.empty() || needle.size() > haystack.size()) return false;
+  for (std::size_t offset = 0; offset + needle.size() <= haystack.size();
+       ++offset) {
+    bool matched = true;
+    for (std::size_t index = 0; index < needle.size(); ++index) {
+      const unsigned char left =
+          static_cast<unsigned char>(haystack[offset + index]);
+      const unsigned char right = static_cast<unsigned char>(needle[index]);
+      if (std::tolower(left) != std::tolower(right)) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) return true;
+  }
+  return false;
+}
+
+bool WebsocketAuthRejected(std::uint16_t close_code,
+                           std::string_view reason) noexcept {
+  if (close_code != 1008) return false;
+  return ContainsIgnoreCase(reason, "authentication") ||
+         ContainsIgnoreCase(reason, "unauthorized") ||
+         ContainsIgnoreCase(reason, "credential");
+}
+
+const char* ViewData(std::string_view view) noexcept {
+  return view.empty() ? "" : view.data();
 }
 
 net::HttpMethod BinanceMethod(binance::HttpMethod method) noexcept {
@@ -262,6 +322,10 @@ class LiveTransport::Impl {
               : (websocket.state() == net::WebSocketClientState::Closed
                      ? Failure::Disconnected
                      : Failure::Transport);
+      if (!local_close_ && websocket.close_code()) {
+        event.auth_rejected = WebsocketAuthRejected(*websocket.close_code(),
+                                                    websocket.close_reason());
+      }
       if (enqueue(event)) websocket_terminal_pending = false;
     }
   }
@@ -278,6 +342,7 @@ class LiveTransport::Impl {
         !websocket_terminal_reported) {
       websocket_terminal_reported = true;
       websocket_terminal_pending = true;
+      log_websocket_terminal();
     }
   }
 
@@ -295,6 +360,78 @@ class LiveTransport::Impl {
     }
   }
 
+  void clear_local_close() noexcept {
+    local_close_ = false;
+    local_close_code_ = 0;
+    local_close_reason_[0] = '\0';
+  }
+
+  void save_local_close(std::uint16_t code,
+                        std::string_view reason) noexcept {
+    local_close_ = true;
+    local_close_code_ = code;
+    const std::size_t n =
+        std::min(reason.size(), sizeof(local_close_reason_) - 1);
+    if (n != 0) std::memcpy(local_close_reason_, reason.data(), n);
+    local_close_reason_[n] = '\0';
+  }
+
+  void maybe_log_websocket_closed(const char* origin, std::uint16_t close_code,
+                                  std::string_view close_reason,
+                                  std::string_view error,
+                                  net::WebSocketClientState state) noexcept {
+    const Clock::time_point now = Clock::now();
+    if (next_diagnostic_time_.time_since_epoch().count() != 0 &&
+        now < next_diagnostic_time_) {
+      if (suppressed_diagnostics_ !=
+          std::numeric_limits<std::uint32_t>::max()) {
+        ++suppressed_diagnostics_;
+      }
+      return;
+    }
+    const std::uint32_t suppressed = suppressed_diagnostics_;
+    suppressed_diagnostics_ = 0;
+    next_diagnostic_time_ = now + std::chrono::seconds(30);
+    if (state == net::WebSocketClientState::TimedOut) {
+      std::fprintf(stderr,
+                   "oms websocket closed host=%s origin=%s state=%s "
+                   "timeout_phase=%s close_code=%u close_reason=%.*s "
+                   "error=%.*s suppressed=%u\n",
+                   config.websocket.host.c_str(), origin,
+                   WebSocketStateName(state),
+                   WebSocketStateName(websocket.timeout_origin_state()),
+                   static_cast<unsigned>(close_code),
+                   static_cast<int>(close_reason.size()), ViewData(close_reason),
+                   static_cast<int>(error.size()), ViewData(error), suppressed);
+      return;
+    }
+    std::fprintf(stderr,
+                 "oms websocket closed host=%s origin=%s state=%s "
+                 "close_code=%u close_reason=%.*s error=%.*s suppressed=%u\n",
+                 config.websocket.host.c_str(), origin,
+                 WebSocketStateName(state),
+                 static_cast<unsigned>(close_code),
+                 static_cast<int>(close_reason.size()), ViewData(close_reason),
+                 static_cast<int>(error.size()), ViewData(error), suppressed);
+  }
+
+  void log_websocket_terminal() noexcept {
+    const char* origin = "transport_failure";
+    std::uint16_t code = 0;
+    std::string_view reason{};
+    if (local_close_) {
+      origin = "local_close";
+      code = local_close_code_;
+      reason = std::string_view{local_close_reason_};
+    } else if (websocket.close_code()) {
+      origin = "peer_close";
+      code = *websocket.close_code();
+      reason = websocket.close_reason();
+    }
+    maybe_log_websocket_closed(origin, code, reason, websocket.error_message(),
+                               websocket.state());
+  }
+
   Config config;
   std::vector<std::unique_ptr<RequestSlot>> requests;
   net::WebSocketClient websocket;
@@ -309,7 +446,12 @@ class LiveTransport::Impl {
   bool websocket_open_reported{};
   bool websocket_terminal_reported{};
   bool websocket_terminal_pending{};
+  bool local_close_{};
+  std::uint16_t local_close_code_{};
+  char local_close_reason_[124]{};
   Clock::time_point websocket_deadline{};
+  Clock::time_point next_diagnostic_time_{};
+  std::uint32_t suppressed_diagnostics_{};
 };
 
 LiveTransport::LiveTransport(net::SharedSslContext ssl_context, Config config)
@@ -367,6 +509,7 @@ bool LiveTransport::start_websocket(std::string_view target,
   impl_->websocket_open_reported = false;
   impl_->websocket_terminal_reported = false;
   impl_->websocket_terminal_pending = false;
+  impl_->clear_local_close();
   // Outbound frames belong to the socket generation that accepted them.
   // Never replay an uncertain order/subscription frame after reconnect.
   for (const auto& slot : impl_->outbound_slots) slot->size = 0;
@@ -409,7 +552,13 @@ SubmitResult LiveTransport::send_websocket(
 void LiveTransport::close_websocket(std::uint16_t code,
                                     std::string_view reason) noexcept {
   std::string_view ignored;
-  (void)impl_->websocket.close(code, reason, ignored);
+  if (!impl_->websocket.close(code, reason, ignored)) return;
+  impl_->save_local_close(code, reason);
+  if (code != 1000 || !reason.empty()) {
+    impl_->maybe_log_websocket_closed(
+        "local_close", code, reason, impl_->websocket.error_message(),
+        impl_->websocket.state());
+  }
 }
 
 std::size_t LiveTransport::descriptors(
@@ -591,9 +740,11 @@ void LiveTransport::binance_metadata(
 LiveTransport::PolymarketAdapter::PolymarketAdapter(
     LiveTransport& transport,
     std::chrono::milliseconds request_timeout, std::string websocket_target,
-    std::string subscription_message)
+    std::string subscription_message,
+    std::chrono::milliseconds websocket_connect_timeout)
     : transport_(&transport),
       request_timeout_(request_timeout),
+      websocket_connect_timeout_(websocket_connect_timeout),
       websocket_target_(std::move(websocket_target)),
       subscription_message_(std::move(subscription_message)) {}
 
@@ -637,6 +788,54 @@ AdapterResult LiveTransport::PolymarketAdapter::submit(
   return AdapterResult::Failed;
 }
 
+AdapterResult LiveTransport::PolymarketAdapter::submit_clob_auth(
+    const polymarket::ClobAuthRequest& request) noexcept {
+  net::HttpMethod method{};
+  if (!ParseMethod({request.wire.method.data(), request.wire.method_size},
+                   method)) {
+    return AdapterResult::InvalidArgument;
+  }
+  const std::array<net::HttpHeader, 4> headers{{
+      {"POLY_ADDRESS", request.poly_address.view()},
+      {"POLY_SIGNATURE", request.poly_signature.view()},
+      {"POLY_TIMESTAMP", request.poly_timestamp.view()},
+      {"POLY_NONCE", request.poly_nonce.view()},
+  }};
+  const auto body = std::span<const std::byte>(
+      reinterpret_cast<const std::byte*>(request.wire.body.data()),
+      request.wire.body_size);
+  const SubmitResult result = transport_->submit(
+      {request.id, method,
+       {request.wire.path.data(), request.wire.path_size},
+       {},
+       body, headers, Clock::now() + request_timeout_});
+  switch (result) {
+    case SubmitResult::Accepted:
+      return AdapterResult::Ok;
+    case SubmitResult::WouldBlock:
+      return AdapterResult::WouldBlock;
+    case SubmitResult::InvalidArgument:
+      return AdapterResult::InvalidArgument;
+  }
+  return AdapterResult::Failed;
+}
+
+AdapterResult LiveTransport::PolymarketAdapter::set_user_subscription(
+    std::string_view message) noexcept {
+  const std::size_t previous = subscription_message_.size();
+  if (previous != 0) {
+    OPENSSL_cleanse(subscription_message_.data(), previous);
+  }
+  subscription_message_.assign(message.begin(), message.end());
+  if (subscription_message_.size() < previous) {
+    const std::size_t keep = subscription_message_.size();
+    subscription_message_.resize(previous, '\0');
+    OPENSSL_cleanse(subscription_message_.data() + keep, previous - keep);
+    subscription_message_.resize(keep);
+  }
+  return AdapterResult::Ok;
+}
+
 AdapterResult LiveTransport::PolymarketAdapter::poll(
     polymarket::TransportEvent& event) noexcept {
   Event source{};
@@ -656,7 +855,8 @@ AdapterResult LiveTransport::PolymarketAdapter::poll(
       event = {polymarket::TransportEventKind::SessionReady, 0, 0, {}};
       break;
     case EventKind::WebSocketClosed:
-      event = {polymarket::TransportEventKind::SessionLost, 0, 0, {}};
+      event = {polymarket::TransportEventKind::SessionLost, 0, 0, {},
+               source.auth_rejected};
       break;
     case EventKind::WebSocketMessage:
       event = {polymarket::TransportEventKind::UserMessage, 0, 0,
@@ -678,7 +878,7 @@ AdapterResult LiveTransport::PolymarketAdapter::poll(
 AdapterResult LiveTransport::PolymarketAdapter::request_reconnect() noexcept {
   if (websocket_target_.empty()) return AdapterResult::InvalidArgument;
   return transport_->start_websocket(
-             websocket_target_, Clock::now() + request_timeout_)
+             websocket_target_, Clock::now() + websocket_connect_timeout_)
              ? AdapterResult::Ok
              : AdapterResult::Failed;
 }

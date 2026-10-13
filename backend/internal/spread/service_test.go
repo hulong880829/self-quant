@@ -94,3 +94,26 @@ func TestServiceCacheKeyIncludesCompareVenue(t *testing.T) {
 		t.Fatalf("calls=%d", store.calls.Load())
 	}
 }
+
+func TestServiceCacheIsolatesSameTickerDifferentConID(t *testing.T) {
+	store := &fakeStore{history: History{Venue: "binance", CompareVenue: "ibkr"}}
+	service := NewService(store, time.Minute, 1)
+	ctx := context.Background()
+	request := HistoryRequest{
+		Venue: "binance", CompareVenue: "ibkr", BaseAsset: "AAPL", QuoteAsset: "USDT",
+		VenueCanonicalSymbol: "AAPLUSDT", CompareVenueCanonicalSymbol: "AAPL",
+		VenueExchangeSymbol: "AAPLUSDT", CompareExchangeSymbol: "1",
+		VenueProduct: "perpetual", CompareVenueProduct: "equity",
+		IdentityMode: "venue_symbol", Range: Range1h,
+	}
+	if _, err := service.GetHistory(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	request.CompareExchangeSymbol = "2"
+	if _, err := service.GetHistory(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if store.calls.Load() != 2 {
+		t.Fatalf("calls=%d", store.calls.Load())
+	}
+}

@@ -12,16 +12,17 @@ import (
 var ErrUnsupported = errors.New("unified account snapshots are not supported for this exchange")
 
 type Credentials struct {
-	APIKey, APISecret, Passphrase string
+	APIKey, APISecret, Passphrase  string
 	CredentialKind, SigningAddress string
-	AccountIndex                  *int64
-	APIKeyIndex                   *int32
+	AccountIndex                   *int64
+	APIKeyIndex                    *int32
 }
 
 type Position struct {
 	Key, Kind, Exchange, Symbol, Side         string
 	NotionalUSD, Size, SpotSize               string
 	SignedContractSize, EntryPrice, MarkPrice string
+	LiquidationPrice                          string
 	UnrealizedPnL                             string
 	WireSymbol, ProductCategory, BaseAsset    string
 	MarketTitle, Outcome                      string

@@ -99,7 +99,6 @@ bool Valid(const api::ResolvedInstrument& value) noexcept {
   return value.kind == api::ExecutionRouteKind::Polymarket &&
          (value.outcome == api::PolymarketOutcome::Yes ||
           value.outcome == api::PolymarketOutcome::No) &&
-         (value.signature_type == 0 || value.signature_type == 3) &&
          value.minimum_order_size > 0 &&
          AnyByte(value.polymarket.condition_id) &&
          AnyByte(value.polymarket.token_id);

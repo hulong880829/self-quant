@@ -121,6 +121,17 @@ type arbitrageBaselineSnapshots struct {
 	err       error
 }
 
+type preflightPreviewAdapter struct {
+	*stubAdapter
+	preview exchange.LeverageSetPreview
+}
+
+func (a *preflightPreviewAdapter) PreviewSetLeverage(
+	context.Context, exchange.Credentials, exchange.Instrument, decimal.Decimal,
+) (exchange.LeverageSetPreview, error) {
+	return a.preview, nil
+}
+
 func (s *arbitrageBaselineSnapshots) Snapshot(
 	_ context.Context, venue string, _ portfolio.Credentials,
 ) (portfolio.Snapshot, error) {
@@ -315,6 +326,153 @@ func TestCreateArbitrageCombinationReusesSameAccountSnapshot(t *testing.T) {
 	)
 	if !errors.Is(err, ErrVenueUnavailable) || store.item.ID != created.ID {
 		t.Fatalf("snapshot failure err=%v store=%+v", err, store.item)
+	}
+}
+
+func TestCreateArbitrageCombinationRejectsEntropyOutsideAllowlist(t *testing.T) {
+	store := &arbitrageCaptureStore{}
+	service := NewService(
+		newMemoryStore(),
+		arbitrageServiceCatalog{},
+		arbitrageServiceCredentials{
+			owner: "admin",
+			items: map[int64]Credentials{
+				1: {
+					TradingAccountID: 1, ProductName: "ARB",
+					AccountName: "entropy-main", Exchange: "entropy",
+				},
+				2: {
+					TradingAccountID: 2, ProductName: "ARB",
+					AccountName: "binance-main", Exchange: "binance",
+				},
+			},
+		},
+		exchange.NewTestRegistry(map[string]exchange.Adapter{}),
+		time.Second,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	service.ConfigureArbitrage(store)
+	service.ConfigureArbitrageExchanges(map[string]bool{
+		"binance": true, "okx": true, "bybit": true, "bitget": true,
+		"gate": true, "hyperliquid": true, "aster": true, "lighter": true,
+	})
+	_, err := service.CreateArbitrageCombination(
+		context.Background(),
+		CreateArbitrageInput{
+			Token: "token", LegATradingAccountID: 1, LegAInstrumentID: 11,
+			LegBTradingAccountID: 2, LegBInstrumentID: 22,
+			AskThresholdBps: "12", BidThresholdBps: "-8",
+			TargetNotional: "10000",
+			ExecutionMode:  "simultaneous_market", MakerLeg: "a",
+			IdempotencyKey: "entropy-rejected",
+		},
+	)
+	if !errors.Is(err, ErrUnsupportedExchange) {
+		t.Fatalf("err=%v", err)
+	}
+	if store.item.ID != "" {
+		t.Fatalf("unsupported combination was persisted: %+v", store.item)
+	}
+}
+
+func TestPreflightArbitrageCombinationIsReadOnly(t *testing.T) {
+	instrumentA := readyArbitrageInstrument(11, "aster", "perpetual", "BEATUSDT")
+	instrumentB := readyArbitrageInstrument(22, "okx", "perpetual", "BEAT-USDT-SWAP")
+	store := &arbitrageCaptureStore{}
+	aster := &preflightPreviewAdapter{
+		stubAdapter: &stubAdapter{positionMode: exchange.PositionModeOneWay},
+		preview: exchange.LeverageSetPreview{
+			MarginChange: decimal.NewFromInt(10),
+			EstMaxOpen:   "100000", EstMaxOpenUnit: exchange.EstMaxOpenUnitQuoteNotional,
+		},
+	}
+	okx := &preflightPreviewAdapter{
+		stubAdapter: &stubAdapter{positionMode: exchange.PositionModeOneWay},
+		preview: exchange.LeverageSetPreview{
+			EstMaxOpen: "100000", EstMaxOpenUnit: exchange.EstMaxOpenUnitQuoteNotional,
+		},
+	}
+	snapshots := &arbitrageBaselineSnapshots{
+		calls: map[string]int{},
+		snapshots: map[string]portfolio.Snapshot{
+			"aster": {AvailableFundsUSD: "500", Positions: []portfolio.Position{{
+				Kind: "cex", Exchange: "aster", WireSymbol: "BEATUSDT",
+				MarkPrice: "100", SignedContractSize: "0",
+			}}},
+			"okx": {AvailableFundsUSD: "600", Positions: []portfolio.Position{{
+				Kind: "cex", Exchange: "okx", WireSymbol: "BEAT-USDT-SWAP",
+				MarkPrice: "100", SignedContractSize: "0",
+			}}},
+		},
+	}
+	readinessCalls := 0
+	credentials := &readinessArbitrageCredentials{
+		arbitrageServiceCredentials: arbitrageServiceCredentials{
+			owner: "admin",
+			items: map[int64]Credentials{
+				1: {TradingAccountID: 1, ProductName: "ARB", Exchange: "aster"},
+				2: {TradingAccountID: 2, ProductName: "ARB", Exchange: "okx"},
+			},
+		},
+		readiness: TradingReadiness{Ready: true},
+		onInspect: func() {
+			readinessCalls++
+		},
+	}
+	service := NewService(
+		newMemoryStore(),
+		arbitrageServiceCatalog{items: map[int64]Instrument{
+			instrumentA.ID: instrumentA, instrumentB.ID: instrumentB,
+		}},
+		credentials,
+		exchange.NewTestRegistry(map[string]exchange.Adapter{"aster": aster, "okx": okx}),
+		time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	service.ConfigureArbitrage(store)
+	service.ConfigureArbitragePositionSnapshots(snapshots)
+	result, err := service.PreflightArbitrageCombination(context.Background(), CreateArbitrageInput{
+		Token: "token", LegATradingAccountID: 1, LegAInstrumentID: 11,
+		LegBTradingAccountID: 2, LegBInstrumentID: 22,
+		AskThresholdBps: "12", BidThresholdBps: "-8", TargetNotional: "1000",
+		ExecutionMode: "simultaneous_market", MakerLeg: "a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Executable || result.LegA.RequiredMargin.Value != "260" ||
+		result.LegA.RoundedBaseQuantity.Value != "10" || result.ExpiresAt.Sub(result.CheckedAt) != 3*time.Second {
+		t.Fatalf("result=%+v", result)
+	}
+	if aster.leverageSets != 0 || okx.leverageSets != 0 ||
+		readinessCalls != 0 || store.item.ID != "" {
+		t.Fatalf("preflight had side effects: aster=%d okx=%d readiness=%d item=%+v",
+			aster.leverageSets, okx.leverageSets, readinessCalls, store.item)
+	}
+	if snapshots.calls["aster"] != 1 || snapshots.calls["okx"] != 1 {
+		t.Fatalf("snapshot calls=%v", snapshots.calls)
+	}
+
+	aster.preview.EstMaxOpenUnit = ""
+	result, err = service.PreflightArbitrageCombination(context.Background(), CreateArbitrageInput{
+		Token: "token", LegATradingAccountID: 1, LegAInstrumentID: 11,
+		LegBTradingAccountID: 2, LegBInstrumentID: 22,
+		AskThresholdBps: "12", BidThresholdBps: "-8", TargetNotional: "1000",
+		ExecutionMode: "simultaneous_market", MakerLeg: "a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Executable || result.LegA.RequiredMargin.Status != "unknown" {
+		t.Fatalf("unknown margin result=%+v", result)
+	}
+	foundMarginWarning := false
+	for _, warning := range result.Warnings {
+		if warning.Code == "margin_unknown" && warning.Leg == "a" {
+			foundMarginWarning = true
+		}
+	}
+	if !foundMarginWarning {
+		t.Fatalf("warnings=%+v", result.Warnings)
 	}
 }
 
@@ -585,6 +743,58 @@ func TestCreateArbitrageCombinationIdempotencySkipsLeverage(t *testing.T) {
 	}
 	if snapshots.calls["gate"] != 1 || snapshots.calls["okx"] != 1 {
 		t.Fatalf("idempotent retry recaptured snapshots=%v", snapshots.calls)
+	}
+}
+
+func TestCreateArbitrageCombinationIdempotencyFingerprintConflict(t *testing.T) {
+	instrumentA := readyArbitrageInstrument(11, "gate", "perpetual", "BEAT_USDT")
+	instrumentB := readyArbitrageInstrument(22, "okx", "perpetual", "BEAT-USDT-SWAP")
+	store := &arbitrageCaptureStore{}
+	adapterA := &stubAdapter{positionMode: exchange.PositionModeOneWay}
+	adapterB := &stubAdapter{positionMode: exchange.PositionModeOneWay}
+	snapshots := &arbitrageBaselineSnapshots{
+		calls: map[string]int{},
+		snapshots: map[string]portfolio.Snapshot{
+			"gate": {AvailableFundsUSD: "1000000"},
+			"okx":  {AvailableFundsUSD: "1000000"},
+		},
+	}
+	service := NewService(
+		newMemoryStore(),
+		arbitrageServiceCatalog{items: map[int64]Instrument{
+			instrumentA.ID: instrumentA, instrumentB.ID: instrumentB,
+		}},
+		arbitrageServiceCredentials{
+			owner: "admin",
+			items: map[int64]Credentials{
+				1: {TradingAccountID: 1, ProductName: "ARB", AccountName: "gate-main", Exchange: "gate"},
+				2: {TradingAccountID: 2, ProductName: "ARB", AccountName: "okx-main", Exchange: "okx"},
+			},
+		},
+		exchange.NewTestRegistry(map[string]exchange.Adapter{"gate": adapterA, "okx": adapterB}),
+		time.Second,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	service.ConfigureArbitrage(store)
+	service.ConfigureArbitragePositionSnapshots(snapshots)
+	input := CreateArbitrageInput{
+		Token: "token", LegATradingAccountID: 1, LegAInstrumentID: 11,
+		LegBTradingAccountID: 2, LegBInstrumentID: 22,
+		AskThresholdBps: "12", BidThresholdBps: "-8",
+		TargetNotional: "10000",
+		ExecutionMode:  "simultaneous_market", MakerLeg: "a",
+		IdempotencyKey: "idempotent-conflict",
+	}
+	if _, err := service.CreateArbitrageCombination(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	conflict := input
+	conflict.TargetNotional = "20000"
+	if _, err := service.CreateArbitrageCombination(context.Background(), conflict); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("conflict err=%v", err)
+	}
+	if adapterA.leverageSets != 1 || adapterB.leverageSets != 1 {
+		t.Fatalf("conflict retried leverage a=%d b=%d", adapterA.leverageSets, adapterB.leverageSets)
 	}
 }
 

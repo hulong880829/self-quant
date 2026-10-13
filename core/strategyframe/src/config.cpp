@@ -572,7 +572,7 @@ Result<StrategyFrameConfig> load_config(const std::string& path) noexcept {
             {"enabled", "account_id", "rest", "trading_websocket",
              "user_websocket",
              "api_key_env", "secret_env", "passphrase_env",
-             "signer_address_env", "funder_address_env", "private_key_env"},
+             "funder_address_env", "private_key_env", "signature_type"},
             "oms.venues." + venue_name);
         VenueExecutionConfig config;
         config.kind = ParseVenueKind(venue_name);
@@ -590,16 +590,62 @@ Result<StrategyFrameConfig> load_config(const std::string& path) noexcept {
             ValueOr<std::string>(venue, "secret_env", {});
         config.passphrase_env =
             ValueOr<std::string>(venue, "passphrase_env", {});
-        config.signer_address_env =
-            ValueOr<std::string>(venue, "signer_address_env", {});
-        config.funder_address_env =
-            ValueOr<std::string>(venue, "funder_address_env", {});
         config.private_key_env =
             ValueOr<std::string>(venue, "private_key_env", {});
-        if (config.enabled &&
-            (config.account_id == 0 || config.api_key_env.empty() ||
-             config.secret_env.empty())) {
-          throw std::runtime_error("enabled venue requires credential envs");
+        const YAML::Node signature_node = venue["signature_type"];
+        const YAML::Node funder_node = venue["funder_address_env"];
+        if (config.kind != VenueExecutionConfig::Kind::Polymarket) {
+          if (signature_node) {
+            throw std::runtime_error(
+                "oms.venues." + venue_name +
+                ": signature_type is only valid for polymarket");
+          }
+        } else if (signature_node) {
+          const int signature_type = signature_node.as<int>();
+          if (signature_type != 0 && signature_type != 1 &&
+              signature_type != 3) {
+            throw std::runtime_error(
+                "oms.venues." + venue_name +
+                ": signature_type must be 0, 1, or 3");
+          }
+          config.signature_type =
+              static_cast<std::uint8_t>(signature_type);
+          if (signature_type == 0) {
+            if (funder_node) {
+              throw std::runtime_error(
+                  "oms.venues." + venue_name +
+                  ": type 0 forbids funder_address_env");
+            }
+          } else {
+            if (!funder_node) {
+              throw std::runtime_error(
+                  "oms.venues." + venue_name +
+                  ": type 1 and 3 require funder_address_env");
+            }
+            config.funder_address_env = funder_node.as<std::string>();
+            if (config.funder_address_env.empty()) {
+              throw std::runtime_error(
+                  "oms.venues." + venue_name +
+                  ": type 1 and 3 require funder_address_env");
+            }
+          }
+        } else if (config.enabled) {
+          throw std::runtime_error(
+              "oms.venues." + venue_name +
+              ": enabled polymarket requires signature_type");
+        }
+        if (config.enabled) {
+          if (config.account_id == 0) {
+            throw std::runtime_error("enabled venue requires credential envs");
+          }
+          if (config.kind == VenueExecutionConfig::Kind::Polymarket) {
+            if (config.private_key_env.empty()) {
+              throw std::runtime_error(
+                  "enabled venue requires credential envs");
+            }
+          } else if (config.api_key_env.empty() || config.secret_env.empty()) {
+            throw std::runtime_error("enabled venue requires credential envs");
+          }
         }
         result.venues.push_back(std::move(config));
       }

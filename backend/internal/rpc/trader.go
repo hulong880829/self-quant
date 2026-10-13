@@ -9,6 +9,7 @@ import (
 	shopspringdecimal "github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	traderv1 "selfquant/backend/gen/trader/v1"
 	"selfquant/backend/internal/trader"
@@ -33,6 +34,13 @@ type traderService interface {
 	)
 	ListArbitrageCombinations(context.Context, string, string, int, string) ([]trader.ArbitrageCombination, string, int64, error)
 	CloseArbitrageCombination(context.Context, string, string) (trader.ArbitrageCombination, error)
+}
+
+type traderArbitrageReadService interface {
+	PreflightArbitrageCombination(context.Context, trader.CreateArbitrageInput) (trader.ArbitragePreflight, error)
+	ListArbitrageCombinationOrders(context.Context, string, string, trader.ArbitrageHistoryQuery) ([]trader.Order, string, error)
+	ListArbitrageCombinationExecutions(context.Context, string, string, trader.ArbitrageHistoryQuery) ([]trader.ArbitrageExecution, string, error)
+	ListArbitrageCombinationEvents(context.Context, string, string, trader.ArbitrageHistoryQuery) ([]trader.ArbitrageEvent, string, error)
 }
 
 type traderArbitrageConfigService interface {
@@ -279,6 +287,7 @@ func (s *TraderServer) CreateArbitrageCombination(
 		ExitAnnualizedRate:                request.GetExitAnnualizedRate(),
 		ExitAfterSeconds:                  int(request.GetExitAfterSeconds()),
 		EarlyExitFunding8hAnnualizedFloor: request.GetEarlyExitFunding_8HAnnualizedFloor(),
+		EarlyExitLiquidationDistancePct:   request.GetEarlyExitLiquidationDistancePct(),
 	})
 	if err != nil {
 		return nil, mapTraderError(err)
@@ -298,9 +307,13 @@ func (s *TraderServer) UpdateArbitrageCombination(
 	}
 	item, err := service.UpdateArbitrageCombination(ctx, trader.UpdateArbitrageInput{
 		Token: request.GetToken(), CombinationID: request.GetCombinationId(),
-		AskThresholdBps: request.AskThresholdBps,
-		BidThresholdBps: request.BidThresholdBps,
-		TargetNotional:  request.TargetNotional,
+		AskThresholdBps:                   request.AskThresholdBps,
+		BidThresholdBps:                   request.BidThresholdBps,
+		TargetNotional:                    request.TargetNotional,
+		ExitAfterSeconds:                  protoInt32Ptr(request.ExitAfterSeconds),
+		ExitAnnualizedRate:                request.ExitAnnualizedRate,
+		EarlyExitFunding8hAnnualizedFloor: request.EarlyExitFunding_8HAnnualizedFloor,
+		EarlyExitLiquidationDistancePct:   request.EarlyExitLiquidationDistancePct,
 	})
 	if err != nil {
 		if errors.Is(err, trader.ErrInvalidArgument) {
@@ -329,37 +342,51 @@ func (s *TraderServer) GetArbitrageCombination(
 		RecentExecutions: make([]*traderv1.ArbitrageExecution, 0, len(executions)),
 		RecentEvents:     make([]*traderv1.ArbitrageEvent, 0, len(events)),
 	}
+	response.Combination.FinalMetrics = arbitrageFinalMetricsToProto(item)
 	for _, order := range orders {
 		response.Orders = append(response.Orders, traderOrderToProto(order))
 	}
 	for _, execution := range executions {
-		trigger := execution.TriggerAskSpread
-		if execution.Direction == "bid" {
-			trigger = execution.TriggerBidSpread
-		}
-		filled := shopspringdecimal.Min(
-			decimalOrZero(execution.LegAFilledQuantity),
-			decimalOrZero(execution.LegBFilledQuantity),
-		).String()
-		response.RecentExecutions = append(response.RecentExecutions, &traderv1.ArbitrageExecution{
-			Id: execution.ID, Direction: execution.Direction, Status: execution.Status,
-			TriggerSpreadBps: trigger, TargetBaseQuantity: execution.TargetBaseQuantity,
-			FilledBaseQuantity: filled, DeltaNotional: execution.DeltaNotional,
-			ErrorMessage:      execution.ErrorMessage,
-			CreatedAt:         optionalTraderTimestamp(execution.CreatedAt),
-			UpdatedAt:         optionalTraderTimestamp(execution.UpdatedAt),
-			RequestedNotional: execution.RequestedNotional,
-			PositionEffect:    execution.PositionEffect,
-			ReduceOnly:        execution.ReduceOnly,
-		})
+		response.RecentExecutions = append(response.RecentExecutions, arbitrageExecutionToProto(execution))
 	}
 	for _, event := range events {
-		response.RecentEvents = append(response.RecentEvents, &traderv1.ArbitrageEvent{
-			Id: event.ID, Type: event.Type, Message: event.Message,
-			CreatedAt: optionalTraderTimestamp(event.CreatedAt),
-		})
+		response.RecentEvents = append(response.RecentEvents, arbitrageEventToProto(event))
 	}
 	return response, nil
+}
+
+func arbitrageExecutionToProto(execution trader.ArbitrageExecution) *traderv1.ArbitrageExecution {
+	trigger := execution.TriggerAskSpread
+	if execution.Direction == "bid" {
+		trigger = execution.TriggerBidSpread
+	}
+	filled := shopspringdecimal.Min(
+		decimalOrZero(execution.LegAFilledQuantity),
+		decimalOrZero(execution.LegBFilledQuantity),
+	).String()
+	return &traderv1.ArbitrageExecution{
+		Id: execution.ID, Direction: execution.Direction, Status: execution.Status,
+		TriggerSpreadBps: trigger, TargetBaseQuantity: execution.TargetBaseQuantity,
+		FilledBaseQuantity: filled, DeltaNotional: execution.DeltaNotional,
+		ErrorMessage:      execution.ErrorMessage,
+		CreatedAt:         optionalTraderTimestamp(execution.CreatedAt),
+		UpdatedAt:         optionalTraderTimestamp(execution.UpdatedAt),
+		RequestedNotional: execution.RequestedNotional,
+		PositionEffect:    execution.PositionEffect, ReduceOnly: execution.ReduceOnly,
+	}
+}
+
+func arbitrageEventToProto(event trader.ArbitrageEvent) *traderv1.ArbitrageEvent {
+	result := &traderv1.ArbitrageEvent{
+		Id: event.ID, Type: event.Type, Message: event.Message,
+		ExecutionId: event.ExecutionID, CreatedAt: optionalTraderTimestamp(event.CreatedAt),
+	}
+	if event.PayloadObject {
+		if payload, err := structpb.NewStruct(event.Payload); err == nil {
+			result.Payload = payload
+		}
+	}
+	return result
 }
 
 func (s *TraderServer) ListArbitrageCombinations(
@@ -395,6 +422,172 @@ func (s *TraderServer) CloseArbitrageCombination(
 	return &traderv1.CloseArbitrageCombinationResponse{
 		Combination: arbitrageCombinationToProto(item),
 	}, nil
+}
+
+func (s *TraderServer) PreflightArbitrageCombination(
+	ctx context.Context,
+	request *traderv1.PreflightArbitrageCombinationRequest,
+) (*traderv1.PreflightArbitrageCombinationResponse, error) {
+	service, ok := s.service.(traderArbitrageReadService)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "arbitrage preflight is unavailable")
+	}
+	result, err := service.PreflightArbitrageCombination(ctx, trader.CreateArbitrageInput{
+		Token:                request.GetToken(),
+		LegATradingAccountID: request.GetLegATradingAccountId(),
+		LegAInstrumentID:     request.GetLegAInstrumentId(),
+		LegBTradingAccountID: request.GetLegBTradingAccountId(),
+		LegBInstrumentID:     request.GetLegBInstrumentId(),
+		AskThresholdBps:      request.GetAskThresholdBps(),
+		BidThresholdBps:      request.GetBidThresholdBps(),
+		TargetNotional:       request.GetTargetNotional(),
+		ExecutionMode:        request.GetExecutionMode(), MakerLeg: request.GetMakerLeg(),
+		RunMode: request.GetRunMode(), EntryDirection: request.GetEntryDirection(),
+		LegALeverage: request.GetLegALeverage(), LegBLeverage: request.GetLegBLeverage(),
+		ExitPolicy: request.GetExitPolicy(), ExitAnnualizedRate: request.GetExitAnnualizedRate(),
+		ExitAfterSeconds:                  int(request.GetExitAfterSeconds()),
+		EarlyExitFunding8hAnnualizedFloor: request.GetEarlyExitFunding_8HAnnualizedFloor(),
+		EarlyExitLiquidationDistancePct:   request.GetEarlyExitLiquidationDistancePct(),
+	})
+	if err != nil {
+		return nil, mapTraderError(err)
+	}
+	warnings := make([]*traderv1.PreflightWarning, 0, len(result.Warnings))
+	for _, warning := range result.Warnings {
+		warnings = append(warnings, &traderv1.PreflightWarning{
+			Code: warning.Code, Message: warning.Message, Leg: warning.Leg, Exchange: warning.Exchange,
+		})
+	}
+	return &traderv1.PreflightArbitrageCombinationResponse{
+		Executable: result.Executable, CheckedAt: optionalTraderTimestamp(result.CheckedAt),
+		ExpiresAt: optionalTraderTimestamp(result.ExpiresAt),
+		LegA:      preflightLegToProto(result.LegA), LegB: preflightLegToProto(result.LegB),
+		Warnings: warnings, Code: result.Code, Message: result.Message,
+		Leg: result.Leg, Exchange: result.Exchange,
+	}, nil
+}
+
+func (s *TraderServer) ListArbitrageCombinationOrders(
+	ctx context.Context,
+	request *traderv1.ListArbitrageCombinationOrdersRequest,
+) (*traderv1.ListArbitrageCombinationOrdersResponse, error) {
+	service, ok := s.service.(traderArbitrageReadService)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "arbitrage history is unavailable")
+	}
+	items, next, err := service.ListArbitrageCombinationOrders(
+		ctx, request.GetQuery().GetToken(), request.GetQuery().GetCombinationId(),
+		historyQueryFromProto(request.GetQuery()),
+	)
+	if err != nil {
+		return nil, mapTraderError(err)
+	}
+	response := &traderv1.ListArbitrageCombinationOrdersResponse{NextCursor: next}
+	for _, item := range items {
+		response.Items = append(response.Items, traderOrderToProto(item))
+	}
+	return response, nil
+}
+
+func (s *TraderServer) ListArbitrageCombinationExecutions(
+	ctx context.Context,
+	request *traderv1.ListArbitrageCombinationExecutionsRequest,
+) (*traderv1.ListArbitrageCombinationExecutionsResponse, error) {
+	service, ok := s.service.(traderArbitrageReadService)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "arbitrage history is unavailable")
+	}
+	items, next, err := service.ListArbitrageCombinationExecutions(
+		ctx, request.GetQuery().GetToken(), request.GetQuery().GetCombinationId(),
+		historyQueryFromProto(request.GetQuery()),
+	)
+	if err != nil {
+		return nil, mapTraderError(err)
+	}
+	response := &traderv1.ListArbitrageCombinationExecutionsResponse{NextCursor: next}
+	for _, item := range items {
+		response.Items = append(response.Items, arbitrageExecutionToProto(item))
+	}
+	return response, nil
+}
+
+func (s *TraderServer) ListArbitrageCombinationEvents(
+	ctx context.Context,
+	request *traderv1.ListArbitrageCombinationEventsRequest,
+) (*traderv1.ListArbitrageCombinationEventsResponse, error) {
+	service, ok := s.service.(traderArbitrageReadService)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "arbitrage history is unavailable")
+	}
+	items, next, err := service.ListArbitrageCombinationEvents(
+		ctx, request.GetQuery().GetToken(), request.GetQuery().GetCombinationId(),
+		historyQueryFromProto(request.GetQuery()),
+	)
+	if err != nil {
+		return nil, mapTraderError(err)
+	}
+	response := &traderv1.ListArbitrageCombinationEventsResponse{NextCursor: next}
+	for _, item := range items {
+		response.Items = append(response.Items, arbitrageEventToProto(item))
+	}
+	return response, nil
+}
+
+func preflightDecimalToProto(value trader.PreflightDecimal) *traderv1.PreflightDecimal {
+	return &traderv1.PreflightDecimal{Value: value.Value, Status: value.Status}
+}
+
+func preflightLegToProto(value trader.PreflightLeg) *traderv1.PreflightLeg {
+	return &traderv1.PreflightLeg{
+		AvailableFunds:      preflightDecimalToProto(value.AvailableFunds),
+		RequiredMargin:      preflightDecimalToProto(value.RequiredMargin),
+		EstimatedFee:        preflightDecimalToProto(value.EstimatedFee),
+		MinQuantity:         preflightDecimalToProto(value.MinQuantity),
+		MinNotional:         preflightDecimalToProto(value.MinNotional),
+		QuantityStep:        preflightDecimalToProto(value.QuantityStep),
+		RoundedBaseQuantity: preflightDecimalToProto(value.RoundedBaseQuantity),
+	}
+}
+
+func historyQueryFromProto(
+	request *traderv1.ListArbitrageCombinationHistoryRequest,
+) trader.ArbitrageHistoryQuery {
+	return trader.ArbitrageHistoryQuery{
+		Limit: int(request.GetLimit()), Cursor: request.GetCursor(),
+		From: protoTraderTime(request.GetFrom()), To: protoTraderTime(request.GetTo()),
+		ExecutionID: request.GetExecutionId(),
+	}
+}
+
+type traderArbitrageCountService interface {
+	GetArbitrageCountsByOwnerInternal(context.Context, string) ([]trader.OwnerArbitrageCount, error)
+}
+
+func (s *TraderServer) GetArbitrageCountsByOwnerInternal(
+	ctx context.Context,
+	request *traderv1.GetArbitrageCountsByOwnerInternalRequest,
+) (*traderv1.GetArbitrageCountsByOwnerInternalResponse, error) {
+	counter, ok := s.service.(traderArbitrageCountService)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "method GetArbitrageCountsByOwnerInternal not implemented")
+	}
+	items, err := counter.GetArbitrageCountsByOwnerInternal(ctx, request.GetServiceToken())
+	if err != nil {
+		return nil, mapTraderError(err)
+	}
+	response := &traderv1.GetArbitrageCountsByOwnerInternalResponse{
+		Items: make([]*traderv1.OwnerArbitrageCounts, 0, len(items)),
+	}
+	for _, item := range items {
+		response.Items = append(response.Items, &traderv1.OwnerArbitrageCounts{
+			OwnerUsername: item.OwnerUsername,
+			Running:       item.Running,
+			Closing:       item.Closing,
+			Closed:        item.Closed,
+			Failed:        item.Failed,
+		})
+	}
+	return response, nil
 }
 
 func instrumentToProto(item trader.Instrument) *traderv1.Instrument {
@@ -530,6 +723,26 @@ func arbitrageCombinationToProto(item trader.ArbitrageCombination) *traderv1.Arb
 		ScheduledExitAt:                    optionalTraderTimestamp(item.ScheduledExitAt),
 		OneShotPhase:                       item.OneShotPhase,
 		EarlyExitFunding_8HAnnualizedFloor: item.EarlyExitFunding8hAnnualizedFloor,
+		EarlyExitLiquidationDistancePct:    item.EarlyExitLiquidationDistancePct,
+		LegALiquidationDistancePct:         item.LegALiquidationDistancePct,
+		LegBLiquidationDistancePct:         item.LegBLiquidationDistancePct,
+	}
+}
+
+func arbitrageFinalMetricsToProto(item trader.ArbitrageCombination) *traderv1.ArbitrageFinalMetrics {
+	return &traderv1.ArbitrageFinalMetrics{
+		Status:                     item.FinalMetricsStatus,
+		CompletedAt:                optionalTraderTimestamp(item.FinalMetricsCompletedAt),
+		RetryCount:                 int32(item.FinalMetricsRetryCount),
+		LastError:                  item.FinalMetricsLastError,
+		RealizedSpreadPnl:          item.RealizedSpreadPnl,
+		EstimatedFundingPnl:        item.EstimatedFundingPnl,
+		EstimatedTradingFee:        item.EstimatedTradingFee,
+		CombinedPositionAnnualized: item.CombinedPositionAnnualized,
+		MetricsQuality:             item.MetricsQuality,
+		HoldingSeconds:             item.HoldingSeconds,
+		NotionalExposureSeconds:    item.NotionalExposureSeconds,
+		CalculatedAt:               optionalTraderTimestamp(item.MetricsCalculatedAt),
 	}
 }
 
@@ -570,6 +783,8 @@ func mapTraderError(err error) error {
 	}
 	message := strings.TrimSpace(err.Error())
 	switch {
+	case errors.Is(err, trader.ErrInvalidServiceToken):
+		return status.Error(codes.Unauthenticated, "invalid service token")
 	case errors.Is(err, trader.ErrInvalidArgument):
 		return status.Error(codes.InvalidArgument, "invalid order request")
 	case errors.Is(err, trader.ErrNotFound), errors.Is(err, trader.ErrInstrumentUnavailable):
@@ -635,4 +850,12 @@ func arbitrageCreateGRPCCode(code string) codes.Code {
 	default:
 		return codes.FailedPrecondition
 	}
+}
+
+func protoInt32Ptr(value *int32) *int {
+	if value == nil {
+		return nil
+	}
+	converted := int(*value)
+	return &converted
 }

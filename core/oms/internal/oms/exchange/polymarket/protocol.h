@@ -111,4 +111,24 @@ struct PositionSnapshot {
     std::string_view json, api::VenueEvent* events, std::size_t event_capacity,
     std::size_t& event_count) noexcept;
 
+struct ApiKeyCredentials {
+  std::string_view api_key{};
+  std::string_view secret{};
+  std::string_view passphrase{};
+};
+
+[[nodiscard]] ProtocolResult BuildDeriveApiKey(WireRequest& request) noexcept;
+[[nodiscard]] ProtocolResult BuildCreateApiKey(WireRequest& request) noexcept;
+[[nodiscard]] bool CredentialHttpSuccess(std::uint16_t status) noexcept;
+[[nodiscard]] bool CredentialHttpTemporary(std::uint16_t status) noexcept;
+[[nodiscard]] bool DeriveExplicitlyMissing(std::uint16_t status,
+                                           std::string_view body) noexcept;
+[[nodiscard]] bool CreateConflictStatus(std::uint16_t status) noexcept;
+[[nodiscard]] ProtocolResult ParseApiKeyCredentials(
+    std::string_view json, ApiKeyCredentials& credentials) noexcept;
+[[nodiscard]] ProtocolResult BuildUserSubscribe(
+    std::string_view api_key, std::string_view secret,
+    std::string_view passphrase, char* output, std::size_t capacity,
+    std::size_t& size) noexcept;
+
 }  // namespace oms::exchange::polymarket

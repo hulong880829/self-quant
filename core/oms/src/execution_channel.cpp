@@ -78,7 +78,6 @@ struct BinanceSecrets {
 };
 
 struct PolymarketSecrets {
-  SecretText signer_address;
   SecretText funder_address;
   SecretText private_key;
   SecretText api_key;
@@ -186,75 +185,18 @@ bool CopyPolymarketCredentials(const PolymarketExecutionConfig& config,
       !config.credential_provider(config.credential_context, source)) {
     return false;
   }
-  if (!ValidSecret(source.signer_address) ||
-      !ValidSecret(source.funder_address) ||
-      !ValidSecret(source.private_key) || !ValidSecret(source.api_key) ||
-      !ValidSecret(source.api_secret) || !ValidSecret(source.passphrase)) {
+  if (config.signature_type == PolymarketSignatureType::Eoa) {
+    if (!source.funder_address.empty()) return false;
+  } else if (config.signature_type == PolymarketSignatureType::PolyProxy ||
+             config.signature_type == PolymarketSignatureType::Poly1271) {
+    if (!ValidSecret(source.funder_address)) return false;
+  } else {
     return false;
   }
-  output.signer_address.assign(source.signer_address);
+  if (!ValidSecret(source.private_key)) return false;
   output.funder_address.assign(source.funder_address);
   output.private_key.assign(source.private_key);
-  output.api_key.assign(source.api_key);
-  output.api_secret.assign(source.api_secret);
-  output.passphrase.assign(source.passphrase);
   return true;
-}
-
-void AppendJsonString(std::string_view source, std::string& output) {
-  constexpr char hex[] = "0123456789abcdef";
-  output.push_back('"');
-  for (const char raw : source) {
-    const unsigned char value = static_cast<unsigned char>(raw);
-    switch (value) {
-      case '"':
-        output.append("\\\"");
-        break;
-      case '\\':
-        output.append("\\\\");
-        break;
-      case '\b':
-        output.append("\\b");
-        break;
-      case '\f':
-        output.append("\\f");
-        break;
-      case '\n':
-        output.append("\\n");
-        break;
-      case '\r':
-        output.append("\\r");
-        break;
-      case '\t':
-        output.append("\\t");
-        break;
-      default:
-        if (value < 0x20U) {
-          output.append("\\u00");
-          output.push_back(hex[value >> 4U]);
-          output.push_back(hex[value & 0x0fU]);
-        } else {
-          output.push_back(static_cast<char>(value));
-        }
-        break;
-    }
-  }
-  output.push_back('"');
-}
-
-std::string PolymarketSubscription(const PolymarketSecrets& credentials) {
-  std::string output;
-  output.reserve(credentials.api_key.view().size() +
-                 credentials.api_secret.view().size() +
-                 credentials.passphrase.view().size() + 96);
-  output.append("{\"auth\":{\"apiKey\":");
-  AppendJsonString(credentials.api_key.view(), output);
-  output.append(",\"secret\":");
-  AppendJsonString(credentials.api_secret.view(), output);
-  output.append(",\"passphrase\":");
-  AppendJsonString(credentials.passphrase.view(), output);
-  output.append("},\"type\":\"USER\"}");
-  return output;
 }
 
 struct BinanceResolver {
@@ -273,17 +215,48 @@ std::uint64_t WallClockMilliseconds(void*) noexcept {
       std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
+Error MapInitialSessionResult(exchange::AdapterResult result) noexcept {
+  switch (result) {
+    case exchange::AdapterResult::Ok:
+      return Error::Ok;
+    case exchange::AdapterResult::InvalidArgument:
+      return Error::InvalidArgument;
+    case exchange::AdapterResult::Failed:
+    case exchange::AdapterResult::NotReady:
+    case exchange::AdapterResult::WouldBlock:
+    case exchange::AdapterResult::Unsupported:
+    case exchange::AdapterResult::StaleReservation:
+      return Error::NotReady;
+  }
+  return Error::NotReady;
+}
+
 bool CopyPolymarketAdapterCredentials(const PolymarketSecrets& source,
                                       Credentials& output) noexcept {
-  return output.signer_address.assign(source.signer_address.view()) &&
-         output.funder_address.assign(source.funder_address.view()) &&
-         output.private_key.assign(source.private_key.view()) &&
-         output.api_key.assign(source.api_key.view()) &&
-         output.api_secret.assign(source.api_secret.view()) &&
-         output.passphrase.assign(source.passphrase.view());
+  return output.funder_address.assign(source.funder_address.view()) &&
+         output.private_key.assign(source.private_key.view());
 }
 
 }  // namespace
+
+namespace detail {
+
+std::string BuildPolymarketUserSubscription(
+    std::string_view api_key, std::string_view secret,
+    std::string_view passphrase) {
+  std::array<char, ::oms::exchange::polymarket::kMaximumWireBytes> buffer{};
+  std::size_t size = 0;
+  if (::oms::exchange::polymarket::BuildUserSubscribe(
+          api_key, secret, passphrase, buffer.data(), buffer.size(), size) !=
+      ::oms::exchange::polymarket::ProtocolResult::Ok) {
+    return {};
+  }
+  std::string output(buffer.data(), size);
+  OPENSSL_cleanse(buffer.data(), buffer.size());
+  return output;
+}
+
+}  // namespace detail
 
 struct ExecutionChannel::Impl {
   // Destruction is reverse declaration order: OmsApi stops first, then trade
@@ -487,8 +460,7 @@ Result<std::unique_ptr<ExecutionChannel>> ExecutionChannel::Create(
       impl->polymarket_wrapper =
           std::make_unique<LiveTransport::PolymarketAdapter>(
               *impl->polymarket_transport, std::chrono::seconds(5),
-              "/ws/user",
-              PolymarketSubscription(impl->secrets.polymarket));
+              "/ws/user", "", std::chrono::seconds(10));
       impl->polymarket_data_wrapper =
           std::make_unique<LiveTransport::PolymarketAdapter>(
               *impl->polymarket_data_transport, std::chrono::seconds(5), "",
@@ -503,12 +475,18 @@ Result<std::unique_ptr<ExecutionChannel>> ExecutionChannel::Create(
                                             adapter_config.credentials)) {
         return {{}, Error::InvalidArgument};
       }
+      adapter_config.signature_type = config.polymarket.signature_type;
       adapter_config.now_ms = &WallClockMilliseconds;
       impl->polymarket_adapter =
           std::make_unique<PolymarketTradeAdapter>(adapter_config);
       if (impl->polymarket_adapter->status() ==
           exchange::AdapterStatus::Failed) {
         return {{}, Error::InvalidArgument};
+      }
+      const auto started =
+          impl->polymarket_adapter->start_initial_session();
+      if (started != exchange::AdapterResult::Ok) {
+        return {{}, MapInitialSessionResult(started)};
       }
       adapters[adapter_index++] = impl->polymarket_adapter.get();
       account_routes[adapter_index - 1] = {

@@ -1,5 +1,6 @@
 #include <cassert>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <stdexcept>
 #include <thread>
@@ -77,6 +78,7 @@ void TestCanonicalMarketIdentity() {
   assert(parse_canonical_venue("hyperliquid") == Venue::Hyperliquid);
   assert(parse_canonical_venue("aster") == Venue::Aster);
   assert(parse_canonical_venue("lighter") == Venue::Lighter);
+  assert(parse_canonical_venue("ibkr") == Venue::Ibkr);
 
   assert(parse_canonical_product("spot") == ProductType::Spot);
   assert(parse_canonical_product("perpetual") == ProductType::Perpetual);
@@ -200,7 +202,7 @@ void TestLadder() {
          md::LadderResult::OutOfWindow);
 }
 
-struct WireVisitor final : md::wire::RecordVisitor {
+struct WireVisitor : md::wire::RecordVisitor {
   int instruments{};
   int catalogs{};
   int bbos{};
@@ -209,6 +211,8 @@ struct WireVisitor final : md::wire::RecordVisitor {
   int begins{};
   int chunks{};
   int ends{};
+  int fair_v1{};
+  int fair_v2{};
   std::uint32_t levels{};
 
   bool OnInstrument(const md::wire::InstrumentUpdateRecord &) noexcept override {
@@ -251,6 +255,17 @@ struct WireVisitor final : md::wire::RecordVisitor {
   bool OnSnapshotEnd(
       const md::wire::SnapshotEndRecord &) noexcept override {
     ++ends;
+    return true;
+  }
+  bool OnFairPrice(const md::wire::FairPriceRecordV1 &) noexcept override {
+    ++fair_v1;
+    return true;
+  }
+};
+
+struct FairV2Visitor final : WireVisitor {
+  bool OnFairPriceV2(const md::wire::FairPriceRecordV2 &) noexcept override {
+    ++fair_v2;
     return true;
   }
 };
@@ -465,6 +480,87 @@ void TestWireCodec() {
          md::wire::CodecError::UnknownMessageType);
 }
 
+void TestFairPriceWire() {
+  static_assert(sizeof(md::wire::FairPriceRecordV1) == 408);
+  static_assert(sizeof(md::wire::FairPriceRecordV2) == 440);
+  static_assert(static_cast<std::uint16_t>(md::MessageType::FairPrice) == 11);
+  static_assert(static_cast<std::uint16_t>(md::MessageType::FairPriceV2) == 12);
+
+  md::wire::HeaderFields header{
+      .instrument_id = 7,
+      .bus_seq = 8,
+      .source_seq = 9,
+      .exchange_ts_ns = 10,
+      .receive_tsc = 11,
+      .publish_tsc = 12,
+      .book_generation = 13,
+      .state = md::BookState::Live,
+      .source_id = 1,
+  };
+  std::array<std::byte, 512> buffer{};
+  md::wire::FairPriceRecordV1 v1{};
+  const char short_profile[] = "agg";
+  std::memcpy(v1.profile.data(), short_profile, sizeof(short_profile));
+  auto encoded = md::wire::EncodeFairPrice(buffer, header, v1);
+  assert(encoded && encoded.size == sizeof(md::wire::FairPriceRecordV1));
+  md::wire::FairPriceRecordV1 decoded_v1{};
+  assert(md::wire::DecodeFairPrice(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             decoded_v1) == md::wire::CodecError::Ok);
+  assert(decoded_v1.header.message_type ==
+         static_cast<std::uint16_t>(md::MessageType::FairPrice));
+  md::wire::FairPriceRecordV2 reject_v2{};
+  assert(md::wire::DecodeFairPriceV2(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             reject_v2) != md::wire::CodecError::Ok);
+
+  WireVisitor visitor;
+  assert(md::wire::Decode(
+             std::span<const std::byte>(buffer.data(), encoded.size), visitor) ==
+         md::wire::CodecError::Ok);
+  assert(visitor.fair_v1 == 1 && visitor.fair_v2 == 0);
+
+  md::wire::FairPriceRecordV2 v2{};
+  const char long_profile[] =
+      "agg_spot_usdt_binance-bitget-bybit-gate-okx--";
+  static_assert(sizeof(long_profile) - 1 == 45);
+  static_assert(sizeof(long_profile) - 1 > 32);
+  std::memcpy(v2.profile.data(), long_profile, sizeof(long_profile));
+  header.flags = 1;
+  assert(!md::wire::EncodeFairPriceV2(buffer, header, v2));
+  header.flags = 0;
+  encoded = md::wire::EncodeFairPriceV2(buffer, header, v2);
+  assert(encoded && encoded.size == sizeof(md::wire::FairPriceRecordV2));
+  md::wire::FairPriceRecordV2 decoded_v2{};
+  assert(md::wire::DecodeFairPriceV2(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             decoded_v2) == md::wire::CodecError::Ok);
+  assert(decoded_v2.header.message_type ==
+         static_cast<std::uint16_t>(md::MessageType::FairPriceV2));
+  assert(std::memcmp(decoded_v2.profile.data(), long_profile,
+                     sizeof(long_profile)) == 0);
+  md::wire::FairPriceRecordV1 reject_v1{};
+  assert(md::wire::DecodeFairPrice(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             reject_v1) != md::wire::CodecError::Ok);
+  assert(md::wire::Decode(
+             std::span<const std::byte>(buffer.data(), encoded.size), visitor) ==
+         md::wire::CodecError::Ok);
+  assert(visitor.fair_v1 == 1 && visitor.fair_v2 == 0);
+
+  FairV2Visitor v2_visitor;
+  assert(md::wire::Decode(
+             std::span<const std::byte>(buffer.data(), encoded.size),
+             v2_visitor) == md::wire::CodecError::Ok);
+  assert(v2_visitor.fair_v1 == 0 && v2_visitor.fair_v2 == 1);
+
+  auto flagged = buffer;
+  flagged[offsetof(md::wire::RecordHeader, flags)] = std::byte{1};
+  assert(md::wire::DecodeFairPriceV2(
+             std::span<const std::byte>(flagged.data(), encoded.size),
+             decoded_v2) != md::wire::CodecError::Ok);
+}
+
 void TestSpsc() {
   queue::SpscRing<LeaseValue, 4> ring;
   {
@@ -585,6 +681,7 @@ int main() {
   TestSymbol();
   TestLadder();
   TestWireCodec();
+  TestFairPriceWire();
   TestSpsc();
   TestMpsc();
   TestDecimal();

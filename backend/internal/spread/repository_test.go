@@ -52,6 +52,28 @@ func TestHistoryQueryUsesCrossVenuePerpetualAsks(t *testing.T) {
 	}
 }
 
+func TestHistoryIdentityQueryFiltersCanonicalAndVenueSymbol(t *testing.T) {
+	query := historyIdentityQuery("market_data", "crypto_bbo", 60)
+	for _, fragment := range []string{
+		"venue = @venue",
+		"product = @venue_product",
+		"canonical_symbol = @venue_canonical_symbol",
+		"venue_symbol = @venue_exchange_symbol",
+		"venue = @compare_venue",
+		"product = @compare_product",
+		"canonical_symbol = @compare_canonical_symbol",
+		"venue_symbol = @compare_exchange_symbol",
+		"PREWHERE venue IN (@venue, @compare_venue)",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("identity query missing %q:\n%s", fragment, query)
+		}
+	}
+	if strings.Contains(query, "JOIN") {
+		t.Fatal("identity query should not self-join")
+	}
+}
+
 func TestNormalizeRequestPreservesPerVenueCanonicalSymbols(t *testing.T) {
 	request, err := NormalizeRequest(HistoryRequest{
 		Venue: "hyperliquid", CompareVenue: "binance",

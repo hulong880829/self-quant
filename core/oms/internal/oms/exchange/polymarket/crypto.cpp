@@ -9,6 +9,7 @@
 #include <new>
 
 #include <openssl/bn.h>
+#include <openssl/crypto.h>
 #include <openssl/ec.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -38,6 +39,14 @@ constexpr std::string_view kExchange =
     "0xE111180000d2663C0091e4f400237545B87B996B";
 constexpr std::string_view kNegRiskExchange =
     "0xe2222d279d744050d28e00520010520000310F59";
+constexpr std::string_view kClobAuthDomainType =
+    "EIP712Domain(string name,string version,uint256 chainId)";
+constexpr std::string_view kClobAuthType =
+    "ClobAuth(address address,string timestamp,uint256 nonce,string message)";
+constexpr std::string_view kClobAuthDomainName = "ClobAuthDomain";
+constexpr std::string_view kClobAuthDomainVersion = "1";
+constexpr std::string_view kClobAuthMessage =
+    "This message attests that I control the given wallet";
 
 using Bn = std::unique_ptr<BIGNUM, decltype(&BN_free)>;
 using BnCtx = std::unique_ptr<BN_CTX, decltype(&BN_CTX_free)>;
@@ -141,6 +150,38 @@ bool Append(std::array<std::uint8_t, Capacity>& output, std::size_t& used,
 Bytes32 HashText(std::string_view value) noexcept {
   return Keccak256(reinterpret_cast<const std::uint8_t*>(value.data()),
                    value.size());
+}
+
+Bytes32 ClobAuthDomainHash() noexcept {
+  std::array<std::uint8_t, 128> encoded{};
+  const Bytes32 type_hash = HashText(kClobAuthDomainType);
+  const Bytes32 name_hash = HashText(kClobAuthDomainName);
+  const Bytes32 version_hash = HashText(kClobAuthDomainVersion);
+  Bytes32 chain{};
+  PutUint(chain, 137);
+  std::copy(type_hash.begin(), type_hash.end(), encoded.begin());
+  std::copy(name_hash.begin(), name_hash.end(), encoded.begin() + 32);
+  std::copy(version_hash.begin(), version_hash.end(), encoded.begin() + 64);
+  std::copy(chain.begin(), chain.end(), encoded.begin() + 96);
+  return Keccak256(encoded.data(), encoded.size());
+}
+
+Bytes32 ClobAuthStructHash(const Address& address, std::string_view timestamp,
+                           std::uint64_t nonce) noexcept {
+  std::array<std::uint8_t, 160> encoded{};
+  const Bytes32 type_hash = HashText(kClobAuthType);
+  Bytes32 address_word{};
+  PutAddress(address_word, address);
+  const Bytes32 timestamp_hash = HashText(timestamp);
+  Bytes32 nonce_word{};
+  PutUint(nonce_word, nonce);
+  const Bytes32 message_hash = HashText(kClobAuthMessage);
+  std::copy(type_hash.begin(), type_hash.end(), encoded.begin());
+  std::copy(address_word.begin(), address_word.end(), encoded.begin() + 32);
+  std::copy(timestamp_hash.begin(), timestamp_hash.end(), encoded.begin() + 64);
+  std::copy(nonce_word.begin(), nonce_word.end(), encoded.begin() + 96);
+  std::copy(message_hash.begin(), message_hash.end(), encoded.begin() + 128);
+  return Keccak256(encoded.data(), encoded.size());
 }
 
 Bytes32 DomainHash(const Address& contract) noexcept {
@@ -331,12 +372,29 @@ OrderSigningContext::OrderSigningContext(
     return;
   }
   impl_->private_bytes = private_bytes;
+  unsigned char pubkey[65]{};
+  if (EC_POINT_mul(impl_->group.get(), impl_->point.get(),
+                   impl_->private_key.get(), nullptr, nullptr,
+                   impl_->context.get()) != 1 ||
+      EC_POINT_point2oct(impl_->group.get(), impl_->point.get(),
+                         POINT_CONVERSION_UNCOMPRESSED, pubkey, sizeof(pubkey),
+                         impl_->context.get()) != sizeof(pubkey) ||
+      pubkey[0] != 0x04) {
+    status_ = CryptoResult::CryptoFailure;
+    return;
+  }
+  const Bytes32 digest = Keccak256(pubkey + 1, 64);
+  std::copy(digest.begin() + 12, digest.end(), signer_address_.begin());
   status_ = CryptoResult::Ok;
 }
 
 OrderSigningContext::~OrderSigningContext() noexcept { delete impl_; }
 
 CryptoResult OrderSigningContext::status() const noexcept { return status_; }
+
+const Address& OrderSigningContext::signer_address() const noexcept {
+  return signer_address_;
+}
 
 CryptoResult OrderSigningContext::SignDigest(
     const Bytes32& digest,
@@ -410,6 +468,34 @@ Bytes32 Keccak256(const std::uint8_t* data, std::size_t size) noexcept {
 
 CryptoResult DecodeAddress(std::string_view text, Address& output) noexcept {
   return DecodeHex(text, output);
+}
+
+CryptoResult EncodeEip55Address(const Address& address, char* output,
+                                std::size_t capacity,
+                                std::size_t& size) noexcept {
+  size = 0;
+  if (output == nullptr) return CryptoResult::InvalidArgument;
+  if (capacity < 42) return CryptoResult::BufferTooSmall;
+  constexpr char kLower[] = "0123456789abcdef";
+  std::array<char, 40> hex{};
+  for (std::size_t index = 0; index < address.size(); ++index) {
+    hex[index * 2] = kLower[address[index] >> 4U];
+    hex[index * 2 + 1] = kLower[address[index] & 0x0fU];
+  }
+  const Bytes32 hash = Keccak256(reinterpret_cast<const std::uint8_t*>(hex.data()),
+                                 hex.size());
+  output[0] = '0';
+  output[1] = 'x';
+  for (std::size_t index = 0; index < hex.size(); ++index) {
+    const unsigned nibble =
+        (index % 2U == 0U) ? (hash[index / 2U] >> 4U) : (hash[index / 2U] & 0x0fU);
+    const char digit = hex[index];
+    output[2 + index] =
+        (nibble >= 8U && digit >= 'a') ? static_cast<char>(digit - ('a' - 'A'))
+                                       : digit;
+  }
+  size = 42;
+  return CryptoResult::Ok;
 }
 
 CryptoResult DecodeHex32(std::string_view text, Bytes32& output) noexcept {
@@ -551,7 +637,9 @@ Bytes32 OrderStructHash(const Order& order) noexcept {
 }
 
 Bytes32 OrderSigningHash(const Order& order) noexcept {
-  if (order.signature_type != 0 && order.signature_type != 3) return {};
+  if (order.signature_type != 0 && order.signature_type != 1 &&
+      order.signature_type != 3)
+    return {};
   const Bytes32 domain = OrderDomainHash(order.negative_risk);
   const Bytes32 contents = OrderStructHash(order);
   if (order.signature_type != 3) return TypedDigest(domain, contents);
@@ -580,8 +668,6 @@ CryptoResult OrderSigningContext::Sign(const Order& order,
                          order.signature_type != 1 &&
                          order.signature_type != 3))
     return CryptoResult::InvalidArgument;
-  if (order.signature_type == 1)
-    return CryptoResult::UnsupportedSignatureType;
   std::array<std::uint8_t, 65> signature{};
   const Bytes32 digest = OrderSigningHash(order);
   CryptoResult result = SignDigest(digest, signature);
@@ -605,6 +691,34 @@ CryptoResult OrderSigningContext::Sign(const Order& order,
       return CryptoResult::BufferTooSmall;
   }
   output.size = used;
+  return CryptoResult::Ok;
+}
+
+CryptoResult OrderSigningContext::SignClobAuth(
+    std::string_view timestamp, std::uint64_t nonce, char* output,
+    std::size_t capacity, std::size_t& size) noexcept {
+  size = 0;
+  if (output == nullptr) return CryptoResult::InvalidArgument;
+  if (timestamp.empty()) return CryptoResult::InvalidArgument;
+  if (capacity < 132) return CryptoResult::BufferTooSmall;
+  std::array<std::uint8_t, 65> signature{};
+  const Bytes32 digest = TypedDigest(
+      ClobAuthDomainHash(),
+      ClobAuthStructHash(signer_address_, timestamp, nonce));
+  const CryptoResult result = SignDigest(digest, signature);
+  if (result != CryptoResult::Ok) {
+    OPENSSL_cleanse(signature.data(), signature.size());
+    return result;
+  }
+  constexpr char kDigits[] = "0123456789abcdef";
+  output[0] = '0';
+  output[1] = 'x';
+  for (std::size_t index = 0; index < signature.size(); ++index) {
+    output[2 + index * 2] = kDigits[signature[index] >> 4U];
+    output[3 + index * 2] = kDigits[signature[index] & 0x0fU];
+  }
+  OPENSSL_cleanse(signature.data(), signature.size());
+  size = 132;
   return CryptoResult::Ok;
 }
 

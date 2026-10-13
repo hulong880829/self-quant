@@ -1,0 +1,9 @@
+mds:
+  source: replay
+oms:
+  venues:
+    polymarket:
+      enabled: true
+      account_id: 1
+      signature_type: 0
+strategy: {}

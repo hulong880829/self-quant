@@ -41,6 +41,12 @@ type HistoryRequest struct {
 	QuoteAsset                  string
 	VenueCanonicalSymbol        string
 	CompareVenueCanonicalSymbol string
+	VenueExchangeSymbol         string
+	CompareExchangeSymbol       string
+	VenueProduct                string
+	CompareVenueProduct         string
+	IdentityMode                string
+	PriceMultiplier             decimal.Decimal
 	Range                       Range
 	Now                         time.Time
 }
@@ -159,8 +165,32 @@ func NormalizeRequest(input HistoryRequest) (HistoryRequest, error) {
 	if compareSymbol == "" {
 		compareSymbol = CanonicalSymbol(base, quote)
 	}
-	if !ValidCanonicalSymbol(venueSymbol) ||
-		(compareVenue != "" && !ValidCanonicalSymbol(compareSymbol)) {
+	identityMode := strings.ToLower(strings.TrimSpace(input.IdentityMode))
+	venueProduct := strings.ToLower(strings.TrimSpace(input.VenueProduct))
+	compareProduct := strings.ToLower(strings.TrimSpace(input.CompareVenueProduct))
+	venueExchange := strings.TrimSpace(input.VenueExchangeSymbol)
+	compareExchange := strings.TrimSpace(input.CompareExchangeSymbol)
+	symbolOK := ValidCanonicalSymbol
+	if identityMode == "venue_symbol" {
+		symbolOK = ValidIdentitySymbol
+	} else if identityMode != "" {
+		return HistoryRequest{}, ErrInvalidArgument
+	}
+	if !symbolOK(venueSymbol) ||
+		(compareVenue != "" && !symbolOK(compareSymbol)) {
+		return HistoryRequest{}, ErrInvalidArgument
+	}
+	if identityMode == "venue_symbol" {
+		if compareVenue == "" || !validProduct(venueProduct) || !validProduct(compareProduct) ||
+			!ValidIdentitySymbol(venueExchange) || !ValidIdentitySymbol(compareExchange) {
+			return HistoryRequest{}, ErrInvalidArgument
+		}
+	}
+	multiplier := input.PriceMultiplier
+	if multiplier.IsZero() {
+		multiplier = decimal.NewFromInt(1)
+	}
+	if !multiplier.IsPositive() || multiplier.GreaterThan(decimal.NewFromInt(1_000_000)) {
 		return HistoryRequest{}, ErrInvalidArgument
 	}
 	parsed, err := ParseRange(string(input.Range))
@@ -174,6 +204,9 @@ func NormalizeRequest(input HistoryRequest) (HistoryRequest, error) {
 	return HistoryRequest{
 		Venue: venue, CompareVenue: compareVenue, BaseAsset: base, QuoteAsset: quote,
 		VenueCanonicalSymbol: venueSymbol, CompareVenueCanonicalSymbol: compareSymbol,
+		VenueExchangeSymbol: venueExchange, CompareExchangeSymbol: compareExchange,
+		VenueProduct: venueProduct, CompareVenueProduct: compareProduct,
+		IdentityMode: identityMode, PriceMultiplier: multiplier,
 		Range: parsed, Now: now,
 	}, nil
 }
@@ -200,6 +233,32 @@ func ValidAsset(value string) bool {
 
 func ValidCanonicalSymbol(value string) bool {
 	return validLetterOrDigitToken(value, 2, 32)
+}
+
+func ValidIdentitySymbol(value string) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	count := utf8.RuneCountInString(value)
+	if count < 1 || count > 64 {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsLetter(r) || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == ':' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validProduct(value string) bool {
+	switch value {
+	case "spot", "perpetual", "equity":
+		return true
+	default:
+		return false
+	}
 }
 
 func validLetterOrDigitToken(value string, minRunes, maxRunes int) bool {
@@ -264,6 +323,9 @@ func buildHistory(req HistoryRequest, rows []bucketRow) History {
 			hasSpot = true
 		}
 		perpAsk, perpOK := decodeAsk(row.PerpAskRaw, row.PerpScale)
+		if perpOK && req.PriceMultiplier.IsPositive() && !req.PriceMultiplier.Equal(decimal.NewFromInt(1)) {
+			perpAsk = perpAsk.Mul(req.PriceMultiplier)
+		}
 		if !spotOK || !perpOK {
 			continue
 		}

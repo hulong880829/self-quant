@@ -1,6 +1,7 @@
 package trader
 
 import (
+	"fmt"
 	"math/big"
 	"strings"
 	"time"
@@ -523,6 +524,25 @@ func expectedCarryAfterMaker(carry, makerQty decimal.Decimal, makerSide string) 
 		return carry.Sub(makerQty)
 	}
 	return carry.Add(makerQty)
+}
+
+func carryBeforeExecutionFromFills(
+	refreshedCarry, legAFilled, legBFilled decimal.Decimal,
+	direction string,
+) (decimal.Decimal, error) {
+	var delta decimal.Decimal
+	switch strings.ToLower(strings.TrimSpace(direction)) {
+	case "ask":
+		delta = legAFilled.Sub(legBFilled)
+	case "bid":
+		delta = legBFilled.Sub(legAFilled)
+	default:
+		return decimal.Zero, fmt.Errorf(
+			"%w: unsupported arbitrage direction %q",
+			ErrInvalidArgument, direction,
+		)
+	}
+	return refreshedCarry.Sub(delta), nil
 }
 
 func carryHedgeSide(carry decimal.Decimal) string {

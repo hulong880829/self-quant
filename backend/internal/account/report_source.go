@@ -2,7 +2,6 @@ package account
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strings"
@@ -29,12 +28,7 @@ type TradeFillSyncResult struct {
 }
 
 func (s *Service) authorizeInternal(token string) error {
-	expected, provided := []byte(s.internalToken), []byte(strings.TrimSpace(token))
-	if len(expected) == 0 || len(expected) != len(provided) ||
-		subtle.ConstantTimeCompare(expected, provided) != 1 {
-		return ErrInvalidServiceToken
-	}
-	return nil
+	return s.authorizeReport(token)
 }
 
 func (s *Service) GetProductAccountSnapshotsInternal(

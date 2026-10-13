@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -686,4 +687,253 @@ func lastLogEvent(t *testing.T, logs, msg string) map[string]any {
 		t.Fatalf("missing log %s in %s", msg, logs)
 	}
 	return last
+}
+
+func TestRecentFillAverageCachesBinanceAveragePrice(t *testing.T) {
+	t.Parallel()
+	key := Key{Account: "acct", Venue: VenueBinance, Product: ProductPerpetual}
+	subscription, connection := subscribeTestStream(t, key)
+	connection.reads <- fakeRead{payload: []byte(
+		`{"e":"ORDER_TRADE_UPDATE","E":1700000000123,"o":{"c":"client-ap","i":42,"X":"FILLED","z":"2","ap":"11.5"}}`,
+	)}
+	waitForStatus(t, subscription.Updates(), StatusFilled)
+	got, ok := subscription.manager.LookupRecentFillAverage(key, "client-ap", "42")
+	if !ok || got.AveragePrice != "11.5" || got.CumulativeFilled != "2" {
+		t.Fatalf("got=%+v ok=%v", got, ok)
+	}
+	if _, ok := subscription.manager.LookupRecentFillAverage(key, "client-ap", ""); !ok {
+		t.Fatal("client id lookup missed")
+	}
+	if _, ok := subscription.manager.LookupRecentFillAverage(key, "", "42"); !ok {
+		t.Fatal("venue id lookup missed")
+	}
+}
+
+func TestRecentFillAverageCachesBinanceQuoteOverQty(t *testing.T) {
+	t.Parallel()
+	key := Key{Account: "acct", Venue: VenueBinance, Product: ProductSpot}
+	subscription, connection := subscribeTestStream(t, key)
+	connection.reads <- fakeRead{payload: []byte(
+		`{"e":"executionReport","E":1700000000123,"c":"client-z","i":43,"X":"FILLED","z":"2","Z":"20"}`,
+	)}
+	waitForStatus(t, subscription.Updates(), StatusFilled)
+	got, ok := subscription.manager.LookupRecentFillAverage(key, "client-z", "43")
+	if !ok || got.AveragePrice != "10" {
+		t.Fatalf("got=%+v ok=%v", got, ok)
+	}
+}
+
+func TestRecentFillAverageSkipsEventsWithoutAverage(t *testing.T) {
+	t.Parallel()
+	key := Key{Account: "acct", Venue: VenueBinance, Product: ProductPerpetual}
+	subscription, connection := subscribeTestStream(t, key)
+	connection.reads <- fakeRead{payload: []byte(
+		`{"e":"ORDER_TRADE_UPDATE","E":1700000000123,"o":{"c":"client-empty","i":44,"X":"NEW","z":"0"}}`,
+	)}
+	waitForStatus(t, subscription.Updates(), StatusNew)
+	if _, ok := subscription.manager.LookupRecentFillAverage(key, "client-empty", "44"); ok {
+		t.Fatal("zero fill must not be cached")
+	}
+}
+
+func TestRecentFillAverageNewerEventReplacesOlder(t *testing.T) {
+	t.Parallel()
+	manager := newTestManager(t, &fakeConnector{connections: []*fakeConnection{newFakeConnection()}})
+	key := Key{Account: "acct", Venue: VenueBinance, Product: ProductPerpetual}
+	normalized, err := key.normalized()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.rememberRecentFillAverage(normalized, Update{
+		ClientOrderID: "client-1", VenueOrderID: "1", Status: StatusPartiallyFilled,
+		CumulativeFilled: "1", AveragePrice: "10",
+		EventTime: time.Unix(10, 0).UTC(), Sequence: 1,
+	})
+	manager.rememberRecentFillAverage(normalized, Update{
+		ClientOrderID: "client-1", VenueOrderID: "1", Status: StatusFilled,
+		CumulativeFilled: "2", AveragePrice: "12",
+		EventTime: time.Unix(11, 0).UTC(), Sequence: 2,
+	})
+	got, ok := manager.LookupRecentFillAverage(key, "client-1", "1")
+	if !ok || got.AveragePrice != "12" || got.CumulativeFilled != "2" {
+		t.Fatalf("got=%+v ok=%v", got, ok)
+	}
+}
+
+func TestRecentFillAverageRejectsOlderSequenceAndTime(t *testing.T) {
+	t.Parallel()
+	manager := newTestManager(t, &fakeConnector{connections: []*fakeConnection{newFakeConnection()}})
+	key := Key{Account: "acct", Venue: VenueBinance, Product: ProductPerpetual}
+	normalized, _ := key.normalized()
+	manager.rememberRecentFillAverage(normalized, Update{
+		ClientOrderID: "client-1", VenueOrderID: "1", Status: StatusFilled,
+		CumulativeFilled: "2", AveragePrice: "12",
+		EventTime: time.Unix(11, 0).UTC(), Sequence: 5,
+	})
+	manager.rememberRecentFillAverage(normalized, Update{
+		ClientOrderID: "client-1", VenueOrderID: "1", Status: StatusFilled,
+		CumulativeFilled: "2", AveragePrice: "9",
+		EventTime: time.Unix(11, 0).UTC(), Sequence: 4,
+	})
+	manager.rememberRecentFillAverage(normalized, Update{
+		ClientOrderID: "client-1", VenueOrderID: "1", Status: StatusFilled,
+		CumulativeFilled: "2", AveragePrice: "8",
+		EventTime: time.Unix(9, 0).UTC(), Sequence: 9,
+	})
+	got, ok := manager.LookupRecentFillAverage(key, "client-1", "1")
+	if !ok || got.AveragePrice != "12" {
+		t.Fatalf("got=%+v ok=%v", got, ok)
+	}
+}
+
+func TestRecentFillAverageRemovesStaleVenueAlias(t *testing.T) {
+	t.Parallel()
+	manager := newTestManager(t, &fakeConnector{connections: []*fakeConnection{newFakeConnection()}})
+	key := Key{Account: "acct", Venue: VenueBinance, Product: ProductPerpetual}
+	normalized, _ := key.normalized()
+	manager.rememberRecentFillAverage(normalized, Update{
+		ClientOrderID: "client-1", VenueOrderID: "41", Status: StatusPartiallyFilled,
+		CumulativeFilled: "1", AveragePrice: "10",
+		EventTime: time.Unix(10, 0).UTC(), Sequence: 1,
+	})
+	manager.rememberRecentFillAverage(normalized, Update{
+		ClientOrderID: "client-1", VenueOrderID: "99", Status: StatusFilled,
+		CumulativeFilled: "2", AveragePrice: "11",
+		EventTime: time.Unix(12, 0).UTC(), Sequence: 2,
+	})
+	if _, ok := manager.LookupRecentFillAverage(key, "client-1", "41"); ok {
+		t.Fatal("old venue alias must be removed")
+	}
+	got, ok := manager.LookupRecentFillAverage(key, "client-1", "99")
+	if !ok || got.VenueOrderID != "99" {
+		t.Fatalf("got=%+v ok=%v", got, ok)
+	}
+}
+
+func TestRecentFillAverageSurvivesSessionCloseAndIdle(t *testing.T) {
+	t.Parallel()
+	connection := newFakeConnection()
+	manager, err := New(Options{
+		Connector:        &fakeConnector{connections: []*fakeConnection{connection}, called: make(chan int, 2)},
+		ReconnectInitial: time.Millisecond, ReconnectMax: 2 * time.Millisecond,
+		IdleTimeout: 30 * time.Millisecond, Jitter: func(time.Duration) time.Duration { return 0 },
+		Logger: slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	key := Key{Account: "acct", Venue: VenueBinance, Product: ProductPerpetual}
+	subscription, err := manager.Subscribe(context.Background(), key, Credentials{APIKey: "key", Secret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, subscription.Updates(), StatusConnected)
+	connection.reads <- fakeRead{payload: []byte(
+		`{"e":"ORDER_TRADE_UPDATE","E":1700000000123,"o":{"c":"client-idle","i":50,"X":"FILLED","z":"1","ap":"4"}}`,
+	)}
+	waitForStatus(t, subscription.Updates(), StatusFilled)
+	_ = subscription.Close()
+	deadline := time.Now().Add(time.Second)
+	for manager.Stats().ActiveSessions != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("session did not idle-expire")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, ok := manager.LookupRecentFillAverage(key, "client-idle", "50"); !ok {
+		t.Fatal("cache must outlive idle session")
+	}
+}
+
+func TestRecentFillAverageExpiresAfterTTL(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	manager := newTestManager(t, &fakeConnector{connections: []*fakeConnection{newFakeConnection()}})
+	manager.now = func() time.Time { return now }
+	key := Key{Account: "acct", Venue: VenueBinance, Product: ProductPerpetual}
+	normalized, _ := key.normalized()
+	manager.rememberRecentFillAverage(normalized, Update{
+		ClientOrderID: "client-ttl", VenueOrderID: "7", Status: StatusFilled,
+		CumulativeFilled: "1", AveragePrice: "5", EventTime: now, Sequence: 1,
+	})
+	if _, ok := manager.LookupRecentFillAverage(key, "client-ttl", "7"); !ok {
+		t.Fatal("expected live snapshot")
+	}
+	now = now.Add(recentFillAverageTTL + time.Second)
+	if _, ok := manager.LookupRecentFillAverage(key, "client-ttl", "7"); ok {
+		t.Fatal("ttl must drop both indexes")
+	}
+	if _, ok := manager.LookupRecentFillAverage(key, "", "7"); ok {
+		t.Fatal("expired venue index leaked")
+	}
+}
+
+func TestRecentFillAverageLookupNormalizesBinanceSpot(t *testing.T) {
+	t.Parallel()
+	manager := newTestManager(t, &fakeConnector{connections: []*fakeConnection{newFakeConnection()}})
+	spot := Key{Account: "acct", Venue: VenueBinance, Product: ProductSpot}
+	manager.rememberRecentFillAverage(spot, Update{
+		ClientOrderID: "client-spot", VenueOrderID: "8", Status: StatusFilled,
+		CumulativeFilled: "2", AveragePrice: "11",
+		EventTime: time.Unix(10, 0).UTC(), Sequence: 1,
+	})
+	got, ok := manager.LookupRecentFillAverage(spot, "client-spot", "8")
+	if !ok || got.AveragePrice != "11" || got.Key.Product != ProductPerpetual {
+		t.Fatalf("got=%+v ok=%v", got, ok)
+	}
+}
+
+func TestRecentFillAverageConcurrentRememberAndLookup(t *testing.T) {
+	t.Parallel()
+	manager := newTestManager(t, &fakeConnector{connections: []*fakeConnection{newFakeConnection()}})
+	key := Key{Account: "acct", Venue: VenueBinance, Product: ProductPerpetual}
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			manager.rememberRecentFillAverage(key, Update{
+				ClientOrderID: "client-race", VenueOrderID: "9", Status: StatusFilled,
+				CumulativeFilled: "1", AveragePrice: "5",
+				EventTime: time.Unix(int64(i+1), 0).UTC(), Sequence: int64(i + 1),
+			})
+			_, _ = manager.LookupRecentFillAverage(key, "client-race", "9")
+			_, _ = manager.LookupRecentFillAverage(key, "", "9")
+		}(i)
+	}
+	wg.Wait()
+	if _, ok := manager.LookupRecentFillAverage(key, "client-race", "9"); !ok {
+		t.Fatal("expected snapshot after concurrent writes")
+	}
+}
+
+func TestRecentFillAverageTypeOmitsCredentials(t *testing.T) {
+	t.Parallel()
+	typ := reflect.TypeOf(RecentFillAverage{})
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		switch name {
+		case "APIKey", "Secret", "Passphrase", "AuthToken", "APISecret":
+			t.Fatalf("credential field %s must not be cached", name)
+		}
+	}
+}
+
+func subscribeTestStream(t *testing.T, key Key) (*Subscription, *fakeConnection) {
+	t.Helper()
+	connection := newFakeConnection()
+	connector := &fakeConnector{
+		connections: []*fakeConnection{connection}, called: make(chan int, 2),
+	}
+	manager := newTestManager(t, connector)
+	subscription, err := manager.Subscribe(
+		context.Background(), key, Credentials{APIKey: "key", Secret: "secret"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForConnection(t, connector.called, 1)
+	waitForStatus(t, subscription.Updates(), StatusConnected)
+	return subscription, connection
 }

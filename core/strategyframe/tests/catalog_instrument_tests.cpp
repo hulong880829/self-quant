@@ -36,10 +36,12 @@ int main() {
   static_assert(token.size() == 78);
   Copy(token, polymarket.venue_symbol);
   Copy("UP", polymarket.outcome);
+  polymarket.signature_type = 3;
 
   const auto converted =
       strategyframe::detail::CatalogInstrument(polymarket);
   Require(converted.instrument.venue_symbol[0] == '\0');
+  Require(converted.polymarket_signature_type == 0);
   Require(std::any_of(converted.polymarket_token_id.begin(),
                       converted.polymarket_token_id.end(),
                       [](std::uint8_t value) { return value != 0; }));

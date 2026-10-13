@@ -11,13 +11,11 @@ Build every item below from the same commit:
 - `mds_producer`
 - `mds_aggregator`
 - `mds_shm_consumer`
-- `mds_record_tool`
 - StrategyFrame and every linked strategy, including `poly-mm`
-- installed-package smoke consumers (`mds_package_consumer` and
-  `mds_record_package_consumer`)
+- installed-package smoke consumers (`mds_package_consumer`)
 
 The `mds_shm_consumer` binary is deployed in three roles. Inventory and replace
-all `--gateway`, `--record`, and `--clickhouse-bbo` instances even though only
+all `--gateway`, `--clickhouse-aggregate`, and `--clickhouse-bbo` instances even though only
 the ClickHouse role attaches directly to venue ticker rings.
 
 ## Restart gate
@@ -43,7 +41,7 @@ old reader remains attached.
 - `bbo_origin_missing` and strict-policy `bbo_origin_unknown` are zero.
 - AggBbo/AggOrderBook origin-mask bits are zero; aggregate TTL, flags, publish
   counts, and values match baseline.
-- `.sqrec` aggregate records match the deterministic baseline fields; only
-  sample wall/monotonic clock values may differ.
+- ClickHouse aggregate history `sampled_at` advances and row counts increase;
+  only sample wall/monotonic clock values may differ.
 - StrategyFrame reports no policy-starved configured instrument.
 

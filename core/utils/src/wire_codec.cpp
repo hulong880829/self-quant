@@ -32,6 +32,10 @@ constexpr std::size_t expected_size(std::uint16_t type) noexcept {
       return sizeof(AggBboRecord);
     case MessageType::AggOrderBook:
       return sizeof(AggOrderBookRecord);
+    case MessageType::FairPrice:
+      return sizeof(FairPriceRecordV1);
+    case MessageType::FairPriceV2:
+      return sizeof(FairPriceRecordV2);
   }
   return 0;
 }
@@ -47,7 +51,8 @@ constexpr bool valid_flags(MessageType type, std::uint16_t flags) noexcept {
         kAggSkewEnforced | kAggMemberDataError;
     return (flags & static_cast<std::uint16_t>(~allowed)) == 0;
   }
-  if (type == MessageType::AggOrderBook) {
+  if (type == MessageType::AggOrderBook || type == MessageType::FairPrice ||
+      type == MessageType::FairPriceV2) {
     return flags == 0;
   }
   return flags == 0;
@@ -462,6 +467,16 @@ CodecError DecodeAggOrderBook(std::span<const std::byte> bytes,
                                      : CodecError::InvalidField;
 }
 
+CodecError DecodeFairPrice(std::span<const std::byte> bytes,
+                           FairPriceRecordV1 &record) noexcept {
+  return decode_record(bytes, MessageType::FairPrice, record);
+}
+
+CodecError DecodeFairPriceV2(std::span<const std::byte> bytes,
+                             FairPriceRecordV2 &record) noexcept {
+  return decode_record(bytes, MessageType::FairPriceV2, record);
+}
+
 EncodeResult EncodeInstrument(std::span<std::byte> destination,
                               const HeaderFields &header,
                               const Instrument &instrument) noexcept {
@@ -651,6 +666,32 @@ EncodeResult EncodeAggOrderBook(
   return {CodecError::Ok, sizeof(AggOrderBookRecord)};
 }
 
+EncodeResult EncodeFairPrice(std::span<std::byte> destination,
+                             const HeaderFields &header,
+                             const FairPriceRecordV1 &value) noexcept {
+  if (validate_encode_fields(MessageType::FairPrice, header) !=
+      CodecError::Ok) {
+    return {CodecError::InvalidField, 0};
+  }
+  FairPriceRecordV1 record = value;
+  record.header =
+      make_header(MessageType::FairPrice, sizeof(record), header);
+  return write_record(destination, record);
+}
+
+EncodeResult EncodeFairPriceV2(std::span<std::byte> destination,
+                               const HeaderFields &header,
+                               const FairPriceRecordV2 &value) noexcept {
+  if (validate_encode_fields(MessageType::FairPriceV2, header) !=
+      CodecError::Ok) {
+    return {CodecError::InvalidField, 0};
+  }
+  FairPriceRecordV2 record = value;
+  record.header =
+      make_header(MessageType::FairPriceV2, sizeof(record), header);
+  return write_record(destination, record);
+}
+
 CodecError Decode(std::span<const std::byte> bytes,
                   RecordVisitor &visitor) noexcept {
   RecordHeader header{};
@@ -729,6 +770,24 @@ CodecError Decode(std::span<const std::byte> bytes,
         return decoded;
       }
       return visitor.OnSnapshotEnd(record) ? CodecError::Ok
+                                           : CodecError::InvalidField;
+    }
+    case MessageType::FairPrice: {
+      FairPriceRecordV1 record{};
+      const auto decoded = DecodeFairPrice(bytes, record);
+      if (decoded != CodecError::Ok) {
+        return decoded;
+      }
+      return visitor.OnFairPrice(record) ? CodecError::Ok
+                                         : CodecError::InvalidField;
+    }
+    case MessageType::FairPriceV2: {
+      FairPriceRecordV2 record{};
+      const auto decoded = DecodeFairPriceV2(bytes, record);
+      if (decoded != CodecError::Ok) {
+        return decoded;
+      }
+      return visitor.OnFairPriceV2(record) ? CodecError::Ok
                                            : CodecError::InvalidField;
     }
     case MessageType::AggBbo:

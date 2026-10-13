@@ -2,6 +2,7 @@ package trader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"selfquant/backend/internal/database"
+	"selfquant/backend/internal/trader/exchange"
 )
 
 func TestTwapRepositoryIntegration(t *testing.T) {
@@ -78,6 +80,30 @@ func TestTwapRepositoryIntegration(t *testing.T) {
 	)
 	if err != nil || inserted || repeated.ID != jobs[0].ID {
 		t.Fatalf("idempotent create: inserted=%v job=%s err=%v", inserted, repeated.ID, err)
+	}
+	conflictJob := integrationTwapJob(accountID, instrumentID, "key-0")
+	conflictJob.RequestFingerprint = "different"
+	conflictReplay, inserted, err := repository.CreateTwap(ctx, conflictJob)
+	if err != nil || inserted || conflictReplay.ID != jobs[0].ID {
+		t.Fatalf(
+			"twap fingerprint replay: inserted=%v id=%s err=%v",
+			inserted, conflictReplay.ID, err,
+		)
+	}
+	if conflictReplay.RequestFingerprint != "same" {
+		t.Fatalf("twap fingerprint overwritten: %s", conflictReplay.RequestFingerprint)
+	}
+	if conflictReplay.RequestFingerprint == conflictJob.RequestFingerprint {
+		t.Fatal("expected fingerprint mismatch for service-level conflict")
+	}
+	var twapCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM trader_twap_jobs WHERE idempotency_key=$1`, "key-0",
+	).Scan(&twapCount); err != nil {
+		t.Fatal(err)
+	}
+	if twapCount != 1 {
+		t.Fatalf("twap count=%d want=1", twapCount)
 	}
 	if _, _, err := repository.CreateTwap(
 		ctx, integrationTwapJob(accountID, instrumentID, "key-over-limit"),
@@ -226,6 +252,100 @@ func TestTwapRepositoryIntegration(t *testing.T) {
 	}
 	if parent != nil {
 		t.Fatalf("child parent was not cleared: %v", *parent)
+	}
+}
+
+func TestTwapServiceIdempotencyReuseAndFingerprint(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := fmt.Sprintf("trader_twap_svc_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE") }()
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err := database.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+
+	var accountID, instrumentID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO trading_accounts(
+			owner_username,product_name,exchange,account_name,api_key_enc,api_secret_enc
+		) VALUES('admin','TWAP','binance','main','x'::bytea,'y'::bytea)
+		RETURNING id`).Scan(&accountID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO instruments(
+			exchange,exchange_symbol,base_asset,quote_asset,global_symbol,
+			contract_type,status,settle_asset,contract_size,price_tick,quantity_step
+		) VALUES('binance','BTCUSDT','BTC','USDT','BTCUSDT',
+			'perpetual','active','USDT',1,0.1,0.001)
+		RETURNING id`).Scan(&instrumentID); err != nil {
+		t.Fatal(err)
+	}
+
+	repository := NewRepository(pool)
+	instrument := testInstrument()
+	instrument.ID = instrumentID
+	instrument.MarketMinNotionalStatus = exchange.ConstraintNotApplicable
+	service := NewService(
+		repository,
+		stubCatalog{item: instrument},
+		stubCredentials{owner: "admin", item: Credentials{
+			TradingAccountID: accountID, ProductName: "TWAP", Exchange: "binance", AccountName: "main",
+		}},
+		exchange.NewTestRegistry(map[string]exchange.Adapter{"binance": &stubAdapter{}}),
+		time.Second,
+		nil,
+	)
+	service.ConfigureTwap(repository)
+	start := time.Now().UTC().Add(time.Minute)
+	input := CreateTwapInput{
+		Token: "tok", TradingAccountID: accountID, InstrumentID: instrumentID, Side: "buy",
+		TotalQuantity: "1", StartAt: start, EndAt: start.Add(time.Hour),
+		IntervalSeconds: 60, ExecutionType: "market", IdempotencyKey: "twap-svc-idem",
+	}
+	first, err := service.CreateTwap(ctx, input)
+	if err != nil {
+		t.Fatalf("first err=%v", err)
+	}
+	second, err := service.CreateTwap(ctx, input)
+	if err != nil || second.ID != first.ID {
+		t.Fatalf("replay id=%s want=%s err=%v", second.ID, first.ID, err)
+	}
+	conflict := input
+	conflict.TotalQuantity = "2"
+	if _, err := service.CreateTwap(ctx, conflict); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("conflict err=%v", err)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM trader_twap_jobs WHERE idempotency_key=$1`, input.IdempotencyKey,
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("twap count=%d want=1", count)
 	}
 }
 

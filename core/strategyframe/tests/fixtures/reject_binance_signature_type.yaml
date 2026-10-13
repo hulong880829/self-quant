@@ -1,0 +1,11 @@
+mds:
+  source: replay
+oms:
+  venues:
+    binance_spot:
+      enabled: false
+      account_id: 1
+      api_key_env: BINANCE_SPOT_API_KEY
+      secret_env: BINANCE_SPOT_SECRET
+      signature_type: 0
+strategy: {}

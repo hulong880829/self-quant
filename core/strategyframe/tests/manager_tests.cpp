@@ -4,6 +4,7 @@
 
 #include "strategyframe/managers.h"
 #include "strategyframe/manager_access.h"
+#include "strategyframe/expire_successor.h"
 
 namespace {
 
@@ -171,5 +172,54 @@ int main() {
               rolling_dedup, duplicate_snapshot) ==
           strategyframe::Error::Ok);
   Require(rolling_dedup.positions().empty());
+
+  strategyframe::PositionManager epochs(8);
+  const auto first_epoch =
+      strategyframe::detail::ManagerAccess::EnsureAccountEpoch(epochs, 7);
+  Require(first_epoch == 1);
+  Require(epochs.mutation_epoch(7) == 1);
+  Require(epochs.last_committed_snapshot_epoch(7) == 0);
+  Require(!epochs.snapshot_confirms_zero(7, 42));
+  std::array<strategyframe::PositionView, 0> empty_snapshot{};
+  Require(strategyframe::detail::ManagerAccess::UpdateAccountSnapshot(
+              epochs, 7, empty_snapshot) == strategyframe::Error::Ok);
+  Require(strategyframe::detail::ManagerAccess::CommitQuerySnapshot(
+              epochs, 7, first_epoch) == strategyframe::Error::Ok);
+  Require(epochs.mutation_epoch(7) == 2);
+  Require(epochs.last_committed_snapshot_epoch(7) == 2);
+  Require(epochs.snapshot_confirms_zero(7, 42));
+
+  const auto t1 = epochs.mutation_epoch(7);
+  strategyframe::TradeId t2_trade;
+  t2_trade.value[0] = 't';
+  t2_trade.length = 1;
+  Require(strategyframe::detail::ManagerAccess::ApplyFill(
+              epochs, 7, 42, strategyframe::Side::Buy,
+              strategyframe::PositionSide::Net, {1, 0, {}}, t2_trade,
+              4) == strategyframe::Error::Ok);
+  Require(epochs.mutation_epoch(7) == t1 + 1);
+  Require(epochs.last_committed_snapshot_epoch(7) == t1);
+  Require(!epochs.snapshot_confirms_zero(7, 42));
+  Require(epochs.find(7, 42).value.quantity.value == 1);
+  Require(strategyframe::detail::ManagerAccess::CommitQuerySnapshot(
+              epochs, 7, t1) == strategyframe::Error::NotReady);
+  Require(epochs.find(7, 42).value.quantity.value == 1);
+
+  const auto stale_query = epochs.mutation_epoch(7);
+  strategyframe::TradeId t2b_trade;
+  t2b_trade.value[0] = 'u';
+  t2b_trade.length = 1;
+  Require(strategyframe::detail::ManagerAccess::ApplyFill(
+              epochs, 7, 42, strategyframe::Side::Buy,
+              strategyframe::PositionSide::Net, {1, 0, {}}, t2b_trade,
+              5) == strategyframe::Error::Ok);
+  Require(strategyframe::detail::ManagerAccess::CommitQuerySnapshot(
+              epochs, 7, stale_query) == strategyframe::Error::NotReady);
+  Require(epochs.find(7, 42).value.quantity.value == 2);
+
+  Require(!strategyframe::expired_with_successor(0, 100, true));
+  Require(!strategyframe::expired_with_successor(50, 40, true));
+  Require(!strategyframe::expired_with_successor(50, 50, false));
+  Require(strategyframe::expired_with_successor(50, 50, true));
   return 0;
 }

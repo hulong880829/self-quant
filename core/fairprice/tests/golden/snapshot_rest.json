@@ -1,0 +1,131 @@
+{
+  "bbo": {
+    "gated_ask": {
+      "price": {
+        "mantissa": "10100",
+        "scale": 2
+      },
+      "quantity": {
+        "mantissa": "11",
+        "scale": 3
+      },
+      "venue_mask": 1,
+      "contributions": [
+        {
+          "venue": "binance",
+          "quantity": {
+            "mantissa": "11",
+            "scale": 3
+          }
+        }
+      ]
+    },
+    "gated_bid": {
+      "price": {
+        "mantissa": "9900",
+        "scale": 2
+      },
+      "quantity": {
+        "mantissa": "10",
+        "scale": 3
+      },
+      "venue_mask": 1,
+      "contributions": [
+        {
+          "venue": "binance",
+          "quantity": {
+            "mantissa": "10",
+            "scale": 3
+          }
+        }
+      ]
+    },
+    "gated_cross_bps": 0,
+    "gated_spread_bps": 0,
+    "generation": "6",
+    "price_scale": 2,
+    "quantity_scale": 3,
+    "raw_ask": {
+      "best_venue": 0,
+      "price": {
+        "mantissa": "10100",
+        "scale": 2
+      },
+      "quantity": {
+        "mantissa": "11",
+        "scale": 3
+      },
+      "venue_mask": 1
+    },
+    "raw_bid": {
+      "best_venue": 0,
+      "price": {
+        "mantissa": "9900",
+        "scale": 2
+      },
+      "quantity": {
+        "mantissa": "10",
+        "scale": 3
+      },
+      "venue_mask": 1
+    },
+    "raw_cross_bps": 0,
+    "raw_spread_bps": 0,
+    "sequence": "41",
+    "wall_ns": "999"
+  },
+  "orderbook": {
+    "asks": [
+      {
+        "price": {
+          "mantissa": "10100",
+          "scale": 2
+        },
+        "quantity": {
+          "mantissa": "11",
+          "scale": 3
+        },
+        "venue_mask": 1,
+        "contributions": [
+          {
+            "venue": "binance",
+            "quantity": {
+              "mantissa": "11",
+              "scale": 3
+            }
+          }
+        ]
+      }
+    ],
+    "bids": [
+      {
+        "price": {
+          "mantissa": "9900",
+          "scale": 2
+        },
+        "quantity": {
+          "mantissa": "10",
+          "scale": 3
+        },
+        "venue_mask": 1,
+        "contributions": [
+          {
+            "venue": "binance",
+            "quantity": {
+              "mantissa": "10",
+              "scale": 3
+            }
+          }
+        ]
+      }
+    ],
+    "generation": "7",
+    "price_scale": 2,
+    "quantity_scale": 3,
+    "sequence": "42",
+    "wall_ns": "1000"
+  },
+  "profile": "agg_binance",
+  "ready": true,
+  "symbol": "BTCUSDT"
+}

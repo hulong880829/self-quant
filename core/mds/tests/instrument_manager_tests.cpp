@@ -76,5 +76,13 @@ int main() {
   assert(!unstable_manager.resolve(Venue::Binance, ProductType::Spot,
                                    "BTCUSDT", collision, error));
   assert(error.find("instrument identity remap") != std::string::npos);
+
+  utils::md::InstrumentId aapl{};
+  assert(manager.resolve_instance(Venue::Ibkr, ProductType::Equity, "AAPL",
+                                  "265598", aapl, error));
+  assert(mds::instrument::InstrumentManager::canonical_key(
+             Venue::Ibkr, ProductType::Equity, "AAPL") +
+             "|265598" ==
+         "ibkr|equity|AAPL|265598");
   return 0;
 }

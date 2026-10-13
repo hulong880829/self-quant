@@ -143,14 +143,8 @@ func evaluateExitingOneShotDust(
 	if residualNotional.GreaterThanOrEqual(decimal.NewFromInt(arbitrageMinOpenNotional)) {
 		return oneShotDustUnsafe
 	}
-	_, eligible, err := executableHedgeQuantity(residual, price, instrument, false)
-	if err != nil {
-		return oneShotDustRetry
-	}
-	if eligible {
-		return oneShotDustUnsafe
-	}
-	if hedgeQuantityDustReason(residual, price, instrument) == "" {
+	stepped := closeFlattenQuantity(instrument, residual)
+	if stepped.IsPositive() {
 		return oneShotDustRetry
 	}
 	return oneShotDustAccepted

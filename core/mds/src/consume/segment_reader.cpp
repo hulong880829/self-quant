@@ -8,6 +8,48 @@
 
 namespace mds::consume {
 
+BorrowedSegmentRecord::BorrowedSegmentRecord(
+    transport::ReadLease &&lease) noexcept
+    : lease_(std::move(lease)) {}
+
+BorrowedSegmentRecord::BorrowedSegmentRecord(
+    BorrowedSegmentRecord &&other) noexcept
+    : lease_(std::move(other.lease_)) {}
+
+BorrowedSegmentRecord &BorrowedSegmentRecord::operator=(
+    BorrowedSegmentRecord &&other) noexcept {
+  if (this != &other) {
+    lease_ = std::move(other.lease_);
+  }
+  return *this;
+}
+
+BorrowedSegmentRecord::~BorrowedSegmentRecord() = default;
+
+std::uint32_t BorrowedSegmentRecord::type() const noexcept {
+  return lease_ ? lease_.view().type : 0;
+}
+
+std::uint64_t BorrowedSegmentRecord::sequence() const noexcept {
+  return lease_ ? lease_.view().sequence : 0;
+}
+
+std::uint64_t BorrowedSegmentRecord::epoch() const noexcept {
+  return lease_ ? lease_.view().epoch : 0;
+}
+
+std::span<const std::byte> BorrowedSegmentRecord::payload() const noexcept {
+  return lease_ ? lease_.view().payload : std::span<const std::byte>{};
+}
+
+BorrowedSegmentRecord::operator bool() const noexcept {
+  return static_cast<bool>(lease_);
+}
+
+api::Result<void> BorrowedSegmentRecord::commit() noexcept {
+  return lease_.commit();
+}
+
 SegmentReader::~SegmentReader() { close(); }
 
 SegmentReader::SegmentReader(SegmentReader &&other) noexcept
@@ -69,9 +111,9 @@ SegmentReader::open(std::string_view segment_name,
   return {.value = std::move(result)};
 }
 
-api::Result<std::optional<SegmentRecord>> SegmentReader::try_read() {
+api::Result<transport::ReadLease> SegmentReader::acquire_lease() {
   if (!reader_) {
-    return {.value = std::nullopt,
+    return {.value = {},
             .error = api::ErrorCode::InvalidHandle,
             .message = "segment reader is not open"};
   }
@@ -79,7 +121,7 @@ api::Result<std::optional<SegmentRecord>> SegmentReader::try_read() {
     (void)ring_.unregister_reader(reader_);
     reader_ = {};
     auto registered = register_reader();
-    return {.value = std::nullopt,
+    return {.value = {},
             .error = registered ? api::ErrorCode::RecordOverwritten
                                 : registered.error,
             .message = registered
@@ -91,7 +133,7 @@ api::Result<std::optional<SegmentRecord>> SegmentReader::try_read() {
   if (now - last_heartbeat_ns_ >= options_.heartbeat_interval_ns) {
     auto heartbeat = ring_.heartbeat(reader_, now);
     if (!heartbeat) {
-      return {.value = std::nullopt,
+      return {.value = {},
               .error = heartbeat.error,
               .message = std::move(heartbeat.message)};
     }
@@ -101,27 +143,53 @@ api::Result<std::optional<SegmentRecord>> SegmentReader::try_read() {
   transport::ReadLease lease;
   const auto error = ring_.try_read(reader_, lease);
   if (error == api::ErrorCode::QuotaExceeded) {
-    return {.value = std::nullopt};
+    return {};
   }
   if (error != api::ErrorCode::Ok) {
-    return {.value = std::nullopt,
+    return {.value = {},
             .error = error,
             .message = "shared-memory read failed"};
   }
+  return {.value = std::move(lease)};
+}
 
-  const auto &view = lease.view();
+api::Result<std::optional<SegmentRecord>> SegmentReader::try_read() {
+  auto leased = acquire_lease();
+  if (!leased) {
+    return {.value = std::nullopt,
+            .error = leased.error,
+            .message = std::move(leased.message)};
+  }
+  if (!leased.value) {
+    return {.value = std::nullopt};
+  }
+  const auto &view = leased.value.view();
   SegmentRecord record;
   record.type = view.type;
   record.sequence = view.sequence;
   record.epoch = view.epoch;
   record.storage.assign(view.payload.begin(), view.payload.end());
-  auto committed = lease.commit();
+  auto committed = leased.value.commit();
   if (!committed) {
     return {.value = std::nullopt,
             .error = committed.error,
             .message = std::move(committed.message)};
   }
   return {.value = std::move(record)};
+}
+
+api::Result<std::optional<BorrowedSegmentRecord>>
+SegmentReader::try_read_view() {
+  auto leased = acquire_lease();
+  if (!leased) {
+    return {.value = std::nullopt,
+            .error = leased.error,
+            .message = std::move(leased.message)};
+  }
+  if (!leased.value) {
+    return {.value = std::nullopt};
+  }
+  return {.value = BorrowedSegmentRecord(std::move(leased.value))};
 }
 
 std::string_view SegmentReader::segment_name() const noexcept {

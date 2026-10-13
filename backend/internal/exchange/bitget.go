@@ -35,11 +35,31 @@ type bitgetSpotInstrument struct {
 	MinTradeUSDT                                      string
 }
 
+type flexibleBool bool
+
+func (b *flexibleBool) UnmarshalJSON(data []byte) error {
+	switch strings.Trim(strings.ToLower(string(data)), `"`) {
+	case "true", "yes", "1":
+		*b = true
+	default:
+		*b = false
+	}
+	return nil
+}
+
+func (b flexibleBool) MarshalJSON() ([]byte, error) {
+	if b {
+		return []byte("true"), nil
+	}
+	return []byte("false"), nil
+}
+
 type bitgetUTAInstrument struct {
-	Category, Symbol, BaseCoin, QuoteCoin, Status, Type, FundInterval string
-	PricePrecision, QuantityPrecision, QuotePrecision                 string
-	PriceMultiplier, QuantityMultiplier                               string
-	MinOrderQty, MaxOrderQty, MinOrderAmount, MaxMarketOrderQty       string
+	Category, Symbol, BaseCoin, QuoteCoin, Status, Type, FundInterval, SymbolType string
+	IsRwa                                                                         flexibleBool `json:"isRwa"`
+	PricePrecision, QuantityPrecision, QuotePrecision                             string
+	PriceMultiplier, QuantityMultiplier                                           string
+	MinOrderQty, MaxOrderQty, MinOrderAmount, MaxMarketOrderQty                   string
 }
 
 func precisionStep(value string) float64 {
@@ -115,7 +135,7 @@ func parseBitgetInstruments(items []bitgetInstrument) []Instrument {
 			SourceUpdatedAt: time.Now().UTC(),
 		})
 	}
-	return result
+	return TagCryptoPerpetuals(result, "bitget.perpetual")
 }
 
 func parseBitgetUTAInstruments(items []bitgetUTAInstrument, category string) []Instrument {
@@ -183,8 +203,30 @@ func parseBitgetUTAInstruments(items []bitgetUTAInstrument, category string) []I
 			MarketMinNotional: marketMinNotional, MarketMinNotionalStatus: marketMinNotionalStatus,
 			Metadata: metadata, SourceUpdatedAt: time.Now().UTC(),
 		})
+		if contractType == ContractTypePerpetual {
+			if ref := bitgetUnderlying(item); ref.AssetClass != "" {
+				result[len(result)-1].SetUnderlying(ref)
+			}
+		}
 	}
-	return result
+	return TagCryptoPerpetuals(result, "bitget.perpetual")
+}
+
+func bitgetUnderlying(item bitgetUTAInstrument) UnderlyingReference {
+	source := "bitget.instruments.symbolType=" + strings.ToLower(strings.TrimSpace(item.SymbolType))
+	switch strings.ToLower(strings.TrimSpace(item.SymbolType)) {
+	case "stock":
+		return TradfiCandidate(AssetClassStock, item.BaseCoin, item.QuoteCoin, source)
+	case "commodity", "metal":
+		return CommodityReference(item.BaseCoin, "USD", source)
+	case "crypto":
+		return CryptoReference(item.BaseCoin, item.QuoteCoin, source)
+	default:
+		if bool(item.IsRwa) {
+			return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: item.BaseCoin, Source: source}
+		}
+		return UnderlyingReference{}
+	}
 }
 
 func (b *Bitget) SyncInstruments(ctx context.Context, contractType string) ([]Instrument, error) {

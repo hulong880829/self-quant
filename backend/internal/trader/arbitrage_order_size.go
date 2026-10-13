@@ -162,11 +162,6 @@ func sizeArbitrageExecution(
 		if rng == nil {
 			rng = cryptoNotionalRand{}
 		}
-		legATop, okA := topOfBookNotional(instrumentA, bboPriceForSide(bboA, aSide), bboQuantityForSide(bboA, aSide))
-		legBTop, okB := topOfBookNotional(instrumentB, bboPriceForSide(bboB, bSide), bboQuantityForSide(bboB, bSide))
-		if !okA || !okB {
-			return arbitrageSizePlan{}, "missing bbo quantity", false
-		}
 		maker := strings.EqualFold(strings.TrimSpace(combination.ExecutionMode), "maker_then_hedge")
 		random = rng.RandomNotional()
 		if random.IsNegative() {
@@ -178,25 +173,45 @@ func sizeArbitrageExecution(
 		}
 		fraction := decimal.RequireFromString(arbitrageMakerDepthFraction)
 		if maker {
-			makerTop, hedgeTop := legATop, legBTop
+			makerInst, makerBBO, makerSide := instrumentA, bboA, aSide
+			hedgeInst, hedgeBBO, hedgeSide := instrumentB, bboB, bSide
 			if strings.EqualFold(strings.TrimSpace(combination.MakerLeg), "b") {
-				makerTop, hedgeTop = legBTop, legATop
+				makerInst, makerBBO, makerSide = instrumentB, bboB, bSide
+				hedgeInst, hedgeBBO, hedgeSide = instrumentA, bboA, aSide
 			}
-			hedgeCap = hedgeTop
+			makerTop, okMaker := topOfBookNotional(
+				makerInst,
+				bboPriceForSide(makerBBO, makerSide),
+				bboQuantityForSide(makerBBO, makerSide),
+			)
+			if !okMaker {
+				return arbitrageSizePlan{}, "missing bbo quantity", false
+			}
+			hedgeCap, _ = topOfBookNotional(
+				hedgeInst,
+				bboPriceForSide(hedgeBBO, hedgeSide),
+				bboQuantityForSide(hedgeBBO, hedgeSide),
+			)
 			raw = makerTop.Mul(fraction).Add(random)
-			if hedgeCap.LessThan(raw) {
-				raw = hedgeCap
-			}
 		} else {
+			legATop, okA := topOfBookNotional(
+				instrumentA, bboPriceForSide(bboA, aSide), bboQuantityForSide(bboA, aSide),
+			)
+			legBTop, okB := topOfBookNotional(
+				instrumentB, bboPriceForSide(bboB, bSide), bboQuantityForSide(bboB, bSide),
+			)
+			if !okA || !okB {
+				return arbitrageSizePlan{}, "missing bbo quantity", false
+			}
 			hedgeCap = decimal.Min(legATop, legBTop)
 			raw = decimal.Min(legATop, legBTop).Mul(fraction).Add(random)
 			raw = decimal.Min(raw, legATop, legBTop)
-		}
-		if !closing && hedgeCap.LessThan(minOpen) {
-			return arbitrageSizePlan{}, "hedge cap below minimum open notional", false
-		}
-		if closing && hedgeCap.LessThan(minOpen) {
-			return arbitrageSizePlan{}, "hedge cap below minimum close notional", false
+			if !closing && hedgeCap.LessThan(minOpen) {
+				return arbitrageSizePlan{}, "hedge cap below minimum open notional", false
+			}
+			if closing && hedgeCap.LessThan(minOpen) {
+				return arbitrageSizePlan{}, "hedge cap below minimum close notional", false
+			}
 		}
 		if raw.LessThan(minOpen) {
 			raw = minOpen

@@ -1,0 +1,50 @@
+{
+  "healthz": {
+    "status": "ok"
+  },
+  "history": {
+    "symbol": "BTCUSDT",
+    "type": "gated",
+    "start_ns": "17865120000000001",
+    "end_ns": "17865120000000002",
+    "resolution_ns": "60000000000",
+    "buckets": [
+      {
+        "start_ns": "17865120000000004",
+        "open": 0,
+        "high": 0,
+        "low": 0,
+        "close": 1.25,
+        "window_min": 0,
+        "window_max": 0,
+        "samples": 0,
+        "coverage": 0
+      }
+    ],
+    "gaps": [
+      {
+        "start_ns": "17865120000000005",
+        "end_ns": "17865120000000006"
+      }
+    ],
+    "distribution_bps": null,
+    "current_hour_from_ns": "17865120000000003"
+  },
+  "readyz": {
+    "status": "ready"
+  },
+  "reset": {
+    "channel": "fairprice",
+    "op": "reset",
+    "profile": "agg_binance",
+    "reason": "source_stale",
+    "symbol": "BTCUSDT"
+  },
+  "subscribe_ack": {
+    "channel": "fairprice",
+    "ok": true,
+    "op": "subscribe",
+    "profile": "agg_binance",
+    "symbol": "BTCUSDT"
+  }
+}

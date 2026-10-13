@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -341,6 +342,222 @@ func TestAsterFetchCurrentFailsWholeRoundOnOpenInterestError(t *testing.T) {
 	})
 	if err == nil || rates != nil {
 		t.Fatalf("partial openInterest must fail rates=%+v err=%v", rates, err)
+	}
+}
+
+func writeAsterJSONStatus(writer http.ResponseWriter, status int, body string) {
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(status)
+	_, _ = writer.Write([]byte(body))
+}
+
+func TestIsAsterInactiveInstrumentError(t *testing.T) {
+	if isAsterInactiveInstrumentError(nil) {
+		t.Fatal("nil must not be inactive")
+	}
+	if isAsterInactiveInstrumentError(context.Canceled) {
+		t.Fatal("canceled must not be inactive")
+	}
+	if isAsterInactiveInstrumentError(context.DeadlineExceeded) {
+		t.Fatal("deadline exceeded must not be inactive")
+	}
+	if isAsterInactiveInstrumentError(fmt.Errorf(`aster BUILDUSDT openInterest: %w`, context.Canceled)) {
+		t.Fatal("wrapped canceled must not be inactive")
+	}
+	if isAsterInactiveInstrumentError(fmt.Errorf(`host: {"code":-4108,"msg":"This contract has been delisted"}`)) {
+		t.Fatal("code -4108 without HTTP 400 must not be inactive")
+	}
+	if isAsterInactiveInstrumentError(fmt.Errorf(`host: HTTP 400: {"code":-2010,"msg":"Invalid symbol."}`)) {
+		t.Fatal("other HTTP 400 must not be inactive")
+	}
+	if isAsterInactiveInstrumentError(fmt.Errorf(`host: HTTP 500: {"code":-4108,"msg":"This contract has been delisted"}`)) {
+		t.Fatal("HTTP 500 with code -4108 must not be inactive")
+	}
+	if isAsterInactiveInstrumentError(fmt.Errorf(
+		`host: HTTP 400: {"code":-4144,"msg":"This contract has been delisted or is under maintenance"}`,
+	)) {
+		t.Fatal("must not match English delist message")
+	}
+	got := fmt.Errorf(`127.0.0.1:1: HTTP 400: {"code":-4108,"msg":"This contract has been delisted or is under maintenance"}`)
+	if !isAsterInactiveInstrumentError(got) {
+		t.Fatalf("HTTP 400 with code -4108 must be inactive: %v", got)
+	}
+}
+
+func TestAsterFetchCurrentSkipsInactiveInstrument(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/fapi/v3/premiumIndex":
+			_, _ = writer.Write([]byte(`[
+				{"symbol":"BTCUSDT","lastFundingRate":"0.0001","nextFundingTime":1720000000000,"markPrice":"60000","indexPrice":"59990","time":1719990000000},
+				{"symbol":"BUILDUSDT","lastFundingRate":"0.0003","nextFundingTime":1720000000000,"markPrice":"1","indexPrice":"1","time":1719990000000}
+			]`))
+		case "/fapi/v3/ticker/24hr":
+			_, _ = writer.Write([]byte(`[
+				{"symbol":"BTCUSDT","lastPrice":"60001","volume":"1","quoteVolume":"60000","priceChangePercent":"0"},
+				{"symbol":"BUILDUSDT","lastPrice":"1","volume":"1","quoteVolume":"1","priceChangePercent":"0"}
+			]`))
+		case "/fapi/v3/fundingInfo":
+			_, _ = writer.Write([]byte(`[]`))
+		case "/fapi/v3/openInterest":
+			if request.URL.Query().Get("symbol") == "BUILDUSDT" {
+				writeAsterJSONStatus(writer, http.StatusBadRequest, `{"code":-4108,"msg":"This contract has been delisted or is under maintenance"}`)
+				return
+			}
+			_, _ = writer.Write([]byte(`{"symbol":"BTCUSDT","openInterest":"10","time":1719990000000}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	rates, err := newAsterHTTPAdapter(t, server.URL).FetchCurrent(context.Background(), []Instrument{
+		{ExchangeSymbol: "BTCUSDT", IntervalHours: 8},
+		{ExchangeSymbol: "BUILDUSDT", IntervalHours: 8},
+	})
+	if err != nil || len(rates) != 1 {
+		t.Fatalf("rates=%+v err=%v", rates, err)
+	}
+	got := rates[0]
+	if got.ExchangeSymbol != "BTCUSDT" || got.Rate != 0.0001 || got.MarkPrice != 60000 ||
+		got.OpenInterestContracts != 10 || got.OpenInterestBase != 10 ||
+		got.OpenInterestNotionalUSD != 600000 || got.IntervalHours != 8 || got.FundingTime.IsZero() {
+		t.Fatalf("btc rate incomplete: %+v", got)
+	}
+}
+
+func TestAsterFetchCurrentFailsWhenAllInstrumentsInactive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/fapi/v3/premiumIndex":
+			_, _ = writer.Write([]byte(`[
+				{"symbol":"BTCUSDT","lastFundingRate":"0.0001","nextFundingTime":1720000000000,"markPrice":"60000","indexPrice":"59990","time":1719990000000},
+				{"symbol":"BUILDUSDT","lastFundingRate":"0.0003","nextFundingTime":1720000000000,"markPrice":"1","indexPrice":"1","time":1719990000000}
+			]`))
+		case "/fapi/v3/ticker/24hr":
+			_, _ = writer.Write([]byte(`[
+				{"symbol":"BTCUSDT","lastPrice":"60001","volume":"1","quoteVolume":"60000","priceChangePercent":"0"},
+				{"symbol":"BUILDUSDT","lastPrice":"1","volume":"1","quoteVolume":"1","priceChangePercent":"0"}
+			]`))
+		case "/fapi/v3/fundingInfo":
+			_, _ = writer.Write([]byte(`[]`))
+		case "/fapi/v3/openInterest":
+			writeAsterJSONStatus(writer, http.StatusBadRequest, `{"code":-4108,"msg":"This contract has been delisted or is under maintenance"}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	rates, err := newAsterHTTPAdapter(t, server.URL).FetchCurrent(context.Background(), []Instrument{
+		{ExchangeSymbol: "BTCUSDT"}, {ExchangeSymbol: "BUILDUSDT"},
+	})
+	if err == nil || rates != nil {
+		t.Fatalf("all inactive must fail rates=%+v err=%v", rates, err)
+	}
+}
+
+func TestAsterFetchCurrentDoesNotIgnoreUnknown400(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/fapi/v3/premiumIndex":
+			_, _ = writer.Write([]byte(`[{"symbol":"BTCUSDT","lastFundingRate":"0.0001","nextFundingTime":1720000000000,"markPrice":"60000","indexPrice":"59990","time":1719990000000}]`))
+		case "/fapi/v3/ticker/24hr":
+			_, _ = writer.Write([]byte(`[{"symbol":"BTCUSDT","lastPrice":"60001","volume":"1","quoteVolume":"60000","priceChangePercent":"0"}]`))
+		case "/fapi/v3/fundingInfo":
+			_, _ = writer.Write([]byte(`[]`))
+		case "/fapi/v3/openInterest":
+			writeAsterJSONStatus(writer, http.StatusBadRequest, `{"code":-1121,"msg":"Invalid symbol."}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	rates, err := newAsterHTTPAdapter(t, server.URL).FetchCurrent(context.Background(), []Instrument{
+		{ExchangeSymbol: "BTCUSDT"},
+	})
+	if err == nil || rates != nil {
+		t.Fatalf("unknown HTTP 400 must fail rates=%+v err=%v", rates, err)
+	}
+}
+
+func TestAsterFetchCurrentFailsWhenInactiveMixedWithUnknownError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/fapi/v3/premiumIndex":
+			_, _ = writer.Write([]byte(`[
+				{"symbol":"BTCUSDT","lastFundingRate":"0.0001","nextFundingTime":1720000000000,"markPrice":"60000","indexPrice":"59990","time":1719990000000},
+				{"symbol":"BUILDUSDT","lastFundingRate":"0.0003","nextFundingTime":1720000000000,"markPrice":"1","indexPrice":"1","time":1719990000000}
+			]`))
+		case "/fapi/v3/ticker/24hr":
+			_, _ = writer.Write([]byte(`[
+				{"symbol":"BTCUSDT","lastPrice":"60001","volume":"1","quoteVolume":"60000","priceChangePercent":"0"},
+				{"symbol":"BUILDUSDT","lastPrice":"1","volume":"1","quoteVolume":"1","priceChangePercent":"0"}
+			]`))
+		case "/fapi/v3/fundingInfo":
+			_, _ = writer.Write([]byte(`[]`))
+		case "/fapi/v3/openInterest":
+			switch request.URL.Query().Get("symbol") {
+			case "BUILDUSDT":
+				writeAsterJSONStatus(writer, http.StatusBadRequest, `{"code":-4108,"msg":"This contract has been delisted or is under maintenance"}`)
+			case "BTCUSDT":
+				http.Error(writer, "unavailable", http.StatusInternalServerError)
+			default:
+				http.NotFound(writer, request)
+			}
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	rates, err := newAsterHTTPAdapter(t, server.URL).FetchCurrent(context.Background(), []Instrument{
+		{ExchangeSymbol: "BTCUSDT"}, {ExchangeSymbol: "BUILDUSDT"},
+	})
+	if err == nil || rates != nil {
+		t.Fatalf("mixed inactive and unknown error must fail rates=%+v err=%v", rates, err)
+	}
+}
+
+func TestAsterFetchCurrentHonorsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	oiStarted := make(chan struct{})
+	var once sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/fapi/v3/premiumIndex":
+			_, _ = writer.Write([]byte(`[{"symbol":"BTCUSDT","lastFundingRate":"0.0001","nextFundingTime":1720000000000,"markPrice":"60000","indexPrice":"59990","time":1719990000000}]`))
+		case "/fapi/v3/ticker/24hr":
+			_, _ = writer.Write([]byte(`[{"symbol":"BTCUSDT","lastPrice":"60001","volume":"1","quoteVolume":"60000","priceChangePercent":"0"}]`))
+		case "/fapi/v3/fundingInfo":
+			_, _ = writer.Write([]byte(`[]`))
+		case "/fapi/v3/openInterest":
+			once.Do(func() { close(oiStarted) })
+			<-request.Context().Done()
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	adapter := newAsterHTTPAdapter(t, server.URL)
+	type result struct {
+		rates []FundingRate
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		rates, err := adapter.FetchCurrent(ctx, []Instrument{
+			{ExchangeSymbol: "BTCUSDT"},
+		})
+		done <- result{rates: rates, err: err}
+	}()
+	select {
+	case <-oiStarted:
+		cancel()
+	case <-time.After(2 * time.Second):
+		t.Fatal("openInterest was not started")
+	}
+	got := <-done
+	if !errors.Is(got.err, context.Canceled) || got.rates != nil {
+		t.Fatalf("canceled fetch must fail rates=%+v err=%v", got.rates, got.err)
 	}
 }
 

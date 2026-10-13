@@ -84,6 +84,7 @@ struct Event {
   std::uint64_t used_weight_1m{};
   bool has_retry_after{};
   bool has_used_weight{};
+  bool auth_rejected{};
   std::string_view payload;
 };
 
@@ -165,20 +166,35 @@ class LiveTransport::PolymarketAdapter final
       LiveTransport& transport,
       std::chrono::milliseconds request_timeout = std::chrono::seconds(5),
       std::string websocket_target = "/ws/user",
-      std::string subscription_message = {});
+      std::string subscription_message = {},
+      std::chrono::milliseconds websocket_connect_timeout =
+          std::chrono::seconds(10));
   ~PolymarketAdapter() override;
 
   [[nodiscard]] AdapterResult submit(
       const polymarket::TransportRequest& request) noexcept override;
+  [[nodiscard]] AdapterResult submit_clob_auth(
+      const polymarket::ClobAuthRequest& request) noexcept override;
+  [[nodiscard]] AdapterResult set_user_subscription(
+      std::string_view message) noexcept override;
   [[nodiscard]] AdapterResult poll(
       polymarket::TransportEvent& event) noexcept override;
   [[nodiscard]] AdapterResult request_reconnect() noexcept override;
   [[nodiscard]] AdapterResult send_heartbeat() noexcept override;
   void close() noexcept override;
 
+  [[nodiscard]] std::chrono::milliseconds request_timeout() const noexcept {
+    return request_timeout_;
+  }
+  [[nodiscard]] std::chrono::milliseconds websocket_connect_timeout()
+      const noexcept {
+    return websocket_connect_timeout_;
+  }
+
  private:
   LiveTransport* transport_{};
   std::chrono::milliseconds request_timeout_{};
+  std::chrono::milliseconds websocket_connect_timeout_{};
   std::string websocket_target_;
   std::string subscription_message_;
 };

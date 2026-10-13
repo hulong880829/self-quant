@@ -39,6 +39,42 @@ func TestWaitContextCanBeCancelled(t *testing.T) {
 	}
 }
 
+func TestIdentitiesAreAppliedBeforeUpsert(t *testing.T) {
+	var events []string
+	writer := &recordingInstrumentWriter{events: &events}
+	synchronizer := NewSynchronizer(nil, []exchange.Adapter{
+		&loggingCatalogAdapter{events: &events, catalogAdapter: catalogAdapter{name: "binance", instruments: []exchange.Instrument{equityPerp("binance", "AAPLUSDT", "AAPL")}}},
+		&loggingCatalogAdapter{events: &events, catalogAdapter: catalogAdapter{name: "okx", instruments: []exchange.Instrument{equityPerp("okx", "AAPL-USDT-SWAP", "AAPL")}}},
+	}, NewSnapshotStore(), nil)
+	synchronizer.instrumentWrites = writer
+	if _, err := synchronizer.SyncInstruments(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 4 || events[0] != "sync" || events[1] != "sync" || events[2] != "upsert" || events[3] != "upsert" {
+		t.Fatalf("events=%v", events)
+	}
+}
+
+type loggingCatalogAdapter struct {
+	catalogAdapter
+	events *[]string
+}
+
+func (a *loggingCatalogAdapter) SyncInstruments(ctx context.Context, contractType string) ([]exchange.Instrument, error) {
+	*a.events = append(*a.events, "sync")
+	return a.catalogAdapter.SyncInstruments(ctx, contractType)
+}
+
+type recordingInstrumentWriter struct {
+	memInstrumentWriter
+	events *[]string
+}
+
+func (w *recordingInstrumentWriter) UpsertInstruments(ctx context.Context, instruments []exchange.Instrument) ([]FundingInstrument, error) {
+	*w.events = append(*w.events, "upsert")
+	return w.memInstrumentWriter.UpsertInstruments(ctx, instruments)
+}
+
 func TestInstrumentRefreshMustSucceedAndContainInstruments(t *testing.T) {
 	instruments := []exchange.Instrument{{ExchangeSymbol: "BTCUSDT"}}
 	if !authoritativeInstrumentRefresh(instruments, nil) {

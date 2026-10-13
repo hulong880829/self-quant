@@ -20,7 +20,8 @@ enum class Venue : std::uint16_t {
   Sse = 7,
   Hyperliquid = 8,
   Aster = 9,
-  Lighter = 10
+  Lighter = 10,
+  Ibkr = 11
 };
 enum class ProductType : std::uint8_t { Unknown = 0, Spot = 1, Perpetual = 2, Future = 3, BinaryOption = 4, Equity = 5 };
 enum class Side : std::uint8_t { Bid = 1, Ask = 2 };
@@ -33,7 +34,8 @@ enum class BboOrigin : std::uint16_t {
 enum class MessageType : std::uint16_t {
   Bbo = 1, Ticker = 2, BookDelta = 3, SnapshotBegin = 4,
   SnapshotChunk = 5, SnapshotEnd = 6, InstrumentUpdate = 7,
-  AggBbo = 8, AggOrderBook = 9, InstrumentCatalog = 10
+  AggBbo = 8, AggOrderBook = 9, InstrumentCatalog = 10, FairPrice = 11,
+  FairPriceV2 = 12
 };
 
 constexpr std::uint8_t kInstrumentRefineBookTick = 1U << 0U;
@@ -147,6 +149,8 @@ static_assert(static_cast<std::uint16_t>(MessageType::SnapshotChunk) == 5);
 static_assert(static_cast<std::uint16_t>(MessageType::SnapshotEnd) == 6);
 static_assert(static_cast<std::uint16_t>(MessageType::InstrumentUpdate) == 7);
 static_assert(static_cast<std::uint16_t>(MessageType::InstrumentCatalog) == 10);
+static_assert(static_cast<std::uint16_t>(MessageType::FairPrice) == 11);
+static_assert(static_cast<std::uint16_t>(MessageType::FairPriceV2) == 12);
 static_assert(std::is_trivially_copyable_v<Instrument>);
 static_assert(std::is_trivially_copyable_v<BboEvent>);
 static_assert(std::is_trivially_copyable_v<TickerEvent>);

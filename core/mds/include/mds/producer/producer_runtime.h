@@ -46,6 +46,10 @@ class ProducerRuntime {
   [[nodiscard]] api::Result<void> start() noexcept;
   int run_once(int timeout_ms = 100) noexcept;
   void stop() noexcept;
+  void request_discovery_now_for_test() noexcept;
+  [[nodiscard]] std::size_t instrument_count_for_test() const noexcept;
+  [[nodiscard]] std::size_t ring_count_for_test() const noexcept;
+  [[nodiscard]] bool discovery_batch_active_for_test() const noexcept;
 
   [[nodiscard]] std::span<const ResolvedSegment>
   resolved_segments() const noexcept;

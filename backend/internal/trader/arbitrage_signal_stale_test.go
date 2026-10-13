@@ -44,6 +44,7 @@ func TestArbitrageSchedulerRejectsNewSignalWhenBBOOlderThanTwoSeconds(t *testing
 		store, market, runner, time.Millisecond, time.Millisecond, time.Second,
 		10, 2, 2, 2, false, nil,
 	)
+	t.Cleanup(scheduler.closeAll)
 	scheduler.runOnce(ctx)
 	connectionA.reads <- []byte("100,100.1")
 	connectionB.reads <- []byte("100.3,100.4")
@@ -51,7 +52,6 @@ func TestArbitrageSchedulerRejectsNewSignalWhenBBOOlderThanTwoSeconds(t *testing
 	waitForFreshBBO(t, market, marketdata.Key{Venue: "bitget", Product: "perpetual", Symbol: "COTIUSDT"})
 	staleReads := scheduler.Stats().StaleBBOReads
 	scheduler.runOnce(ctx)
-	defer scheduler.closeAll()
 
 	select {
 	case <-runner.executed:
@@ -63,15 +63,15 @@ func TestArbitrageSchedulerRejectsNewSignalWhenBBOOlderThanTwoSeconds(t *testing
 	if store.claims != 0 {
 		t.Fatalf("claims=%d, want 0", store.claims)
 	}
-	if store.item.MarketDataStale {
-		t.Fatal("2s signal stale was recorded as MarketDataStale")
+	if !store.item.MarketDataStale {
+		t.Fatal("3s BBO should be treated as MarketDataStale")
 	}
 	stats := scheduler.Stats()
-	if stats.SignalStaleRejected == 0 {
-		t.Fatal("signal_stale_rejected_total did not increase")
+	if stats.SignalStaleRejected != 0 {
+		t.Fatalf("signal_stale_rejected_total=%d, want 0", stats.SignalStaleRejected)
 	}
-	if stats.StaleBBOReads != staleReads {
-		t.Fatalf("signal stale incremented stale_bbo_reads_total %d -> %d", staleReads, stats.StaleBBOReads)
+	if stats.StaleBBOReads == staleReads {
+		t.Fatal("stale_bbo_reads_total did not increase")
 	}
 }
 
@@ -85,13 +85,13 @@ func TestArbitrageSchedulerClaimsWhenBothLegsWithinTwoSeconds(t *testing.T) {
 		store, market, runner, time.Millisecond, time.Millisecond, time.Second,
 		10, 2, 2, 2, false, nil,
 	)
+	t.Cleanup(scheduler.closeAll)
 	scheduler.runOnce(ctx)
 	connectionA.reads <- []byte("100,100.1")
 	connectionB.reads <- []byte("100.3,100.4")
 	waitForFreshBBO(t, market, marketdata.Key{Venue: "bybit", Product: "perpetual", Symbol: "COTIUSDT"})
 	waitForFreshBBO(t, market, marketdata.Key{Venue: "bitget", Product: "perpetual", Symbol: "COTIUSDT"})
 	scheduler.runOnce(ctx)
-	defer scheduler.closeAll()
 	select {
 	case <-runner.executed:
 	case <-time.After(time.Second):
@@ -111,25 +111,33 @@ func TestArbitrageSchedulerResumesActiveExecutionWhenSignalBBOStale(t *testing.T
 		ID: "execution-1", CombinationID: item.ID, Status: "hedging",
 	}
 	store := &dryRunStore{claim: true, item: item, activeExecution: &execution}
-	runner := &schedulerRunner{executed: make(chan ArbitrageExecution, 1)}
+	runner := &schedulerRunner{
+		executed:  make(chan ArbitrageExecution, 1),
+		recovered: make(chan ArbitrageExecution, 2),
+	}
 	scheduler := newTestArbitrageScheduler(
 		store, market, runner, time.Millisecond, time.Millisecond, time.Second,
 		10, 2, 2, 2, false, nil,
 	)
+	t.Cleanup(scheduler.closeAll)
 	scheduler.runOnce(ctx)
 	connectionA.reads <- []byte("100,100.1")
 	connectionB.reads <- []byte("100.3,100.4")
 	waitForFreshBBO(t, market, marketdata.Key{Venue: "bybit", Product: "perpetual", Symbol: "COTIUSDT"})
 	waitForFreshBBO(t, market, marketdata.Key{Venue: "bitget", Product: "perpetual", Symbol: "COTIUSDT"})
 	scheduler.runOnce(ctx)
-	defer scheduler.closeAll()
 	select {
-	case got := <-runner.executed:
+	case got := <-runner.recovered:
 		if got.ID != execution.ID {
-			t.Fatalf("resumed=%+v", got)
+			t.Fatalf("recovered=%+v", got)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("active execution was blocked by 2s signal stale")
+		t.Fatal("stale signal BBO did not recover the active execution")
+	}
+	select {
+	case got := <-runner.executed:
+		t.Fatalf("stale signal BBO resumed with Execute: %+v", got)
+	default:
 	}
 	if store.claims != 0 {
 		t.Fatalf("resume claimed a new execution: %d", store.claims)
@@ -149,8 +157,8 @@ func TestArbitrageSchedulerClosingIgnoresSignalBBOStale(t *testing.T) {
 		store, market, runner, time.Millisecond, time.Millisecond, time.Second,
 		10, 2, 2, 2, false, nil,
 	)
+	t.Cleanup(scheduler.closeAll)
 	scheduler.runOnce(ctx)
-	defer scheduler.closeAll()
 	select {
 	case closed := <-runner.closed:
 		if closed.ID != item.ID {
@@ -197,13 +205,13 @@ func TestArbitrageSchedulerRechecksSignalStaleBeforeClaim(t *testing.T) {
 		silentRiskCatalog: silentRiskCatalog{101: instrument(101), 202: instrument(202)},
 		delay:             200 * time.Millisecond,
 	})
+	t.Cleanup(scheduler.closeAll)
 	scheduler.runOnce(ctx)
 	connectionA.reads <- []byte("100,100.1")
 	connectionB.reads <- []byte("100.3,100.4")
 	waitForFreshBBO(t, market, marketdata.Key{Venue: "bybit", Product: "perpetual", Symbol: "COTIUSDT"})
 	waitForFreshBBO(t, market, marketdata.Key{Venue: "bitget", Product: "perpetual", Symbol: "COTIUSDT"})
 	scheduler.runOnce(ctx)
-	defer scheduler.closeAll()
 	select {
 	case <-runner.executed:
 		t.Fatal("catalog delay allowed a stale claim")

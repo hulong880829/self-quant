@@ -19,24 +19,32 @@ bool SameTrade(const strategyframe::TradeId& lhs,
 
 }  // namespace
 
+PnlLedger::PnlLedger(strategyframe::AccountId account_id) noexcept
+    : account_id_(account_id) {}
+
 PnlLedger::PnlLedger(strategyframe::AccountId account_id,
                      strategyframe::InstrumentId up_instrument,
                      strategyframe::InstrumentId down_instrument) noexcept
-    : account_id_(account_id) {
-  rows_[0].instrument_id = up_instrument;
-  rows_[1].instrument_id = down_instrument;
+    : PnlLedger(account_id) {
+  (void)commit_active_window(up_instrument, down_instrument);
 }
 
 PnlLedger::Row* PnlLedger::row(
     strategyframe::InstrumentId instrument_id) noexcept {
-  for (Row& value : rows_)
+  if (instrument_id == 0) return nullptr;
+  for (Row& value : active_)
+    if (value.instrument_id == instrument_id) return &value;
+  for (Row& value : retired_)
     if (value.instrument_id == instrument_id) return &value;
   return nullptr;
 }
 
 const PnlLedger::Row* PnlLedger::row(
     strategyframe::InstrumentId instrument_id) const noexcept {
-  for (const Row& value : rows_)
+  if (instrument_id == 0) return nullptr;
+  for (const Row& value : active_)
+    if (value.instrument_id == instrument_id) return &value;
+  for (const Row& value : retired_)
     if (value.instrument_id == instrument_id) return &value;
   return nullptr;
 }
@@ -165,7 +173,15 @@ double PnlLedger::quantity(
 }
 
 bool PnlLedger::flat() const noexcept {
-  return rows_[0].quantity == 0.0 && rows_[1].quantity == 0.0;
+  for (const Row& value : active_)
+    if (value.quantity != 0.0) return false;
+  for (const Row& value : retired_)
+    if (value.instrument_id != 0 && value.quantity != 0.0) return false;
+  return true;
+}
+
+bool PnlLedger::active_flat() const noexcept {
+  return active_[0].quantity == 0.0 && active_[1].quantity == 0.0;
 }
 
 void PnlLedger::clear_terminal_order(
@@ -180,21 +196,133 @@ void PnlLedger::clear_terminal_order(
   }
 }
 
-bool PnlLedger::activate_window(
+bool PnlLedger::has_live_order(
+    strategyframe::InstrumentId instrument_id) const noexcept {
+  for (const OrderRef& value : orders_) {
+    if (value.used && value.instrument_id == instrument_id) return true;
+  }
+  return false;
+}
+
+bool PnlLedger::archive_active_rows() noexcept {
+  const bool keep =
+      active_[0].quantity != 0.0 || active_[1].quantity != 0.0 ||
+      has_live_order(active_[0].instrument_id) ||
+      has_live_order(active_[1].instrument_id);
+  if (!keep) {
+    for (Row& value : active_) archived_realized_ += value.realized;
+    active_ = {};
+    return true;
+  }
+  std::size_t free = 0;
+  for (const Row& value : retired_)
+    if (value.instrument_id == 0) ++free;
+  if (free < 2) return false;
+  for (Row& value : active_) {
+    if (value.instrument_id == 0) continue;
+    for (Row& dest : retired_) {
+      if (dest.instrument_id != 0) continue;
+      dest = value;
+      dest.retired = true;
+      break;
+    }
+  }
+  active_ = {};
+  return true;
+}
+
+bool PnlLedger::commit_active_window(
     strategyframe::InstrumentId up_instrument,
     strategyframe::InstrumentId down_instrument) noexcept {
-  if (!flat() || up_instrument == 0 || down_instrument == 0 ||
+  if (up_instrument == 0 || down_instrument == 0 ||
       up_instrument == down_instrument) {
     return false;
   }
-  for (const Row& value : rows_) archived_realized_ += value.realized;
-  rows_ = {};
-  rows_[0].instrument_id = up_instrument;
-  rows_[1].instrument_id = down_instrument;
-  for (OrderRef& value : orders_) value = {};
-  tombstones_ = {};
-  tombstone_cursor_ = 0;
+  if (active_[0].instrument_id == up_instrument &&
+      active_[1].instrument_id == down_instrument) {
+    return true;
+  }
+  if (active_[0].instrument_id != 0 || active_[1].instrument_id != 0) {
+    if (!archive_active_rows()) return false;
+  }
+  active_[0] = {};
+  active_[1] = {};
+  active_[0].instrument_id = up_instrument;
+  active_[1].instrument_id = down_instrument;
   return true;
+}
+
+bool PnlLedger::activate_window(
+    strategyframe::InstrumentId up_instrument,
+    strategyframe::InstrumentId down_instrument) noexcept {
+  return commit_active_window(up_instrument, down_instrument);
+}
+
+bool PnlLedger::can_archive_active() const noexcept {
+  const bool keep =
+      active_[0].quantity != 0.0 || active_[1].quantity != 0.0 ||
+      has_live_order(active_[0].instrument_id) ||
+      has_live_order(active_[1].instrument_id);
+  if (!keep) return true;
+  std::size_t free = 0;
+  for (const Row& value : retired_)
+    if (value.instrument_id == 0) ++free;
+  return free >= 2;
+}
+
+bool PnlLedger::archive_active() noexcept { return archive_active_rows(); }
+
+bool PnlLedger::retired_nonzero() const noexcept {
+  for (const Row& value : retired_) {
+    if (value.instrument_id != 0 && value.quantity != 0.0) return true;
+  }
+  return false;
+}
+
+bool PnlLedger::has_instrument(
+    strategyframe::InstrumentId instrument_id) const noexcept {
+  return row(instrument_id) != nullptr;
+}
+
+void PnlLedger::confirm_snapshot_zeros(
+    std::span<const strategyframe::QueriedPositionView> positions) noexcept {
+  std::array<strategyframe::InstrumentId, kPnlRetiredRows> ids{};
+  std::size_t count = 0;
+  for (const Row& value : retired_) {
+    if (value.instrument_id == 0) continue;
+    bool held = false;
+    for (const auto& position : positions) {
+      if (position.instrument_id != value.instrument_id) continue;
+      if (position.quantity.value != 0) {
+        held = true;
+        break;
+      }
+    }
+    if (!held && count < ids.size()) ids[count++] = value.instrument_id;
+  }
+  for (std::size_t index = 0; index < count; ++index) {
+    confirm_zero(ids[index]);
+    recycle_instrument(ids[index]);
+  }
+}
+
+void PnlLedger::confirm_zero(
+    strategyframe::InstrumentId instrument_id) noexcept {
+  Row* value = row(instrument_id);
+  if (value == nullptr) return;
+  value->quantity = 0.0;
+  value->cost = 0.0;
+}
+
+void PnlLedger::recycle_instrument(
+    strategyframe::InstrumentId instrument_id) noexcept {
+  for (Row& value : retired_) {
+    if (value.instrument_id != instrument_id) continue;
+    if (value.quantity != 0.0 || has_live_order(instrument_id)) return;
+    archived_realized_ += value.realized;
+    value = {};
+    return;
+  }
 }
 
 std::size_t PnlLedger::used_order_slots() const noexcept {

@@ -72,14 +72,7 @@ func (c *Client) SlippagePrice(
 		}
 	}
 
-	price = formatPriceToTickSize(price, szDecimals, class)
-
-	adjustedPrice, err := validateAndAdjustPrice(price, asset)
-	if err != nil {
-		return 0, fmt.Errorf("failed to validate price for tick size: %w", err)
-	}
-
-	return adjustedPrice, nil
+	return formatPriceToTickSize(price, szDecimals, class), nil
 }
 
 // PlaceMany packages multiple OrderSpec legs into a single signed action.

@@ -19,9 +19,8 @@ func (h *Handler) reportRequest(
 	writer http.ResponseWriter,
 	request *http.Request,
 ) (string, int64, bool) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return "", 0, false
 	}
 	productID, err := strconv.ParseInt(
@@ -35,9 +34,8 @@ func (h *Handler) reportRequest(
 }
 
 func (h *Handler) listReportProducts(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 3*time.Second)

@@ -68,24 +68,111 @@ func TestRandomNotionalBoundsZeroAnd1999Cents(t *testing.T) {
 	}
 }
 
-func TestMakerSizeCapsAtHedgeTopOfBook(t *testing.T) {
+func TestMakerThenHedgeDoesNotCapOrRejectOnHedgeTopOfBook(t *testing.T) {
 	combo := ArbitrageCombination{
 		ExecutionMode: "maker_then_hedge", MakerLeg: "a", TargetNotional: "10000",
 		LegA: ArbitrageLeg{InstrumentID: 1}, LegB: ArbitrageLeg{InstrumentID: 2},
 	}
 	instrument := sizingInstrument(1, "binance", "1", "0.001")
 	maker := marketdata.BBO{BidPrice: "100", AskPrice: "100", BidQuantity: "1000", AskQuantity: "1000"}
-	hedge := marketdata.BBO{BidPrice: "100", AskPrice: "100", BidQuantity: "0.3", AskQuantity: "0.3"}
-	plan, _, ok := sizeArbitrageExecution(
+	hedge := marketdata.BBO{BidPrice: "100", AskPrice: "100", BidQuantity: "0.05", AskQuantity: "0.05"}
+	plan, reason, ok := sizeArbitrageExecution(
 		combo, instrument, instrument, maker, hedge, "ask", "open",
 		decimal.NewFromInt(10000), decimal.Zero, fixedNotionalRand{decimal.RequireFromString("19.99")},
 	)
 	if !ok {
-		t.Fatal("expected sized plan")
+		t.Fatalf("expected sized plan reason=%s", reason)
 	}
-	hedgeCap := decimal.RequireFromString("30")
-	if plan.RequestedNotional.GreaterThan(hedgeCap) || plan.HedgeCapNotional.GreaterThan(hedgeCap) {
-		t.Fatalf("plan=%+v hedgeCap=%s", plan, hedgeCap)
+	hedgeCap := decimal.RequireFromString("5")
+	if !plan.HedgeCapNotional.Equal(hedgeCap) {
+		t.Fatalf("hedgeCap=%s want %s", plan.HedgeCapNotional, hedgeCap)
+	}
+	if !plan.RequestedNotional.GreaterThan(hedgeCap) {
+		t.Fatalf("maker size was clipped to hedge cap plan=%+v", plan)
+	}
+}
+
+func TestMakerThenHedgeMissingHedgeQuantityIsObservational(t *testing.T) {
+	combo := ArbitrageCombination{
+		ExecutionMode: "maker_then_hedge", MakerLeg: "a", TargetNotional: "10000",
+		LegA: ArbitrageLeg{InstrumentID: 1}, LegB: ArbitrageLeg{InstrumentID: 2},
+	}
+	instrument := sizingInstrument(1, "binance", "1", "0.001")
+	maker := marketdata.BBO{BidPrice: "100", AskPrice: "100", BidQuantity: "1000", AskQuantity: "1000"}
+	hedge := marketdata.BBO{BidPrice: "100", AskPrice: "100"}
+	plan, reason, ok := sizeArbitrageExecution(
+		combo, instrument, instrument, maker, hedge, "ask", "open",
+		decimal.NewFromInt(10000), decimal.Zero, fixedNotionalRand{decimal.Zero},
+	)
+	if !ok || reason != "" || !plan.HedgeCapNotional.IsZero() {
+		t.Fatalf("plan=%+v ok=%v reason=%s", plan, ok, reason)
+	}
+}
+
+func TestMakerThenHedgeMissingMakerQuantityStillFails(t *testing.T) {
+	combo := ArbitrageCombination{
+		ExecutionMode: "maker_then_hedge", MakerLeg: "a", TargetNotional: "10000",
+		LegA: ArbitrageLeg{InstrumentID: 1}, LegB: ArbitrageLeg{InstrumentID: 2},
+	}
+	instrument := sizingInstrument(1, "binance", "1", "0.001")
+	maker := marketdata.BBO{BidPrice: "100", AskPrice: "100"}
+	hedge := marketdata.BBO{BidPrice: "100", AskPrice: "100", BidQuantity: "1000", AskQuantity: "1000"}
+	if _, reason, ok := sizeArbitrageExecution(
+		combo, instrument, instrument, maker, hedge, "ask", "open",
+		decimal.NewFromInt(10000), decimal.Zero, fixedNotionalRand{decimal.Zero},
+	); ok || reason != "missing bbo quantity" {
+		t.Fatalf("ok=%v reason=%s", ok, reason)
+	}
+}
+
+func TestMakerThenHedgeMissingHedgePriceStillFails(t *testing.T) {
+	combo := ArbitrageCombination{
+		ExecutionMode: "maker_then_hedge", MakerLeg: "a", TargetNotional: "10000",
+		LegA: ArbitrageLeg{InstrumentID: 1}, LegB: ArbitrageLeg{InstrumentID: 2},
+	}
+	instrument := sizingInstrument(1, "binance", "1", "0.001")
+	maker := marketdata.BBO{BidPrice: "100", AskPrice: "100", BidQuantity: "1000", AskQuantity: "1000"}
+	hedge := marketdata.BBO{BidQuantity: "1000", AskQuantity: "1000"}
+	if _, reason, ok := sizeArbitrageExecution(
+		combo, instrument, instrument, maker, hedge, "ask", "open",
+		decimal.NewFromInt(10000), decimal.Zero, fixedNotionalRand{decimal.Zero},
+	); ok || reason != "missing bbo price" {
+		t.Fatalf("ok=%v reason=%s", ok, reason)
+	}
+}
+
+func TestMakerThenHedgeOrdinaryCloseIgnoresHedgeCapFloor(t *testing.T) {
+	combo := ArbitrageCombination{
+		ExecutionMode: "maker_then_hedge", MakerLeg: "a", TargetNotional: "10000",
+		Status: "running", RuntimeState: "monitoring",
+		LegABasePosition: "1", LegBBasePosition: "-1",
+		LegA: ArbitrageLeg{InstrumentID: 1}, LegB: ArbitrageLeg{InstrumentID: 2},
+	}
+	instrument := sizingInstrument(1, "binance", "1", "0.001")
+	maker := marketdata.BBO{BidPrice: "100", AskPrice: "100", BidQuantity: "1000", AskQuantity: "1000"}
+	hedge := marketdata.BBO{BidPrice: "100", AskPrice: "100", BidQuantity: "0.05", AskQuantity: "0.05"}
+	plan, reason, ok := sizeArbitrageExecution(
+		combo, instrument, instrument, maker, hedge, "bid", "close",
+		decimal.Zero, decimal.NewFromInt(100), fixedNotionalRand{decimal.Zero},
+	)
+	if !ok || reason == "hedge cap below minimum close notional" {
+		t.Fatalf("plan=%+v ok=%v reason=%s", plan, ok, reason)
+	}
+}
+
+func TestSimultaneousMarketStillRequiresBothQuantities(t *testing.T) {
+	combo := ArbitrageCombination{
+		ExecutionMode: "simultaneous_market", TargetNotional: "10000",
+		LegA: ArbitrageLeg{InstrumentID: 1}, LegB: ArbitrageLeg{InstrumentID: 2},
+	}
+	instrument := sizingInstrument(1, "binance", "1", "0.001")
+	priced := marketdata.BBO{BidPrice: "100", AskPrice: "100", BidQuantity: "1000", AskQuantity: "1000"}
+	missing := marketdata.BBO{BidPrice: "100", AskPrice: "100"}
+	if _, reason, ok := sizeArbitrageExecution(
+		combo, instrument, instrument, priced, missing, "ask", "open",
+		decimal.NewFromInt(10000), decimal.Zero, fixedNotionalRand{decimal.Zero},
+	); ok || reason != "missing bbo quantity" {
+		t.Fatalf("ok=%v reason=%s", ok, reason)
 	}
 }
 

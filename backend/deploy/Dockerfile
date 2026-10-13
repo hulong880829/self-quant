@@ -21,8 +21,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -ldflags="-s -w" -o /out/trader-service ./cmd/trader-service && \
     go build -trimpath -ldflags="-s -w" -o /out/ai-service ./cmd/ai-service && \
     go build -trimpath -ldflags="-s -w" -o /out/spread-service ./cmd/spread-service && \
-    go build -trimpath -ldflags="-s -w" -o /out/aggdata-service ./cmd/aggdata-service && \
+    go build -trimpath -ldflags="-s -w" -o /out/jev-service ./cmd/jev-service && \
+    go build -trimpath -ldflags="-s -w" -o /out/admin-service ./cmd/admin-service && \
     go build -trimpath -ldflags="-s -w" -o /out/api-gateway ./cmd/api-gateway && \
+    go build -trimpath -ldflags="-s -w" -o /out/tradefi-negative-cache-expire ./cmd/tradefi-negative-cache-expire && \
     go install github.com/grpc-ecosystem/grpc-health-probe@v0.4.39
 
 FROM busybox:1.37.0-musl AS busybox

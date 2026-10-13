@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	"selfquant/backend/internal/account/portfolio"
 	"selfquant/backend/internal/trader/exchange"
 	"selfquant/backend/internal/trader/marketdata"
 )
@@ -357,27 +358,37 @@ func TestEmergencyHedgeOrdinaryBelowMinNotionalDoesNotPlace(t *testing.T) {
 }
 
 func TestDustOpenAggregatesCarryIntoHedge(t *testing.T) {
-	testDustAggregatesCarry(t, "ask", "open", false, "39", "129", "129", "0", "monitoring")
+	for _, runtime := range []string{"hedge_deferred_dust", "monitoring", "repricing"} {
+		t.Run(runtime, func(t *testing.T) {
+			testDustAggregatesCarry(
+				t, "ask", "open", false, "39", "129", "129", "0", runtime, "monitoring",
+			)
+		})
+	}
 }
 
 func TestDustCloseAggregatesCarryIntoHedge(t *testing.T) {
-	testDustAggregatesCarry(t, "bid", "close", true, "-39", "-129", "129", "0", "monitoring")
+	testDustAggregatesCarry(
+		t, "bid", "close", true, "-39", "-129", "129", "0", "monitoring", "monitoring",
+	)
 }
 
 func TestDustPartialHedgeKeepsComboCarry(t *testing.T) {
-	testDustAggregatesCarry(t, "bid", "close", true, "-39", "-129", "100", "-29", "hedge_deferred_dust")
+	testDustAggregatesCarry(
+		t, "bid", "close", true, "-39", "-129", "100", "-29", "hedge_deferred_dust", "hedge_deferred_dust",
+	)
 }
 
 func testDustAggregatesCarry(
 	t *testing.T,
 	direction, effect string,
 	reduceOnly bool,
-	startCarry, aggregatedCarry, hedgeFill, finalCarry, wantState string,
+	startCarry, aggregatedCarry, hedgeFill, finalCarry, runtime, wantState string,
 ) {
 	t.Helper()
 	makerInst := dustCarryInstrument(101, "bybit", "BTCUSDT", "50")
 	hedgeInst := dustCarryInstrument(202, "okx", "BTC-USDT-SWAP", "50")
-	combo := dustCarryCombo(makerInst, hedgeInst, direction, "hedge_deferred_dust", startCarry)
+	combo := dustCarryCombo(makerInst, hedgeInst, direction, runtime, startCarry)
 	orderStore := &postOnlyOrderStore{memoryStore: newMemoryStore()}
 	base := &executorFailStore{combo: combo, intentStore: orderStore}
 	store := &scriptedCarryStore{
@@ -443,48 +454,7 @@ func testDustAggregatesCarry(
 }
 
 func TestDustOppositeCarryDoesNotMerge(t *testing.T) {
-	makerInst := dustCarryInstrument(101, "bybit", "BTCUSDT", "50")
-	hedgeInst := dustCarryInstrument(202, "okx", "BTC-USDT-SWAP", "50")
-	combo := dustCarryCombo(makerInst, hedgeInst, "bid", "hedge_deferred_dust", "39")
-	orderStore := &postOnlyOrderStore{memoryStore: newMemoryStore()}
-	store := &executorFailStore{combo: combo, intentStore: orderStore}
-	maker := &stubAdapter{place: exchange.Result{
-		VenueOrderID: "maker-1", Status: "filled",
-		FilledQuantity: "90", AveragePrice: "1",
-	}}
-	hedge := &stubAdapter{place: exchange.Result{
-		VenueOrderID: "hedge-1", Status: "filled",
-		FilledQuantity: "90", AveragePrice: "1",
-	}}
-	service := NewService(orderStore, nil, nil, nil, time.Second, nil)
-	executor := NewArbitrageExecutor(
-		store, orderStore, service,
-		silentRiskCatalog{makerInst.ID: makerInst, hedgeInst.ID: hedgeInst},
-		silentRiskCredentials{},
-		exchange.NewTestRegistry(map[string]exchange.Adapter{
-			"bybit": maker, "okx": hedge,
-		}),
-		dustCarryMarket(t, makerInst, hedgeInst), "",
-		time.Millisecond, 0, 0, 1, time.Second, nil,
-	)
-	execution := ArbitrageExecution{
-		ID: "dust-opposite", CombinationID: combo.ID, Direction: "bid",
-		TargetBaseQuantity: "90", RequestedNotional: "90",
-		TriggerLegABid: "1", TriggerLegAAsk: "1",
-		TriggerLegBBid: "1", TriggerLegBAsk: "1",
-	}
-	bbo := marketdata.BBO{BidPrice: "1", AskPrice: "1"}
-	if err := executor.executeMakerThenHedge(
-		context.Background(), combo, &execution, bbo, bbo, nil,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if len(hedge.requests) != 1 || hedge.requests[0].Quantity != "90" {
-		t.Fatalf("opposite carry must hedge maker residual: %+v", hedge.requests)
-	}
-	if !store.lastPrepare.FastPathAdmission || store.lastPrepare.AggregateCarry {
-		t.Fatalf("prepare=%+v", store.lastPrepare)
-	}
+	testDustOneCloseAbsorbsOppositeCarry(t)
 }
 
 func TestDustPriceMoveHedgesCarryBeforeMaker(t *testing.T) {
@@ -592,6 +562,38 @@ func TestExpectedCarryAfterMaker(t *testing.T) {
 	)
 	if !got.Equal(decimal.NewFromInt(129)) {
 		t.Fatalf("got=%s", got)
+	}
+}
+
+func TestCarryBeforeExecutionFromFills(t *testing.T) {
+	t.Parallel()
+	refreshed := decimal.NewFromInt(89)
+	maker := decimal.NewFromInt(90)
+	hedge := decimal.NewFromInt(40)
+	got, err := carryBeforeExecutionFromFills(refreshed, maker, hedge, "ask")
+	if err != nil || !got.Equal(decimal.NewFromInt(39)) {
+		t.Fatalf("ask both legs got=%s err=%v", got, err)
+	}
+	got, err = carryBeforeExecutionFromFills(refreshed, maker, decimal.Zero, "ask")
+	if err != nil || !got.Equal(decimal.NewFromInt(-1)) {
+		t.Fatalf("ask maker only got=%s err=%v", got, err)
+	}
+	got, err = carryBeforeExecutionFromFills(
+		decimal.NewFromInt(-13369), decimal.NewFromInt(17765), decimal.Zero, "bid",
+	)
+	if err != nil || !got.Equal(decimal.NewFromInt(4396)) {
+		t.Fatalf("bid maker only got=%s err=%v", got, err)
+	}
+	got, err = carryBeforeExecutionFromFills(
+		decimal.NewFromInt(-29), decimal.NewFromInt(90), decimal.NewFromInt(100), "bid",
+	)
+	if err != nil || !got.Equal(decimal.NewFromInt(-39)) {
+		t.Fatalf("bid both legs got=%s err=%v", got, err)
+	}
+	if _, err := carryBeforeExecutionFromFills(refreshed, maker, hedge, "sideways"); !errors.Is(
+		err, ErrInvalidArgument,
+	) {
+		t.Fatalf("unknown direction err=%v", err)
 	}
 }
 
@@ -762,5 +764,614 @@ func TestLastCloseStandaloneCarryIsResidualAndCompletesPairedZero(t *testing.T) 
 	}
 	if unbalanced != 0 {
 		t.Fatalf("events=%v", base.eventTypes)
+	}
+}
+
+func dustHasEvent(store *executorFailStore, name string) bool {
+	for _, eventType := range store.eventTypes {
+		if eventType == name {
+			return true
+		}
+	}
+	return false
+}
+
+func seedDustOrder(
+	t *testing.T, store *postOnlyOrderStore, order Order, status, filled string,
+) Order {
+	t.Helper()
+	if order.OwnerUsername == "" {
+		order.OwnerUsername = "admin"
+	}
+	stored, created, err := store.CreateIntent(context.Background(), order)
+	if err != nil || !created {
+		t.Fatalf("created=%v err=%v", created, err)
+	}
+	if status == "" || status == "pending" {
+		return stored
+	}
+	stored, err = store.UpdateResult(context.Background(), stored.ID, VenueResult{
+		Status: status, FilledQuantity: filled, AveragePrice: "1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stored
+}
+
+func TestStandaloneCarryPlan(t *testing.T) {
+	makerInst := dustCarryInstrument(101, "bybit", "BTCUSDT", "50")
+	hedgeInst := dustCarryInstrument(202, "okx", "BTC-USDT-SWAP", "50")
+	bbo := marketdata.BBO{BidPrice: "1", AskPrice: "1"}
+	executor := &ArbitrageExecutor{
+		spotSnapshots: make(map[string]map[int64]portfolio.Snapshot),
+	}
+	closeExec := ArbitrageExecution{
+		ID: "plan", Direction: "ask", PositionEffect: "close", ReduceOnly: true,
+	}
+
+	full := dustCarryCombo(makerInst, hedgeInst, "ask", "monitoring", "100")
+	full.LegABasePosition = "0"
+	full.LegBBasePosition = "100"
+	action, err := executor.standaloneCarryPlan(
+		context.Background(), full, closeExec, full.LegB, hedgeInst,
+		Credentials{TradingAccountID: 2}, bbo,
+	)
+	if err != nil || action != standaloneCarryExecute {
+		t.Fatalf("full size action=%d err=%v", action, err)
+	}
+
+	partial := dustCarryCombo(makerInst, hedgeInst, "ask", "monitoring", "100")
+	partial.LegABasePosition = "80"
+	partial.LegBBasePosition = "20"
+	action, err = executor.standaloneCarryPlan(
+		context.Background(), partial, closeExec, partial.LegB, hedgeInst,
+		Credentials{TradingAccountID: 2}, bbo,
+	)
+	if err != nil || action != standaloneCarryDeferToMaker {
+		t.Fatalf("available < carry action=%d err=%v", action, err)
+	}
+
+	tiny := dustCarryCombo(makerInst, hedgeInst, "ask", "monitoring", "39")
+	action, err = executor.standaloneCarryPlan(
+		context.Background(), tiny, closeExec, tiny.LegB, hedgeInst,
+		Credentials{TradingAccountID: 2}, bbo,
+	)
+	if err != nil || action != standaloneCarryDeferToMaker {
+		t.Fatalf("below min notional action=%d err=%v", action, err)
+	}
+
+	unknown := hedgeInst
+	unknown.MinNotionalStatus = exchange.ConstraintUnknown
+	_, err = executor.standaloneCarryPlan(
+		context.Background(), full, closeExec, full.LegB, unknown,
+		Credentials{TradingAccountID: 2}, bbo,
+	)
+	if !errors.Is(err, ErrInstrumentUnavailable) {
+		t.Fatalf("unknown constraint err=%v", err)
+	}
+
+	noStep := hedgeInst
+	noStep.QuantityStep = "0"
+	_, err = executor.standaloneCarryPlan(
+		context.Background(), full, closeExec, full.LegB, noStep,
+		Credentials{TradingAccountID: 2}, bbo,
+	)
+	if !errors.Is(err, ErrInstrumentUnavailable) {
+		t.Fatalf("step unavailable err=%v", err)
+	}
+
+	spot := hedgeInst
+	spot.ContractType = "spot"
+	spotCombo := full
+	spotCombo.LegB.ContractType = "spot"
+	executor.spotSnapshots[closeExec.ID] = map[int64]portfolio.Snapshot{
+		2: {SpotBalances: map[string]string{"BTC": "10"}},
+	}
+	action, err = executor.standaloneCarryPlan(
+		context.Background(), spotCombo, closeExec, spotCombo.LegB, spot,
+		Credentials{TradingAccountID: 2}, bbo,
+	)
+	if err != nil || action != standaloneCarryDeferToMaker {
+		t.Fatalf("spot shortfall action=%d err=%v", action, err)
+	}
+
+	executor.spotSnapshots = make(map[string]map[int64]portfolio.Snapshot)
+	_, err = executor.standaloneCarryPlan(
+		context.Background(), spotCombo, closeExec, spotCombo.LegB, spot,
+		Credentials{TradingAccountID: 2}, bbo,
+	)
+	if !errors.Is(err, ErrVenueUnavailable) {
+		t.Fatalf("snapshot failure err=%v", err)
+	}
+}
+
+func TestLeftoverCloseDustCompletableGuards(t *testing.T) {
+	combo := ArbitrageCombination{}
+	execution := ArbitrageExecution{PositionEffect: "close", ReduceOnly: true, ID: "dust"}
+	maker := Order{Status: "filled", FilledQuantity: "40"}
+	before := decimal.NewFromInt(100)
+	shrunk := decimal.NewFromInt(60)
+	owned := decimal.NewFromInt(200)
+	if !leftoverCloseDustCompletable(combo, execution, maker, nil, before, shrunk, owned) {
+		t.Fatal("expected leftover complete")
+	}
+	if leftoverCloseDustCompletable(combo, execution, maker, nil, before, before, owned) {
+		t.Fatal("equal carry must fail")
+	}
+	if leftoverCloseDustCompletable(
+		combo, execution, maker,
+		[]Order{{
+			ArbitrageExecutionID: "dust", ArbitrageRole: "hedge", Status: "open",
+		}},
+		before, shrunk, owned,
+	) {
+		t.Fatal("live hedge must not complete")
+	}
+	openExec := execution
+	openExec.PositionEffect = "open"
+	if leftoverCloseDustCompletable(combo, openExec, maker, nil, before, shrunk, owned) {
+		t.Fatal("open must not complete leftover")
+	}
+}
+
+func testDustOneCloseAbsorbsOppositeCarry(t *testing.T) {
+	t.Helper()
+	makerInst := dustCarryInstrument(101, "bybit", "BTCUSDT", "50")
+	hedgeInst := dustCarryInstrument(202, "okx", "BTC-USDT-SWAP", "50")
+	combo := dustCarryCombo(makerInst, hedgeInst, "bid", "monitoring", "4396")
+	combo.LegABasePosition = "431618"
+	combo.LegBBasePosition = "-427222"
+	combo.OrderNotional = "17765"
+	orderStore := &postOnlyOrderStore{memoryStore: newMemoryStore()}
+	base := &executorFailStore{combo: combo, intentStore: orderStore}
+	store := &scriptedCarryStore{
+		executorFailStore: base,
+		carries:           []string{"4396", "-13369", "0", "0"},
+	}
+	maker := &stubAdapter{place: exchange.Result{
+		VenueOrderID: "maker-1", Status: "filled",
+		FilledQuantity: "17765", AveragePrice: "1",
+	}}
+	hedge := &stubAdapter{place: exchange.Result{
+		VenueOrderID: "hedge-1", Status: "filled",
+		FilledQuantity: "13369", AveragePrice: "1",
+	}}
+	service := NewService(orderStore, nil, nil, nil, time.Second, nil)
+	executor := NewArbitrageExecutor(
+		store, orderStore, service,
+		silentRiskCatalog{makerInst.ID: makerInst, hedgeInst.ID: hedgeInst},
+		silentRiskCredentials{},
+		exchange.NewTestRegistry(map[string]exchange.Adapter{
+			"bybit": maker, "okx": hedge,
+		}),
+		dustCarryMarket(t, makerInst, hedgeInst), "",
+		time.Millisecond, 0, 0, 1, time.Second, nil,
+	)
+	execution := ArbitrageExecution{
+		ID: "dust-one-close", CombinationID: combo.ID, Direction: "bid",
+		PositionEffect: "close", ReduceOnly: true,
+		TargetBaseQuantity: "17765", RequestedNotional: "17765",
+		TriggerLegABid: "1", TriggerLegAAsk: "1",
+		TriggerLegBBid: "1", TriggerLegBAsk: "1",
+	}
+	bbo := marketdata.BBO{BidPrice: "1", AskPrice: "1"}
+	if err := executor.executeMakerThenHedge(
+		context.Background(), combo, &execution, bbo, bbo, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(maker.requests) != 1 || maker.requests[0].Quantity != "17765" {
+		t.Fatalf("maker requests=%+v", maker.requests)
+	}
+	if len(hedge.requests) != 1 ||
+		hedge.requests[0].Side != "buy" ||
+		hedge.requests[0].Quantity != "13369" ||
+		!hedge.requests[0].ReduceOnly {
+		t.Fatalf("hedge requests=%+v", hedge.requests)
+	}
+	if !base.lastPrepare.AggregateCarry || base.lastPrepare.FastPathAdmission ||
+		!parseDecimal(base.lastPrepare.ExpectedCarryQuantity).Equal(decimal.NewFromInt(-13369)) {
+		t.Fatalf("prepare=%+v", base.lastPrepare)
+	}
+	if execution.Status != "completed" {
+		t.Fatalf("execution=%+v", execution)
+	}
+}
+
+func TestDustOrdinaryFillUsesFastPathNoExtraRefresh(t *testing.T) {
+	makerInst := dustCarryInstrument(101, "bybit", "BTCUSDT", "50")
+	hedgeInst := dustCarryInstrument(202, "okx", "BTC-USDT-SWAP", "50")
+	combo := dustCarryCombo(makerInst, hedgeInst, "ask", "monitoring", "0")
+	orderStore := &postOnlyOrderStore{memoryStore: newMemoryStore()}
+	base := &executorFailStore{combo: combo, intentStore: orderStore}
+	store := &scriptedCarryStore{
+		executorFailStore: base,
+		carries:           []string{"0", "0", "0"},
+	}
+	maker := &stubAdapter{place: exchange.Result{
+		VenueOrderID: "maker-1", Status: "filled",
+		FilledQuantity: "90", AveragePrice: "1",
+	}}
+	hedge := &stubAdapter{place: exchange.Result{
+		VenueOrderID: "hedge-1", Status: "filled",
+		FilledQuantity: "90", AveragePrice: "1",
+	}}
+	service := NewService(orderStore, nil, nil, nil, time.Second, nil)
+	executor := NewArbitrageExecutor(
+		store, orderStore, service,
+		silentRiskCatalog{makerInst.ID: makerInst, hedgeInst.ID: hedgeInst},
+		silentRiskCredentials{},
+		exchange.NewTestRegistry(map[string]exchange.Adapter{
+			"bybit": maker, "okx": hedge,
+		}),
+		dustCarryMarket(t, makerInst, hedgeInst), "",
+		time.Millisecond, 0, 0, 1, time.Second, nil,
+	)
+	execution := ArbitrageExecution{
+		ID: "dust-fast", CombinationID: combo.ID, Direction: "ask",
+		TargetBaseQuantity: "90", RequestedNotional: "90",
+		TriggerLegABid: "1", TriggerLegAAsk: "1",
+		TriggerLegBBid: "1", TriggerLegBAsk: "1",
+	}
+	bbo := marketdata.BBO{BidPrice: "1", AskPrice: "1"}
+	if err := executor.executeMakerThenHedge(
+		context.Background(), combo, &execution, bbo, bbo, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(hedge.requests) != 1 || hedge.requests[0].Quantity != "90" {
+		t.Fatalf("hedge requests=%+v", hedge.requests)
+	}
+	if !base.lastPrepare.FastPathAdmission || base.lastPrepare.AggregateCarry {
+		t.Fatalf("prepare=%+v", base.lastPrepare)
+	}
+	if base.recomputeCalls != 3 {
+		t.Fatalf("ordinary fill must not refresh before hedge: recomputeCalls=%d", base.recomputeCalls)
+	}
+}
+
+func TestDustMakerFilledNoHedgeAggregatesWithoutDustState(t *testing.T) {
+	makerInst := dustCarryInstrument(101, "bybit", "BTCUSDT", "50")
+	hedgeInst := dustCarryInstrument(202, "okx", "BTC-USDT-SWAP", "50")
+	combo := dustCarryCombo(makerInst, hedgeInst, "ask", "monitoring", "129")
+	orderStore := &postOnlyOrderStore{memoryStore: newMemoryStore()}
+	base := &executorFailStore{combo: combo, intentStore: orderStore}
+	store := &scriptedCarryStore{
+		executorFailStore: base,
+		carries:           []string{"129", "129", "0", "0"},
+	}
+	makerOrder := seedDustOrder(t, orderStore, Order{
+		IdempotencyKey: "arb:dust-recover:a:maker:0", OwnerUsername: "admin",
+		TradingAccountID: 1, Exchange: "bybit", InstrumentID: makerInst.ID,
+		Side: "buy", OrderType: "limit", Quantity: "90", Price: "1",
+		ArbitrageExecutionID: "dust-recover", ArbitrageLeg: "a", ArbitrageRole: "maker",
+	}, "filled", "90")
+	maker := unusedVenueAdapter{}
+	hedge := &stubAdapter{place: exchange.Result{
+		VenueOrderID: "hedge-1", Status: "filled",
+		FilledQuantity: "129", AveragePrice: "1",
+	}}
+	service := NewService(orderStore, nil, nil, nil, time.Second, nil)
+	executor := NewArbitrageExecutor(
+		store, orderStore, service,
+		silentRiskCatalog{makerInst.ID: makerInst, hedgeInst.ID: hedgeInst},
+		silentRiskCredentials{},
+		exchange.NewTestRegistry(map[string]exchange.Adapter{
+			"bybit": maker, "okx": hedge,
+		}),
+		dustCarryMarket(t, makerInst, hedgeInst), "",
+		time.Millisecond, 0, 0, 1, time.Second, nil,
+	)
+	execution := ArbitrageExecution{
+		ID: "dust-recover", CombinationID: combo.ID, Direction: "ask",
+		Status: "maker_open", MakerOrderID: makerOrder.ID,
+		LegAFilledQuantity: "90", TargetBaseQuantity: "90", RequestedNotional: "90",
+		TriggerLegABid: "1", TriggerLegAAsk: "1",
+		TriggerLegBBid: "1", TriggerLegBAsk: "1",
+	}
+	bbo := marketdata.BBO{BidPrice: "1", AskPrice: "1"}
+	if err := executor.executeMakerThenHedge(
+		context.Background(), combo, &execution, bbo, bbo, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(hedge.requests) != 1 || hedge.requests[0].Quantity != "129" {
+		t.Fatalf("hedge requests=%+v", hedge.requests)
+	}
+	if !base.lastPrepare.AggregateCarry || base.lastPrepare.FastPathAdmission {
+		t.Fatalf("prepare=%+v", base.lastPrepare)
+	}
+}
+
+func TestDustRestartPartialHedgeReconstructsCarry(t *testing.T) {
+	makerInst := dustCarryInstrument(101, "bybit", "BTCUSDT", "50")
+	hedgeInst := dustCarryInstrument(202, "okx", "BTC-USDT-SWAP", "50")
+	combo := dustCarryCombo(makerInst, hedgeInst, "ask", "monitoring", "89")
+	orderStore := &postOnlyOrderStore{memoryStore: newMemoryStore()}
+	base := &executorFailStore{combo: combo, intentStore: orderStore}
+	store := &scriptedCarryStore{
+		executorFailStore: base,
+		carries:           []string{"89", "89", "89", "0", "0"},
+	}
+	makerOrder := seedDustOrder(t, orderStore, Order{
+		IdempotencyKey: "arb:dust-restart:a:maker:0", OwnerUsername: "admin",
+		TradingAccountID: 1, Exchange: "bybit", InstrumentID: makerInst.ID,
+		Side: "buy", OrderType: "limit", Quantity: "90", Price: "1",
+		ArbitrageExecutionID: "dust-restart", ArbitrageLeg: "a", ArbitrageRole: "maker",
+	}, "filled", "90")
+	hedgeOrder := seedDustOrder(t, orderStore, Order{
+		IdempotencyKey: "arb:dust-restart:b:hedge:0", OwnerUsername: "admin",
+		TradingAccountID: 2, Exchange: "okx", InstrumentID: hedgeInst.ID,
+		Side: "sell", OrderType: "limit", Quantity: "90", Price: "1",
+		ArbitrageExecutionID: "dust-restart", ArbitrageLeg: "b", ArbitrageRole: "hedge",
+	}, "canceled", "40")
+	hedge := &stubAdapter{place: exchange.Result{
+		VenueOrderID: "hedge-2", Status: "filled",
+		FilledQuantity: "89", AveragePrice: "1",
+	}}
+	service := NewService(orderStore, nil, nil, nil, time.Second, nil)
+	executor := NewArbitrageExecutor(
+		store, orderStore, service,
+		silentRiskCatalog{makerInst.ID: makerInst, hedgeInst.ID: hedgeInst},
+		silentRiskCredentials{},
+		exchange.NewTestRegistry(map[string]exchange.Adapter{
+			"bybit": unusedVenueAdapter{}, "okx": hedge,
+		}),
+		dustCarryMarket(t, makerInst, hedgeInst), "",
+		time.Millisecond, 0, 0, 1, time.Second, nil,
+	)
+	execution := ArbitrageExecution{
+		ID: "dust-restart", CombinationID: combo.ID, Direction: "ask",
+		Status: "reconciling", MakerOrderID: makerOrder.ID, HedgeOrderID: hedgeOrder.ID,
+		HedgeSequence: 0, LegAFilledQuantity: "90", LegBFilledQuantity: "40",
+		TargetBaseQuantity: "90", RequestedNotional: "90",
+		TriggerLegABid: "1", TriggerLegAAsk: "1",
+		TriggerLegBBid: "1", TriggerLegBAsk: "1",
+	}
+	bbo := marketdata.BBO{BidPrice: "1", AskPrice: "1"}
+	if err := executor.executeMakerThenHedge(
+		context.Background(), combo, &execution, bbo, bbo, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(hedge.requests) != 1 || hedge.requests[0].Quantity != "89" {
+		t.Fatalf("restart must aggregate current carry, not remaining 50: %+v", hedge.requests)
+	}
+	if !base.lastPrepare.AggregateCarry || base.lastPrepare.FastPathAdmission {
+		t.Fatalf("prepare=%+v", base.lastPrepare)
+	}
+}
+
+func TestDustLiveHedgeDoesNotCompleteAsDust(t *testing.T) {
+	makerInst := dustCarryInstrument(101, "bybit", "BTCUSDT", "50")
+	hedgeInst := dustCarryInstrument(202, "okx", "BTC-USDT-SWAP", "50")
+	combo := dustCarryCombo(makerInst, hedgeInst, "ask", "monitoring", "129")
+	orderStore := &postOnlyOrderStore{memoryStore: newMemoryStore()}
+	store := &executorFailStore{combo: combo, intentStore: orderStore}
+	makerOrder := seedDustOrder(t, orderStore, Order{
+		IdempotencyKey: "arb:dust-live:a:maker:0", OwnerUsername: "admin",
+		TradingAccountID: 1, Exchange: "bybit", InstrumentID: makerInst.ID,
+		Side: "buy", OrderType: "limit", Quantity: "90", Price: "1",
+		ArbitrageExecutionID: "dust-live", ArbitrageLeg: "a", ArbitrageRole: "maker",
+	}, "filled", "90")
+	hedgeOrder := seedDustOrder(t, orderStore, Order{
+		IdempotencyKey: "arb:dust-live:b:hedge:0", OwnerUsername: "admin",
+		TradingAccountID: 2, Exchange: "okx", InstrumentID: hedgeInst.ID,
+		Side: "sell", OrderType: "limit", Quantity: "90", Price: "1",
+		ArbitrageExecutionID: "dust-live", ArbitrageLeg: "b", ArbitrageRole: "hedge",
+	}, "open", "0")
+	hedge := &stubAdapter{query: exchange.Result{Status: "open", FilledQuantity: "0"}}
+	service := NewService(orderStore, nil, nil, nil, time.Second, nil)
+	executor := NewArbitrageExecutor(
+		store, orderStore, service,
+		silentRiskCatalog{makerInst.ID: makerInst, hedgeInst.ID: hedgeInst},
+		silentRiskCredentials{},
+		exchange.NewTestRegistry(map[string]exchange.Adapter{
+			"bybit": unusedVenueAdapter{}, "okx": hedge,
+		}),
+		dustCarryMarket(t, makerInst, hedgeInst), "",
+		time.Millisecond, 0, 0, 1, 20*time.Millisecond, nil,
+	)
+	execution := ArbitrageExecution{
+		ID: "dust-live", CombinationID: combo.ID, Direction: "ask",
+		Status: "hedging", MakerOrderID: makerOrder.ID, HedgeOrderID: hedgeOrder.ID,
+		LegAFilledQuantity: "90", TargetBaseQuantity: "90",
+		TriggerLegABid: "1", TriggerLegAAsk: "1",
+		TriggerLegBBid: "1", TriggerLegBAsk: "1",
+	}
+	err := executor.executeMakerThenHedge(
+		context.Background(), combo, &execution,
+		marketdata.BBO{BidPrice: "1", AskPrice: "1"},
+		marketdata.BBO{BidPrice: "1", AskPrice: "1"},
+		nil,
+	)
+	if !errors.Is(err, ErrVenueUncertain) {
+		t.Fatalf("err=%v", err)
+	}
+	if execution.Status == "completed" {
+		t.Fatalf("live hedge must not complete: %+v", execution)
+	}
+	if len(hedge.requests) != 0 {
+		t.Fatalf("placed replacement: %+v", hedge.requests)
+	}
+}
+
+func TestDustClosePartialPositiveCarryCompletesLeftover(t *testing.T) {
+	makerInst := dustCarryInstrument(101, "bybit", "BTCUSDT", "20")
+	hedgeInst := dustCarryInstrument(202, "okx", "BTC-USDT-SWAP", "20")
+	combo := dustCarryCombo(makerInst, hedgeInst, "bid", "monitoring", "100")
+	combo.LegABasePosition = "200"
+	combo.LegBBasePosition = "-100"
+	orderStore := &postOnlyOrderStore{memoryStore: newMemoryStore()}
+	base := &executorFailStore{combo: combo, intentStore: orderStore}
+	store := &scriptedCarryStore{
+		executorFailStore: base,
+		carries:           []string{"100", "60", "60"},
+	}
+	maker := &stubAdapter{place: exchange.Result{
+		VenueOrderID: "maker-1", Status: "filled",
+		FilledQuantity: "40", AveragePrice: "1",
+	}}
+	hedge := &stubAdapter{}
+	service := NewService(orderStore, nil, nil, nil, time.Second, nil)
+	executor := NewArbitrageExecutor(
+		store, orderStore, service,
+		silentRiskCatalog{makerInst.ID: makerInst, hedgeInst.ID: hedgeInst},
+		silentRiskCredentials{},
+		exchange.NewTestRegistry(map[string]exchange.Adapter{
+			"bybit": maker, "okx": hedge,
+		}),
+		dustCarryMarket(t, makerInst, hedgeInst), "",
+		time.Millisecond, 0, 0, 1, time.Second, nil,
+	)
+	execution := ArbitrageExecution{
+		ID: "dust-leftover", CombinationID: combo.ID, Direction: "bid",
+		PositionEffect: "close", ReduceOnly: true,
+		TargetBaseQuantity: "40", RequestedNotional: "40",
+		TriggerLegABid: "1", TriggerLegAAsk: "1",
+		TriggerLegBBid: "1", TriggerLegBAsk: "1",
+	}
+	if err := executor.executeMakerThenHedge(
+		context.Background(), combo, &execution,
+		marketdata.BBO{BidPrice: "1", AskPrice: "1"},
+		marketdata.BBO{BidPrice: "1", AskPrice: "1"},
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(hedge.requests) != 0 {
+		t.Fatalf("must not expand short hedge: %+v", hedge.requests)
+	}
+	if execution.Status != "completed" {
+		t.Fatalf("execution=%+v", execution)
+	}
+	if store.combo.RuntimeState != "hedge_deferred_dust" {
+		t.Fatalf("combo=%+v", store.combo)
+	}
+	if !dustHasEvent(base, "hedge_deferred_dust") {
+		t.Fatalf("events=%v", base.eventTypes)
+	}
+}
+
+func TestDustEqualCarryLeftoverMustFail(t *testing.T) {
+	makerInst := dustCarryInstrument(101, "bybit", "BTCUSDT", "20")
+	hedgeInst := dustCarryInstrument(202, "okx", "BTC-USDT-SWAP", "20")
+	combo := dustCarryCombo(makerInst, hedgeInst, "bid", "monitoring", "100")
+	combo.LegABasePosition = "200"
+	combo.LegBBasePosition = "-100"
+	orderStore := &postOnlyOrderStore{memoryStore: newMemoryStore()}
+	base := &executorFailStore{combo: combo, intentStore: orderStore}
+	store := &scriptedCarryStore{
+		executorFailStore: base,
+		carries:           []string{"100", "100"},
+	}
+	maker := &stubAdapter{place: exchange.Result{
+		VenueOrderID: "maker-1", Status: "filled",
+		FilledQuantity: "40", AveragePrice: "1",
+	}}
+	service := NewService(orderStore, nil, nil, nil, time.Second, nil)
+	executor := NewArbitrageExecutor(
+		store, orderStore, service,
+		silentRiskCatalog{makerInst.ID: makerInst, hedgeInst.ID: hedgeInst},
+		silentRiskCredentials{},
+		exchange.NewTestRegistry(map[string]exchange.Adapter{
+			"bybit": maker, "okx": unusedVenueAdapter{},
+		}),
+		dustCarryMarket(t, makerInst, hedgeInst), "",
+		time.Millisecond, 0, 0, 1, time.Second, nil,
+	)
+	execution := ArbitrageExecution{
+		ID: "dust-equal", CombinationID: combo.ID, Direction: "bid",
+		PositionEffect: "close", ReduceOnly: true,
+		TargetBaseQuantity: "40", RequestedNotional: "40",
+		TriggerLegABid: "1", TriggerLegAAsk: "1",
+		TriggerLegBBid: "1", TriggerLegBAsk: "1",
+	}
+	err := executor.executeMakerThenHedge(
+		context.Background(), combo, &execution,
+		marketdata.BBO{BidPrice: "1", AskPrice: "1"},
+		marketdata.BBO{BidPrice: "1", AskPrice: "1"},
+		nil,
+	)
+	if !errors.Is(err, ErrArbitrageUnsafeHedge) {
+		t.Fatalf("err=%v", err)
+	}
+	if execution.Status == "completed" {
+		t.Fatalf("equal carry must not complete: %+v", execution)
+	}
+}
+
+func TestDustRepricingThenAggregatesNetCarry(t *testing.T) {
+	makerInst := dustCarryInstrument(101, "bybit", "BTCUSDT", "50")
+	hedgeInst := dustCarryInstrument(202, "okx", "BTC-USDT-SWAP", "50")
+	combo := dustCarryCombo(makerInst, hedgeInst, "ask", "monitoring", "39")
+	orderStore := &postOnlyOrderStore{memoryStore: newMemoryStore()}
+	base := &executorFailStore{combo: combo, intentStore: orderStore}
+	store := &scriptedCarryStore{
+		executorFailStore: base,
+		carries:           []string{"39", "39", "39", "39", "129", "0", "0"},
+	}
+	maker := &stubAdapter{
+		placeResults: []exchange.Result{
+			{
+				Status: "rejected", ErrorCode: "EC_PostOnlyWillTakeLiquidity",
+				FilledQuantity: "0",
+			},
+			{VenueOrderID: "maker-2", Status: "filled", FilledQuantity: "90", AveragePrice: "1"},
+		},
+		placeErrors: []error{exchange.ErrRejected, nil},
+	}
+	hedge := &stubAdapter{place: exchange.Result{
+		VenueOrderID: "hedge-1", Status: "filled",
+		FilledQuantity: "129", AveragePrice: "1",
+	}}
+	service := NewService(orderStore, nil, nil, nil, time.Second, nil)
+	executor := NewArbitrageExecutor(
+		store, orderStore, service,
+		silentRiskCatalog{makerInst.ID: makerInst, hedgeInst.ID: hedgeInst},
+		silentRiskCredentials{},
+		exchange.NewTestRegistry(map[string]exchange.Adapter{
+			"bybit": maker, "okx": hedge,
+		}),
+		dustCarryMarket(t, makerInst, hedgeInst), "",
+		time.Millisecond, 0, 0, 1, time.Second, nil,
+	)
+	first := ArbitrageExecution{
+		ID: "dust-reprice-1", CombinationID: combo.ID, Direction: "ask",
+		TargetBaseQuantity: "90", RequestedNotional: "90",
+		TriggerLegABid: "1", TriggerLegAAsk: "1",
+		TriggerLegBBid: "1", TriggerLegBAsk: "1",
+	}
+	bbo := marketdata.BBO{BidPrice: "1", AskPrice: "1"}
+	if err := executor.executeMakerThenHedge(
+		context.Background(), combo, &first, bbo, bbo, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if store.combo.RuntimeState != "repricing" {
+		t.Fatalf("runtime=%s", store.combo.RuntimeState)
+	}
+	if len(hedge.requests) != 0 {
+		t.Fatalf("zero fill must not hedge: %+v", hedge.requests)
+	}
+	base.execution = ArbitrageExecution{}
+	base.executions = nil
+	second := ArbitrageExecution{
+		ID: "dust-reprice-2", CombinationID: combo.ID, Direction: "ask",
+		TargetBaseQuantity: "90", RequestedNotional: "90",
+		TriggerLegABid: "1", TriggerLegAAsk: "1",
+		TriggerLegBBid: "1", TriggerLegBAsk: "1",
+	}
+	if err := executor.executeMakerThenHedge(
+		context.Background(), store.combo, &second, bbo, bbo, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(hedge.requests) != 1 || hedge.requests[0].Quantity != "129" {
+		t.Fatalf("hedge requests=%+v", hedge.requests)
+	}
+	if !base.lastPrepare.AggregateCarry || base.lastPrepare.FastPathAdmission {
+		t.Fatalf("prepare=%+v", base.lastPrepare)
 	}
 }

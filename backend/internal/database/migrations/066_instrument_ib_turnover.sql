@@ -1,0 +1,3 @@
+ALTER TABLE instruments
+    ADD COLUMN IF NOT EXISTS turnover_usd_90d DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ib_metrics_observed_at TIMESTAMPTZ;

@@ -203,12 +203,33 @@ describe("aggdata fair price mapping", () => {
         price: { mantissa: "6374667000", scale: 5 },
         degraded: false,
         degraded_reasons: [],
+      }, {
+        observed_at: "2026-08-13T13:40:02Z",
+        source_wall_ns: "1786512002000000000",
+        ring_epoch: "9",
+        seq: "11",
+        price: { mantissa: "8527600234", scale: 5 },
+        degraded: true,
+        degraded_reasons: ["book_crossed"],
       }],
     });
     expect(history.points[0]).toMatchObject({
       price: 63746.67,
       modelId: "fp-v1:test",
       sequence: 10n,
+      ringEpoch: 9n,
+      degraded: false,
+      degradedReasons: [],
+    });
+    expect(history.points[1]?.priceFixed.mantissa).toBe(8527600234n);
+    expect(history.points[1]?.priceFixed.scale).toBe(5);
+    expect(history.points[1]?.price).toBeCloseTo(85276.00234, 5);
+    expect(history.points[1]).toMatchObject({
+      modelId: "fp-v1:test",
+      ringEpoch: 9n,
+      sequence: 11n,
+      degraded: true,
+      degradedReasons: ["book_crossed"],
     });
   });
 

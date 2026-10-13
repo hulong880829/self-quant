@@ -135,6 +135,13 @@ enum class PolymarketOutcome : std::uint8_t {
   No = 2,
 };
 
+enum class PolymarketSignatureType : std::uint8_t {
+  Eoa = 0,
+  PolyProxy = 1,
+  Poly1271 = 3,
+  Unspecified = 0xff,
+};
+
 enum OrderFlag : std::uint16_t {
   PostOnly = 1U << 0U,
   ReduceOnly = 1U << 1U,
@@ -363,6 +370,14 @@ static_assert(std::is_standard_layout_v<RegisterInstrumentRequest>);
 static_assert(std::is_standard_layout_v<RetireInstrumentRequest>);
 static_assert(std::is_standard_layout_v<InstrumentCommandResult>);
 static_assert(sizeof(PolymarketOutcome) == 1);
+static_assert(sizeof(PolymarketSignatureType) == 1);
+static_assert(static_cast<std::uint8_t>(PolymarketSignatureType::Eoa) == 0);
+static_assert(static_cast<std::uint8_t>(PolymarketSignatureType::PolyProxy) ==
+              1);
+static_assert(static_cast<std::uint8_t>(PolymarketSignatureType::Poly1271) ==
+              3);
+static_assert(
+    static_cast<std::uint8_t>(PolymarketSignatureType::Unspecified) == 0xff);
 static_assert(sizeof(VenueSymbol) == 40);
 static_assert(sizeof(ResolvedInstrument::Crypto) == 64);
 static_assert(sizeof(ResolvedInstrument::Polymarket) == 64);

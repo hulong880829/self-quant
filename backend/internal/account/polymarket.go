@@ -45,7 +45,7 @@ func (s *Service) CreatePolymarketTradingAccount(
 	token string,
 	input CreatePolymarketTradingAccountInput,
 ) (TradingAccountView, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return TradingAccountView{}, err
 	}
@@ -156,7 +156,7 @@ func (s *Service) GetPolymarketCredentials(
 	token string,
 	accountID int64,
 ) (PolymarketCredentials, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return PolymarketCredentials{}, err
 	}
@@ -212,7 +212,7 @@ func (s *Service) RefreshPolymarketCredentials(
 	token string,
 	accountID int64,
 ) (PolymarketCredentials, error) {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return PolymarketCredentials{}, err
 	}
@@ -297,7 +297,7 @@ func (s *Service) setPolymarketBindingStatus(
 	accountID int64,
 	status string,
 ) error {
-	session, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(ctx, token)
 	if err != nil {
 		return err
 	}

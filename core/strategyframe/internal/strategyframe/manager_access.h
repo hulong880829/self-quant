@@ -34,6 +34,27 @@ struct ManagerAccess {
       std::span<const PositionView> positions) noexcept {
     return manager.replace_snapshot(positions);
   }
+  static Error UpdateAccountSnapshot(
+      PositionManager& manager, AccountId account_id,
+      std::span<const PositionView> positions) noexcept {
+    return manager.update_account_snapshot(account_id, positions);
+  }
+  static Error UpdateInstrumentSnapshot(
+      PositionManager& manager, AccountId account_id,
+      InstrumentId instrument_id,
+      std::span<const PositionView> positions) noexcept {
+    return manager.update_instrument_snapshot(account_id, instrument_id,
+                                              positions);
+  }
+  static Error CommitQuerySnapshot(PositionManager& manager,
+                                   AccountId account_id,
+                                   std::uint64_t query_epoch) noexcept {
+    return manager.commit_query_snapshot(account_id, query_epoch);
+  }
+  static std::uint64_t EnsureAccountEpoch(PositionManager& manager,
+                                          AccountId account_id) noexcept {
+    return manager.ensure_account_epoch(account_id);
+  }
   static void RetireInstrument(PositionManager& manager,
                                InstrumentId instrument) noexcept {
     manager.retire_instrument(instrument);

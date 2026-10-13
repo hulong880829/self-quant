@@ -249,6 +249,35 @@ func TestCalculateCombinedAnnualizedUsesActualHoldingAfterThreshold(t *testing.T
 	}
 }
 
+func TestLoadArbitrageReplayStrictSkipsZeroAverage(t *testing.T) {
+	at := time.Unix(1_700_000_000, 0).UTC()
+	queryer := stubReplayQuerier{rows: []stubReplayOrderRow{
+		{id: "binance-close", leg: "a", side: "sell", qty: "2", price: "0", at: at},
+		{id: "bitget-close", leg: "b", side: "buy", qty: "2", price: "0.214", at: at.Add(time.Second)},
+	}}
+	replay, err := loadArbitrageReplay(context.Background(), queryer, "combo", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.coverageComplete || len(replay.fills) != 1 || replay.fills[0].orderID != "bitget-close" {
+		t.Fatalf("strict replay=%+v", replay)
+	}
+	queryer.rows[0].price = "0.213"
+	complete, err := loadArbitrageReplay(context.Background(), queryer, "combo", true)
+	if err != nil || !complete.coverageComplete || len(complete.fills) != 2 {
+		t.Fatalf("filled replay=%+v err=%v", complete, err)
+	}
+}
+
+func TestPlanArbitragePositionMetricsWriteRequiresCoverage(t *testing.T) {
+	plan := planArbitragePositionMetricsWrite(
+		arbitrageReplay{coverageComplete: false}, true, true,
+	)
+	if plan.fillOK || plan.writeAnnualized || plan.quality != metricsQualityPartial {
+		t.Fatalf("plan=%+v", plan)
+	}
+}
+
 func TestLoadArbitrageReplaySynthesizesOneFillPerTerminalOrder(t *testing.T) {
 	at := time.Unix(1_700_000_000, 0).UTC()
 	queryer := stubReplayQuerier{rows: []stubReplayOrderRow{
@@ -328,7 +357,9 @@ func persistMetrics(
 	now time.Time,
 ) arbitragePositionMetricsPersistResult {
 	t.Helper()
-	result, err := repo.PersistRunningArbitragePositionMetrics(ctx, id, midA, midB, now)
+	result, err := repo.PersistRunningArbitragePositionMetrics(
+		ctx, id, metricsQuotesFromMids(midA, midB, now), now,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

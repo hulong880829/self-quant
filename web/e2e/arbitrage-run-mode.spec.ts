@@ -45,6 +45,7 @@ function combination(overrides: Record<string, unknown> = {}) {
     scheduledExitAt: "",
     oneShotPhase: "",
     earlyExitFunding8hAnnualizedFloor: "",
+    earlyExitLiquidationDistancePct: "",
     legABasePosition: "5",
     legBBasePosition: "-5",
     carryBaseQuantity: "0",

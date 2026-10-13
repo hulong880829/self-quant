@@ -18,10 +18,21 @@ const (
 	metricsQualityComplete           = "complete"
 	metricsQualityEstimated          = "estimated"
 	metricsQualityPartial            = "partial"
+	finalMetricsPending              = "pending"
+	finalMetricsPartial              = "partial"
+	finalMetricsCompleted            = "completed"
+	residualDustMetricsSkipped       = "residual_dust_metrics_skipped"
+	oneShotDustMetricsSkipped        = "one_shot_dust_metrics_skipped"
+	finalMetricsClaimLease           = 10 * time.Minute
+	finalMetricsBatchSize            = 20
 )
 
 const arbitrageMetricsWriteGuardSQL = `
 	status='running'
+	AND (
+		run_mode<>'one_shot'
+		OR one_shot_phase IN ('building_target','waiting_exit')
+	)
 	AND (metrics_calculated_at IS NULL OR metrics_calculated_at < $14)
 	AND NOT EXISTS (
 		SELECT 1 FROM trader_arbitrage_executions e
@@ -63,9 +74,10 @@ type arbitrageReplay struct {
 type arbitragePositionMetricsStore interface {
 	ListRunningArbitrageCombinationsForMetrics(context.Context) ([]ArbitrageCombination, error)
 	PersistRunningArbitragePositionMetrics(
-		context.Context, string, string, string, time.Time,
+		context.Context, string, arbitrageMetricsQuotes, time.Time,
 	) (arbitragePositionMetricsPersistResult, error)
 	MarkOneShotExiting(context.Context, string, int64, string, map[string]any) (ArbitrageCombination, bool, error)
+	MarkOneShotAnnualizedExiting(context.Context, oneShotAnnualizedExitGuard) (ArbitrageCombination, bool, error)
 }
 
 type MetricsApplyReason string
@@ -461,6 +473,10 @@ func (r *Repository) ListRunningArbitrageCombinationsForMetrics(
 		SELECT `+arbitrageCombinationColumns+`
 		FROM trader_arbitrage_combinations c
 		WHERE c.status='running'
+		  AND (
+			c.run_mode<>'one_shot'
+			OR c.one_shot_phase IN ('building_target','waiting_exit')
+		  )
 		  AND c.venue_baseline_captured_at IS NOT NULL
 		  AND EXISTS (
 			SELECT 1 FROM trader_orders o
@@ -496,15 +512,33 @@ func (r *Repository) ListRunningArbitrageCombinationsForMetrics(
 
 func (r *Repository) PersistRunningArbitragePositionMetrics(
 	ctx context.Context,
-	combinationID, legAMidRaw, legBMidRaw string,
+	combinationID string,
+	quotes arbitrageMetricsQuotes,
 	now time.Time,
 ) (arbitragePositionMetricsPersistResult, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	legAMid, errA := decimal.NewFromString(legAMidRaw)
-	legBMid, errB := decimal.NewFromString(legBMidRaw)
+	legAMid, errA := decimal.NewFromString(quotes.MidA)
+	legBMid, errB := decimal.NewFromString(quotes.MidB)
+	if (errA != nil || !legAMid.IsPositive()) && quotes.BidA != "" && quotes.AskA != "" {
+		bid, errBid := decimal.NewFromString(quotes.BidA)
+		ask, errAsk := decimal.NewFromString(quotes.AskA)
+		if errBid == nil && errAsk == nil && bid.IsPositive() && ask.IsPositive() {
+			legAMid = bid.Add(ask).Div(decimal.NewFromInt(2))
+			errA = nil
+		}
+	}
+	if (errB != nil || !legBMid.IsPositive()) && quotes.BidB != "" && quotes.AskB != "" {
+		bid, errBid := decimal.NewFromString(quotes.BidB)
+		ask, errAsk := decimal.NewFromString(quotes.AskB)
+		if errBid == nil && errAsk == nil && bid.IsPositive() && ask.IsPositive() {
+			legBMid = bid.Add(ask).Div(decimal.NewFromInt(2))
+			errB = nil
+		}
+	}
 	pricesAvailable := errA == nil && errB == nil && legAMid.IsPositive() && legBMid.IsPositive()
+	quotesFresh := quotes.fresh(now)
 
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -542,6 +576,16 @@ func (r *Repository) PersistRunningArbitragePositionMetrics(
 			Combination: item, Reason: MetricsInactive,
 		}, nil
 	}
+	combo, loadErr := r.getArbitrageCombinationByID(ctx, tx, combinationID)
+	if loadErr != nil {
+		return arbitragePositionMetricsPersistResult{}, loadErr
+	}
+	if strings.EqualFold(combo.RunMode, "one_shot") &&
+		combo.OneShotPhase != "building_target" && combo.OneShotPhase != "waiting_exit" {
+		return arbitragePositionMetricsPersistResult{
+			Combination: combo, Reason: MetricsInactive,
+		}, nil
+	}
 	if venueBaselineCapturedAt == nil {
 		item, loadErr := r.getArbitrageCombinationByID(ctx, tx, combinationID)
 		return arbitragePositionMetricsPersistResult{
@@ -549,9 +593,7 @@ func (r *Repository) PersistRunningArbitragePositionMetrics(
 		}, loadErr
 	}
 
-	strictAverageCoverage := strings.EqualFold(legAExchange, "hyperliquid") ||
-		strings.EqualFold(legBExchange, "hyperliquid")
-	replay, err := loadArbitrageReplay(ctx, tx, combinationID, strictAverageCoverage)
+	replay, err := loadArbitrageReplay(ctx, tx, combinationID, true)
 	if err != nil {
 		return arbitragePositionMetricsPersistResult{}, err
 	}
@@ -608,6 +650,7 @@ func (r *Repository) PersistRunningArbitragePositionMetrics(
 	annualized := decimal.Zero
 	thresholdHours := 0.0
 	writeAnnualized := writePlan.writeAnnualized
+	quotesFreshForAnnualized := quotesFresh
 	if writeAnnualized {
 		var thresholdErr error
 		thresholdHours, thresholdErr = r.arbitrageFundingThresholdHours(ctx, tx, combinationID)
@@ -615,9 +658,22 @@ func (r *Repository) PersistRunningArbitragePositionMetrics(
 			return arbitragePositionMetricsPersistResult{}, thresholdErr
 		}
 		profit := realized.Add(funding).Sub(estimatedFee)
-		annualized, writeAnnualized = calculateCombinedAnnualized(
-			profit, exposure, holding, thresholdHours,
-		)
+		if quotesFresh {
+			if closePnL, closeFee, ok := executableInventoryClosePnL(
+				legA, legB, quotes, accounts, combo,
+			); ok {
+				profit = profit.Add(closePnL).Sub(closeFee)
+			} else {
+				quotesFreshForAnnualized = false
+			}
+		}
+		if quotesFreshForAnnualized {
+			annualized, writeAnnualized = calculateCombinedAnnualized(
+				profit, exposure, holding, thresholdHours,
+			)
+		} else {
+			writeAnnualized = false
+		}
 	}
 	quality := metricsQualityPartial
 	if writeAnnualized {
@@ -646,7 +702,7 @@ func (r *Repository) PersistRunningArbitragePositionMetrics(
 			estimated_trading_fee=CASE WHEN NOT $20::bool THEN NULL WHEN $15::bool THEN $17::numeric ELSE estimated_trading_fee END,
 			metrics_calculated_at=CASE WHEN NOT $20::bool THEN NULL WHEN $15::bool THEN $14 ELSE metrics_calculated_at END,
 			funding_history_complete=$18,
-			metrics_quality=$19
+			metrics_quality=CASE WHEN NOT $20::bool OR $21::bool THEN $19 ELSE metrics_quality END
 		WHERE id=$1::uuid AND `+arbitrageMetricsWriteGuardSQL+`
 		RETURNING `+arbitrageCombinationColumns,
 		combinationID,
@@ -669,6 +725,7 @@ func (r *Repository) PersistRunningArbitragePositionMetrics(
 		writePlan.fundingHistoryComplete,
 		quality,
 		fillOK,
+		quotesFreshForAnnualized,
 	).Scan(arbitrageCombinationScanTargets(&updated)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		reason, classErr := classifyMetricsApplyMiss(ctx, tx, combinationID, now)
@@ -695,7 +752,7 @@ func (r *Repository) PersistRunningArbitragePositionMetrics(
 	result := arbitragePositionMetricsPersistResult{
 		Combination: updated, Applied: true, Reason: MetricsApplied,
 	}
-	if writeAnnualized {
+	if writeAnnualized && quotesFreshForAnnualized {
 		if basis, ok := buildOneShotExitBasis(
 			updated, legA, legB, realized, funding, estimatedFee,
 			exposure, holding, thresholdHours, accounts, now,
@@ -733,11 +790,11 @@ func classifyMetricsApplyMiss(
 	combinationID string,
 	now time.Time,
 ) (MetricsApplyReason, error) {
-	var status string
+	var status, runMode, oneShotPhase string
 	var calculatedAt *time.Time
 	var hasActiveExecution, hasActiveFilledOrder bool
 	err := tx.QueryRow(ctx, `
-		SELECT c.status,c.metrics_calculated_at,
+		SELECT c.status,c.run_mode,COALESCE(c.one_shot_phase,''),c.metrics_calculated_at,
 		       EXISTS (
 			SELECT 1 FROM trader_arbitrage_executions e
 			WHERE e.combination_id=c.id
@@ -752,23 +809,27 @@ func classifyMetricsApplyMiss(
 		       )
 		FROM trader_arbitrage_combinations c
 		WHERE c.id=$1::uuid`, combinationID,
-	).Scan(&status, &calculatedAt, &hasActiveExecution, &hasActiveFilledOrder)
+	).Scan(&status, &runMode, &oneShotPhase, &calculatedAt, &hasActiveExecution, &hasActiveFilledOrder)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MetricsInactive, nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("classify metrics apply miss: %w", err)
 	}
-	return metricsApplyMissReason(status, calculatedAt, now, hasActiveExecution, hasActiveFilledOrder), nil
+	return metricsApplyMissReason(status, runMode, oneShotPhase, calculatedAt, now, hasActiveExecution, hasActiveFilledOrder), nil
 }
 
 func metricsApplyMissReason(
-	status string,
+	status, runMode, oneShotPhase string,
 	calculatedAt *time.Time,
 	now time.Time,
 	hasActiveExecution, hasActiveFilledOrder bool,
 ) MetricsApplyReason {
 	if !strings.EqualFold(status, "running") {
+		return MetricsInactive
+	}
+	if strings.EqualFold(runMode, "one_shot") &&
+		oneShotPhase != "building_target" && oneShotPhase != "waiting_exit" {
 		return MetricsInactive
 	}
 	if hasActiveExecution || hasActiveFilledOrder {

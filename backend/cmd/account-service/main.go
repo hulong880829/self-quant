@@ -67,6 +67,7 @@ func main() {
 	tradingRepo := account.NewTradingRepository(pool)
 	portfolios := portfolio.NewRegistry(httpClient, venueURLs)
 	service := account.NewService(account.NewRepository(pool), tokens).
+		WithStatusCache(cfg.StatusCacheTTL).
 		WithTrading(tradingRepo, cipher).
 		WithPolymarket(
 			account.NewPolymarketCredentialRepository(pool),
@@ -82,6 +83,8 @@ func main() {
 		WithReadiness(httpClient, venueURLs).
 		WithInternalReports(cfg.ReportInternalToken, account.NewTradeFillRepository(pool)).
 		WithInternalTrader(cfg.TraderInternalToken).
+		WithInternalGateway(cfg.GatewayInternalToken).
+		WithInternalAdmin(cfg.AdminInternalToken).
 		WithAICredentials(account.NewAICredentialRepository(pool))
 	fees := account.NewFeeSync(
 		tradingRepo, portfolios, service.TradingCredentialsFromRecord, pool, logger, nil,
@@ -92,6 +95,7 @@ func main() {
 		os.Exit(1)
 	}
 	go fees.Run(ctx)
+	go account.NewEquityRefresher(tradingRepo, service, cfg.EquitySnapshotInterval, logger).Run(ctx)
 
 	listener, err := net.Listen("tcp", cfg.GRPCAddress)
 	if err != nil {

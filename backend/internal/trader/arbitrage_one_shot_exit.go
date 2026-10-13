@@ -29,6 +29,10 @@ type oneShotExitBasis struct {
 	BaselineA          decimal.Decimal
 	BaselineB          decimal.Decimal
 	BaselineCapturedAt time.Time
+	VenueA             decimal.Decimal
+	VenueB             decimal.Decimal
+	DifferenceA        decimal.Decimal
+	DifferenceB        decimal.Decimal
 	Realized           decimal.Decimal
 	Funding            decimal.Decimal
 	IncurredFee        decimal.Decimal
@@ -43,6 +47,51 @@ type oneShotExitBasis struct {
 	LegA               ArbitrageLeg
 	LegB               ArbitrageLeg
 	CalculatedAt       time.Time
+}
+
+type oneShotAnnualizedExitGuard struct {
+	CombinationID      string
+	BasisVersion       int64
+	CalculatedAt       time.Time
+	ExitAnnualizedRate decimal.Decimal
+	ComboA             decimal.Decimal
+	ComboB             decimal.Decimal
+	AvgA               decimal.Decimal
+	AvgB               decimal.Decimal
+	BaselineA          decimal.Decimal
+	BaselineB          decimal.Decimal
+	BaselineCapturedAt time.Time
+	VenueA             decimal.Decimal
+	VenueB             decimal.Decimal
+	DifferenceA        decimal.Decimal
+	DifferenceB        decimal.Decimal
+}
+
+func annualizedExitClock(value time.Time) time.Time {
+	if value.IsZero() || value.Equal(time.Unix(0, 0).UTC()) {
+		return time.Unix(0, 0).UTC()
+	}
+	return value
+}
+
+func annualizedExitGuard(basis oneShotExitBasis) oneShotAnnualizedExitGuard {
+	return oneShotAnnualizedExitGuard{
+		CombinationID:      basis.CombinationID,
+		BasisVersion:       basis.Version,
+		CalculatedAt:       annualizedExitClock(basis.CalculatedAt),
+		ExitAnnualizedRate: basis.ExitAnnualizedRate,
+		ComboA:             basis.ComboA,
+		ComboB:             basis.ComboB,
+		AvgA:               basis.AvgA,
+		AvgB:               basis.AvgB,
+		BaselineA:          basis.BaselineA,
+		BaselineB:          basis.BaselineB,
+		BaselineCapturedAt: annualizedExitClock(basis.BaselineCapturedAt),
+		VenueA:             basis.VenueA,
+		VenueB:             basis.VenueB,
+		DifferenceA:        basis.DifferenceA,
+		DifferenceB:        basis.DifferenceB,
+	}
 }
 
 type oneShotExitState struct {
@@ -63,12 +112,85 @@ type oneShotExitSampleResult struct {
 	fault bool
 }
 
+func oneShotPeriodicMetricsEligible(item ArbitrageCombination) bool {
+	if !strings.EqualFold(strings.TrimSpace(item.Status), "running") {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(item.RunMode), "one_shot") {
+		return true
+	}
+	return item.OneShotPhase == "building_target" || item.OneShotPhase == "waiting_exit"
+}
+
 func oneShotAnnualizedWaitingExit(item ArbitrageCombination) bool {
 	return strings.EqualFold(strings.TrimSpace(item.Status), "running") &&
 		strings.EqualFold(strings.TrimSpace(item.RunMode), "one_shot") &&
-		item.OneShotPhase == "waiting_exit" &&
-		item.ExitPolicy == "annualized" &&
-		!item.PositionUncertain
+		(item.OneShotPhase == "building_target" || item.OneShotPhase == "waiting_exit") &&
+		strings.TrimSpace(item.ExitAnnualizedRate) != "" &&
+		!item.PositionUncertain &&
+		!strings.EqualFold(strings.TrimSpace(item.RuntimeState), "manual_intervention")
+}
+
+func (q arbitrageMetricsQuotes) fresh(now time.Time) bool {
+	if quoteStale(q.ReceivedA, now) || quoteStale(q.ReceivedB, now) {
+		return false
+	}
+	bidA, err1 := decimal.NewFromString(q.BidA)
+	askA, err2 := decimal.NewFromString(q.AskA)
+	bidB, err3 := decimal.NewFromString(q.BidB)
+	askB, err4 := decimal.NewFromString(q.AskB)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return false
+	}
+	return bidA.IsPositive() && askA.IsPositive() && bidB.IsPositive() && askB.IsPositive()
+}
+
+func executableInventoryClosePnL(
+	legA, legB arbitrageLegCost,
+	quotes arbitrageMetricsQuotes,
+	accounts map[int64]accountFeeSnapshot,
+	combo ArbitrageCombination,
+) (pnl, fee decimal.Decimal, ok bool) {
+	bidA, err1 := decimal.NewFromString(quotes.BidA)
+	askA, err2 := decimal.NewFromString(quotes.AskA)
+	bidB, err3 := decimal.NewFromString(quotes.BidB)
+	askB, err4 := decimal.NewFromString(quotes.AskB)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return decimal.Zero, decimal.Zero, false
+	}
+	addLeg := func(cost arbitrageLegCost, bid, ask decimal.Decimal, thisLeg string, leg ArbitrageLeg) bool {
+		if cost.position.IsZero() {
+			return true
+		}
+		if !cost.average.IsPositive() {
+			return false
+		}
+		px, pxOK := executableClosePrice(cost.position, bid, ask)
+		if !pxOK || !px.IsPositive() {
+			return false
+		}
+		rate, rateOK := closeFeeCostRate(
+			leg, combo.ExecutionMode, combo.MakerLeg, thisLeg, accounts,
+		)
+		if !rateOK {
+			return false
+		}
+		pnl = pnl.Add(cost.position.Mul(px.Sub(cost.average)))
+		fee = fee.Add(cost.position.Abs().Mul(px).Mul(rate))
+		return true
+	}
+	if !addLeg(legA, bidA, askA, "a", combo.LegA) || !addLeg(legB, bidB, askB, "b", combo.LegB) {
+		return decimal.Zero, decimal.Zero, false
+	}
+	return pnl, fee, true
+}
+
+func metricsQuotesFromMids(midA, midB string, now time.Time) arbitrageMetricsQuotes {
+	return arbitrageMetricsQuotes{
+		MidA: midA, MidB: midB,
+		BidA: midA, AskA: midA, BidB: midB, AskB: midB,
+		ReceivedA: now, ReceivedB: now,
+	}
 }
 
 func closeFeeRole(executionMode, makerLeg, thisLeg string) string {
@@ -271,10 +393,6 @@ func buildOneShotExitBasis(
 	if !okA || !okB {
 		return nil, false
 	}
-	capturedAt := updated.VenueBaselineCapturedAt
-	if capturedAt.Equal(time.Unix(0, 0).UTC()) {
-		capturedAt = time.Time{}
-	}
 	return &oneShotExitBasis{
 		CombinationID:      updated.ID,
 		Version:            updated.Version,
@@ -287,7 +405,11 @@ func buildOneShotExitBasis(
 		ComboB:             parseDecimal(updated.LegBBasePosition),
 		BaselineA:          parseDecimal(updated.LegAVenueBaselineBasePosition),
 		BaselineB:          parseDecimal(updated.LegBVenueBaselineBasePosition),
-		BaselineCapturedAt: capturedAt,
+		BaselineCapturedAt: updated.VenueBaselineCapturedAt,
+		VenueA:             parseDecimal(updated.LegAVenueBasePosition),
+		VenueB:             parseDecimal(updated.LegBVenueBasePosition),
+		DifferenceA:        parseDecimal(updated.LegAPositionDifference),
+		DifferenceB:        parseDecimal(updated.LegBPositionDifference),
 		Realized:           realized,
 		Funding:            funding,
 		IncurredFee:        incurredFee,
@@ -301,6 +423,6 @@ func buildOneShotExitBasis(
 		MakerLeg:           updated.MakerLeg,
 		LegA:               updated.LegA,
 		LegB:               updated.LegB,
-		CalculatedAt:       now,
+		CalculatedAt:       updated.MetricsCalculatedAt,
 	}, true
 }

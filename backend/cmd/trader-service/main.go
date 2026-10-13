@@ -82,6 +82,7 @@ func main() {
 		cfg.HTTPTimeout,
 		logger,
 	)
+	service.WithAdminInternalToken(cfg.AdminInternalToken)
 	service.ConfigureTwap(repository)
 	service.ConfigureArbitrage(repository)
 	service.ConfigureArbitrageExchanges(cfg.ArbitrageEnabledExchanges)
@@ -166,12 +167,19 @@ func main() {
 	arbitragePositionMetrics := trader.NewArbitragePositionMetricsWorker(
 		repository, marketData, logger,
 	)
-	arbitragePositionMetrics.ConfigureFillAverageCompensator(
+	fillAverageCompensator := trader.NewArbitrageFillAverageCompensator(
+		repository,
+		arbitrageOrderStreams,
+		catalog,
+		credentialProvider,
+		venues,
 		trader.NewHyperliquidArbitrageFillAverageCompensator(
 			repository, catalog, credentialProvider, venues,
 			cfg.InternalToken, cfg.HTTPTimeout, logger,
 		),
+		cfg.InternalToken, cfg.HTTPTimeout, logger,
 	)
+	arbitragePositionMetrics.ConfigureFillAverageCompensator(fillAverageCompensator)
 	arbitrageScheduler := trader.NewArbitrageScheduler(
 		repository, marketData, arbitrageExecutor,
 		cfg.ArbitrageControlInterval, cfg.ArbitrageCoalesceWindow,
@@ -183,14 +191,24 @@ func main() {
 	arbitrageScheduler.ConfigureArbitrageInstruments(catalog)
 	arbitrageScheduler.ConfigureArbitrageExchanges(cfg.ArbitrageEnabledExchanges)
 	arbitrageScheduler.ConfigureSignalBBOStale(cfg.ArbitrageSignalBBOStale)
+	arbitrageScheduler.ConfigureFillAverageCompensator(fillAverageCompensator)
 	arbitrageExecutor.ConfigureSignalBBOStale(cfg.ArbitrageSignalBBOStale)
+	arbitrageExecutor.ConfigureFillAverageCompensator(fillAverageCompensator)
 	service.ConfigureArbitrageValuations(arbitrageScheduler)
 	positionAuditor.ConfigureArbitrageValuations(arbitrageScheduler)
 	arbitrageScheduler.ConfigureRuntimeLifecycle(arbitragePositionMetrics)
+	service.ConfigureArbitrageMetricsLifecycle(arbitragePositionMetrics)
+	arbitrageExecutor.ConfigureMetricsLifecycle(arbitragePositionMetrics)
+	arbitrageExecutor.ConfigureFinalMetrics(repository)
 	arbitrageScheduler.StartBatchers(ctx)
 	go arbitrageScheduler.Run(ctx)
 	go arbitragePositionMetrics.Run(ctx)
-	go trader.NewArbitrageFunding8hExitWorker(repository, logger).Run(ctx)
+	go trader.NewArbitrageFinalMetricsWorker(repository, fillAverageCompensator, logger).Run(ctx)
+	funding8hExit := trader.NewArbitrageFunding8hExitWorker(repository, logger)
+	arbitragePositionMetrics.ConfigureExitSignal(arbitrageScheduler)
+	funding8hExit.ConfigureExitSignal(arbitrageScheduler)
+	positionAuditor.ConfigureExitSignal(arbitrageScheduler)
+	go funding8hExit.Run(ctx)
 	go positionAuditor.Run(ctx)
 	arbitrageMetrics := trader.NewArbitrageMetricsReporter(
 		arbitrageScheduler, marketData, arbitrageOrderStreams, arbitrageExecutor, time.Minute, logger,

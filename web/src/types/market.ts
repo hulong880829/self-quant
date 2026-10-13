@@ -121,6 +121,41 @@ export interface RankedFundingOpportunity {
   stale: boolean;
 }
 
+export interface TradefiPerpRow {
+  id: string;
+  stockSymbol: string;
+  spotExchange: string;
+  conId: string;
+  primaryExchange: string;
+  localSymbol: string;
+  tradingClass: string;
+  exchange: Exchange;
+  exchangeSymbol: string;
+  baseAsset: string;
+  quoteAsset: string;
+  fundingRate: number;
+  perpetualFundingAnnualized: number;
+  annualizedRate: number;
+  currentFundingRate: number | null;
+  nextFundingRate: number | null;
+  settlementIntervalHours: number;
+  nextFundingAt: string;
+  nextSettlementAt: string;
+  volume24hBase: number;
+  turnover24hUsd: number;
+  dailyVolume: number;
+  positionQuantity: number;
+  positionNotional: number;
+  cumulative24h: number;
+  cumulative7d: number;
+  history24hComplete?: boolean;
+  history7dComplete?: boolean;
+  stale?: boolean;
+  updatedAt: string;
+  verifiedAt: string;
+  priceMultiplier?: string;
+}
+
 export type RateDirection = "all" | "positive" | "negative";
 
 export type ContractKind = "crypto" | "tradifi" | "hip3";

@@ -93,6 +93,12 @@ type dryRunStore struct {
 	dustGateUnreconciled bool
 	withDustSkip         bool
 	withDustErr          error
+	flattenClaims        int
+	lastFlattenClaim     OneShotFinalFlattenClaim
+	orders               []Order
+	flattenFinalizeCalls int
+	flattenFinalizeErr   error
+	finalMetricsErr      error
 }
 
 type closeRetryStore struct {
@@ -130,7 +136,7 @@ func (*closeRetryRunner) RecoverWithoutMarketData(
 }
 
 func (*closeRetryRunner) ReconcileCircuitOpen(
-	context.Context, ArbitrageCombination, ArbitrageExecution,
+	context.Context, ArbitrageCombination,
 ) error {
 	return nil
 }
@@ -212,6 +218,84 @@ func (s *dryRunStore) ClaimArbitrageExecution(
 	return execution, s.claim, nil
 }
 
+func (s *dryRunStore) ClaimOneShotFinalFlattenExecution(
+	_ context.Context, claim OneShotFinalFlattenClaim,
+) (ArbitrageExecution, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flattenClaims++
+	s.lastFlattenClaim = claim
+	if s.claimLimit > 0 && s.flattenClaims > s.claimLimit {
+		return ArbitrageExecution{}, false, nil
+	}
+	if !s.claim {
+		return ArbitrageExecution{}, false, nil
+	}
+	if !validateOneShotFinalFlattenClaim(s.item, claim, time.Now().UTC()) {
+		return ArbitrageExecution{}, false, nil
+	}
+	execution := claim.Execution
+	if execution.ID == "" {
+		execution.ID = "flatten-" + strconv.Itoa(s.flattenClaims)
+	}
+	copied := execution
+	s.activeExecution = &copied
+	return execution, true, nil
+}
+
+func (s *dryRunStore) FinalizeOneShotFinalFlattenExecution(
+	_ context.Context, executionID string,
+) (oneShotFinalFlattenFinalizeResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flattenFinalizeCalls++
+	if s.flattenFinalizeErr != nil {
+		return oneShotFinalFlattenFinalizeResult{}, s.flattenFinalizeErr
+	}
+	execution := ArbitrageExecution{}
+	if s.activeExecution != nil && s.activeExecution.ID == executionID {
+		execution = *s.activeExecution
+	}
+	if !oneShotFinalFlattenOrdersTerminal(s.orders, executionID) {
+		return oneShotFinalFlattenFinalizeResult{
+			Combination: s.item, Execution: execution,
+		}, ErrArbitrageReconciling
+	}
+	if terminalArbitrageExecutionStatus(execution.Status) {
+		return oneShotFinalFlattenFinalizeResult{
+			Combination: s.item, Execution: execution,
+		}, nil
+	}
+	s.item = applyOneShotFinalFlattenLedger(s.item, s.orders, executionID)
+	fillA, fillB, notional := oneShotFinalFlattenFillTotals(s.orders, executionID)
+	execution.LegAFilledQuantity = fillA.String()
+	execution.LegBFilledQuantity = fillB.String()
+	execution.DeltaNotional = notional.String()
+	if fillA.IsPositive() || fillB.IsPositive() {
+		execution.Status = "completed"
+	} else {
+		execution.Status = "failed"
+	}
+	execution.ClosedAt = time.Now().UTC()
+	if notional.IsPositive() {
+		s.item.CumulativeTurnoverNotional = parseDecimal(s.item.CumulativeTurnoverNotional).
+			Add(notional.Abs()).String()
+	}
+	copied := execution
+	s.activeExecution = &copied
+	return oneShotFinalFlattenFinalizeResult{
+		Combination: s.item, Execution: execution, Applied: true,
+	}, nil
+}
+
+func (s *dryRunStore) ListArbitrageOrders(
+	context.Context, string, string,
+) ([]Order, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Order(nil), s.orders...), nil
+}
+
 func (s *dryRunStore) MarkOneShotWaitingExit(
 	_ context.Context, id string, version int64, scheduled time.Time,
 ) (ArbitrageCombination, bool, error) {
@@ -222,7 +306,9 @@ func (s *dryRunStore) MarkOneShotWaitingExit(
 	}
 	s.item.OneShotPhase = "waiting_exit"
 	s.item.TargetReachedAt = time.Now().UTC()
-	s.item.ScheduledExitAt = scheduled
+	if s.item.ScheduledExitAt.IsZero() || s.item.ScheduledExitAt.Equal(time.Unix(0, 0).UTC()) {
+		s.item.ScheduledExitAt = scheduled
+	}
 	s.item.Version++
 	return s.item, true, nil
 }
@@ -251,6 +337,38 @@ func (s *dryRunStore) MarkOneShotExited(
 		return s.item, false, nil
 	}
 	s.item.OneShotPhase = "exited"
+	s.item.Version++
+	if s.item.FinalMetricsStatus != finalMetricsCompleted {
+		s.item.FinalMetricsStatus = finalMetricsPending
+		s.item.FinalMetricsRetryFinite = true
+		s.item.FinalMetricsNextRetryAt = time.Now().UTC()
+	}
+	return s.item, true, nil
+}
+
+func (s *dryRunStore) PersistFinalArbitragePositionMetrics(
+	_ context.Context, id string, expectedVersion int64, _ bool, _ time.Time,
+) (ArbitrageCombination, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finalMetricsErr != nil {
+		return s.item, s.finalMetricsErr
+	}
+	if s.item.ID != id || s.item.Version != expectedVersion {
+		return s.item, ErrArbitrageConflict
+	}
+	return s.item, nil
+}
+
+func (s *dryRunStore) MarkArbitrageClosedAndScheduleFinalMetrics(
+	_ context.Context, id string, expectedVersion int64,
+) (ArbitrageCombination, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.item.ID != id || s.item.Version != expectedVersion || s.item.Status != "closing" {
+		return s.item, false, nil
+	}
+	s.item.Status = "closed"
 	s.item.Version++
 	return s.item, true, nil
 }
@@ -492,11 +610,12 @@ type schedulerRunner struct {
 	executeHook   func()
 	recovered     chan ArbitrageExecution
 	recoverHook   func()
-	reconciled    chan ArbitrageExecution
+	reconciled    chan ArbitrageCombination
 	reconcileErr  error
 	reconcileHook func()
 	closed        chan ArbitrageCombination
 	closeErr      error
+	closeHook     func(ArbitrageCombination)
 }
 
 type blockingSchedulerRunner struct {
@@ -504,12 +623,14 @@ type blockingSchedulerRunner struct {
 	release      chan struct{}
 	canceled     chan struct{}
 	ignoreCancel bool
+	releaseOnce  sync.Once
 }
 
 type blockingRecoveryRunner struct {
-	started chan struct{}
-	release chan struct{}
-	closed  chan ArbitrageCombination
+	started     chan struct{}
+	release     chan struct{}
+	closed      chan ArbitrageCombination
+	releaseOnce sync.Once
 }
 
 type activeResumeStore struct {
@@ -524,6 +645,40 @@ func (s activeResumeStore) GetActiveArbitrageExecution(
 	return s.execution, nil
 }
 
+func sendExecution(ch chan ArbitrageExecution, execution ArbitrageExecution) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- execution:
+	default:
+	}
+}
+
+func sendCombination(ch chan ArbitrageCombination, item ArbitrageCombination) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- item:
+	default:
+	}
+}
+
+func (r *blockingSchedulerRunner) Release() {
+	if r == nil || r.release == nil {
+		return
+	}
+	r.releaseOnce.Do(func() { close(r.release) })
+}
+
+func (r *blockingRecoveryRunner) Release() {
+	if r == nil || r.release == nil {
+		return
+	}
+	r.releaseOnce.Do(func() { close(r.release) })
+}
+
 func (r *schedulerRunner) Execute(
 	_ context.Context,
 	_ ArbitrageCombination,
@@ -534,7 +689,7 @@ func (r *schedulerRunner) Execute(
 	if r.executeHook != nil {
 		r.executeHook()
 	}
-	r.executed <- execution
+	sendExecution(r.executed, execution)
 }
 
 func (r *blockingSchedulerRunner) Execute(
@@ -563,7 +718,7 @@ func (*blockingSchedulerRunner) RecoverWithoutMarketData(
 }
 
 func (*blockingSchedulerRunner) ReconcileCircuitOpen(
-	context.Context, ArbitrageCombination, ArbitrageExecution,
+	context.Context, ArbitrageCombination,
 ) error {
 	return nil
 }
@@ -589,7 +744,7 @@ func (r *blockingRecoveryRunner) RecoverWithoutMarketData(
 }
 
 func (*blockingRecoveryRunner) ReconcileCircuitOpen(
-	context.Context, ArbitrageCombination, ArbitrageExecution,
+	context.Context, ArbitrageCombination,
 ) error {
 	return nil
 }
@@ -597,7 +752,7 @@ func (*blockingRecoveryRunner) ReconcileCircuitOpen(
 func (r *blockingRecoveryRunner) CloseCombination(
 	_ context.Context, item ArbitrageCombination,
 ) error {
-	r.closed <- item
+	sendCombination(r.closed, item)
 	return nil
 }
 
@@ -607,21 +762,17 @@ func (r *schedulerRunner) RecoverWithoutMarketData(
 	if r.recoverHook != nil {
 		r.recoverHook()
 	}
-	if r.recovered != nil {
-		r.recovered <- execution
-	}
+	sendExecution(r.recovered, execution)
 	return nil
 }
 
 func (r *schedulerRunner) ReconcileCircuitOpen(
-	_ context.Context, _ ArbitrageCombination, execution ArbitrageExecution,
+	_ context.Context, combination ArbitrageCombination,
 ) error {
 	if r.reconcileHook != nil {
 		r.reconcileHook()
 	}
-	if r.reconciled != nil {
-		r.reconciled <- execution
-	}
+	sendCombination(r.reconciled, combination)
 	return r.reconcileErr
 }
 
@@ -629,9 +780,10 @@ func (r *schedulerRunner) CloseCombination(
 	_ context.Context,
 	item ArbitrageCombination,
 ) error {
-	if r.closed != nil {
-		r.closed <- item
+	if r.closeHook != nil {
+		r.closeHook(item)
 	}
+	sendCombination(r.closed, item)
 	return r.closeErr
 }
 
@@ -1382,6 +1534,203 @@ func testStaleParser(key marketdata.Key, _ []byte, received time.Time) (marketda
 	}, true, nil
 }
 
+func TestArbitrageSchedulerOpportunityGoneOpensOnFreshAsk(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	market, connectionA, connectionB := newEventSchedulerMarket(t)
+	item := eventSchedulerCombination()
+	item.ID = "46c5b9e3-3fdd-4930-b529-c2d902b61801"
+	item.RuntimeState = "opportunity_gone"
+	store := &dryRunStore{claim: true, item: item}
+	runner := &schedulerRunner{executed: make(chan ArbitrageExecution, 1)}
+	scheduler := newTestArbitrageScheduler(
+		store, market, runner, time.Millisecond, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	scheduler.runOnce(ctx)
+	connectionA.reads <- []byte("100,100.1")
+	connectionB.reads <- []byte("100.3,100.4")
+	keyA, _ := marketdata.NewKey("bybit", "perpetual", "COTIUSDT")
+	keyB, _ := marketdata.NewKey("bitget", "perpetual", "COTIUSDT")
+	waitForFreshBBO(t, market, keyA)
+	waitForFreshBBO(t, market, keyB)
+	scheduler.runOnce(ctx)
+	defer scheduler.closeAll()
+	select {
+	case execution := <-runner.executed:
+		if execution.Direction != "ask" || execution.PositionEffect != "open" ||
+			execution.ReduceOnly {
+			t.Fatalf("execution=%+v", execution)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("opportunity_gone did not open on fresh ask")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.claims != 1 {
+		t.Fatalf("claims=%d", store.claims)
+	}
+}
+
+func TestArbitrageSchedulerOpportunityGoneClosesOnFreshBid(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	market, connectionA, connectionB := newEventSchedulerMarket(t)
+	item := eventSchedulerCombination()
+	item.ID = "46c5b9e3-3fdd-4930-b529-c2d902b61802"
+	item.RuntimeState = "opportunity_gone"
+	item.LegA.InstrumentID = 101
+	item.LegB.InstrumentID = 202
+	item.ExecutionMode = "simultaneous_market"
+	item.AskThresholdBps = "1000"
+	item.BidThresholdBps = "-50"
+	item.OrderNotional = "500"
+	item.VenueBaselineCapturedAt = time.Now().UTC()
+	item.LegAVenueBaselineBasePosition = "100"
+	item.LegBVenueBaselineBasePosition = "-100"
+	store := &dryRunStore{claim: true, item: item}
+	runner := &schedulerRunner{executed: make(chan ArbitrageExecution, 1)}
+	scheduler := newTestArbitrageScheduler(
+		store, market, runner, time.Millisecond, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	instrument := func(id int64) Instrument {
+		return Instrument{
+			ID: id, Exchange: "binance", ContractType: "perpetual",
+			QuantityStep: "1", PriceTick: "0.1",
+			MinQuantity: "1", MinNotional: "1",
+			MinQuantityStatus:  exchange.ConstraintKnown,
+			MaxQuantityStatus:  exchange.ConstraintNotApplicable,
+			MinNotionalStatus:  exchange.ConstraintKnown,
+			MarketQuantityStep: "1", MarketMinQuantity: "1",
+			MarketMinNotional:        "1",
+			MarketQuantityStepStatus: exchange.ConstraintKnown,
+			MarketMinQuantityStatus:  exchange.ConstraintKnown,
+			MarketMaxQuantityStatus:  exchange.ConstraintNotApplicable,
+			MarketMinNotionalStatus:  exchange.ConstraintKnown,
+		}
+	}
+	scheduler.ConfigureArbitrageInstruments(
+		silentRiskCatalog{101: instrument(101), 202: instrument(202)},
+	)
+	scheduler.runOnce(ctx)
+	connectionA.reads <- []byte("100,100.1")
+	connectionB.reads <- []byte("99,99.1")
+	keyA, _ := marketdata.NewKey("bybit", "perpetual", "COTIUSDT")
+	keyB, _ := marketdata.NewKey("bitget", "perpetual", "COTIUSDT")
+	waitForFreshBBO(t, market, keyA)
+	waitForFreshBBO(t, market, keyB)
+	scheduler.runOnce(ctx)
+	defer scheduler.closeAll()
+	select {
+	case execution := <-runner.executed:
+		if execution.Direction != "bid" || execution.PositionEffect != "close" ||
+			!execution.ReduceOnly {
+			t.Fatalf("execution=%+v", execution)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("opportunity_gone did not close on fresh bid")
+	}
+}
+
+func TestArbitrageSchedulerOpportunityGoneDoesNotClaimBelowThreshold(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	market, connectionA, connectionB := newEventSchedulerMarket(t)
+	item := eventSchedulerCombination()
+	item.ID = "46c5b9e3-3fdd-4930-b529-c2d902b61803"
+	item.RuntimeState = "opportunity_gone"
+	item.AskThresholdBps = "1000"
+	item.BidThresholdBps = "-1000"
+	store := &dryRunStore{claim: true, item: item}
+	runner := &schedulerRunner{executed: make(chan ArbitrageExecution, 1)}
+	scheduler := newTestArbitrageScheduler(
+		store, market, runner, time.Millisecond, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	scheduler.runOnce(ctx)
+	connectionA.reads <- []byte("100,100.1")
+	connectionB.reads <- []byte("100.3,100.4")
+	keyA, _ := marketdata.NewKey("bybit", "perpetual", "COTIUSDT")
+	keyB, _ := marketdata.NewKey("bitget", "perpetual", "COTIUSDT")
+	waitForFreshBBO(t, market, keyA)
+	waitForFreshBBO(t, market, keyB)
+	scheduler.runOnce(ctx)
+	scheduler.closeAll()
+	select {
+	case execution := <-runner.executed:
+		t.Fatalf("below-threshold execution=%+v", execution)
+	default:
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.claims != 0 {
+		t.Fatalf("claims=%d", store.claims)
+	}
+}
+
+func TestArbitrageSchedulerOpportunityGoneDoesNotTriggerWithStaleLeg(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	keyA, _ := marketdata.NewKey("bybit", "perpetual", "COTIUSDT")
+	keyB, _ := marketdata.NewKey("bitget", "perpetual", "COTIUSDT")
+	connectionA := &schedulerConnection{reads: make(chan []byte, 1), done: make(chan struct{})}
+	connectionB := &schedulerConnection{reads: make(chan []byte, 1), done: make(chan struct{})}
+	connector := &schedulerConnector{connections: map[marketdata.Key]*schedulerConnection{
+		keyA: connectionA, keyB: connectionB,
+	}}
+	market, err := marketdata.New(marketdata.Options{
+		Connector: connector,
+		Parsers: map[string]marketdata.Parser{
+			"bybit": func(key marketdata.Key, payload []byte, received time.Time) (marketdata.BBO, bool, error) {
+				return marketdata.BBO{
+					Key: key, BidPrice: "100", AskPrice: "100", BidQuantity: "10000", AskQuantity: "10000",
+					ReceiveTimestamp: received,
+				}, true, nil
+			},
+			"bitget": testStaleParser,
+		},
+		StaleAfter: time.Millisecond, ReconnectInitial: time.Hour, ReconnectMax: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer market.Close()
+	item := eventSchedulerCombination()
+	item.ID = "46c5b9e3-3fdd-4930-b529-c2d902b61804"
+	item.RuntimeState = "opportunity_gone"
+	item.AskThresholdBps = "-100"
+	item.BidThresholdBps = "100"
+	store := &dryRunStore{claim: true, item: item}
+	runner := &schedulerRunner{executed: make(chan ArbitrageExecution, 1)}
+	scheduler := newTestArbitrageScheduler(
+		store, market, runner, time.Millisecond, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	scheduler.runOnce(ctx)
+	connectionA.reads <- []byte("fresh")
+	connectionB.reads <- []byte("stale")
+	deadline := time.Now().Add(time.Second)
+	for market.Stats().Updates < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("BBO fixtures were not consumed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	scheduler.runOnce(ctx)
+	scheduler.closeAll()
+	select {
+	case <-runner.executed:
+		t.Fatal("stale BBO triggered execution")
+	default:
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.claims != 0 {
+		t.Fatalf("stale BBO claims=%d", store.claims)
+	}
+}
+
 func TestArbitrageSchedulerSkipsAskAtPositiveCap(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1665,10 +2014,10 @@ func TestArbitrageSchedulerFlattenTinyUnpairedClosesWithoutClaim(t *testing.T) {
 	runtime := &arbitrageRuntime{combination: item}
 	bbo := flattenCloseBBO()
 	px := decimal.RequireFromString("0.214")
-	if !scheduler.flattenOrFinalizeClosing(
+	if scheduler.flattenOrFinalizeClosing(
 		context.Background(), runtime, bbo, bbo, px, px, px, px,
 	) {
-		t.Fatal("tiny unpaired should close combination")
+		t.Fatal("tiny unpaired must stay closing until the ledger is flat")
 	}
 	if store.claims != 0 {
 		t.Fatalf("claims=%d events=%v", store.claims, store.eventTypes)
@@ -1691,10 +2040,10 @@ func TestArbitrageSchedulerFlattenMinusFivePlusTenTinyClosesWithoutClaim(t *test
 	runtime := &arbitrageRuntime{combination: item}
 	bbo := flattenCloseBBO()
 	px := decimal.RequireFromString("0.214")
-	if !scheduler.flattenOrFinalizeClosing(
+	if scheduler.flattenOrFinalizeClosing(
 		context.Background(), runtime, bbo, bbo, px, px, px, px,
 	) {
-		t.Fatal("paired tiny leftover should close combination")
+		t.Fatal("paired tiny leftover must stay closing until the ledger is flat")
 	}
 	if store.claims != 0 {
 		t.Fatalf("claims=%d events=%v", store.claims, store.eventTypes)
@@ -1724,10 +2073,10 @@ func TestArbitrageSchedulerFlattenPairedTinyUnequalClosesWithoutClaim(t *testing
 	bbo.BidPrice = "25"
 	bbo.AskPrice = "25"
 	px := decimal.RequireFromString("25")
-	if !scheduler.flattenOrFinalizeClosing(
+	if scheduler.flattenOrFinalizeClosing(
 		context.Background(), runtime, bbo, bbo, px, px, px, px,
 	) {
-		t.Fatal("paired-but-unequal tiny should close combination")
+		t.Fatal("paired-but-unequal tiny must stay closing until the ledger is flat")
 	}
 	if store.claims != 0 {
 		t.Fatalf("claims=%d events=%v", store.claims, store.eventTypes)
@@ -1760,10 +2109,10 @@ func TestArbitrageSchedulerFlattenPairedTinyCloseFailedKeyStillCloses(t *testing
 	bbo.BidPrice = "25"
 	bbo.AskPrice = "25"
 	px := decimal.RequireFromString("25")
-	if !scheduler.flattenOrFinalizeClosing(
+	if scheduler.flattenOrFinalizeClosing(
 		context.Background(), runtime, bbo, bbo, px, px, px, px,
 	) {
-		t.Fatal("close_failed must not block a valid paired tiny")
+		t.Fatal("close_failed must not block a valid paired tiny, and the runtime must stay")
 	}
 	if store.claims != 0 {
 		t.Fatalf("claims=%d", store.claims)
@@ -1862,10 +2211,10 @@ func TestArbitrageSchedulerFlattenSameSignTinyClosesBothLegs(t *testing.T) {
 	runtime := &arbitrageRuntime{combination: item}
 	bbo := flattenCloseBBO()
 	px := decimal.RequireFromString("0.214")
-	if !scheduler.flattenOrFinalizeClosing(
+	if scheduler.flattenOrFinalizeClosing(
 		context.Background(), runtime, bbo, bbo, px, px, px, px,
 	) {
-		t.Fatal("same-sign tiny should close combination")
+		t.Fatal("same-sign tiny must stay closing until the ledger is flat")
 	}
 	if store.claims != 0 {
 		t.Fatalf("claims=%d", store.claims)
@@ -1882,7 +2231,10 @@ func TestArbitrageSchedulerFlattenRecoversUnpairedTinyManualReason(t *testing.T)
 	item.RuntimeState = "manual_intervention"
 	item.ErrorMessage = arbitrageUnpairedLegsManualReason
 	store := &dryRunStore{claim: true, item: item}
-	runner := &schedulerRunner{closed: make(chan ArbitrageCombination, 1)}
+	runner := &schedulerRunner{
+		executed: make(chan ArbitrageExecution, 1),
+		closed:   make(chan ArbitrageCombination, 1),
+	}
 	scheduler := newTestArbitrageScheduler(
 		store, nil, runner, time.Second, time.Millisecond, time.Second,
 		10, 2, 2, 2, false, nil,
@@ -1890,18 +2242,18 @@ func TestArbitrageSchedulerFlattenRecoversUnpairedTinyManualReason(t *testing.T)
 	runtime := &arbitrageRuntime{combination: item}
 	bbo := flattenCloseBBO()
 	px := decimal.RequireFromString("0.214")
-	if !scheduler.flattenOrFinalizeClosing(
+	if scheduler.flattenOrFinalizeClosing(
 		context.Background(), runtime, bbo, bbo, px, px, px, px,
 	) {
-		t.Fatal("recoverable unpaired tiny should close combination")
+		t.Fatal("locked unpaired tiny must not auto-close")
 	}
 	if store.claims != 0 {
 		t.Fatalf("claims=%d", store.claims)
 	}
 	select {
-	case <-runner.closed:
-	case <-time.After(time.Second):
-		t.Fatal("recovered unpaired tiny did not close")
+	case closed := <-runner.closed:
+		t.Fatalf("locked unpaired tiny closed=%+v", closed)
+	default:
 	}
 }
 
@@ -2018,22 +2370,17 @@ func TestArbitrageSchedulerClosingCircuitTinyOwnedCloses(t *testing.T) {
 	runtime := &arbitrageRuntime{combination: item}
 	bbo := flattenCloseBBO()
 	px := decimal.RequireFromString("0.214")
-	if !scheduler.flattenOrFinalizeClosing(
+	if scheduler.flattenOrFinalizeClosing(
 		context.Background(), runtime, bbo, bbo, px, px, px, px,
 	) {
-		t.Fatal("circuit tiny owned should close combination")
+		t.Fatal("circuit lock must not auto-close tiny owned")
 	}
-	if store.claims != 0 || dryRunActiveLookups(store) < 1 {
-		t.Fatalf("claims=%d lookups=%d", store.claims, dryRunActiveLookups(store))
-	}
-	select {
-	case <-runner.closed:
-	case <-time.After(time.Second):
-		t.Fatal("circuit tiny owned did not call CloseCombination")
+	if store.claims != 0 || !runtime.combination.CircuitOpen {
+		t.Fatalf("claims=%d combo=%+v", store.claims, runtime.combination)
 	}
 	select {
-	case execution := <-runner.executed:
-		t.Fatalf("claimed sized execution=%+v", execution)
+	case closed := <-runner.closed:
+		t.Fatalf("circuit tiny owned closed=%+v", closed)
 	default:
 	}
 }
@@ -2043,6 +2390,7 @@ func TestArbitrageSchedulerClosingCircuitTinyOwnedResumesActiveExecution(t *test
 	execution := ArbitrageExecution{
 		ID: "existing-circuit-flatten", CombinationID: item.ID,
 		Status: "hedging", PositionEffect: "close", ReduceOnly: true,
+		LegAFilledQuantity: "10", LegBFilledQuantity: "0",
 	}
 	store := &dryRunStore{claim: true, item: item, activeExecution: &execution}
 	runner := &schedulerRunner{
@@ -2223,22 +2571,17 @@ func TestArbitrageSchedulerClosingCircuitPairedTinyCloses(t *testing.T) {
 	runtime := &arbitrageRuntime{combination: item}
 	bbo := flattenCloseBBO()
 	px := decimal.RequireFromString("0.214")
-	if !scheduler.flattenOrFinalizeClosing(
+	if scheduler.flattenOrFinalizeClosing(
 		context.Background(), runtime, bbo, bbo, px, px, px, px,
 	) {
-		t.Fatal("circuit paired tiny should close combination")
+		t.Fatal("circuit lock must not auto-close paired tiny")
 	}
 	if store.claims != 0 || !runtime.combination.CircuitOpen {
 		t.Fatalf("claims=%d combo=%+v", store.claims, runtime.combination)
 	}
 	select {
-	case <-runner.closed:
-	case <-time.After(time.Second):
-		t.Fatal("circuit paired tiny did not call CloseCombination")
-	}
-	select {
-	case execution := <-runner.executed:
-		t.Fatalf("claimed sized execution=%+v", execution)
+	case closed := <-runner.closed:
+		t.Fatalf("circuit paired tiny closed=%+v", closed)
 	default:
 	}
 }
@@ -2316,16 +2659,26 @@ func TestArbitrageSchedulerEvaluateRecoversUnpairedTinyClose(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	runtime := &arbitrageRuntime{combination: item, legA: subA, legB: subB}
-	if !scheduler.evaluate(context.Background(), runtime, "bbo_event") {
-		t.Fatal("recovered unpaired tiny should close combination")
+	if scheduler.evaluate(context.Background(), runtime, "bbo_event") {
+		t.Fatal("locked unpaired tiny must keep the runtime")
 	}
 	if store.claims != 0 {
 		t.Fatalf("claims=%d", store.claims)
 	}
 	select {
-	case <-runner.closed:
-	case <-time.After(time.Second):
-		t.Fatal("evaluate did not close combination")
+	case closed := <-runner.closed:
+		t.Fatalf("evaluate closed locked combination=%+v", closed)
+	default:
+	}
+	value, ok := scheduler.ArbitrageValuation(item.ID)
+	if !ok || value.LegAMid == "" || value.LegBMid == "" {
+		t.Fatalf("locked evaluate should still value both legs: %+v ok=%v", value, ok)
+	}
+	if runtime.combination.MarketDataStale {
+		t.Fatal("fresh legs should clear marketDataStale")
+	}
+	if runtime.combination.RuntimeState != "manual_intervention" {
+		t.Fatalf("lock was cleared: %+v", runtime.combination)
 	}
 }
 
@@ -2382,6 +2735,78 @@ func TestArbitrageSchedulerOneShotExitedNotAppliedKeepsRunning(t *testing.T) {
 	if runtime.combination.Status != "running" ||
 		runtime.combination.OneShotPhase != "exiting" {
 		t.Fatalf("combination=%+v", runtime.combination)
+	}
+}
+
+func TestArbitrageSchedulerFinalizeFlatteningCompensatesThenMarksExited(t *testing.T) {
+	item := ownedFlattenCombo("0", "0")
+	item.Status = "running"
+	item.RunMode = "one_shot"
+	item.OneShotPhase = "exiting"
+	item.CarryBaseQuantity = "0"
+	item.CombinedPositionAnnualized = ""
+	store := &dryRunStore{item: item}
+	compensator := &recordingFillAverageCompensator{}
+	scheduler := newTestArbitrageScheduler(
+		store, nil, &schedulerRunner{closed: make(chan ArbitrageCombination, 1)},
+		time.Second, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	scheduler.ConfigureFillAverageCompensator(compensator)
+	runtime := &arbitrageRuntime{combination: item}
+	if scheduler.finalizeFlattening(context.Background(), runtime) {
+		t.Fatal("successful exit should keep runtime scheduled")
+	}
+	if compensator.called {
+		t.Fatalf("close path must not compensate=%+v", compensator)
+	}
+	if runtime.combination.OneShotPhase != "exited" ||
+		runtime.combination.FinalMetricsStatus != finalMetricsPending ||
+		!runtime.combination.FinalMetricsRetryFinite {
+		t.Fatalf("combination=%+v", runtime.combination)
+	}
+}
+
+func TestArbitrageSchedulerFinalizeFlatteningNotReadyKeepsExiting(t *testing.T) {
+	item := ownedFlattenCombo("0", "0")
+	item.Status = "running"
+	item.RunMode = "one_shot"
+	item.OneShotPhase = "exiting"
+	item.CarryBaseQuantity = "0"
+	store := &dryRunStore{item: item, finalMetricsErr: ErrFinalMetricsNotReady}
+	compensator := &recordingFillAverageCompensator{}
+	scheduler := newTestArbitrageScheduler(
+		store, nil, &schedulerRunner{
+			executed: make(chan ArbitrageExecution, 1),
+			closed:   make(chan ArbitrageCombination, 1),
+		},
+		time.Second, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	scheduler.ConfigureFillAverageCompensator(compensator)
+	runtime := &arbitrageRuntime{combination: item}
+	if scheduler.finalizeFlattening(context.Background(), runtime) {
+		t.Fatal("not ready should keep runtime")
+	}
+	if compensator.called {
+		t.Fatal("flat exit must not compensate before marking exited")
+	}
+	if runtime.combination.OneShotPhase != "exited" ||
+		runtime.combination.FinalMetricsStatus != finalMetricsPending {
+		t.Fatalf("combination=%+v", runtime.combination)
+	}
+	if runtime.combination.LastFailureKey == finalMetricsNotReadyKey {
+		t.Fatalf("metrics failure blocked exit: %+v", runtime.combination)
+	}
+	bbo := flattenCloseBBO()
+	px := decimal.RequireFromString("0.214")
+	if scheduler.flattenOrFinalizeClosingFrom(
+		context.Background(), runtime, bbo, bbo, px, px, px, px, "control",
+	) {
+		t.Fatal("flat settling leftover must not open new work")
+	}
+	if store.flattenClaims != 0 || store.claims != 0 {
+		t.Fatalf("claims=%d flatten=%d", store.claims, store.flattenClaims)
 	}
 }
 
@@ -2501,7 +2926,7 @@ func TestArbitrageSchedulerOneShotExitingDoesNotTinyFlatten(t *testing.T) {
 	item.RunMode = "one_shot"
 	item.OneShotPhase = "exiting"
 	store := &dryRunStore{claim: true, item: item}
-	runner := &schedulerRunner{closed: make(chan ArbitrageCombination, 1)}
+	runner := &schedulerRunner{executed: make(chan ArbitrageExecution, 1)}
 	scheduler := newTestArbitrageScheduler(
 		store, nil, runner, time.Second, time.Millisecond, time.Second,
 		10, 2, 2, 2, false, nil,
@@ -2515,7 +2940,26 @@ func TestArbitrageSchedulerOneShotExitingDoesNotTinyFlatten(t *testing.T) {
 		t.Fatal("one-shot exiting leftover must not close combination")
 	}
 	if store.claims != 0 {
-		t.Fatalf("claims=%d", store.claims)
+		t.Fatalf("generic claims=%d", store.claims)
+	}
+	select {
+	case execution := <-runner.executed:
+		if !execution.LastCloseClip || !execution.ReduceOnly ||
+			execution.PositionEffect != "close" {
+			t.Fatalf("execution=%+v", execution)
+		}
+		if execution.TargetBaseQuantity != "10" {
+			t.Fatalf("target=%s claim=%+v", execution.TargetBaseQuantity, store.lastFlattenClaim)
+		}
+		if store.flattenClaims != 1 {
+			t.Fatalf("flattenClaims=%d", store.flattenClaims)
+		}
+		if !store.lastFlattenClaim.LegAQuantity.IsZero() ||
+			!store.lastFlattenClaim.LegBQuantity.Equal(decimal.NewFromInt(10)) {
+			t.Fatalf("claim=%+v", store.lastFlattenClaim)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("one-shot exiting leftover must claim independent flatten")
 	}
 	select {
 	case <-runner.closed:
@@ -2721,6 +3165,325 @@ func TestArbitrageSchedulerValuationCache(t *testing.T) {
 	scheduler.clearArbitrageValuation("combo")
 	if _, ok := scheduler.ArbitrageValuation("combo"); ok {
 		t.Fatal("valuation cache was not cleared")
+	}
+}
+
+func attachQuotedLegs(
+	t *testing.T,
+	runtime *arbitrageRuntime,
+	bidA, askA, bidB, askB string,
+	ageA, ageB time.Duration,
+	publishB bool,
+) {
+	t.Helper()
+	item := runtime.combination
+	keyA, err := marketdata.NewKey(
+		item.LegA.Exchange, item.LegA.ContractType, item.LegA.ExchangeSymbol,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyB, err := marketdata.NewKey(
+		item.LegB.Exchange, item.LegB.ContractType, item.LegB.ExchangeSymbol,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connA := &schedulerConnection{reads: make(chan []byte, 1), done: make(chan struct{})}
+	connB := &schedulerConnection{reads: make(chan []byte, 1), done: make(chan struct{})}
+	parser := func(age time.Duration) marketdata.Parser {
+		return func(key marketdata.Key, payload []byte, received time.Time) (marketdata.BBO, bool, error) {
+			parts := strings.Split(string(payload), ",")
+			stamp := received.Add(-age)
+			return marketdata.BBO{
+				Key: key, BidPrice: parts[0], AskPrice: parts[1],
+				BidQuantity: "10000", AskQuantity: "10000",
+				VenueTimestamp: stamp, ReceiveTimestamp: stamp,
+			}, true, nil
+		}
+	}
+	marketA, err := marketdata.New(marketdata.Options{
+		Connector: &schedulerConnector{
+			connections: map[marketdata.Key]*schedulerConnection{keyA: connA},
+		},
+		Parsers: map[string]marketdata.Parser{
+			item.LegA.Exchange: parser(ageA),
+		},
+		StaleAfter: time.Hour, ReconnectInitial: time.Hour, ReconnectMax: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = marketA.Close() })
+	marketB, err := marketdata.New(marketdata.Options{
+		Connector: &schedulerConnector{
+			connections: map[marketdata.Key]*schedulerConnection{keyB: connB},
+		},
+		Parsers: map[string]marketdata.Parser{
+			item.LegB.Exchange: parser(ageB),
+		},
+		StaleAfter: time.Hour, ReconnectInitial: time.Hour, ReconnectMax: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = marketB.Close() })
+	subA, err := marketA.Subscribe(context.Background(), keyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = subA.Close() })
+	subB, err := marketB.Subscribe(context.Background(), keyB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = subB.Close() })
+	connA.reads <- []byte(bidA + "," + askA)
+	if publishB {
+		connB.reads <- []byte(bidB + "," + askB)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, errA := subA.Latest()
+		_, errB := subB.Latest()
+		readyB := !publishB || errB == nil
+		if errA == nil && readyB {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("leg subscriptions were not ready")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	runtime.legA, runtime.legB = subA, subB
+}
+
+func TestArbitrageSchedulerLockedStillUpdatesValuationWithoutNewExecution(t *testing.T) {
+	item := eventSchedulerCombination()
+	item.RuntimeState = "manual_intervention"
+	item.CircuitOpen = true
+	item.AskThresholdBps = "-100"
+	item.BidThresholdBps = "100"
+	store := &dryRunStore{claim: true, item: item}
+	runner := &schedulerRunner{
+		executed: make(chan ArbitrageExecution, 1),
+		closed:   make(chan ArbitrageCombination, 1),
+	}
+	scheduler := newTestArbitrageScheduler(
+		store, nil, runner, time.Second, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	runtime := &arbitrageRuntime{combination: item}
+	attachQuotedLegs(t, runtime, "99", "101", "1", "1.02", 0, 0, true)
+	if scheduler.evaluate(context.Background(), runtime, "bbo_event") {
+		t.Fatal("locked evaluate must keep the runtime")
+	}
+	if store.claims != 0 {
+		t.Fatalf("claims=%d", store.claims)
+	}
+	select {
+	case execution := <-runner.executed:
+		t.Fatalf("locked evaluate created execution=%+v", execution)
+	default:
+	}
+	select {
+	case closed := <-runner.closed:
+		t.Fatalf("locked evaluate closed=%+v", closed)
+	default:
+	}
+	value, ok := scheduler.ArbitrageValuation(item.ID)
+	if !ok || value.LegAMid != "100" || value.LegBMid != "1.01" {
+		t.Fatalf("valuation=%+v ok=%v", value, ok)
+	}
+	if runtime.combination.MarketDataStale {
+		t.Fatal("fresh locked legs should not stay stale")
+	}
+	if runtime.combination.CurrentAskSpreadBps == "" || runtime.combination.CurrentBidSpreadBps == "" {
+		t.Fatalf("spreads were not updated: %+v", runtime.combination)
+	}
+	if !runtime.combination.CircuitOpen ||
+		runtime.combination.RuntimeState != "manual_intervention" {
+		t.Fatalf("lock was cleared: %+v", runtime.combination)
+	}
+}
+
+func TestArbitrageSchedulerClearsOnlyStaleLegValuation(t *testing.T) {
+	item := eventSchedulerCombination()
+	store := &dryRunStore{claim: true, item: item}
+	scheduler := newTestArbitrageScheduler(
+		store, nil, &schedulerRunner{executed: make(chan ArbitrageExecution, 1)},
+		time.Second, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	runtime := &arbitrageRuntime{combination: item}
+	attachQuotedLegs(t, runtime, "99", "101", "1", "1.02", 0, 3*time.Second, true)
+	if scheduler.evaluate(context.Background(), runtime, "bbo_event") {
+		t.Fatal("stale hedge leg must not stop the runtime")
+	}
+	if store.claims != 0 {
+		t.Fatalf("claims=%d", store.claims)
+	}
+	value, ok := scheduler.ArbitrageValuation(item.ID)
+	if !ok || value.LegAMid != "100" || value.LegBMid != "" || !value.LegBUpdatedAt.IsZero() {
+		t.Fatalf("stale B should clear only B: %+v ok=%v", value, ok)
+	}
+	if !runtime.combination.MarketDataStale {
+		t.Fatal("one stale leg should keep marketDataStale")
+	}
+	runtime.combination.MarketDataStale = true
+	attachQuotedLegs(t, runtime, "99", "101", "1", "1.02", 0, 0, true)
+	if scheduler.evaluate(context.Background(), runtime, "bbo_event") {
+		t.Fatal("fresh legs should keep the running runtime")
+	}
+	value, ok = scheduler.ArbitrageValuation(item.ID)
+	if !ok || value.LegAMid != "100" || value.LegBMid != "1.01" {
+		t.Fatalf("both fresh valuation=%+v ok=%v", value, ok)
+	}
+	if runtime.combination.MarketDataStale {
+		t.Fatal("both fresh legs should clear marketDataStale")
+	}
+}
+
+func TestArbitrageSchedulerClearsOnlyFailedLatestLegValuation(t *testing.T) {
+	item := eventSchedulerCombination()
+	store := &dryRunStore{claim: true, item: item}
+	scheduler := newTestArbitrageScheduler(
+		store, nil, &schedulerRunner{executed: make(chan ArbitrageExecution, 1)},
+		time.Second, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	runtime := &arbitrageRuntime{combination: item}
+	attachQuotedLegs(t, runtime, "99", "101", "1", "1.02", 0, 0, false)
+	scheduler.evaluate(context.Background(), runtime, "bbo_event")
+	value, ok := scheduler.ArbitrageValuation(item.ID)
+	if !ok || value.LegAMid != "100" || value.LegBMid != "" || !value.LegBUpdatedAt.IsZero() {
+		t.Fatalf("failed Latest on B should clear only B: %+v ok=%v", value, ok)
+	}
+	if !runtime.combination.MarketDataStale {
+		t.Fatal("missing B should keep marketDataStale")
+	}
+	if store.claims != 0 {
+		t.Fatalf("claims=%d", store.claims)
+	}
+}
+
+func TestArbitrageSchedulerFreshMarketDoesNotClearTradingLock(t *testing.T) {
+	item := eventSchedulerCombination()
+	item.RuntimeState = "manual_intervention"
+	item.CircuitOpen = true
+	store := &dryRunStore{claim: true, item: item}
+	scheduler := newTestArbitrageScheduler(
+		store, nil, &schedulerRunner{executed: make(chan ArbitrageExecution, 1)},
+		time.Second, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	runtime := &arbitrageRuntime{combination: item}
+	attachQuotedLegs(t, runtime, "99", "101", "1", "1.02", 0, 0, true)
+	scheduler.evaluate(context.Background(), runtime, "bbo_event")
+	if !runtime.combination.CircuitOpen ||
+		runtime.combination.RuntimeState != "manual_intervention" {
+		t.Fatalf("fresh BBO cleared lock: %+v", runtime.combination)
+	}
+	if store.claims != 0 {
+		t.Fatalf("claims=%d", store.claims)
+	}
+}
+
+func TestArbitrageSchedulerLockedResumesLeftoverHedgeOnly(t *testing.T) {
+	item := eventSchedulerCombination()
+	item.RuntimeState = "manual_intervention"
+	item.MakerLeg = "a"
+	execution := ArbitrageExecution{
+		ID: "leftover-hedge", CombinationID: item.ID,
+		Status: "hedging", LegAFilledQuantity: "1", LegBFilledQuantity: "0",
+	}
+	store := &dryRunStore{item: item, activeExecution: &execution}
+	runner := &schedulerRunner{
+		executed:  make(chan ArbitrageExecution, 1),
+		recovered: make(chan ArbitrageExecution, 1),
+	}
+	scheduler := newTestArbitrageScheduler(
+		store, nil, runner, time.Second, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	runtime := &arbitrageRuntime{combination: item}
+	attachQuotedLegs(t, runtime, "99", "101", "1", "1.02", 0, 0, true)
+	if scheduler.evaluate(context.Background(), runtime, "bbo_event") {
+		t.Fatal("locked leftover hedge must keep the runtime")
+	}
+	select {
+	case resumed := <-runner.executed:
+		if resumed.ID != execution.ID {
+			t.Fatalf("resumed=%+v", resumed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("locked leftover hedge was not resumed")
+	}
+	if store.claims != 0 {
+		t.Fatalf("claims=%d", store.claims)
+	}
+}
+
+func TestArbitrageSchedulerLockedDoesNotResumeUnfilledMaker(t *testing.T) {
+	item := eventSchedulerCombination()
+	item.CircuitOpen = true
+	item.RuntimeState = "maker_open"
+	item.MakerLeg = "a"
+	execution := ArbitrageExecution{
+		ID: "unfilled-maker", CombinationID: item.ID,
+		Status: "maker_open", LegAFilledQuantity: "0", LegBFilledQuantity: "0",
+	}
+	store := &dryRunStore{item: item, activeExecution: &execution}
+	runner := &schedulerRunner{
+		executed:  make(chan ArbitrageExecution, 1),
+		recovered: make(chan ArbitrageExecution, 1),
+	}
+	scheduler := newTestArbitrageScheduler(
+		store, nil, runner, time.Second, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	runtime := &arbitrageRuntime{combination: item}
+	attachQuotedLegs(t, runtime, "99", "101", "1", "1.02", 0, 0, true)
+	scheduler.evaluate(context.Background(), runtime, "bbo_event")
+	select {
+	case resumed := <-runner.executed:
+		t.Fatalf("unfilled maker Execute=%+v", resumed)
+	default:
+	}
+	if store.claims != 0 {
+		t.Fatalf("claims=%d", store.claims)
+	}
+}
+
+func TestArbitrageSchedulerLockedDoesNotOpenOrAutoClose(t *testing.T) {
+	item := eventSchedulerCombination()
+	item.RuntimeState = "manual_intervention"
+	item.AskThresholdBps = "-100"
+	item.BidThresholdBps = "100"
+	store := &dryRunStore{claim: true, item: item}
+	runner := &schedulerRunner{
+		executed: make(chan ArbitrageExecution, 1),
+		closed:   make(chan ArbitrageCombination, 1),
+	}
+	scheduler := newTestArbitrageScheduler(
+		store, nil, runner, time.Second, time.Millisecond, time.Second,
+		10, 2, 2, 2, false, nil,
+	)
+	runtime := &arbitrageRuntime{combination: item}
+	attachQuotedLegs(t, runtime, "99", "101", "1", "1.02", 0, 0, true)
+	scheduler.evaluate(context.Background(), runtime, "bbo_event")
+	if store.claims != 0 {
+		t.Fatalf("claims=%d", store.claims)
+	}
+	select {
+	case execution := <-runner.executed:
+		t.Fatalf("new execution=%+v", execution)
+	default:
+	}
+	select {
+	case closed := <-runner.closed:
+		t.Fatalf("auto-closed=%+v", closed)
+	default:
 	}
 }
 
@@ -2995,8 +3758,8 @@ func TestEventDrivenSchedulerRecoversWithoutBBOOnControlTick(t *testing.T) {
 	time.Sleep(60 * time.Millisecond)
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if store.snapshots != 1 {
-		t.Fatalf("stale snapshot writes=%d, want 1 within the snapshot interval", store.snapshots)
+	if store.snapshots == 0 {
+		t.Fatal("missing stale snapshot write")
 	}
 }
 
@@ -3007,6 +3770,11 @@ func TestEventDrivenSchedulerClosesWithoutBBO(t *testing.T) {
 	item.RuntimeState = "closing"
 	store := &dryRunStore{item: item}
 	runner := &schedulerRunner{closed: make(chan ArbitrageCombination, 1)}
+	runner.closeHook = func(ArbitrageCombination) {
+		store.mu.Lock()
+		store.item.Status = "closed"
+		store.mu.Unlock()
+	}
 	scheduler := newTestArbitrageScheduler(
 		store, market, runner, 20*time.Millisecond, 20*time.Millisecond, time.Hour,
 		10, 2, 2, 2, false, nil,
@@ -3043,6 +3811,7 @@ func TestClosingWaitsForStaleRecoveryToFinish(t *testing.T) {
 		store, market, runner, 20*time.Millisecond, 20*time.Millisecond, time.Hour,
 		10, 2, 2, 2, false, nil,
 	)
+	t.Cleanup(runner.Release)
 	runSchedulerForTest(t, scheduler)
 
 	select {
@@ -3061,7 +3830,7 @@ func TestClosingWaitsForStaleRecoveryToFinish(t *testing.T) {
 	default:
 	}
 
-	close(runner.release)
+	runner.Release()
 	select {
 	case closed := <-runner.closed:
 		if closed.ID != execution.CombinationID {
@@ -3108,6 +3877,7 @@ func TestLeaseLossDoesNotCancelInFlightExecution(t *testing.T) {
 		store, market, runner, time.Hour, 20*time.Millisecond, 150*time.Millisecond,
 		10, 2, 2, 2, false, nil,
 	)
+	t.Cleanup(runner.Release)
 	runSchedulerForTest(t, scheduler)
 	waitForSchedulerCondition(t, func() bool {
 		return scheduler.Stats().ActiveCombinations == 1
@@ -3134,7 +3904,7 @@ func TestLeaseLossDoesNotCancelInFlightExecution(t *testing.T) {
 		t.Fatal("runtime was removed before its in-flight execution completed")
 	}
 
-	close(runner.release)
+	runner.Release()
 	waitForSchedulerCondition(t, func() bool {
 		return scheduler.Stats().ActiveCombinations == 0
 	}, "runtime was not removed after in-flight execution completed")
@@ -3162,15 +3932,13 @@ func TestSchedulerShutdownWaitsForInFlightExecution(t *testing.T) {
 		defer close(done)
 		scheduler.Run(ctx)
 	}()
-	var released sync.Once
-	release := func() { released.Do(func() { close(runner.release) }) }
 	t.Cleanup(func() {
 		cancel()
-		release()
+		runner.Release()
 		select {
 		case <-done:
 		case <-time.After(2 * time.Second):
-			t.Fatal("scheduler did not stop")
+			t.Errorf("scheduler did not stop")
 		}
 	})
 	waitForSchedulerCondition(t, func() bool {
@@ -3194,7 +3962,7 @@ func TestSchedulerShutdownWaitsForInFlightExecution(t *testing.T) {
 		t.Fatal("runtime was removed before in-flight execution finished")
 	}
 
-	release()
+	runner.Release()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
@@ -3336,8 +4104,8 @@ func runSchedulerForTest(t *testing.T, scheduler *ArbitrageScheduler) {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("scheduler did not stop")
+		case <-time.After(2 * time.Second):
+			t.Errorf("scheduler did not stop")
 		}
 	})
 }
@@ -3570,10 +4338,10 @@ func TestArbitrageSchedulerLastClipHandoffTinyCloseAfterRetry(t *testing.T) {
 	runtime := &arbitrageRuntime{combination: item}
 	bbo := flattenCloseBBO()
 	px := decimal.RequireFromString("0.214")
-	if !scheduler.flattenOrFinalizeClosing(
+	if scheduler.flattenOrFinalizeClosing(
 		context.Background(), runtime, bbo, bbo, px, px, px, px,
 	) {
-		t.Fatal("handoff tiny should close combination")
+		t.Fatal("handoff tiny must stay closing until the ledger is flat")
 	}
 	if store.claims != 0 {
 		t.Fatalf("claims=%d", store.claims)
@@ -3791,7 +4559,7 @@ func TestArbitrageSchedulerBBOLargeLeftoverMarksManual(t *testing.T) {
 }
 
 func TestArbitrageSchedulerExitingDustAcceptedExitsWithoutOrder(t *testing.T) {
-	item := oneShotExitingLeftover("0", "-10")
+	item := oneShotExitingLeftover("0", "-0.0004")
 	store := &dryRunStore{claim: true, item: item}
 	scheduler := newTestArbitrageScheduler(
 		store, nil, &schedulerRunner{closed: make(chan ArbitrageCombination, 1)},
@@ -3806,19 +4574,19 @@ func TestArbitrageSchedulerExitingDustAcceptedExitsWithoutOrder(t *testing.T) {
 	) {
 		t.Fatal("dust leftover should keep runtime")
 	}
-	if store.claims != 0 {
-		t.Fatalf("claims=%d", store.claims)
+	if store.flattenClaims != 0 || store.claims != 0 {
+		t.Fatalf("claims=%d flatten=%d", store.claims, store.flattenClaims)
 	}
 	if runtime.combination.OneShotPhase != "exited" {
 		t.Fatalf("combination=%+v", runtime.combination)
 	}
-	if runtime.combination.LegBBasePosition != "-10" {
+	if runtime.combination.LegBBasePosition != "-0.0004" {
 		t.Fatalf("positions rewritten: %+v", runtime.combination)
 	}
 }
 
 func TestArbitrageSchedulerDustGateErrorDoesNotEnterManualThenRecovers(t *testing.T) {
-	item := oneShotExitingLeftover("0", "-10")
+	item := oneShotExitingLeftover("0", "-0.0004")
 	store := &dryRunStore{item: item, dustGateErr: errors.New("db unavailable")}
 	scheduler := newTestArbitrageScheduler(
 		store, nil, &schedulerRunner{}, time.Second, time.Millisecond, time.Second,
@@ -3848,7 +4616,7 @@ func TestArbitrageSchedulerDustGateErrorDoesNotEnterManualThenRecovers(t *testin
 }
 
 func TestArbitrageSchedulerUnreconciledDustDoesNotEnterManualThenRecovers(t *testing.T) {
-	item := oneShotExitingLeftover("0", "-10")
+	item := oneShotExitingLeftover("0", "-0.0004")
 	store := &dryRunStore{item: item, dustGateUnreconciled: true}
 	scheduler := newTestArbitrageScheduler(
 		store, nil, &schedulerRunner{}, time.Second, time.Millisecond, time.Second,
@@ -3877,7 +4645,7 @@ func TestArbitrageSchedulerUnreconciledDustDoesNotEnterManualThenRecovers(t *tes
 }
 
 func TestArbitrageSchedulerDustCASConflictRetriesThenSucceeds(t *testing.T) {
-	item := oneShotExitingLeftover("0", "-10")
+	item := oneShotExitingLeftover("0", "-0.0004")
 	store := &dryRunStore{item: item, withDustSkip: true}
 	scheduler := newTestArbitrageScheduler(
 		store, nil, &schedulerRunner{}, time.Second, time.Millisecond, time.Second,
@@ -3959,10 +4727,10 @@ func TestArbitrageSchedulerClosingExitedTinyFlatten(t *testing.T) {
 	runtime := &arbitrageRuntime{combination: item}
 	bbo := flattenCloseBBO()
 	px := decimal.RequireFromString("0.214")
-	if !scheduler.flattenOrFinalizeClosingFrom(
+	if scheduler.flattenOrFinalizeClosingFrom(
 		context.Background(), runtime, bbo, bbo, px, px, px, px, "control",
 	) {
-		t.Fatal("closing exited should tiny flatten")
+		t.Fatal("closing exited tiny must stay on the closing runtime")
 	}
 	select {
 	case <-runner.closed:

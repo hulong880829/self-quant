@@ -1,6 +1,7 @@
 #include "mds/record/clickhouse_bbo_recorder.h"
 
 #include "mds/exchange/capabilities.h"
+#include "mds/record/clickhouse_bbo_support.h"
 #include "net/http_client.h"
 #include "utils/md/wire_codec.h"
 
@@ -78,6 +79,8 @@ struct ClickHouseBboRecorder::Impl {
     std::uint8_t price_scale{};
     std::uint8_t quantity_scale{};
     std::uint64_t expiry_unix_ns{};
+    std::uint64_t instrument_id{};
+    std::string venue_symbol;
   };
   struct Latest {
     utils::md::wire::BboRecord record{};
@@ -121,8 +124,7 @@ struct ClickHouseBboRecorder::Impl {
 
   bool selected(utils::md::Venue venue,
                 utils::md::ProductType product) const noexcept {
-    if (venue == utils::md::Venue::Polymarket ||
-        product == utils::md::ProductType::BinaryOption) {
+    if (!is_clickhouse_bbo_supported(venue, product)) {
       return false;
     }
     return std::any_of(
@@ -214,6 +216,8 @@ struct ClickHouseBboRecorder::Impl {
       append_pod(body, row.ask_quantity);
       append_pod(body, row.identity.price_scale);
       append_pod(body, row.identity.quantity_scale);
+      append_pod(body, row.identity.instrument_id);
+      append_string(body, row.identity.venue_symbol);
     }
     return body;
   }
@@ -225,14 +229,16 @@ struct ClickHouseBboRecorder::Impl {
         " (ts DateTime64(9, 'UTC'), venue LowCardinality(String), "
         "product LowCardinality(String), canonical_symbol String, "
         "bid_price Int64, bid_quantity Int64, ask_price Int64, "
-        "ask_quantity Int64, price_scale UInt8, quantity_scale UInt8) "
+        "ask_quantity Int64, price_scale UInt8, quantity_scale UInt8, "
+        "instrument_id UInt64, venue_symbol String) "
         "ENGINE=MergeTree PARTITION BY toDate(ts) "
         "ORDER BY (venue, product, canonical_symbol, ts)";
     if (!request(ddl, {})) ++http_failures;
     const auto insert =
         "INSERT INTO " + qualified +
         " (ts, venue, product, canonical_symbol, bid_price, bid_quantity, "
-        "ask_price, ask_quantity, price_scale, quantity_scale) "
+        "ask_price, ask_quantity, price_scale, quantity_scale, "
+        "instrument_id, venue_symbol) "
         "FORMAT RowBinary";
     while (true) {
       std::vector<Row> batch;
@@ -301,13 +307,10 @@ bool ClickHouseBboRecorder::start() {
       o.selectors.empty() ||
       std::any_of(o.selectors.begin(), o.selectors.end(),
                   [](const ClickHouseSelector &selector) {
-                    return selector.venue == utils::md::Venue::Unknown ||
-                           selector.venue == utils::md::Venue::Polymarket ||
-                           selector.product == utils::md::ProductType::Unknown ||
-                           selector.product ==
-                               utils::md::ProductType::BinaryOption;
+                    return !is_clickhouse_bbo_supported(selector.venue,
+                                                        selector.product);
                   })) {
-    impl_->set_error("invalid crypto ClickHouse recorder options");
+    impl_->set_error("invalid ClickHouse BBO recorder options");
     return false;
   }
   impl_->writer = std::thread([this] { impl_->run(); });
@@ -361,8 +364,14 @@ void ClickHouseBboRecorder::consume(std::span<const std::byte> payload,
       }
     }
     impl_->catalog[header.instrument_id] = {
-        venue, product, symbol, record.catalog.price_scale,
-        record.catalog.quantity_scale, record.catalog.expiry_unix_ns};
+        venue,
+        product,
+        symbol,
+        record.catalog.price_scale,
+        record.catalog.quantity_scale,
+        record.catalog.expiry_unix_ns,
+        header.instrument_id,
+        fixed_string(record.catalog.venue_symbol)};
     for (auto pending = impl_->unresolved.begin();
          pending != impl_->unresolved.end();) {
       if (pending->record.header.instrument_id == header.instrument_id) {

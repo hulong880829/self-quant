@@ -31,6 +31,11 @@ func TestVenueParsers(t *testing.T) {
 			client:  "client-2", order: "43", trade: "8", status: StatusPartiallyFilled, filled: "1", average: "11",
 		},
 		{
+			name: "Binance perpetual zero ap uses quote", venue: VenueBinance, product: ProductPerpetual,
+			payload: `{"e":"ORDER_TRADE_UPDATE","E":1700000000123,"o":{"c":"client-2z","i":43,"X":"FILLED","z":"2","ap":"0","Z":"21.4","t":8}}`,
+			client:  "client-2z", order: "43", trade: "8", status: StatusFilled, filled: "2", average: "10.7",
+		},
+		{
 			name: "OKX", venue: VenueOKX, product: ProductPerpetual,
 			payload: `{"arg":{"channel":"orders"},"data":[{"clOrdId":"client-3","ordId":"44","state":"filled","accFillSz":"3","avgPx":"12","tradeId":"9","uTime":"1700000000123","seqId":"99"}]}`,
 			client:  "client-3", order: "44", trade: "9", status: StatusFilled, filled: "3", average: "12",

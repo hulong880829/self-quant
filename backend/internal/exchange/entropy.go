@@ -29,11 +29,16 @@ func (e *Entropy) SyncInstruments(ctx context.Context, contractType string) ([]I
 	if contractType != ContractTypePerpetual {
 		return nil, fmt.Errorf("entropy: unsupported contract type %q", contractType)
 	}
+	categories, err := fetchHyperliquidCategories(e.client, ctx)
+	if err != nil {
+		return nil, err
+	}
+	annotations := fetchHyperliquidAnnotations(e.client, ctx)
 	meta, _, err := hyperliquidMetaAndContexts(e.client, ctx, entropyDex)
 	if err != nil {
 		return nil, err
 	}
-	result := stampEntropyInstruments(parseHyperliquidInstruments(meta, entropyDex))
+	result := stampEntropyInstruments(parseHyperliquidPerps(meta, entropyDex, categories, annotations))
 	if len(result) == 0 {
 		return nil, fmt.Errorf("entropy: empty perpetual catalog")
 	}

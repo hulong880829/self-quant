@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -45,10 +46,12 @@ func (value *bybitString) UnmarshalJSON(data []byte) error {
 }
 
 type bybitInstrument struct {
-	Symbol, ContractType, Status, BaseCoin, QuoteCoin string
-	FundingInterval                                   bybitString
-	SettleCoin                                        string
-	PriceFilter                                       struct {
+	Symbol, ContractType, Status, BaseCoin, QuoteCoin    string
+	UnderlyingTicker, MarketRegion, FullName, SymbolType string
+	IsPreListing                                         bool `json:"isPreListing"`
+	FundingInterval                                      bybitString
+	SettleCoin                                           string
+	PriceFilter                                          struct {
 		TickSize string `json:"tickSize"`
 	} `json:"priceFilter"`
 	LotSizeFilter struct {
@@ -61,6 +64,65 @@ type bybitInstrument struct {
 		MinOrderAmt       string `json:"minOrderAmt"`
 		MaxOrderAmt       string `json:"maxOrderAmt"`
 	} `json:"lotSizeFilter"`
+}
+
+func bybitUnderlying(item bybitInstrument) UnderlyingReference {
+	source := "bybit.instruments.symbolType=" + strings.ToLower(strings.TrimSpace(item.SymbolType))
+	if item.IsPreListing {
+		return PreMarketReference(item.BaseCoin, source)
+	}
+	kind := strings.ToLower(strings.TrimSpace(item.SymbolType))
+	if kind == "" && strings.TrimSpace(item.UnderlyingTicker) != "" {
+		kind = "stock"
+		source = "bybit.instruments.underlyingTicker"
+	}
+	switch kind {
+	case "crypto", "":
+		return CryptoReference(item.BaseCoin, item.QuoteCoin, "bybit.perpetual")
+	case "forex":
+		raw := item.UnderlyingTicker
+		if raw == "" {
+			raw = item.BaseCoin
+		}
+		base, quote, ok := SplitFXPair(raw)
+		if !ok {
+			return UnderlyingReference{AssetClass: AssetClassFX, Symbol: item.BaseCoin, Source: source}
+		}
+		return FXReference(base, quote, item.QuoteCoin, source)
+	case "commodity":
+		symbol := item.UnderlyingTicker
+		if symbol == "" {
+			symbol = item.BaseCoin
+		}
+		return CommodityReference(symbol, "USD", source)
+	case "stock":
+		if strings.TrimSpace(item.UnderlyingTicker) == "" || strings.TrimSpace(item.MarketRegion) == "" {
+			return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: item.BaseCoin, Source: source}
+		}
+		symbol, ok := NormalizeEquityTicker(item.MarketRegion, item.UnderlyingTicker)
+		if !ok {
+			return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: item.UnderlyingTicker, Source: source}
+		}
+		region := strings.ToUpper(strings.TrimSpace(item.MarketRegion))
+		if region == "US" {
+			ref := StockReference(symbol, "US", item.QuoteCoin, item.FullName, source)
+			if strings.Contains(strings.ToUpper(item.FullName), "ETF") {
+				ref.AssetClass = AssetClassETF
+				return ref.Normalized()
+			}
+			return ref
+		}
+		listing := map[string]string{"HK": "HKD", "JP": "JPY", "KR": "KRW", "CN": "CNY"}[region]
+		if listing == "" {
+			return UnderlyingReference{AssetClass: AssetClassUnknown, Symbol: symbol, Source: source}
+		}
+		ref := RegionalStock(symbol, region, listing, item.QuoteCoin, item.FullName, source)
+		ref.PerpPriceCurrency = "USD"
+		ref.DollarConverted = true
+		return ref.Normalized()
+	default:
+		return CryptoReference(item.BaseCoin, item.QuoteCoin, "bybit.perpetual")
+	}
 }
 
 func parseBybitInstruments(items []bybitInstrument, contractType string) []Instrument {
@@ -107,7 +169,7 @@ func parseBybitInstruments(items []bybitInstrument, contractType string) []Instr
 			model, sizeUnit = "inverse", "quote"
 		}
 		metadata := instrumentMetadata(item, model, sizeUnit)
-		result = append(result, Instrument{
+		parsed := Instrument{
 			Exchange: "bybit", ExchangeSymbol: item.Symbol,
 			BaseAsset: item.BaseCoin, QuoteAsset: item.QuoteCoin,
 			GlobalSymbol:  GlobalSymbol(item.BaseCoin, item.QuoteCoin),
@@ -122,7 +184,11 @@ func parseBybitInstruments(items []bybitInstrument, contractType string) []Instr
 			MarketMaxQuantity: marketMaxQuantity, MarketMaxQuantityStatus: marketMaxQuantityStatus,
 			MarketMinNotional: marketMinNotional, MarketMinNotionalStatus: marketMinNotionalStatus,
 			SourceUpdatedAt: time.Now().UTC(),
-		})
+		}
+		if contractType == ContractTypePerpetual {
+			parsed.SetUnderlying(bybitUnderlying(item))
+		}
+		result = append(result, parsed)
 	}
 	return result
 }

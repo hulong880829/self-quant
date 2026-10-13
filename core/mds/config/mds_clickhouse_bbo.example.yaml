@@ -4,10 +4,11 @@ clickhouse_bbo:
   database: market_data
   table: crypto_bbo
   user: bbo_writer
-  password_env: CLICKHOUSE_BBO_PASSWORD
+  password_env: CLICKHOUSE_PASSWORD
 
   # 必须与 producer 的 shared_memory.prefix 一致。
   # 当前覆盖：Binance / OKX / Bitget / Bybit / Gate / Hyperliquid / Aster / Lighter
+  # 以及 IBKR equity（与 crypto 共用这一个 consumer，禁止再起独立 IB recorder）。
   shm_prefix: /selfquant.mds.bbo
 
   # 每个标的每秒保存一次最新 BBO
@@ -18,6 +19,8 @@ clickhouse_bbo:
   request_timeout_ms: 5000
 
   batch_rows: 5000
+  # Covers the existing crypto peak plus the small IBKR equity set.
+  # IBKR is sampled on the same 1s interval; do not lower sample_interval_ms.
   queue_rows: 50000
   unresolved_rows: 4096
 
@@ -203,3 +206,7 @@ clickhouse_bbo:
     - venue: lighter
       product: perpetual
       shard: 3
+
+    - venue: ibkr
+      product: equity
+      shard: 0

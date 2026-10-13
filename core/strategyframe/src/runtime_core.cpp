@@ -1,4 +1,5 @@
 #include "strategyframe/detail/runtime_bridge.h"
+#include "strategyframe/expire_successor.h"
 
 #include <algorithm>
 #include <atomic>
@@ -35,6 +36,7 @@ namespace strategyframe {
 namespace {
 
 constexpr std::uint32_t kLane = 1;
+constexpr std::uint64_t kRetireGraceNs = 1'000'000ULL;
 static_assert(static_cast<std::uint16_t>(OrderFlag::PostOnly) ==
               static_cast<std::uint16_t>(oms::api::OrderFlag::PostOnly));
 static_assert(static_cast<std::uint16_t>(OrderFlag::ReduceOnly) ==
@@ -257,7 +259,7 @@ oms::api::InstrumentInit CatalogInstrumentImpl(
             ? oms::api::PolymarketOutcome::Yes
             : oms::api::PolymarketOutcome::No;
     result.polymarket_negative_risk = source.negative_risk != 0;
-    result.polymarket_signature_type = source.signature_type;
+    result.polymarket_signature_type = 0;
   }
   return result;
 }
@@ -274,7 +276,7 @@ oms::api::ResolvedInstrument CatalogRoutingImpl(
   routing.price_scale = source.price_scale;
   routing.quantity_scale = source.quantity_scale;
   routing.catalog_revision = generation;
-  routing.signature_type = source.signature_type;
+  routing.signature_type = 0;
   routing.negative_risk = source.negative_risk != 0;
   routing.tick_size = source.tick_size;
   routing.lot_size = source.lot_size;
@@ -396,7 +398,21 @@ class RuntimeCore final : public detail::Runtime {
         const Error error = mds_.poll(config_.event_budget, count);
         if (error != Error::Ok) return error;
         if (required_catalogs_ready()) break;
-        if (MonotonicNowNs() >= deadline) return Error::NotReady;
+        if (MonotonicNowNs() >= deadline) {
+          for (const auto& selector : config_.mds.required_instruments) {
+            if (find_instrument(selector)) {
+              continue;
+            }
+            std::fprintf(
+                stderr,
+                "strategyframe startup timeout: required MDS catalog missing "
+                "venue=%u product=%u symbol=%s\n",
+                static_cast<unsigned>(selector.venue),
+                static_cast<unsigned>(selector.product),
+                selector.canonical_symbol.c_str());
+          }
+          return Error::NotReady;
+        }
         if (count == 0) {
           if (config_.idle_policy == IdlePolicy::BusySpin)
             continue;
@@ -548,6 +564,8 @@ class RuntimeCore final : public detail::Runtime {
     std::uint32_t deferred_count{};
     ExecutionState execution_state{ExecutionState::Unregistered};
     bool directory_active{};
+    std::uint64_t retire_eligible_since_mono_ns{};
+    std::uint64_t last_execution_activity_mono_ns{};
   };
 
   struct PendingQuery {
@@ -555,6 +573,8 @@ class RuntimeCore final : public detail::Runtime {
     AccountId account_id{};
     InstrumentId instrument_id{};
     QueryComplete::Kind kind{QueryComplete::Kind::OpenOrders};
+    std::uint64_t position_epoch_at_submit{};
+    bool snapshot_incomplete{};
     std::vector<QueriedOrderView> orders;
     std::vector<QueriedPositionView> positions;
   };
@@ -632,17 +652,29 @@ class RuntimeCore final : public detail::Runtime {
           output.enabled = true;
           output.endpoints.rest = endpoint(venue.rest);
           output.endpoints.websocket = endpoint(venue.user_websocket);
-          const char* signer = Environment(venue.signer_address_env);
-          const char* funder = Environment(venue.funder_address_env);
-          const char* private_key = Environment(venue.private_key_env);
-          const char* key = Environment(venue.api_key_env);
-          const char* secret = Environment(venue.secret_env);
-          const char* passphrase = Environment(venue.passphrase_env);
-          if (!signer || !funder || !private_key || !key || !secret ||
-              !passphrase)
+          oms::api::PolymarketSignatureType signature_type{};
+          if (venue.signature_type == 0) {
+            signature_type = oms::api::PolymarketSignatureType::Eoa;
+          } else if (venue.signature_type == 1) {
+            signature_type = oms::api::PolymarketSignatureType::PolyProxy;
+          } else if (venue.signature_type == 3) {
+            signature_type = oms::api::PolymarketSignatureType::Poly1271;
+          } else {
             return Error::InvalidConfig;
-          output.credentials = {signer, funder, private_key,
-                                key,    secret, passphrase};
+          }
+          std::string_view funder{};
+          if (signature_type == oms::api::PolymarketSignatureType::PolyProxy ||
+              signature_type ==
+                  oms::api::PolymarketSignatureType::Poly1271) {
+            const char* value = Environment(venue.funder_address_env);
+            if (value == nullptr) return Error::InvalidConfig;
+            funder = value;
+            if (funder.empty()) return Error::InvalidConfig;
+          }
+          const char* private_key = Environment(venue.private_key_env);
+          if (!private_key) return Error::InvalidConfig;
+          output.signature_type = signature_type;
+          output.credentials = {funder, private_key, {}, {}, {}};
         }
       }
       auto created =
@@ -676,6 +708,22 @@ class RuntimeCore final : public detail::Runtime {
     }
   }
 
+  oms::api::Error last_startup_status_error(
+      oms::exchange::AdapterKind kind) const noexcept {
+    for (auto it = startup_updates_.rbegin();
+         it != startup_updates_.rend(); ++it) {
+      if (it->kind != oms::api::RuntimeUpdateKind::Control ||
+          it->control.kind !=
+              oms::api::RuntimeControlKind::VenueStatus ||
+          it->control.adapter_kind !=
+              static_cast<std::uint8_t>(kind)) {
+        continue;
+      }
+      return it->control.error;
+    }
+    return oms::api::Error::NotReady;
+  }
+
   Error prewarm_execution() noexcept {
     if (config_.venues.empty()) return Error::Ok;
     const std::uint64_t started = MonotonicNowNs();
@@ -684,6 +732,22 @@ class RuntimeCore final : public detail::Runtime {
                       config_.startup_timeout_ns
             ? std::numeric_limits<std::uint64_t>::max()
             : started + config_.startup_timeout_ns;
+    const auto adapter_kind_of =
+        [](VenueExecutionConfig::Kind kind) noexcept {
+          oms::exchange::AdapterKind adapter{};
+          switch (kind) {
+            case VenueExecutionConfig::Kind::BinanceSpot:
+              adapter = oms::exchange::AdapterKind::BinanceSpot;
+              break;
+            case VenueExecutionConfig::Kind::BinanceUsdm:
+              adapter = oms::exchange::AdapterKind::BinanceUsdm;
+              break;
+            case VenueExecutionConfig::Kind::Polymarket:
+              adapter = oms::exchange::AdapterKind::Polymarket;
+              break;
+          }
+          return adapter;
+        };
     for (;;) {
       if (config_.threading == ThreadingMode::SingleThread) {
         const auto serviced = execution_->service_io(0);
@@ -697,27 +761,37 @@ class RuntimeCore final : public detail::Runtime {
       bool ready = true;
       for (const auto& venue : config_.venues) {
         if (!venue.enabled) continue;
-        oms::exchange::AdapterKind kind{};
-        switch (venue.kind) {
-          case VenueExecutionConfig::Kind::BinanceSpot:
-            kind = oms::exchange::AdapterKind::BinanceSpot;
-            break;
-          case VenueExecutionConfig::Kind::BinanceUsdm:
-            kind = oms::exchange::AdapterKind::BinanceUsdm;
-            break;
-          case VenueExecutionConfig::Kind::Polymarket:
-            kind = oms::exchange::AdapterKind::Polymarket;
-            break;
-        }
+        const auto kind = adapter_kind_of(venue.kind);
         const auto status = execution_->venue_status(kind);
         if (!status) return FromOms(status.error);
-        if (status.value.status == oms::exchange::AdapterStatus::Failed)
+        if (status.value.status ==
+            oms::exchange::AdapterStatus::Failed) {
+          std::fprintf(
+              stderr,
+              "strategyframe startup failed: OMS adapter=%u status=%u reason=%u\n",
+              static_cast<unsigned>(kind),
+              static_cast<unsigned>(status.value.status),
+              static_cast<unsigned>(last_startup_status_error(kind)));
           return Error::NotReady;
+        }
         ready = ready &&
                 status.value.status == oms::exchange::AdapterStatus::Ready;
       }
       if (ready) return Error::Ok;
-      if (MonotonicNowNs() >= deadline) return Error::NotReady;
+      if (MonotonicNowNs() >= deadline) {
+        for (const auto& venue : config_.venues) {
+          if (!venue.enabled) continue;
+          const auto kind = adapter_kind_of(venue.kind);
+          const auto status = execution_->venue_status(kind);
+          std::fprintf(
+              stderr,
+              "strategyframe startup timeout: OMS adapter=%u status=%u reason=%u\n",
+              static_cast<unsigned>(kind),
+              status ? static_cast<unsigned>(status.value.status) : 0U,
+              static_cast<unsigned>(last_startup_status_error(kind)));
+        }
+        return Error::NotReady;
+      }
       if (config_.idle_policy == IdlePolicy::BusySpin)
         continue;
       if (config_.idle_policy == IdlePolicy::Adaptive)
@@ -921,23 +995,6 @@ class RuntimeCore final : public detail::Runtime {
         found->execution_state =
             CatalogEntry::ExecutionState::Active;
     }
-    const std::uint64_t now = WallNowNs();
-    for (auto& entry : self.catalogs_) {
-      const auto& catalog = entry.catalog;
-      if (catalog.instrument_id == value.instrument_id ||
-          catalog.venue != value.venue ||
-          catalog.product_type != value.product_type ||
-          catalog.canonical_symbol != value.canonical_symbol ||
-          catalog.expiry_unix_ns == 0 || catalog.expiry_unix_ns > now ||
-          entry.execution_state !=
-              CatalogEntry::ExecutionState::Active) {
-        continue;
-      }
-      // StrategyFrame owns local query/position state. Marking Retiring first
-      // closes the only dynamic submit gate before either owner scans its
-      // state. OMS is contacted later by drive_retirements().
-      entry.execution_state = CatalogEntry::ExecutionState::Retiring;
-    }
     return true;
   }
 
@@ -1078,6 +1135,7 @@ class RuntimeCore final : public detail::Runtime {
         if ((value.position.reserved &
              oms::api::SnapshotUnmapped) != 0) {
           ++metrics_.query_unmapped_positions;
+          pending->snapshot_incomplete = true;
           if (reconcile_quarantine_size_ <
               reconcile_quarantine_.size()) {
             reconcile_quarantine_[reconcile_quarantine_size_++] = value;
@@ -1091,22 +1149,60 @@ class RuntimeCore final : public detail::Runtime {
              FromOms(value.position.quantity)});
         return;
       }
-      if (pending->kind == QueryComplete::Kind::OpenOrders) {
+      std::int32_t complete_error =
+          static_cast<std::int32_t>(FromOms(value.query_complete.error));
+      if (pending->kind == QueryComplete::Kind::Positions) {
+        const bool oms_ok = complete_error == 0;
+        if (!oms_ok || pending->snapshot_incomplete) {
+          if (oms_ok) {
+            complete_error =
+                static_cast<std::int32_t>(Error::NotReady);
+          }
+        } else if (positions_.mutation_epoch(pending->account_id) !=
+                   pending->position_epoch_at_submit) {
+          complete_error = static_cast<std::int32_t>(Error::NotReady);
+        } else {
+          std::vector<PositionView> views;
+          views.reserve(pending->positions.size());
+          for (const auto& item : pending->positions) {
+            PositionView view{};
+            view.account_id = item.account_id;
+            view.instrument_id = item.instrument_id;
+            view.side = PositionSide::Net;
+            view.quantity = item.quantity;
+            views.push_back(view);
+          }
+          const Error committed =
+              pending->instrument_id == 0
+                  ? positions_.update_account_snapshot(
+                        pending->account_id, views)
+                  : positions_.update_instrument_snapshot(
+                        pending->account_id, pending->instrument_id,
+                        views);
+          if (committed != Error::Ok ||
+              positions_.commit_query_snapshot(
+                  pending->account_id,
+                  pending->position_epoch_at_submit) != Error::Ok) {
+            complete_error = static_cast<std::int32_t>(Error::NotReady);
+          }
+        }
+        if (complete_error == 0) {
+          PositionsSnapshot snapshot{pending->token, pending->account_id,
+                                     pending->positions};
+          if (callbacks_.positions_snapshot &&
+              !callbacks_.positions_snapshot(strategy_, snapshot))
+            fail_callback();
+        }
+      } else {
         OpenOrdersSnapshot snapshot{pending->token, pending->account_id,
                                     pending->orders};
         if (callbacks_.open_orders_snapshot &&
             !callbacks_.open_orders_snapshot(strategy_, snapshot))
           fail_callback();
-      } else {
-        PositionsSnapshot snapshot{pending->token, pending->account_id,
-                                   pending->positions};
-        if (callbacks_.positions_snapshot &&
-            !callbacks_.positions_snapshot(strategy_, snapshot))
-          fail_callback();
       }
       QueryComplete complete{
           pending->token, pending->account_id, pending->kind, 0,
-          static_cast<std::int32_t>(FromOms(value.query_complete.error))};
+          complete_error};
       if (callbacks_.query_complete &&
           !callbacks_.query_complete(strategy_, complete))
         fail_callback();
@@ -1247,6 +1343,13 @@ class RuntimeCore final : public detail::Runtime {
     }
     if (callbacks_.execution && !callbacks_.execution(strategy_, update))
       fail_callback();
+    if (update.instrument_id != 0) {
+      const auto now_mono = MonotonicNowNs();
+      for (auto& entry : catalogs_) {
+        if (entry.catalog.instrument_id == update.instrument_id)
+          entry.last_execution_activity_mono_ns = now_mono;
+      }
+    }
   }
 
   void fail_callback() noexcept {
@@ -1589,9 +1692,7 @@ class RuntimeCore final : public detail::Runtime {
     while (index < catalogs_.size()) {
       auto& entry = catalogs_[index];
       if (entry.execution_state ==
-              CatalogEntry::ExecutionState::Active &&
-          entry.catalog.expiry_unix_ns != 0 &&
-          entry.catalog.expiry_unix_ns <= WallNowNs()) {
+          CatalogEntry::ExecutionState::Active) {
         const bool has_successor =
             std::any_of(catalogs_.begin(), catalogs_.end(),
                         [&](const CatalogEntry& candidate) {
@@ -1604,14 +1705,70 @@ class RuntimeCore final : public detail::Runtime {
                                  candidate.catalog.canonical_symbol ==
                                      entry.catalog.canonical_symbol &&
                                  candidate.catalog.expiry_unix_ns >
-                                     entry.catalog.expiry_unix_ns &&
-                                 candidate.execution_state ==
-                                     CatalogEntry::ExecutionState::Active;
+                                     entry.catalog.expiry_unix_ns;
                         });
-        if (has_successor) {
-          entry.execution_state =
-              CatalogEntry::ExecutionState::Retiring;
-          progress = true;
+        if (expired_with_successor(entry.catalog.expiry_unix_ns,
+                                   WallNowNs(), has_successor)) {
+          if (entry.retire_eligible_since_mono_ns == 0)
+            entry.retire_eligible_since_mono_ns = MonotonicNowNs();
+          const std::uint64_t now_mono = MonotonicNowNs();
+          const std::uint64_t activity = std::max(
+              entry.retire_eligible_since_mono_ns,
+              entry.last_execution_activity_mono_ns);
+          const bool grace_done =
+              now_mono >= activity &&
+              now_mono - activity >= kRetireGraceNs;
+          const bool has_order = std::any_of(
+              orders_.open_orders().begin(), orders_.open_orders().end(),
+              [instrument = entry.catalog.instrument_id](
+                  const OrderView& order) {
+                return order.instrument_id == instrument;
+              });
+          const bool has_pending_query = std::any_of(
+              pending_queries_.begin(), pending_queries_.end(),
+              [instrument = entry.catalog.instrument_id](
+                  const PendingQuery& query) {
+                return query.instrument_id == 0 ||
+                       query.instrument_id == instrument;
+              });
+          bool accounts_ready = true;
+          int related = 0;
+          for (const auto& venue : config_.venues) {
+            if (!venue.enabled || venue.account_id == 0) continue;
+            const bool matches =
+                (venue.kind == VenueExecutionConfig::Kind::Polymarket &&
+                 entry.catalog.venue == Venue::Polymarket) ||
+                (venue.kind == VenueExecutionConfig::Kind::BinanceSpot &&
+                 entry.catalog.venue == Venue::Binance &&
+                 entry.catalog.product_type == ProductType::Spot) ||
+                (venue.kind == VenueExecutionConfig::Kind::BinanceUsdm &&
+                 entry.catalog.venue == Venue::Binance &&
+                 (entry.catalog.product_type == ProductType::Perpetual ||
+                  entry.catalog.product_type == ProductType::Future));
+            if (!matches) continue;
+            ++related;
+            if (!positions_.snapshot_confirms_zero(
+                    venue.account_id, entry.catalog.instrument_id)) {
+              accounts_ready = false;
+            }
+          }
+          for (const auto& position : positions_.positions()) {
+            if (position.instrument_id != entry.catalog.instrument_id)
+              continue;
+            ++related;
+            if (!positions_.snapshot_confirms_zero(
+                    position.account_id, position.instrument_id)) {
+              accounts_ready = false;
+            }
+          }
+          if (grace_done && !has_order && !has_pending_query &&
+              accounts_ready && related > 0) {
+            entry.execution_state =
+                CatalogEntry::ExecutionState::Retiring;
+            progress = true;
+          }
+        } else {
+          entry.retire_eligible_since_mono_ns = 0;
         }
       }
       if (entry.execution_state ==
@@ -1728,6 +1885,12 @@ class RuntimeCore final : public detail::Runtime {
     pending.account_id = account_id;
     pending.instrument_id = instrument_id;
     pending.kind = kind;
+    if (kind == QueryComplete::Kind::Positions) {
+      pending.position_epoch_at_submit =
+          positions_.ensure_account_epoch(account_id);
+      if (pending.position_epoch_at_submit == 0)
+        return {{}, Error::CapacityExceeded};
+    }
     pending.orders.reserve(64);
     pending.positions.reserve(64);
     pending_queries_.push_back(std::move(pending));

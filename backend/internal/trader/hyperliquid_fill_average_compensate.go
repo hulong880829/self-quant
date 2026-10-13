@@ -88,6 +88,33 @@ func (c *HyperliquidArbitrageFillAverageCompensator) Compensate(
 		}
 		return
 	}
+	for _, item := range c.CompensateListed(ctx, orders) {
+		if setErr := c.store.TrySetHyperliquidArbitrageAverage(
+			ctx, item.OrderID, item.Average, item.ExpectedFilled,
+		); setErr != nil {
+			c.logger.Error(
+				"hyperliquid average compensate update failed",
+				"order_id", item.OrderID,
+				"error", setErr,
+			)
+		}
+	}
+}
+
+type listedFillAverage struct {
+	OrderID        string
+	CombinationID  string
+	Average        string
+	ExpectedFilled string
+}
+
+func (c *HyperliquidArbitrageFillAverageCompensator) CompensateListed(
+	ctx context.Context,
+	orders []missingHyperliquidAverageOrder,
+) []listedFillAverage {
+	if c == nil || len(orders) == 0 {
+		return nil
+	}
 	ready := make([]missingHyperliquidAverageOrder, 0, len(orders))
 	for _, order := range orders {
 		if strings.TrimSpace(order.VenueOrderID) == "" {
@@ -102,10 +129,12 @@ func (c *HyperliquidArbitrageFillAverageCompensator) Compensate(
 	}
 	groups := groupMissingHyperliquidAverageOrders(ready)
 	if len(groups) == 0 {
-		return
+		return nil
 	}
 	sem := make(chan struct{}, hyperliquidAverageCompensateConcurrency)
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	resolved := make([]listedFillAverage, 0)
 	for index := range groups {
 		if ctx.Err() != nil {
 			break
@@ -116,22 +145,46 @@ func (c *HyperliquidArbitrageFillAverageCompensator) Compensate(
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			c.compensateGroup(ctx, group)
+			items := c.resolveGroup(ctx, group)
+			if len(items) == 0 {
+				return
+			}
+			mu.Lock()
+			resolved = append(resolved, items...)
+			mu.Unlock()
 		}()
 	}
 	wg.Wait()
+	return resolved
 }
 
 func (c *HyperliquidArbitrageFillAverageCompensator) compensateGroup(
 	ctx context.Context,
 	group missingHyperliquidAverageGroup,
 ) {
+	for _, item := range c.resolveGroup(ctx, group) {
+		if setErr := c.store.TrySetHyperliquidArbitrageAverage(
+			ctx, item.OrderID, item.Average, item.ExpectedFilled,
+		); setErr != nil {
+			c.logger.Error(
+				"hyperliquid average compensate update failed",
+				"order_id", item.OrderID,
+				"error", setErr,
+			)
+		}
+	}
+}
+
+func (c *HyperliquidArbitrageFillAverageCompensator) resolveGroup(
+	ctx context.Context,
+	group missingHyperliquidAverageGroup,
+) []listedFillAverage {
 	if ctx.Err() != nil || len(group.Orders) == 0 {
-		return
+		return nil
 	}
 	if c.credentials == nil || c.catalog == nil {
 		c.logger.Error("hyperliquid average compensate is not configured")
-		return
+		return nil
 	}
 	credentials, err := c.credentials.GetInternal(
 		ctx, c.token, group.OwnerUsername, group.TradingAccountID,
@@ -142,7 +195,7 @@ func (c *HyperliquidArbitrageFillAverageCompensator) compensateGroup(
 			"account_id", group.TradingAccountID,
 			"error", err,
 		)
-		return
+		return nil
 	}
 	instrument, err := c.catalog.Get(ctx, group.InstrumentID)
 	if err != nil {
@@ -151,21 +204,21 @@ func (c *HyperliquidArbitrageFillAverageCompensator) compensateGroup(
 			"instrument_id", group.InstrumentID,
 			"error", err,
 		)
-		return
+		return nil
 	}
 	if c.venues == nil {
 		c.logger.Error("hyperliquid average compensate venues are not configured")
-		return
+		return nil
 	}
 	adapter, ok := c.venues.Adapter("hyperliquid")
 	if !ok {
 		c.logger.Error("hyperliquid average compensate adapter unavailable")
-		return
+		return nil
 	}
 	reader, ok := adapter.(exchange.FillReader)
 	if !ok {
 		c.logger.Error("hyperliquid average compensate fill reader unavailable")
-		return
+		return nil
 	}
 	since := missingAverageSince(group.Orders)
 	queryCtx, cancel := context.WithTimeout(ctx, c.timeout)
@@ -180,11 +233,12 @@ func (c *HyperliquidArbitrageFillAverageCompensator) compensateGroup(
 			"instrument_id", group.InstrumentID,
 			"error", err,
 		)
-		return
+		return nil
 	}
+	resolved := make([]listedFillAverage, 0, len(group.Orders))
 	for _, order := range group.Orders {
 		if ctx.Err() != nil {
-			return
+			return resolved
 		}
 		quantity, notional, matched := aggregateHyperliquidFills(
 			fills, order.VenueOrderID, instrument,
@@ -200,17 +254,12 @@ func (c *HyperliquidArbitrageFillAverageCompensator) compensateGroup(
 			)
 			continue
 		}
-		average := notional.Div(quantity).String()
-		if setErr := c.store.TrySetHyperliquidArbitrageAverage(
-			ctx, order.ID, average, order.FilledQuantity,
-		); setErr != nil {
-			c.logger.Error(
-				"hyperliquid average compensate update failed",
-				"order_id", order.ID,
-				"error", setErr,
-			)
-		}
+		resolved = append(resolved, listedFillAverage{
+			OrderID: order.ID, CombinationID: order.CombinationID,
+			Average: notional.Div(quantity).String(), ExpectedFilled: order.FilledQuantity,
+		})
 	}
+	return resolved
 }
 
 func groupMissingHyperliquidAverageOrders(

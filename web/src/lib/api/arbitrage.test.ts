@@ -9,6 +9,8 @@ import {
   fetchArbitrageCombination,
   fetchArbitrageCombinations,
   formatAnnualizedRatioAsPercent,
+  formatLiquidationDistance,
+  formatRunningDuration,
   formatSignedAnnualizedRatioAsPercent,
   mapArbitrageCombination,
   signedAnnualizedPercentToRatio,
@@ -60,6 +62,7 @@ const combination = {
   scheduledExitAt: "",
   oneShotPhase: "",
   earlyExitFunding8hAnnualizedFloor: "",
+  earlyExitLiquidationDistancePct: "",
   legABasePosition: "25",
   legBBasePosition: "-24.99",
   carryBaseQuantity: "0.01",
@@ -138,6 +141,16 @@ describe("arbitrage api client", () => {
     expect(mapArbitrageCombination(combination).legBVenueValuationPrice).toBe(
       "101",
     );
+    expect(
+      mapArbitrageCombination(combination).legALiquidationDistancePct,
+    ).toBeNull();
+    expect(
+      mapArbitrageCombination({
+        ...combination,
+        legALiquidationDistancePct: "18.42",
+        legBLiquidationDistancePct: "-3.5",
+      }).legBLiquidationDistancePct,
+    ).toBe("-3.5");
     expect(() =>
       mapArbitrageCombination({ ...combination, targetNotional: 10000 }),
     ).toThrow("response.data.targetNotional 必须是 decimal string");
@@ -193,6 +206,7 @@ describe("arbitrage api client", () => {
         exitAnnualizedRate: "",
         exitAfterSeconds: 0,
         earlyExitFunding8hAnnualizedFloor: "",
+        earlyExitLiquidationDistancePct: "",
       },
       "fixed-key",
     );
@@ -257,6 +271,7 @@ describe("arbitrage api client", () => {
         exitAnnualizedRate: "",
         exitAfterSeconds: 0,
         earlyExitFunding8hAnnualizedFloor: "",
+        earlyExitLiquidationDistancePct: "",
       }),
     ).rejects.toThrow("BTC-USDT-SWAP 已被运行中套利组合 combo-1 占用");
   });
@@ -420,6 +435,7 @@ describe("arbitrage api client", () => {
         exitAnnualizedRate: "",
         exitAfterSeconds: 0,
         earlyExitFunding8hAnnualizedFloor: "",
+        earlyExitLiquidationDistancePct: "",
       });
       throw new Error("expected create to fail");
     } catch (error) {
@@ -459,6 +475,7 @@ describe("annualized percent conversion", () => {
     expect(annualizedRatioToPercent("0.125")).toBe("12.5");
     expect(formatAnnualizedRatioAsPercent("0.15")).toBe("15.00%");
     expect(formatAnnualizedRatioAsPercent("0.125")).toBe("12.50%");
+    expect(formatAnnualizedRatioAsPercent("0.8")).toBe("80.00%");
   });
 
   it("converts signed 8h funding percents including zero", () => {
@@ -471,5 +488,91 @@ describe("annualized percent conversion", () => {
     expect(formatSignedAnnualizedRatioAsPercent("0.05")).toBe("5.00%");
     expect(formatSignedAnnualizedRatioAsPercent("-0.1")).toBe("-10.00%");
     expect(formatSignedAnnualizedRatioAsPercent("0")).toBe("0.00%");
+  });
+
+  it("floors running duration to whole hours", () => {
+    const start = "2026-08-22T10:00:00Z";
+    expect(
+      formatRunningDuration(start, "", "running", new Date("2026-08-22T10:59:00Z")),
+    ).toBe("0天0小时");
+    expect(
+      formatRunningDuration(start, "", "running", new Date("2026-08-22T11:00:00Z")),
+    ).toBe("0天1小时");
+    expect(
+      formatRunningDuration(start, "", "closing", new Date("2026-08-24T17:40:00Z")),
+    ).toBe("2天7小时");
+    expect(
+      formatRunningDuration(
+        start,
+        "2026-08-22T13:40:00Z",
+        "closed",
+        new Date("2026-08-25T00:00:00Z"),
+      ),
+    ).toBe("0天3小时");
+    expect(formatRunningDuration("bad", "", "running", new Date())).toBe("-");
+    expect(
+      formatRunningDuration(start, "2026-08-22T09:00:00Z", "closed", new Date()),
+    ).toBe("-");
+    expect(formatRunningDuration(start, "", "closed", new Date())).toBe("-");
+  });
+
+  it("formats perpetual liquidation distance and hides spot legs", () => {
+    expect(
+      formatLiquidationDistance({
+        label: "A",
+        exchange: "Binance",
+        contractType: "perpetual",
+        venueBasePosition: "1",
+        distancePct: "18.42",
+      }),
+    ).toEqual({ label: "A", text: "A Binance +18.42%", negative: false });
+    const short = formatLiquidationDistance({
+      label: "B",
+      exchange: "OKX",
+      contractType: "perpetual",
+      venueBasePosition: "-1",
+      distancePct: "-21.07",
+    });
+    expect(short).toEqual({
+      label: "B",
+      text: "B OKX -21.07%",
+      negative: true,
+    });
+    expect(
+      formatLiquidationDistance({
+        label: "A",
+        exchange: "Binance",
+        contractType: "perpetual",
+        venueBasePosition: "1",
+        distancePct: "0",
+      })?.text,
+    ).toBe("A Binance 0.00%");
+    expect(
+      formatLiquidationDistance({
+        label: "A",
+        exchange: "Binance",
+        contractType: "spot",
+        venueBasePosition: "1",
+        distancePct: "18.42",
+      }),
+    ).toBeNull();
+    expect(
+      formatLiquidationDistance({
+        label: "A",
+        exchange: "Binance",
+        contractType: "perpetual",
+        venueBasePosition: "0",
+        distancePct: "18.42",
+      })?.text,
+    ).toBe("A Binance -");
+    expect(
+      formatLiquidationDistance({
+        label: "B",
+        exchange: "OKX",
+        contractType: "perpetual",
+        venueBasePosition: "-5",
+        distancePct: null,
+      })?.text,
+    ).toBe("B OKX -");
   });
 });

@@ -11,6 +11,7 @@ import (
 
 var (
 	ErrInvalidArgument                   = errors.New("invalid argument")
+	ErrInvalidServiceToken               = errors.New("invalid service token")
 	ErrOrderBelowMinimum                 = errors.New("order below minimum")
 	ErrNotFound                          = errors.New("not found")
 	ErrIdempotencyConflict               = errors.New("idempotency key conflict")
@@ -46,6 +47,13 @@ var (
 	)
 	ErrCloseOrderOpen      = errors.New("close order remains open")
 	ErrCloseOrderUncertain = errors.New("close order state uncertain")
+	ErrFinalMetricsNotReady = errors.New("final_metrics_not_ready")
+	ErrFinalMetricsPersist  = errors.New("final_metrics_persist_failed")
+)
+
+const (
+	finalMetricsNotReadyKey = "final_metrics_not_ready"
+	finalMetricsPersistKey  = "final_metrics_persist_failed"
 )
 
 type ArbitrageCreateError struct {

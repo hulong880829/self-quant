@@ -44,13 +44,14 @@ type lighterAccount struct {
 }
 
 type lighterPosition struct {
-	MarketID      json.Number `json:"market_id"`
-	Symbol        string      `json:"symbol"`
-	Sign          json.Number `json:"sign"`
-	Position      string      `json:"position"`
-	AvgEntryPrice string      `json:"avg_entry_price"`
-	PositionValue string      `json:"position_value"`
-	UnrealizedPnl string      `json:"unrealized_pnl"`
+	MarketID         json.Number `json:"market_id"`
+	Symbol           string      `json:"symbol"`
+	Sign             json.Number `json:"sign"`
+	Position         string      `json:"position"`
+	AvgEntryPrice    string      `json:"avg_entry_price"`
+	PositionValue    string      `json:"position_value"`
+	UnrealizedPnl    string      `json:"unrealized_pnl"`
+	LiquidationPrice string      `json:"liquidation_price"`
 }
 
 func (a *lighterAdapter) Snapshot(ctx context.Context, credentials Credentials) (Snapshot, error) {
@@ -133,7 +134,8 @@ func (a *lighterAdapter) Snapshot(ctx context.Context, credentials Credentials) 
 		result.Positions = append(result.Positions, Position{
 			Key: "lighter:" + accountIndex + ":" + symbol + ":" + side, Kind: "cex", Exchange: "Lighter",
 			Symbol: symbol, Side: side, NotionalUSD: notional.String(), Size: size.Abs().String(),
-			EntryPrice: item.AvgEntryPrice, MarkPrice: mark, UnrealizedPnL: pnl.String(),
+			EntryPrice: item.AvgEntryPrice, MarkPrice: mark,
+			LiquidationPrice: item.LiquidationPrice, UnrealizedPnL: pnl.String(),
 			WireSymbol: item.Symbol, ProductCategory: "perp",
 		})
 	}
@@ -180,10 +182,10 @@ func (a *lighterAdapter) AccountFeeRates(
 		"account_index": {strconv.FormatInt(*credentials.AccountIndex, 10)},
 	}
 	var payload struct {
-		Code                 json.Number `json:"code"`
-		Message              string      `json:"message"`
-		CurrentMakerFeeTick  json.Number `json:"current_maker_fee_tick"`
-		CurrentTakerFeeTick  json.Number `json:"current_taker_fee_tick"`
+		Code                json.Number `json:"code"`
+		Message             string      `json:"message"`
+		CurrentMakerFeeTick json.Number `json:"current_maker_fee_tick"`
+		CurrentTakerFeeTick json.Number `json:"current_taker_fee_tick"`
 	}
 	if err := getJSON(
 		ctx, a.client, a.base+"/api/v1/accountLimits?"+query.Encode(), headers, &payload,
