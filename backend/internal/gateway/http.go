@@ -2,11 +2,13 @@ package gateway
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -16,8 +18,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	accountv1 "selfquant/backend/gen/account/v1"
+	adminv1 "selfquant/backend/gen/admin/v1"
 	aiv1 "selfquant/backend/gen/ai/v1"
 	fundingv1 "selfquant/backend/gen/funding/v1"
+	jevv1 "selfquant/backend/gen/jev/v1"
 	polymarketv1 "selfquant/backend/gen/polymarket/v1"
 	reportv1 "selfquant/backend/gen/report/v1"
 	spreadv1 "selfquant/backend/gen/spread/v1"
@@ -25,40 +29,57 @@ import (
 )
 
 type Options struct {
-	SessionCookieName   string
-	SessionCookieSecure bool
-	SessionCookieMaxAge time.Duration
-	Polymarket          polymarketv1.PolymarketServiceClient
-	Report              reportv1.ReportServiceClient
-	Trader              traderv1.TraderServiceClient
-	AI                  aiv1.AIServiceClient
-	Spread              spreadv1.SpreadServiceClient
-	AccountHealth       grpc_health_v1.HealthClient
-	PolymarketHealth    grpc_health_v1.HealthClient
-	ReportHealth        grpc_health_v1.HealthClient
-	TraderHealth        grpc_health_v1.HealthClient
-	AIHealth            grpc_health_v1.HealthClient
-	SpreadHealth        grpc_health_v1.HealthClient
+	SessionCookieName    string
+	SessionCookieSecure  bool
+	SessionCookieMaxAge  time.Duration
+	GatewayInternalToken string
+	CORSOrigin           string
+	Polymarket           polymarketv1.PolymarketServiceClient
+	Report               reportv1.ReportServiceClient
+	Trader               traderv1.TraderServiceClient
+	AI                   aiv1.AIServiceClient
+	Spread               spreadv1.SpreadServiceClient
+	Jev                  jevv1.JevServiceClient
+	AccountHealth        grpc_health_v1.HealthClient
+	PolymarketHealth     grpc_health_v1.HealthClient
+	ReportHealth         grpc_health_v1.HealthClient
+	TraderHealth         grpc_health_v1.HealthClient
+	AIHealth             grpc_health_v1.HealthClient
+	SpreadHealth         grpc_health_v1.HealthClient
+	Admin                adminv1.AdminServiceClient
+	BrokerJWTPublicKey   string
+	BrokerAuthCacheTTL   time.Duration
 }
 
 type Handler struct {
-	funding             fundingv1.FundingServiceClient
-	account             accountv1.AccountServiceClient
-	polymarket          polymarketv1.PolymarketServiceClient
-	report              reportv1.ReportServiceClient
-	trader              traderv1.TraderServiceClient
-	ai                  aiv1.AIServiceClient
-	spread              spreadv1.SpreadServiceClient
-	health              grpc_health_v1.HealthClient
-	accountHealth       grpc_health_v1.HealthClient
-	polymarketHealth    grpc_health_v1.HealthClient
-	reportHealth        grpc_health_v1.HealthClient
-	traderHealth        grpc_health_v1.HealthClient
-	aiHealth            grpc_health_v1.HealthClient
-	spreadHealth        grpc_health_v1.HealthClient
-	sessionCookieName   string
-	sessionCookieSecure bool
-	sessionCookieMaxAge time.Duration
+	funding              fundingv1.FundingServiceClient
+	account              accountv1.AccountServiceClient
+	polymarket           polymarketv1.PolymarketServiceClient
+	report               reportv1.ReportServiceClient
+	trader               traderv1.TraderServiceClient
+	ai                   aiv1.AIServiceClient
+	spread               spreadv1.SpreadServiceClient
+	jev                  jevv1.JevServiceClient
+	health               grpc_health_v1.HealthClient
+	accountHealth        grpc_health_v1.HealthClient
+	polymarketHealth     grpc_health_v1.HealthClient
+	reportHealth         grpc_health_v1.HealthClient
+	traderHealth         grpc_health_v1.HealthClient
+	aiHealth             grpc_health_v1.HealthClient
+	spreadHealth         grpc_health_v1.HealthClient
+	sessionCookieName    string
+	sessionCookieSecure  bool
+	sessionCookieMaxAge  time.Duration
+	gatewayInternalToken string
+	corsOrigin           string
+	admin                adminv1.AdminServiceClient
+	brokerPublicKey      ed25519.PublicKey
+	brokerAuthTTL        time.Duration
+	brokerStateMu        sync.RWMutex
+	brokerState          map[string]brokerAuthCache
+	delegatedMu          sync.RWMutex
+	delegated            map[string]delegatedSession
+	oauthLimiter         *rateLimiter
 }
 
 func NewRouter(
@@ -76,30 +97,50 @@ func NewRouter(
 		maxAge = 12 * time.Hour
 	}
 	handler := &Handler{
-		funding:             funding,
-		account:             account,
-		health:              health,
-		polymarket:          options.Polymarket,
-		report:              options.Report,
-		trader:              options.Trader,
-		ai:                  options.AI,
-		spread:              options.Spread,
-		accountHealth:       options.AccountHealth,
-		polymarketHealth:    options.PolymarketHealth,
-		reportHealth:        options.ReportHealth,
-		traderHealth:        options.TraderHealth,
-		aiHealth:            options.AIHealth,
-		spreadHealth:        options.SpreadHealth,
-		sessionCookieName:   cookieName,
-		sessionCookieSecure: options.SessionCookieSecure,
-		sessionCookieMaxAge: maxAge,
+		funding:              funding,
+		account:              account,
+		health:               health,
+		polymarket:           options.Polymarket,
+		report:               options.Report,
+		trader:               options.Trader,
+		ai:                   options.AI,
+		spread:               options.Spread,
+		jev:                  options.Jev,
+		accountHealth:        options.AccountHealth,
+		polymarketHealth:     options.PolymarketHealth,
+		reportHealth:         options.ReportHealth,
+		traderHealth:         options.TraderHealth,
+		aiHealth:             options.AIHealth,
+		spreadHealth:         options.SpreadHealth,
+		sessionCookieName:    cookieName,
+		sessionCookieSecure:  options.SessionCookieSecure,
+		sessionCookieMaxAge:  maxAge,
+		gatewayInternalToken: strings.TrimSpace(options.GatewayInternalToken),
+		corsOrigin:           strings.TrimSpace(options.CORSOrigin),
+		admin:                options.Admin,
+		brokerAuthTTL:        options.BrokerAuthCacheTTL,
+		brokerState:          map[string]brokerAuthCache{},
+		delegated:            map[string]delegatedSession{},
+		oauthLimiter:         newRateLimiter(time.Minute, 10),
+	}
+	if handler.brokerAuthTTL <= 0 {
+		handler.brokerAuthTTL = 30 * time.Second
+	}
+	if path := strings.TrimSpace(options.BrokerJWTPublicKey); path != "" {
+		if key, err := loadBrokerPublicKey(path); err == nil {
+			handler.brokerPublicKey = key
+		}
 	}
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
 	router.Use(middleware.RealIP)
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.Compress(5))
-	router.Use(corsMiddleware(os.Getenv("GATEWAY_CORS_ORIGIN")))
+	corsOrigin := handler.corsOrigin
+	if corsOrigin == "" {
+		corsOrigin = os.Getenv("GATEWAY_CORS_ORIGIN")
+	}
+	router.Use(corsMiddleware(corsOrigin))
 	router.Get("/health/live", func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -107,6 +148,24 @@ func NewRouter(
 	router.Post("/api/v1/auth/login", handler.login)
 	router.Get("/api/v1/auth/session", handler.session)
 	router.Post("/api/v1/auth/logout", handler.logout)
+	router.Post("/api/v1/oauth/token", handler.oauthToken)
+	router.Get("/api/v1/admin/overview", handler.adminOverview)
+	router.Get("/api/v1/admin/brokers", handler.listAdminBrokers)
+	router.Post("/api/v1/admin/brokers", handler.createAdminBroker)
+	router.Post("/api/v1/admin/brokers/{brokerId}/disable", handler.disableAdminBroker)
+	router.Post("/api/v1/admin/brokers/{brokerId}/restore", handler.restoreAdminBroker)
+	router.Delete("/api/v1/admin/brokers/{brokerId}", handler.deleteAdminBroker)
+	router.Post("/api/v1/admin/brokers/{brokerId}/secret", handler.resetAdminBrokerSecret)
+	router.Get("/api/v1/broker/summary", handler.brokerSummary)
+	router.Get("/api/v1/broker/platform-accounts", handler.listBrokerPlatformAccounts)
+	router.Post("/api/v1/broker/platform-accounts", handler.createBrokerPlatformAccount)
+	router.Get("/api/v1/admin/platform-accounts", handler.listAdminPlatformAccounts)
+	router.Post("/api/v1/admin/platform-accounts", handler.createAdminPlatformAccount)
+	router.Post("/api/v1/admin/platform-accounts/{username}/disable", handler.disableAdminPlatformAccount)
+	router.Post("/api/v1/admin/platform-accounts/{username}/restore", handler.restoreAdminPlatformAccount)
+	router.Delete("/api/v1/admin/platform-accounts/{username}", handler.deleteAdminPlatformAccount)
+	router.Post("/api/v1/admin/platform-accounts/{username}/password", handler.resetAdminPlatformAccountPassword)
+	router.Patch("/api/v1/admin/platform-accounts/{username}/broker", handler.updateAdminPlatformAccountBroker)
 	router.Get("/api/v1/trading-accounts", handler.listTradingAccounts)
 	router.Post("/api/v1/trading-accounts", handler.createTradingAccount)
 	router.Get("/api/v1/trading-accounts/{id}/fee-rates", handler.getTradingAccountFeeRates)
@@ -118,6 +177,7 @@ func NewRouter(
 	router.Get("/api/v1/funding-rates", handler.listFundingRates)
 	router.Post("/api/v1/funding-rates/lookup", handler.lookupFundingRates)
 	router.Get("/api/v1/funding-spreads", handler.listFundingSpreads)
+	router.Get("/api/v1/tradefi-perps-opportunities", handler.listTradefiPerpsOpportunities)
 	router.Get("/api/v1/funding-opportunities", handler.listFundingOpportunities)
 	router.Get(
 		"/api/v1/funding-rates/{exchange}/{exchangeSymbol}/history",
@@ -132,6 +192,11 @@ func NewRouter(
 			handler.getBasisSpreadHistory,
 		)
 	}
+	router.Get("/api/v1/jev-arb/snapshot", handler.getJevSnapshot)
+	router.Get("/api/v1/jev-arb/positions", handler.listJevPositions)
+	router.Get("/api/v1/jev-arb/decisions", handler.listJevDecisions)
+	router.Get("/api/v1/jev-arb/trades", handler.listJevTrades)
+	router.Get("/api/v1/jev-arb/equity", handler.getJevEquity)
 	if handler.polymarket != nil {
 		router.Get("/api/v1/polymarket/markets", handler.listPolymarketMarkets)
 		router.Get("/api/v1/polymarket/markets/{id}", handler.getPolymarketSnapshot)
@@ -156,9 +221,13 @@ func NewRouter(
 		router.Get("/api/v1/trader/twaps/{id}", handler.getTraderTwap)
 		router.Get("/api/v1/trader/twaps/{id}/orders", handler.listTraderTwapOrders)
 		router.Delete("/api/v1/trader/twaps/{id}", handler.cancelTraderTwap)
+		router.Post("/api/v1/trader/arbitrage-combinations/preflight", handler.preflightArbitrageCombination)
 		router.Post("/api/v1/trader/arbitrage-combinations", handler.createArbitrageCombination)
 		router.Get("/api/v1/trader/arbitrage-combinations", handler.listArbitrageCombinations)
 		router.Get("/api/v1/trader/arbitrage-combinations/{id}", handler.getArbitrageCombination)
+		router.Get("/api/v1/trader/arbitrage-combinations/{id}/orders", handler.listArbitrageCombinationOrders)
+		router.Get("/api/v1/trader/arbitrage-combinations/{id}/executions", handler.listArbitrageCombinationExecutions)
+		router.Get("/api/v1/trader/arbitrage-combinations/{id}/events", handler.listArbitrageCombinationEvents)
 		router.Patch("/api/v1/trader/arbitrage-combinations/{id}", handler.updateArbitrageCombination)
 		router.Delete("/api/v1/trader/arbitrage-combinations/{id}", handler.closeArbitrageCombination)
 	}
@@ -186,9 +255,8 @@ func NewRouter(
 }
 
 func (h *Handler) getTradingAccountSnapshot(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	id, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(request, "id")), 10, 64)
@@ -209,20 +277,19 @@ func (h *Handler) getTradingAccountSnapshot(writer http.ResponseWriter, request 
 	if err != nil {
 		if cacheOnly && status.Code(err) == codes.FailedPrecondition &&
 			status.Convert(err).Message() == "snapshot_cache_miss" {
+			writer.Header().Set("Cache-Control", "no-store")
 			writer.WriteHeader(http.StatusNoContent)
 			return
 		}
 		h.writeAccountError(writer, err, "account snapshot unavailable")
 		return
 	}
-	writer.Header().Set("Cache-Control", "no-store")
-	writeJSON(writer, http.StatusOK, tradingAccountSnapshotJSON(response))
+	writePrivateJSON(writer, http.StatusOK, tradingAccountSnapshotJSON(response))
 }
 
 func (h *Handler) getProductGroupSnapshot(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	product := strings.TrimSpace(chi.URLParam(request, "productName"))
@@ -237,7 +304,6 @@ func (h *Handler) getProductGroupSnapshot(writer http.ResponseWriter, request *h
 		h.writeAccountError(writer, err, "product snapshot unavailable")
 		return
 	}
-	writer.Header().Set("Cache-Control", "no-store")
 	snapshot := response.GetSnapshot()
 	positions := make([]map[string]any, 0, len(snapshot.GetPositions()))
 	for _, item := range snapshot.GetPositions() {
@@ -247,7 +313,7 @@ func (h *Handler) getProductGroupSnapshot(writer http.ResponseWriter, request *h
 			"spotSize":         item.GetSpotSize(), "contractSize": item.GetContractSize(),
 		})
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{
+	writePrivateJSON(writer, http.StatusOK, map[string]any{
 		"productName": snapshot.GetProductName(), "accountCount": snapshot.GetAccountCount(),
 		"accountEquityUsd": snapshot.GetAccountEquityUsd(), "availableFundsUsd": snapshot.GetAvailableFundsUsd(),
 		"positions": positions, "sourceUpdatedAt": protoTimeJSON(snapshot.GetSourceUpdatedAt()),
@@ -299,7 +365,7 @@ func corsMiddleware(origin string) func(http.Handler) http.Handler {
 				writer.Header().Set("Access-Control-Allow-Credentials", "true")
 				writer.Header().Set(
 					"Access-Control-Allow-Headers",
-					"Content-Type, Accept, If-None-Match, Idempotency-Key",
+					"Content-Type, Accept, If-None-Match, Idempotency-Key, Authorization, X-SelfQuant-Account",
 				)
 				writer.Header().Set("Access-Control-Expose-Headers", "ETag")
 				writer.Header().Set(
@@ -593,11 +659,8 @@ func (h *Handler) writeAccountError(writer http.ResponseWriter, err error, fallb
 }
 
 func (h *Handler) listTradingAccounts(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{
-			"error": "authentication required",
-		})
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
@@ -613,18 +676,15 @@ func (h *Handler) listTradingAccounts(writer http.ResponseWriter, request *http.
 	for _, item := range response.GetItems() {
 		data = append(data, tradingAccountJSON(item))
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{
+	writePrivateJSON(writer, http.StatusOK, map[string]any{
 		"data": data,
 		"meta": map[string]any{"total": len(data)},
 	})
 }
 
 func (h *Handler) createTradingAccount(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{
-			"error": "authentication required",
-		})
 		return
 	}
 	var body createTradingAccountBody
@@ -678,17 +738,14 @@ func (h *Handler) createTradingAccount(writer http.ResponseWriter, request *http
 		h.writeAccountError(writer, err, "create trading account failed")
 		return
 	}
-	writeJSON(writer, http.StatusCreated, map[string]any{
+	writePrivateJSON(writer, http.StatusCreated, map[string]any{
 		"data": tradingAccountJSON(created),
 	})
 }
 
 func (h *Handler) deleteTradingAccount(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{
-			"error": "authentication required",
-		})
 		return
 	}
 	id, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(request, "id")), 10, 64)
@@ -707,7 +764,7 @@ func (h *Handler) deleteTradingAccount(writer http.ResponseWriter, request *http
 		h.writeAccountError(writer, err, "delete trading account failed")
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"deleted": true})
+	writePrivateJSON(writer, http.StatusOK, map[string]any{"deleted": true})
 }
 
 func (h *Handler) getTradingAccountFeeRates(writer http.ResponseWriter, request *http.Request) {
@@ -719,11 +776,8 @@ func (h *Handler) syncTradingAccountFeeRates(writer http.ResponseWriter, request
 }
 
 func (h *Handler) handleFeeRates(writer http.ResponseWriter, request *http.Request, sync bool) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{
-			"error": "authentication required",
-		})
 		return
 	}
 	id, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(request, "id")), 10, 64)
@@ -753,15 +807,12 @@ func (h *Handler) handleFeeRates(writer http.ResponseWriter, request *http.Reque
 		h.writeAccountError(writer, err, "trading account fee rates unavailable")
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"data": feeRatesJSON(response)})
+	writePrivateJSON(writer, http.StatusOK, map[string]any{"data": feeRatesJSON(response)})
 }
 
 func (h *Handler) inspectTradingReadiness(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{
-			"error": "authentication required",
-		})
 		return
 	}
 	id, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(request, "id")), 10, 64)
@@ -798,7 +849,7 @@ func (h *Handler) inspectTradingReadiness(writer http.ResponseWriter, request *h
 	if response.ResolvedApiKeyIndex != nil {
 		payload["resolvedApiKeyIndex"] = response.GetResolvedApiKeyIndex()
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"data": payload})
+	writePrivateJSON(writer, http.StatusOK, map[string]any{"data": payload})
 }
 
 func (h *Handler) listFundingRates(writer http.ResponseWriter, request *http.Request) {
@@ -965,6 +1016,88 @@ func (h *Handler) lookupFundingRates(writer http.ResponseWriter, request *http.R
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"results": results,
 		"meta": map[string]any{
+			"snapshotVersion": response.GetSnapshotVersion(),
+			"serverTime":      serverTime.Format(time.RFC3339Nano),
+		},
+	})
+}
+
+func (h *Handler) listTradefiPerpsOpportunities(writer http.ResponseWriter, request *http.Request) {
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	defer cancel()
+	response, err := h.funding.ListTradefiPerpsOpportunities(
+		ctx, &fundingv1.ListTradefiPerpsOpportunitiesRequest{},
+	)
+	if err != nil {
+		httpStatus := http.StatusBadGateway
+		switch status.Code(err) {
+		case codes.DeadlineExceeded:
+			httpStatus = http.StatusGatewayTimeout
+		case codes.Unavailable:
+			httpStatus = http.StatusServiceUnavailable
+		}
+		writeJSON(writer, httpStatus, map[string]any{
+			"error":     "funding service unavailable",
+			"requestId": middleware.GetReqID(request.Context()),
+		})
+		return
+	}
+	serverTime := response.GetServerTime().AsTime().UTC()
+	etag := `"` + response.GetSnapshotVersion() + `"`
+	writer.Header().Set("ETag", etag)
+	writer.Header().Set("Cache-Control", "no-cache")
+	if request.Header.Get("If-None-Match") == etag {
+		writer.WriteHeader(http.StatusNotModified)
+		return
+	}
+	data := make([]map[string]any, 0, len(response.GetItems()))
+	for _, item := range response.GetItems() {
+		spot := item.GetSpot()
+		perpetual := item.GetPerpetual()
+		data = append(data, map[string]any{
+			"id":          item.GetStockSymbol() + "-" + perpetual.GetExchange() + "-" + perpetual.GetExchangeSymbol(),
+			"stockSymbol": item.GetStockSymbol(),
+			"spot": map[string]any{
+				"exchange":        "IBKR",
+				"symbol":          spot.GetSymbol(),
+				"conId":           strconv.FormatInt(spot.GetConId(), 10),
+				"primaryExchange": spot.GetPrimaryExchange(),
+				"localSymbol":     spot.GetLocalSymbol(),
+				"tradingClass":    spot.GetTradingClass(),
+			},
+			"perpetual": map[string]any{
+				"exchange":       displayExchange(perpetual.GetExchange()),
+				"exchangeSymbol": perpetual.GetExchangeSymbol(),
+				"baseAsset":      perpetual.GetBaseAsset(),
+				"quoteAsset":     perpetual.GetQuoteAsset(),
+			},
+			"fundingRate":                perpetual.GetFundingRate(),
+			"perpetualFundingAnnualized": perpetual.GetPerpetualFundingAnnualized(),
+			"nextFundingRate":            perpetual.NextFundingRate,
+			"fundingIntervalSeconds":     perpetual.GetFundingIntervalSeconds(),
+			"nextFundingAt":              perpetual.GetNextFundingAt().AsTime().UTC().Format(time.RFC3339Nano),
+			"volume24hBase":              perpetual.GetVolume_24HBase(),
+			"turnover24hUsd":             perpetual.GetTurnover_24HUsd(),
+			"positionQuantity":           perpetual.GetPositionQuantity(),
+			"positionNotionalUsd":        perpetual.GetPositionNotionalUsd(),
+			"cumulative24h":              perpetual.GetCumulative_24H(),
+			"cumulative7d":               perpetual.GetCumulative_7D(),
+			"sourceUpdatedAt":            perpetual.GetSourceUpdatedAt().AsTime().UTC().Format(time.RFC3339Nano),
+			"stale":                      perpetual.GetStale(),
+			"verifiedAt":                 item.GetVerifiedAt().AsTime().UTC().Format(time.RFC3339Nano),
+			"priceMultiplier":            item.GetPriceMultiplier(),
+		})
+		if perpetual.History_24HComplete != nil {
+			data[len(data)-1]["history24hComplete"] = perpetual.GetHistory_24HComplete()
+		}
+		if perpetual.History_7DComplete != nil {
+			data[len(data)-1]["history7dComplete"] = perpetual.GetHistory_7DComplete()
+		}
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"data": data,
+		"meta": map[string]any{
+			"total":           len(data),
 			"snapshotVersion": response.GetSnapshotVersion(),
 			"serverTime":      serverTime.Format(time.RFC3339Nano),
 		},
@@ -1254,4 +1387,9 @@ func writeJSON(writer http.ResponseWriter, status int, payload any) {
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(payload)
+}
+
+func writePrivateJSON(writer http.ResponseWriter, status int, payload any) {
+	writer.Header().Set("Cache-Control", "no-store")
+	writeJSON(writer, status, payload)
 }

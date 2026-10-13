@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -14,8 +15,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	accountv1 "selfquant/backend/gen/account/v1"
+	adminv1 "selfquant/backend/gen/admin/v1"
 	aiv1 "selfquant/backend/gen/ai/v1"
 	fundingv1 "selfquant/backend/gen/funding/v1"
+	jevv1 "selfquant/backend/gen/jev/v1"
 	polymarketv1 "selfquant/backend/gen/polymarket/v1"
 	reportv1 "selfquant/backend/gen/report/v1"
 	spreadv1 "selfquant/backend/gen/spread/v1"
@@ -103,6 +106,35 @@ func main() {
 	}
 	defer spreadConn.Close()
 
+	var jevClient jevv1.JevServiceClient
+	if strings.TrimSpace(cfg.JevGRPCAddress) != "" {
+		jevConn, err := grpc.NewClient(
+			cfg.JevGRPCAddress,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(8*1024*1024)),
+		)
+		if err != nil {
+			logger.Warn("jev gRPC client skipped", "error", err)
+		} else {
+			defer jevConn.Close()
+			jevClient = jevv1.NewJevServiceClient(jevConn)
+		}
+	}
+
+	var adminClient adminv1.AdminServiceClient
+	if strings.TrimSpace(cfg.AdminGRPCAddress) != "" {
+		adminConn, err := grpc.NewClient(
+			cfg.AdminGRPCAddress,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+		if err != nil {
+			logger.Warn("admin gRPC client skipped", "error", err)
+		} else {
+			defer adminConn.Close()
+			adminClient = adminv1.NewAdminServiceClient(adminConn)
+		}
+	}
+
 	server := &http.Server{
 		Addr: cfg.HTTPAddress,
 		Handler: gateway.NewRouter(
@@ -110,20 +142,26 @@ func main() {
 			accountv1.NewAccountServiceClient(accountConn),
 			grpc_health_v1.NewHealthClient(fundingConn),
 			gateway.Options{
-				SessionCookieName:   cfg.SessionCookieName,
-				SessionCookieSecure: cfg.SessionCookieSecure,
-				SessionCookieMaxAge: cfg.SessionCookieMaxAge,
-				Polymarket:          polymarketv1.NewPolymarketServiceClient(polymarketConn),
-				Report:              reportv1.NewReportServiceClient(reportConn),
-				Trader:              traderv1.NewTraderServiceClient(traderConn),
-				AI:                  aiv1.NewAIServiceClient(aiConn),
-				Spread:              spreadv1.NewSpreadServiceClient(spreadConn),
-				AccountHealth:       grpc_health_v1.NewHealthClient(accountConn),
-				PolymarketHealth:    grpc_health_v1.NewHealthClient(polymarketConn),
-				ReportHealth:        grpc_health_v1.NewHealthClient(reportConn),
-				TraderHealth:        grpc_health_v1.NewHealthClient(traderConn),
-				AIHealth:            grpc_health_v1.NewHealthClient(aiConn),
-				SpreadHealth:        grpc_health_v1.NewHealthClient(spreadConn),
+				SessionCookieName:    cfg.SessionCookieName,
+				SessionCookieSecure:  cfg.SessionCookieSecure,
+				SessionCookieMaxAge:  cfg.SessionCookieMaxAge,
+				GatewayInternalToken: cfg.GatewayInternalToken,
+				CORSOrigin:           cfg.CORSOrigin,
+				Polymarket:           polymarketv1.NewPolymarketServiceClient(polymarketConn),
+				Report:               reportv1.NewReportServiceClient(reportConn),
+				Trader:               traderv1.NewTraderServiceClient(traderConn),
+				AI:                   aiv1.NewAIServiceClient(aiConn),
+				Spread:               spreadv1.NewSpreadServiceClient(spreadConn),
+				Jev:                  jevClient,
+				Admin:                adminClient,
+				BrokerJWTPublicKey:   cfg.BrokerJWTPublicKey,
+				BrokerAuthCacheTTL:   cfg.BrokerAuthCacheTTL,
+				AccountHealth:        grpc_health_v1.NewHealthClient(accountConn),
+				PolymarketHealth:     grpc_health_v1.NewHealthClient(polymarketConn),
+				ReportHealth:         grpc_health_v1.NewHealthClient(reportConn),
+				TraderHealth:         grpc_health_v1.NewHealthClient(traderConn),
+				AIHealth:             grpc_health_v1.NewHealthClient(aiConn),
+				SpreadHealth:         grpc_health_v1.NewHealthClient(spreadConn),
 			},
 		),
 		ReadHeaderTimeout: 5 * time.Second,

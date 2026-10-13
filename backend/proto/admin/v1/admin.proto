@@ -1,0 +1,124 @@
+syntax = "proto3";
+
+package admin.v1;
+
+option go_package = "selfquant/backend/gen/admin/v1;adminv1";
+
+import "google/protobuf/timestamp.proto";
+
+service AdminService {
+  rpc CreateBrokerInternal(CreateBrokerInternalRequest) returns (BrokerSecretResponse);
+  rpc ListBrokersInternal(AdminActorRequest) returns (ListBrokersInternalResponse);
+  rpc GetBrokerInternal(GetBrokerInternalRequest) returns (BrokerResponse);
+  rpc DisableBrokerInternal(GetBrokerInternalRequest) returns (BrokerResponse);
+  rpc RestoreBrokerInternal(GetBrokerInternalRequest) returns (BrokerResponse);
+  rpc DeleteBrokerInternal(GetBrokerInternalRequest) returns (BrokerResponse);
+  rpc ResetBrokerSecretInternal(GetBrokerInternalRequest) returns (BrokerSecretResponse);
+  rpc IssueBrokerAccessTokenInternal(IssueBrokerAccessTokenInternalRequest) returns (IssueBrokerAccessTokenInternalResponse);
+  rpc GetBrokerAuthStateInternal(GetBrokerAuthStateInternalRequest) returns (GetBrokerAuthStateInternalResponse);
+  rpc ListAuditEventsInternal(ListAuditEventsInternalRequest) returns (ListAuditEventsInternalResponse);
+  rpc GetOverviewInternal(AdminActorRequest) returns (GetOverviewInternalResponse);
+}
+
+message AdminActorRequest {
+  string service_token = 1;
+  string actor_username = 2;
+}
+
+message Broker {
+  string broker_id = 1;
+  string name = 2;
+  string client_secret_masked = 3;
+  string status = 4;
+  int64 token_version = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+message CreateBrokerInternalRequest {
+  string service_token = 1;
+  string actor_username = 2;
+  string name = 3;
+}
+
+message GetBrokerInternalRequest {
+  string service_token = 1;
+  string actor_username = 2;
+  string broker_id = 3;
+}
+
+message BrokerResponse {
+  Broker broker = 1;
+}
+
+message BrokerSecretResponse {
+  Broker broker = 1;
+  string client_secret = 2;
+}
+
+message ListBrokersInternalResponse {
+  repeated Broker brokers = 1;
+}
+
+message IssueBrokerAccessTokenInternalRequest {
+  string service_token = 1;
+  string client_id = 2;
+  string client_secret = 3;
+}
+
+message IssueBrokerAccessTokenInternalResponse {
+  string access_token = 1;
+  string token_type = 2;
+  int64 expires_in = 3;
+}
+
+message GetBrokerAuthStateInternalRequest {
+  string service_token = 1;
+  string broker_id = 2;
+}
+
+message GetBrokerAuthStateInternalResponse {
+  string broker_id = 1;
+  string status = 2;
+  int64 token_version = 3;
+}
+
+message ListAuditEventsInternalRequest {
+  string service_token = 1;
+  string actor_username = 2;
+  int32 limit = 3;
+}
+
+message AuditEvent {
+  int64 id = 1;
+  string actor_username = 2;
+  string actor_id = 3;
+  string action = 4;
+  string resource_type = 5;
+  string resource_id = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message ListAuditEventsInternalResponse {
+  repeated AuditEvent events = 1;
+}
+
+message OverviewBrokerRow {
+  string broker_id = 1;
+  string name = 2;
+  string status = 3;
+  int64 platform_accounts = 4;
+  int64 running = 5;
+  int64 closing = 6;
+  int64 closed = 7;
+  int64 failed = 8;
+  string equity_usd = 9;
+  int64 covered_accounts = 10;
+  int64 failed_snapshots = 11;
+  int64 stale_snapshots = 12;
+}
+
+message GetOverviewInternalResponse {
+  OverviewBrokerRow platform = 1;
+  repeated OverviewBrokerRow brokers = 2;
+}

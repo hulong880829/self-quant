@@ -12,22 +12,24 @@ without persistence (RDB and AOF disabled).
 Requirements: Docker Compose (default), or Go 1.25+ for host `go run` debugging.
 PostgreSQL 17, Redis 7, and optional ClickHouse are started by Compose.
 The frontend stays on the host (`web/`, typically `npm run dev` on :3000) and
-keeps `NEXT_PUBLIC_*` pointed at the published gateway (`:8080`) and aggdata
-(`:9093`) ports. C++ MDS (`mds_producer` / `mds_aggregator` / `mds_shm_consumer`)
-also stays on the host. `aggdata-service` uses host networking so it can
-reach the MDS gateway on `127.0.0.1:9443` and still publish `:9093`.
+keeps `NEXT_PUBLIC_*` pointed at the published gateway (`:8080`) and C++
+Fairprice (`:9093`) ports. C++ MDS (`mds_producer` / `mds_aggregator` /
+`mds_shm_consumer`) and Fairprice stay on the host. Fairprice reads ClickHouse
+aggregate history and uses the MDS Gateway only for one-shot startup restore;
+live updates come from aggregator SHM.
 
 ```bash
 cp .env.example .env
-# Set ACCOUNT_TOKEN_SECRET, ACCOUNT_CREDENTIALS_KEY, TRADER_INTERNAL_TOKEN,
-# REPORT_INTERNAL_TOKEN, and MDS_GATEWAY_TOKEN before starting services.
 cd backend
-set -a; source .env; set +a
+make bootstrap-compose
+make validate-compose
 docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 ```
 
-Compose rebuilds the shared `selfquant-backend:local` image and starts all nine
-Go services plus Postgres, Redis, and ClickHouse. Network variables in `.env`
+`make bootstrap-compose` selects `new` or `upgrade` from the Postgres and ClickHouse volumes. It does not start containers. Use `make bootstrap-compose-restore` only when restoring a backup. An environment with exactly one of those volumes is incomplete and fails instead of guessing.
+
+Compose rebuilds the shared `selfquant-backend:local` image and starts the Go
+services plus Postgres, Redis, and ClickHouse. Network variables in `.env`
 that still say `localhost` are overridden in `deploy/docker-compose.yml`.
 
 Before the first Compose cutover, stop host processes that bind 8080 and
@@ -36,15 +38,12 @@ Before the first Compose cutover, stop host processes that bind 8080 and
 ```bash
 curl -sS http://127.0.0.1:8080/health/live
 curl -sS http://127.0.0.1:8080/health/ready
-curl -sS http://127.0.0.1:9093/healthz
-# /readyz needs the host MDS gateway; it is not a container start gate.
-curl -sS http://127.0.0.1:9093/readyz
 ```
 
 Restart one Go service without touching databases:
 
 ```bash
-docker compose --env-file .env -f deploy/docker-compose.yml restart aggdata-service
+docker compose --env-file .env -f deploy/docker-compose.yml restart api-gateway
 ```
 
 Restart every Go service and leave Postgres / Redis / ClickHouse running:
@@ -53,7 +52,8 @@ Restart every Go service and leave Postgres / Redis / ClickHouse running:
 docker compose --env-file .env -f deploy/docker-compose.yml restart \
   funding-service account-service polymarket-service \
   report-service trader-service ai-service spread-service \
-  aggdata-service api-gateway
+  jev-service admin-service \
+  api-gateway
 ```
 
 Infrastructure only (the `infra` workflow for host `go run` debugging):
@@ -99,7 +99,7 @@ ClickHouse first-time TLS setup for the host MDS recorder
 
 ```bash
 ./deploy/clickhouse/generate-certs.sh
-export CLICKHOUSE_BBO_PASSWORD='your-password'
+export CLICKHOUSE_PASSWORD='your-password'
 docker compose --env-file .env -f deploy/docker-compose.yml up -d clickhouse
 ```
 
@@ -146,8 +146,9 @@ HTTP endpoints:
 Funding venue allowlists (`ENABLED_EXCHANGES`, `FUNDING_PUBLISHED_EXCHANGES`,
 `FUNDING_SPREAD_ENABLED_EXCHANGES`) control collection and display. Entropy is
 registered as a Funding-only adapter (`exchange=entropy`, HIP-3 dex `io`) but
-is not in the default Go sets. Enable it explicitly in those three lists when
-ready; never add it to `FUNDING_RANKING_ENABLED_EXCHANGES`.
+is not in the default Go sets. Add it only to the deployed `ENABLED_EXCHANGES`.
+Do not add it to `FUNDING_PUBLISHED_EXCHANGES`, `FUNDING_SPREAD_ENABLED_EXCHANGES`,
+`FUNDING_RANKING_ENABLED_EXCHANGES`, or the trader execution list.
 
 Auth uses an HttpOnly signed cookie (`ACCOUNT_SESSION_COOKIE`, default
 `sq_session`). Login validates username/password against bcrypt hashes in
@@ -394,11 +395,14 @@ npm run build
 The frontend should set `NEXT_PUBLIC_API_BASE_URL=http://localhost:8080` when
 it is not proxying `/api` to the Gateway.
 
-## Aggregate market-data service
+## Aggregate market-data (C++ Fairprice)
 
-`aggdata-service` reads `manifest.v1.json` and finalized SQREC shards from
-`AGGDATA_RECORDING_DIR`, then maintains one authenticated connection to the MDS
-Gateway. It exposes:
+Host C++ Fairprice (`core/fairprice`) serves the browser market-data HTTP/WS
+API on `:9093`. Catalog and 24h history come from ClickHouse aggregate tables;
+startup restore may use a one-shot MDS Gateway connection; live updates come
+only from aggregator SHM. Configuration lives in `core/fairprice/config/fairprice.yaml`.
+Keep `AGGDATA_MDS_GATEWAY_URL`, `MDS_GATEWAY_TOKEN`, `AGGDATA_BROWSER_TOKEN`,
+and `DATABASE_URL` for Fairprice. It exposes:
 
 - `GET /healthz` and `GET /readyz`
 - `GET /v1/markets`
@@ -409,35 +413,16 @@ Gateway. It exposes:
 `profile` is optional while a symbol belongs to only one aggregate profile.
 Clients must provide it when spot and perpetual profiles share the same symbol.
 
-Compose starts `aggdata-service` after the MDS consumer has created the
-recording directory (`AGGDATA_RECORDING_DIR`, bind-mounted into the container).
-For host debugging:
+If `AGGDATA_BROWSER_TOKEN` is set, REST requests require
+`Authorization: Bearer ...`; browser WebSocket clients can also pass
+`?token=...`.
 
-```bash
-set -a; source .env; set +a
-go run ./cmd/aggdata-service
-```
-
-The host `go run` default listener is `127.0.0.1:9093`; Compose binds `:9093`.
-`MDS_GATEWAY_TOKEN` is used only on
-the private upstream connection. If `AGGDATA_BROWSER_TOKEN` is set, REST
-requests require `Authorization: Bearer ...`; browser WebSocket clients can
-also pass `?token=...`. WebSocket origins must exactly match
-`AGGDATA_ALLOWED_ORIGINS`. `AGGDATA_STREAM_INTERVAL` defaults to `50ms` and
-accepts values down to `10ms`; it does not change the recorder's 200 ms sampling.
-
-When `AGGDATA_FAIRPRICE_ENABLED=true`, each aggorderbook update also produces a
+When fair price is enabled in YAML, each aggorderbook update also produces a
 generic in-memory fair price. It does not read BBO and does not contain
 Polymarket probability conversion, YES/NO pairing, inventory skew, or quoting
-logic. Defaults are 20 levels, `0.10/bp` exponential depth decay, imbalance
-alpha 1, and a 500 ms price-space EWMA. A crossed book is deterministically
-virtually uncrossed before pricing; successful uncrossing is published with
-`degraded=true` and `book_crossed`, while exhausted depth sends a reset.
-
-Fair prices use their own 5 ms writer ticker
-(`AGGDATA_FAIRPRICE_STREAM_INTERVAL`, minimum 1 ms). This bounds aggdata's
-additional conflation delay, not end-to-end market freshness: the upstream MDS
-Gateway currently publishes its latest image at up to 50 ms intervals.
+logic. A crossed book is deterministically virtually uncrossed before pricing;
+successful uncrossing is published with `degraded=true` and `book_crossed`,
+while exhausted depth sends a reset.
 
 WebSocket control messages are JSON:
 
@@ -498,16 +483,9 @@ latest sample in each PostgreSQL time bucket and only returns the current
 `model_id`. A database outage returns `503` for this endpoint without changing
 real-time WebSocket or readiness behavior.
 
-With `AGGDATA_FAIRPRICE_PERSIST_ENABLED=true`, aggdata samples each ready fair
-price once per UTC second into `fair_price_snapshots` and retains 24 hours by
-default. Quiet markets intentionally repeat the same `(ring_epoch,ring_sequence)`
-each second; a missing row means fair price was not ready. PostgreSQL
-`NUMERIC(38,18)` values are generated directly from mantissa/scale without a
-`float64` round trip. `DATABASE_URL` is reused, and its role needs DDL
-permission for embedded migrations. Database connection, migration, writes,
-and cleanup run in a retrying background manager; failures never affect
-`/healthz`, `/readyz`, fair computation, or WebSocket publishing. Set
-`AGGDATA_FAIRPRICE_PERSIST_ENABLED=false` to avoid any database connection.
+Fairprice PostgreSQL persistence is configured in YAML
+(`fair_price.persistence`) using `DATABASE_URL`. Failures never affect
+`/healthz`, `/readyz`, fair computation, or WebSocket publishing.
 
 Data images use a compact little-endian `SQAB` binary frame. The 42-byte header
 is: magic `u32`, version `u8,u8`, kind `u8`, flags `u8`, header bytes `u16`,
@@ -530,7 +508,3 @@ location /aggdata/ {
     proxy_set_header Connection "upgrade";
 }
 ```
-
-For coexistence with latency-sensitive MDS processes, keep
-`AGGDATA_HISTORY_WORKERS` low (the default is one) and set `GOMEMLIMIT`/`GOGC`
-for the deployment's memory budget.

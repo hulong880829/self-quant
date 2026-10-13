@@ -2,10 +2,27 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <title>SelfQuant Funding / Spread API</title>
+  <title>SelfQuant Broker 交易 API</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui.css">
+  <style>
+    .sq-security-note {
+      max-width: 1460px;
+      margin: 16px auto 0;
+      padding: 12px 16px;
+      font: 14px/1.5 sans-serif;
+      color: #3b4151;
+      background: #fff7e6;
+      border: 1px solid #f0e0b2;
+    }
+  </style>
 </head>
 <body>
+  <p class="sq-security-note">
+    本页为公开文档。不要在公共电脑输入生产 Broker Secret。Try it out 需手动填写
+    <code>X-SelfQuant-Account</code> 与写操作的 <code>Idempotency-Key</code>。
+    刷新页面会清除已填写的 Token。Admin 接口不会自动携带 Cookie。
+    请勿把 <code>client_secret</code> 或长期 Broker JWT 放进浏览器或 App。
+  </p>
   <div id="swagger-ui"></div>
   <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"></script>
   <script>
@@ -14,7 +31,8 @@
         url: "/swagger/openapi.json",
         dom_id: "#swagger-ui",
         deepLinking: true,
-        displayRequestDuration: true
+        displayRequestDuration: true,
+        persistAuthorization: false
       });
     };
   </script>

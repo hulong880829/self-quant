@@ -299,9 +299,8 @@ type placePolymarketOrderBody struct {
 }
 
 func (h *Handler) placePolymarketOrder(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	var body placePolymarketOrderBody
@@ -341,9 +340,8 @@ func (h *Handler) placePolymarketOrder(writer http.ResponseWriter, request *http
 }
 
 func (h *Handler) getPolymarketOrder(writer http.ResponseWriter, request *http.Request) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
@@ -363,9 +361,8 @@ func (h *Handler) privatePolymarketRequest(
 	writer http.ResponseWriter,
 	request *http.Request,
 ) (string, int64, bool) {
-	token, ok := h.sessionToken(request)
+	token, ok := h.userSession(writer, request)
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return "", 0, false
 	}
 	accountID, err := strconv.ParseInt(chi.URLParam(request, "accountId"), 10, 64)

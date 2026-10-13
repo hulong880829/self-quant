@@ -212,6 +212,9 @@ type testAccountServer struct {
 	accounts          []*accountv1.TradingAccount
 	nextID            int64
 	snapshotCacheMiss bool
+	platformAccounts  []*accountv1.PlatformAccount
+	lastServiceToken  string
+	createPlatformErr error
 }
 
 func (s *testAccountServer) Login(
@@ -385,6 +388,42 @@ func (s *testAccountServer) DeleteTradingAccount(
 	return nil, status.Error(codes.NotFound, "trading account not found")
 }
 
+func (s *testAccountServer) ListPlatformAccountsInternal(
+	_ context.Context,
+	request *accountv1.ListPlatformAccountsInternalRequest,
+) (*accountv1.ListPlatformAccountsInternalResponse, error) {
+	s.lastServiceToken = request.GetServiceToken()
+	return &accountv1.ListPlatformAccountsInternalResponse{Accounts: s.platformAccounts}, nil
+}
+
+func (s *testAccountServer) CreatePlatformAccountInternal(
+	_ context.Context,
+	request *accountv1.CreatePlatformAccountInternalRequest,
+) (*accountv1.PlatformAccountResponse, error) {
+	s.lastServiceToken = request.GetServiceToken()
+	if s.createPlatformErr != nil {
+		return nil, s.createPlatformErr
+	}
+	item := &accountv1.PlatformAccount{
+		Username: request.GetUsername(), Permission: "user",
+		BrokerId: request.GetBrokerId(), Status: "active",
+		CreatedSource: request.GetCreatedSource(), CreatedBy: request.GetActorUsername(),
+		AuthVersion: 1,
+	}
+	s.platformAccounts = append(s.platformAccounts, item)
+	return &accountv1.PlatformAccountResponse{Account: item}, nil
+}
+
+func (s *testAccountServer) DisablePlatformAccountInternal(
+	_ context.Context,
+	request *accountv1.MutatePlatformAccountInternalRequest,
+) (*accountv1.PlatformAccountResponse, error) {
+	s.lastServiceToken = request.GetServiceToken()
+	return &accountv1.PlatformAccountResponse{Account: &accountv1.PlatformAccount{
+		Username: request.GetUsername(), Status: "disabled", Permission: "user", AuthVersion: 2,
+	}}, nil
+}
+
 func testRouter(
 	t *testing.T,
 	fundingServer fundingv1.FundingServiceServer,
@@ -419,7 +458,12 @@ func testRouter(
 		fundingv1.NewFundingServiceClient(connection),
 		accountv1.NewAccountServiceClient(connection),
 		grpc_health_v1.NewHealthClient(connection),
-		Options{SessionCookieName: "sq_session", SessionCookieMaxAge: time.Hour},
+		Options{
+			SessionCookieName:    "sq_session",
+			SessionCookieMaxAge:  time.Hour,
+			GatewayInternalToken: "gateway-token",
+			CORSOrigin:           "http://example.test",
+		},
 	)
 }
 
@@ -830,6 +874,9 @@ func TestTradingAccountSnapshotCacheOnlyMissReturns204(t *testing.T) {
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("cache miss 204 must set Cache-Control no-store")
+	}
 	if recorder.Body.Len() != 0 {
 		t.Fatalf("expected empty body, got %q", recorder.Body.String())
 	}
@@ -869,6 +916,9 @@ func TestTradingAccountsCRUDContract(t *testing.T) {
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("create status=%d body=%s", createRec.Code, createRec.Body.String())
 	}
+	if createRec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("create trading account must set Cache-Control no-store")
+	}
 	var created struct {
 		Data map[string]any `json:"data"`
 	}
@@ -886,6 +936,18 @@ func TestTradingAccountsCRUDContract(t *testing.T) {
 	}
 	if _, exists := created.Data["apiSecret"]; exists {
 		t.Fatalf("secret leaked: %+v", created.Data)
+	}
+	if _, exists := created.Data["privateKey"]; exists {
+		t.Fatalf("privateKey leaked: %+v", created.Data)
+	}
+	if _, exists := created.Data["passphrase"]; exists {
+		t.Fatalf("passphrase leaked: %+v", created.Data)
+	}
+	if _, exists := created.Data["tradingApiSecret"]; exists {
+		t.Fatalf("tradingApiSecret leaked: %+v", created.Data)
+	}
+	if _, exists := created.Data["hasPassphrase"]; !exists {
+		t.Fatalf("hasPassphrase missing: %+v", created.Data)
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/trading-accounts", nil)
@@ -1162,5 +1224,65 @@ func TestFundingLookupReturnsHit(t *testing.T) {
 	if len(payload.Results) != 1 || payload.Results[0].Status != "hit" ||
 		payload.Results[0].Item.Cumulative24h != "0.0003" {
 		t.Fatalf("payload=%+v", payload)
+	}
+}
+
+func TestAdminPlatformAccountsCookieAndCSRF(t *testing.T) {
+	accountServer := &testAccountServer{token: "signed-token"}
+	router := testRouter(t, &testFundingServer{}, accountServer)
+
+	list := httptest.NewRequest(http.MethodGet, "/api/v1/admin/platform-accounts", nil)
+	list.AddCookie(&http.Cookie{Name: "sq_session", Value: "signed-token"})
+	listRecorder := httptest.NewRecorder()
+	router.ServeHTTP(listRecorder, list)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	if accountServer.lastServiceToken != "gateway-token" {
+		t.Fatalf("service token=%q", accountServer.lastServiceToken)
+	}
+
+	create := httptest.NewRequest(
+		http.MethodPost, "/api/v1/admin/platform-accounts",
+		strings.NewReader(`{"username":"alice","password":"password1"}`),
+	)
+	create.Header.Set("Content-Type", "application/json")
+	create.AddCookie(&http.Cookie{Name: "sq_session", Value: "signed-token"})
+	createRecorder := httptest.NewRecorder()
+	router.ServeHTTP(createRecorder, create)
+	if createRecorder.Code != http.StatusForbidden {
+		t.Fatalf("missing origin status=%d", createRecorder.Code)
+	}
+
+	create.Header.Set("Origin", "http://evil.test")
+	createRecorder = httptest.NewRecorder()
+	router.ServeHTTP(createRecorder, create)
+	if createRecorder.Code != http.StatusForbidden {
+		t.Fatalf("bad origin status=%d", createRecorder.Code)
+	}
+
+	create = httptest.NewRequest(
+		http.MethodPost, "/api/v1/admin/platform-accounts",
+		strings.NewReader(`{"username":"alice","password":"password1"}`),
+	)
+	create.Header.Set("Content-Type", "application/json")
+	create.Header.Set("Origin", "http://example.test")
+	create.AddCookie(&http.Cookie{Name: "sq_session", Value: "signed-token"})
+	createRecorder = httptest.NewRecorder()
+	router.ServeHTTP(createRecorder, create)
+	if createRecorder.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", createRecorder.Code, createRecorder.Body.String())
+	}
+}
+
+func TestAdminPlatformAccountsRejectDualIdentity(t *testing.T) {
+	router := testRouter(t, &testFundingServer{}, &testAccountServer{token: "signed-token"})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/platform-accounts", nil)
+	request.AddCookie(&http.Cookie{Name: "sq_session", Value: "signed-token"})
+	request.Header.Set("Authorization", "Bearer not-used")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d", recorder.Code)
 	}
 }

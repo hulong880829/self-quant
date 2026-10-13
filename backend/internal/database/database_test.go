@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,8 @@ func TestOpenAPIAndApplicationNameConfig(t *testing.T) {
 	}
 }
 
+var migrationFilename = regexp.MustCompile(`^(\d{3})_.+\.sql$`)
+
 func TestMigrationsAreVersionedAndIdempotent(t *testing.T) {
 	entries, err := fs.ReadDir(migrationFiles, "migrations")
 	if err != nil {
@@ -53,16 +56,50 @@ func TestMigrationsAreVersionedAndIdempotent(t *testing.T) {
 	if len(entries) < 2 {
 		t.Fatalf("expected versioned migrations, got %d", len(entries))
 	}
+	seenPrefix := map[string]string{}
 	for _, entry := range entries {
-		content, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+		name := entry.Name()
+		match := migrationFilename.FindStringSubmatch(name)
+		if match == nil {
+			t.Fatalf("migration %q must match NNN_description.sql", name)
+		}
+		prefix := match[1]
+		if existing, ok := seenPrefix[prefix]; ok {
+			t.Fatalf("duplicate migration prefix %s: %s and %s", prefix, existing, name)
+		}
+		seenPrefix[prefix] = name
+		content, err := migrationFiles.ReadFile("migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
 		}
 		sql := strings.ToUpper(string(content))
 		if strings.Contains(sql, "DROP TABLE INSTRUMENTS") ||
 			strings.Contains(sql, "DROP TABLE FUNDING_RATES") {
-			t.Fatalf("%s contains destructive table migration", entry.Name())
+			t.Fatalf("%s contains destructive table migration", name)
 		}
+	}
+}
+
+func TestIBTurnoverMigrationKeepsMetricsOnInstruments(t *testing.T) {
+	content, err := migrationFiles.ReadFile(
+		"migrations/066_instrument_ib_turnover.sql",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := strings.ToUpper(string(content))
+	for _, required := range []string{
+		"ALTER TABLE INSTRUMENTS",
+		"TURNOVER_USD_90D DOUBLE PRECISION",
+		"IB_METRICS_OBSERVED_AT TIMESTAMPTZ",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("IB turnover migration missing %q", required)
+		}
+	}
+	if strings.Contains(sql, "FUNDING_RATES") ||
+		strings.Contains(sql, "METADATA") {
+		t.Fatal("IB turnover migration must not reuse funding or metadata storage")
 	}
 }
 
@@ -109,6 +146,30 @@ func TestMigratePostgresIntegration(t *testing.T) {
 	}
 	if versions != len(mustMigrationEntries(t)) {
 		t.Fatalf("versions=%d", versions)
+	}
+	const trader058 = "058_trader_arbitrage_oneshot_time_exit.sql"
+	const jev059 = "059_jev_retention.sql"
+	rows, err := pool.Query(ctx, `
+		SELECT version FROM schema_migrations
+		WHERE version IN ($1, $2)
+		ORDER BY applied_at, version`, trader058, jev059)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var applied []string
+	for rows.Next() {
+		var version string
+		if err := rows.Scan(&version); err != nil {
+			t.Fatal(err)
+		}
+		applied = append(applied, version)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(applied) != 2 || applied[0] != trader058 || applied[1] != jev059 {
+		t.Fatalf("migration order=%v, want [%s %s]", applied, trader058, jev059)
 	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO instruments (

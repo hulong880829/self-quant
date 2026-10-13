@@ -1,0 +1,253 @@
+syntax = "proto3";
+
+package jev.v1;
+
+option go_package = "selfquant/backend/gen/jev/v1;jevv1";
+
+import "google/protobuf/timestamp.proto";
+
+service JevService {
+  rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
+  rpc ListPositions(ListPositionsRequest) returns (ListPositionsResponse);
+  rpc ListDecisions(ListDecisionsRequest) returns (ListDecisionsResponse);
+  rpc ListTrades(ListTradesRequest) returns (ListTradesResponse);
+  rpc GetEquityCurve(GetEquityCurveRequest) returns (GetEquityCurveResponse);
+}
+
+message GetSnapshotRequest {
+  string if_none_match = 1;
+  string strategy_version = 2;
+}
+
+message GetSnapshotResponse {
+  bool not_modified = 1;
+  string etag = 2;
+  string snapshot_version = 3;
+  string status = 4;
+  repeated string degraded_reasons = 5;
+  google.protobuf.Timestamp last_successful_at = 6;
+  google.protobuf.Timestamp last_decision_at = 7;
+  google.protobuf.Timestamp last_market_data_at = 8;
+  google.protobuf.Timestamp server_time = 9;
+  string model = 10;
+  string model_requested = 11;
+  string prompt_version = 12;
+  string policy_version = 13;
+  bool simulated = 14;
+  string equity = 15;
+  string net_pnl = 16;
+  string funding_pnl = 17;
+  string realized_spread_pnl = 18;
+  string unrealized_spread_pnl = 19;
+  string cumulative_cost = 20;
+  string max_drawdown = 21;
+  string initial_equity = 22;
+  string paper_round_trip_cost_bps = 23;
+  bool usdt_usdc_one_to_one = 24;
+  string single_entry_empty_reason = 25;
+  string cross_entry_empty_reason = 26;
+  string strategy_single_status = 27;
+  string strategy_cross_status = 28;
+  int32 open_position_count = 29;
+  int32 entry_candidate_count = 30;
+  bool typesafe_configured = 31;
+  JevSingleFilterStats single_filter = 32;
+  JevCrossFilterStats cross_filter = 33;
+  int32 decision_jobs = 34;
+  int32 typesafe_requests = 35;
+  int32 typesafe_success = 36;
+  int32 typesafe_error = 37;
+  string model_status = 38;
+  google.protobuf.Timestamp last_model_call_at = 39;
+  string strategy_version = 40;
+  string lifecycle_equity = 41;
+  string lifecycle_net_pnl = 42;
+  string lifecycle_funding_pnl = 43;
+  string lifecycle_realized_spread_pnl = 44;
+  string lifecycle_unrealized_spread_pnl = 45;
+  string lifecycle_cumulative_cost = 46;
+  repeated string available_strategy_versions = 47;
+}
+
+message JevSingleFilterStats {
+  int32 input = 1;
+  int32 contract_passed = 2;
+  int32 positive_24h_passed = 3;
+  int32 fresh_passed = 4;
+  int32 turnover_passed = 5;
+  int32 spot_matched = 6;
+  int32 bbo_fresh_passed = 7;
+  int32 depth_passed = 8;
+  int32 final = 9;
+  int32 basis_forecast_passed = 10;
+}
+
+message JevCrossFilterStats {
+  int32 input = 1;
+  int32 contract_passed = 2;
+  int32 positive_edge_passed = 3;
+  int32 fresh_passed = 4;
+  int32 turnover_passed = 5;
+  int32 bbo_fresh_passed = 6;
+  int32 depth_passed = 7;
+  int32 final = 8;
+  int32 basis_forecast_passed = 9;
+}
+
+message ListPositionsRequest {
+  int32 limit = 1;
+  string cursor = 2;
+  string if_none_match = 3;
+  string strategy_version = 4;
+}
+
+message JevPosition {
+  string id = 1;
+  string kind = 2;
+  string status = 3;
+  string candidate_key = 4;
+  string base_asset = 5;
+  string quote_asset = 6;
+  string global_symbol = 7;
+  string long_exchange = 8;
+  string long_symbol = 9;
+  string long_product = 10;
+  string short_exchange = 11;
+  string short_symbol = 12;
+  string short_product = 13;
+  string shared_base_qty = 14;
+  string long_qty = 15;
+  string short_qty = 16;
+  string long_entry_price = 17;
+  string short_entry_price = 18;
+  string long_mark_price = 19;
+  string short_mark_price = 20;
+  string realized_spread_pnl = 21;
+  string unrealized_spread_pnl = 22;
+  string funding_pnl = 23;
+  string cost_paid = 24;
+  string net_pnl = 25;
+  string exit_pending_reason = 26;
+  string degraded_reason = 27;
+  google.protobuf.Timestamp opened_at = 28;
+  google.protobuf.Timestamp closed_at = 29;
+  google.protobuf.Timestamp last_mark_at = 30;
+  string entry_mid_basis_bps = 31;
+  string strategy_version = 32;
+  string net_if_exit = 33;
+  google.protobuf.Timestamp net_if_exit_at = 34;
+  int32 exit_confirm_count = 35;
+}
+
+message ListPositionsResponse {
+  repeated JevPosition items = 1;
+  string next_cursor = 2;
+  string etag = 3;
+  bool not_modified = 4;
+}
+
+message ListDecisionsRequest {
+  int32 limit = 1;
+  string cursor = 2;
+  string if_none_match = 3;
+  string strategy_version = 4;
+}
+
+message JevDecision {
+  string id = 1;
+  string position_id = 2;
+  string candidate_key = 3;
+  string kind = 4;
+  string decision = 5;
+  string policy_status = 6;
+  string execution_status = 7;
+  string enter_probability = 8;
+  string exit_probability = 9;
+  string confidence = 10;
+  string expected_net_return_24h = 11;
+  string rationale = 12;
+  string prompt_version = 13;
+  string policy_version = 14;
+  string model_requested = 15;
+  string model_actual = 16;
+  string error_message = 17;
+  google.protobuf.Timestamp decision_at = 18;
+  google.protobuf.Timestamp execution_started_at = 19;
+  google.protobuf.Timestamp fill_deadline = 20;
+  string funding_return_24h = 21;
+  string holding_horizon_net_return = 22;
+  string expected_payback_minutes = 23;
+  string current_mid_basis_bps = 24;
+  string entry_mid_basis_bps = 25;
+  string basis_change_since_entry_bps = 26;
+  string expected_basis_return_24h = 27;
+  string basis_return_p10 = 28;
+  string basis_profit_probability = 29;
+  string basis_forecast_confidence = 30;
+  optional int32 basis_sample_count = 31;
+  string basis_model_version = 32;
+  string strategy_version = 33;
+  string parse_error_type = 34;
+}
+
+message ListDecisionsResponse {
+  repeated JevDecision items = 1;
+  string next_cursor = 2;
+  string etag = 3;
+  bool not_modified = 4;
+}
+
+message ListTradesRequest {
+  int32 limit = 1;
+  string cursor = 2;
+  string if_none_match = 3;
+  string strategy_version = 4;
+}
+
+message JevTrade {
+  string id = 1;
+  string position_id = 2;
+  string decision_id = 3;
+  string side = 4;
+  string shared_base_qty = 5;
+  string long_fill_price = 6;
+  string short_fill_price = 7;
+  string notional = 8;
+  string cost = 9;
+  google.protobuf.Timestamp filled_at = 10;
+  string strategy_version = 11;
+  string base_asset = 12;
+  string kind = 13;
+  string long_exchange = 14;
+  string long_symbol = 15;
+  string long_product = 16;
+  string short_exchange = 17;
+  string short_symbol = 18;
+  string short_product = 19;
+}
+
+message ListTradesResponse {
+  repeated JevTrade items = 1;
+  string next_cursor = 2;
+  string etag = 3;
+  bool not_modified = 4;
+}
+
+message GetEquityCurveRequest {
+  string range = 1;
+  string if_none_match = 2;
+  string strategy_version = 3;
+}
+
+message EquityPoint {
+  google.protobuf.Timestamp ts = 1;
+  string equity = 2;
+  string net_pnl = 3;
+}
+
+message GetEquityCurveResponse {
+  bool not_modified = 1;
+  string etag = 2;
+  string range = 3;
+  repeated EquityPoint points = 4;
+}
