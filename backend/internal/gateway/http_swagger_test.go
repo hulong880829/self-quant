@@ -53,12 +53,17 @@ var documentedOpenAPIPaths = []string{
 	"/api/v1/trader/arbitrage-combinations",
 	"/api/v1/trader/arbitrage-combinations/preflight",
 	"/api/v1/trader/arbitrage-combinations/{id}",
+	"/api/v1/trader/arbitrage-combinations/{id}/preflight-target",
 	"/api/v1/trader/arbitrage-combinations/{id}/orders",
 	"/api/v1/trader/arbitrage-combinations/{id}/executions",
 	"/api/v1/trader/arbitrage-combinations/{id}/events",
+	"/api/v1/reports/products",
+	"/api/v1/reports/products/{id}",
+	"/api/v1/reports/products/{id}/daily",
+	"/api/v1/reports/products/{id}/cash-flows",
 }
 
-const documentedOpenAPIOperations = 44
+const documentedOpenAPIOperations = 49
 
 func TestSwaggerRedirectsIndex(t *testing.T) {
 	router := testRouter(t, &testFundingServer{}, nil)
@@ -126,7 +131,7 @@ func TestOpenAPISpecContract(t *testing.T) {
 		t.Fatalf("openapi=%q", openapi)
 	}
 	info, _ := spec["info"].(map[string]any)
-	if info["version"] != "1.1.3" {
+	if info["version"] != "1.1.4" {
 		t.Fatalf("info.version=%v", info["version"])
 	}
 	title, _ := info["title"].(string)
@@ -143,7 +148,7 @@ func TestOpenAPISpecContract(t *testing.T) {
 		}
 	}
 	forbidden := []string{
-		"/api/v1/reports", "/api/v1/ai", "/api/v1/polymarket", "/api/v1/jev-arb", "/health",
+		"/api/v1/ai", "/api/v1/polymarket", "/api/v1/jev-arb", "/health",
 	}
 	for path := range paths {
 		for _, prefix := range forbidden {
@@ -181,7 +186,7 @@ func TestOpenAPISpecContract(t *testing.T) {
 	}
 	for _, name := range []string{
 		"Funding", "Spread", "OAuth", "Admin", "Broker",
-		"Trading Accounts", "Instruments", "Orders", "TWAP", "Arbitrage",
+		"Trading Accounts", "Instruments", "Orders", "TWAP", "Arbitrage", "Reports",
 	} {
 		if !tagNames[name] {
 			t.Fatalf("missing tag %s in %v", name, tagNames)
@@ -242,6 +247,35 @@ func TestOpenAPISpecContract(t *testing.T) {
 	if strings.Contains(rawSpec, "当前没有非下单的组合级 preflight") {
 		t.Fatal("arbitrage tag still claims that preflight is unavailable")
 	}
+	for _, want := range []string{
+		"Product 是收益统计单位",
+		"北京时间每天 09:00",
+		"arb-{GoBullUserID}",
+		"不提供 30 天或 90 天排名",
+		"spread7dAnnualized",
+		"不支持 30 天",
+		"availability=unavailable 不是零价差",
+		"不得在页面加载时自动调用",
+		"物理删除账户",
+		"不提供 7 天保留",
+		"没有单独检查普通活动订单",
+		"没有未知结果保护",
+		"additionalNotional",
+		"feeAmount 大于 0 是手续费成本",
+		"schemaVersion",
+	} {
+		if !strings.Contains(rawSpec, want) {
+			t.Fatalf("openapi missing %q", want)
+		}
+	}
+	for _, method := range []string{"post", "put", "patch", "delete"} {
+		if _, ok := paths["/api/v1/reports/products/{id}/cash-flows"].(map[string]any)[method]; ok {
+			t.Fatalf("cash-flow write %s must stay out of the App contract", method)
+		}
+		if _, ok := paths["/api/v1/reports/products/{id}"].(map[string]any)[method]; ok {
+			t.Fatalf("report product %s must stay out of the App contract", method)
+		}
+	}
 	for _, name := range []string{
 		"ValidateSession", "IssueBrokerDelegatedSessionInternal",
 		"GetTradingCredentialsInternal", "INTERNAL_TOKEN",
@@ -250,6 +284,15 @@ func TestOpenAPISpecContract(t *testing.T) {
 			t.Fatalf("internal RPC %s leaked into OpenAPI", name)
 		}
 	}
+	assertPublicParameterDescriptions(t, spec)
+	assertNullableSchemaRef(t, schemas, "ReportProductDetail", "latest")
+	assertNullableSchemaRef(t, schemas, "ReportProductDetail", "latestSnapshot")
+	assertNullableSchemaRef(t, schemas, "ReportDailySnapshot", "capitalUtilization")
+	latest := schemaProperty(t, schemas, "ReportProductDetail", "latest")
+	assertExampleAgainstSchema(t, schemas, nil, latest, "report latest null")
+	assertExampleAgainstSchema(t, schemas, map[string]any{
+		"openingEquityUsd": "1", "closingEquityUsd": "1",
+	}, latest, "report latest object")
 }
 
 func TestSwaggerRoutesDoNotCallBackends(t *testing.T) {
@@ -407,7 +450,8 @@ func assertOperationSecurity(t *testing.T, path, method string, op map[string]an
 		}
 	case strings.HasPrefix(path, "/api/v1/trading-accounts") ||
 		strings.HasPrefix(path, "/api/v1/trading-account-products") ||
-		strings.HasPrefix(path, "/api/v1/trader/"):
+		strings.HasPrefix(path, "/api/v1/trader/") ||
+		strings.HasPrefix(path, "/api/v1/reports/"):
 		assertNamedSecurity(t, method, path, security, "BrokerBearer")
 		if !hasParameter(op, "X-SelfQuant-Account") {
 			t.Fatalf("%s %s missing X-SelfQuant-Account", method, path)
@@ -630,9 +674,36 @@ func assertP1ReadContract(t *testing.T, paths, schemas map[string]any) {
 			"metricsQuality", "holdingSeconds", "notionalExposureSeconds", "calculatedAt",
 		})
 	event := mapValue(t, schemas, "ArbitrageEvent")
-	eventProps := mapValue(t, event, "properties")
-	if eventProps["payload"] == nil || eventProps["executionId"] == nil {
-		t.Fatalf("structured event fields=%v", keysOf(eventProps))
+	variants, _ := event["oneOf"].([]any)
+	if len(variants) < 2 {
+		t.Fatal("ArbitrageEvent must be a oneOf of known types plus a fallback")
+	}
+	var fallback map[string]any
+	known := map[string]bool{}
+	for _, raw := range variants {
+		variant, _ := raw.(map[string]any)
+		if _, excluded := variant["not"]; excluded {
+			fallback = variant
+			continue
+		}
+		props := mapValue(t, variant, "properties")
+		if props["payload"] == nil || props["executionId"] == nil {
+			t.Fatalf("event variant missing payload fields: %v", keysOf(props))
+		}
+		typeSchema := mapValue(t, props, "type")
+		for _, item := range stringValues(typeSchema["enum"]) {
+			known[item] = true
+		}
+	}
+	if fallback == nil || len(known) == 0 {
+		t.Fatal("event fallback must exclude the known type enum")
+	}
+	excluded := mapValue(t, mapValue(t, fallback, "not"), "properties")
+	excludedType := mapValue(t, excluded, "type")
+	for _, item := range stringValues(excludedType["enum"]) {
+		if !known[item] {
+			t.Fatalf("fallback excludes undocumented type %s", item)
+		}
 	}
 }
 
@@ -850,6 +921,60 @@ func schemaProperty(
 	t.Helper()
 	schema := mapValue(t, schemas, schemaName)
 	return mapValue(t, mapValue(t, schema, "properties"), propertyName)
+}
+
+func assertNullableSchemaRef(t *testing.T, schemas map[string]any, schemaName, propertyName string) {
+	t.Helper()
+	property := schemaProperty(t, schemas, schemaName, propertyName)
+	if property["nullable"] != true {
+		t.Fatalf("%s.%s nullable=%v", schemaName, propertyName, property["nullable"])
+	}
+	if _, ok := property["$ref"]; ok {
+		t.Fatalf("%s.%s uses a bare $ref, which hides nullable", schemaName, propertyName)
+	}
+	allOf, _ := property["allOf"].([]any)
+	if len(allOf) != 1 {
+		t.Fatalf("%s.%s allOf=%v", schemaName, propertyName, property["allOf"])
+	}
+	ref, _ := allOf[0].(map[string]any)
+	refString, _ := ref["$ref"].(string)
+	if !strings.HasPrefix(refString, "#/components/schemas/") {
+		t.Fatalf("%s.%s ref=%v", schemaName, propertyName, ref)
+	}
+}
+
+func assertPublicParameterDescriptions(t *testing.T, spec map[string]any) {
+	t.Helper()
+	components := mapValue(t, spec, "components")
+	parameters, _ := components["parameters"].(map[string]any)
+	paths := mapValue(t, spec, "paths")
+	for path, raw := range paths {
+		item, _ := raw.(map[string]any)
+		for method, opRaw := range item {
+			switch method {
+			case "get", "post", "put", "patch", "delete":
+			default:
+				continue
+			}
+			op, _ := opRaw.(map[string]any)
+			for _, paramRaw := range anySlice(op["parameters"]) {
+				param, _ := paramRaw.(map[string]any)
+				if ref, _ := param["$ref"].(string); ref != "" {
+					name := ref[strings.LastIndex(ref, "/")+1:]
+					param, _ = parameters[name].(map[string]any)
+				}
+				description, _ := param["description"].(string)
+				if strings.TrimSpace(description) == "" {
+					t.Fatalf("%s %s parameter %v has an empty description", method, path, param["name"])
+				}
+			}
+		}
+	}
+}
+
+func anySlice(value any) []any {
+	items, _ := value.([]any)
+	return items
 }
 
 func assertSchemaFields(

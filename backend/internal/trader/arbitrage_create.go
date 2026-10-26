@@ -23,12 +23,13 @@ func defaultLegLeverage(contractType, raw string) (decimal.Decimal, error) {
 		return decimal.NewFromInt(4), nil
 	}
 	value, err := decimal.NewFromString(raw)
-	if err != nil || !value.IsPositive() || !value.Equal(value.Truncate(0)) {
+	if err != nil || !value.IsPositive() || !value.Equal(value.Truncate(0)) ||
+		value.GreaterThan(decimal.NewFromInt(10)) {
 		return decimal.Zero, newArbitrageCreateError(
 			"invalid_leverage",
 			fmt.Sprintf("invalid leverage %q", raw),
 			"",
-			nil,
+			leverageBoundsDetails(),
 		)
 	}
 	if strings.EqualFold(contractType, "spot") && !value.Equal(decimal.NewFromInt(1)) {
@@ -36,18 +37,14 @@ func defaultLegLeverage(contractType, raw string) (decimal.Decimal, error) {
 			"invalid_leverage",
 			"spot leverage must be 1",
 			"",
-			map[string]string{"contractType": "spot"},
-		)
-	}
-	if strings.EqualFold(contractType, "perpetual") && value.LessThan(decimal.NewFromInt(1)) {
-		return decimal.Zero, newArbitrageCreateError(
-			"invalid_leverage",
-			"contract leverage must be at least 1",
-			"",
-			nil,
+			map[string]string{"contractType": "spot", "min": "1", "max": "1", "step": "1"},
 		)
 	}
 	return value, nil
+}
+
+func leverageBoundsDetails() map[string]string {
+	return map[string]string{"min": "1", "max": "10", "step": "1"}
 }
 
 func tagCreateErrorLeg(err error, leg string) error {

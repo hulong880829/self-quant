@@ -64,6 +64,44 @@ int main() {
     rejected = true;
   }
   Require(rejected);
+
+  auto ibkr = [](utils::md::IbkrSecurityType security, std::string_view con_id,
+                 std::int64_t multiplier, std::uint8_t multiplier_scale) {
+    utils::md::InstrumentCatalog catalog{};
+    catalog.instrument_id = 11;
+    catalog.venue = utils::md::Venue::Ibkr;
+    catalog.product_type = utils::md::ProductType::Equity;
+    catalog.price_scale = 2;
+    catalog.quantity_scale = 0;
+    catalog.tick_size = 1;
+    catalog.lot_size = 1;
+    catalog.contract_multiplier = multiplier;
+    catalog.contract_multiplier_scale = multiplier_scale;
+    catalog.ibkr_security_type = security;
+    Copy("XYZ", catalog.canonical_symbol);
+    Copy(con_id, catalog.venue_symbol);
+    return strategyframe::detail::CatalogRouting(catalog, 3);
+  };
+  const auto commodity =
+      ibkr(utils::md::IbkrSecurityType::Commodity, "69067924", 150, 2);
+  Require(commodity.kind == oms::api::ExecutionRouteKind::Ibkr);
+  Require(commodity.ibkr.con_id == 69067924);
+  Require(commodity.ibkr.security_type == utils::md::IbkrSecurityType::Commodity);
+  Require(commodity.ibkr.contract_multiplier == 150);
+  Require(commodity.ibkr.contract_multiplier_scale == 2);
+  const auto cash = ibkr(utils::md::IbkrSecurityType::Cash, "12087792", 1, 0);
+  Require(cash.kind == oms::api::ExecutionRouteKind::Ibkr);
+  Require(cash.ibkr.con_id == 12087792);
+  Require(cash.ibkr.security_type == utils::md::IbkrSecurityType::Cash);
+  const auto stock = ibkr(utils::md::IbkrSecurityType::Stock, "265598", 1, 0);
+  Require(stock.ibkr.security_type == utils::md::IbkrSecurityType::Stock);
+  bool invalid_ib = false;
+  try {
+    (void)ibkr(utils::md::IbkrSecurityType::Unknown, "265598", 1, 0);
+  } catch (const std::invalid_argument&) {
+    invalid_ib = true;
+  }
+  Require(invalid_ib);
   return 0;
 }
 

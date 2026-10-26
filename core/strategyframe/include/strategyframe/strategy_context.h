@@ -58,6 +58,10 @@ class StrategyContext {
   [[nodiscard]] Result<OrderToken> place_order(
       const OrderRequest& request) noexcept;
   [[nodiscard]] Result<OrderToken> cancel(OrderToken token) noexcept;
+  [[nodiscard]] Result<OrderToken> cancel_venue_order(
+      AccountId account_id, InstrumentId instrument_id,
+      const ClientOrderId& client_order_id,
+      const VenueOrderId& venue_order_id) noexcept;
   [[nodiscard]] Result<QueryToken> query_open_orders(
       AccountId account_id) noexcept;
   [[nodiscard]] Result<QueryToken> query_open_orders(
@@ -66,6 +70,10 @@ class StrategyContext {
       AccountId account_id) noexcept;
   [[nodiscard]] Result<QueryToken> query_positions(
       AccountId account_id, InstrumentId instrument_id) noexcept;
+  [[nodiscard]] Result<QueryToken> query_balances(
+      AccountId account_id) noexcept;
+  [[nodiscard]] Result<void> request_instrument_retirement(
+      InstrumentId instrument_id, RetirementReason reason) noexcept;
 
   [[nodiscard]] Result<TimerHandle> schedule_timer(
       std::uint64_t first_deadline_ns,
@@ -101,12 +109,16 @@ class StrategyContext {
   struct Ops {
     Result<OrderToken> (*place)(void*, const OrderRequest&) noexcept{};
     Result<OrderToken> (*cancel)(void*, OrderToken) noexcept{};
+    Result<OrderToken> (*cancel_venue_order)(
+        void*, AccountId, InstrumentId, const ClientOrderId&,
+        const VenueOrderId&) noexcept{};
     Result<QueryToken> (*query_open_orders)(void*, AccountId) noexcept{};
     Result<QueryToken> (*query_open_orders_for)(
         void*, AccountId, InstrumentId) noexcept{};
     Result<QueryToken> (*query_positions)(void*, AccountId) noexcept{};
     Result<QueryToken> (*query_positions_for)(
         void*, AccountId, InstrumentId) noexcept{};
+    Result<QueryToken> (*query_balances)(void*, AccountId) noexcept{};
     Result<TimerHandle> (*schedule_timer)(void*, std::uint64_t,
                                          std::uint64_t) noexcept{};
     Error (*cancel_timer)(void*, TimerHandle) noexcept{};
@@ -127,6 +139,8 @@ class StrategyContext {
     RuntimeMetrics (*metrics)(const void*) noexcept{};
     std::uint64_t (*now_ns)(const void*) noexcept{};
     void (*request_stop)(void*) noexcept{};
+    Result<void> (*request_instrument_retirement)(
+        void*, InstrumentId, RetirementReason) noexcept{};
   };
 
   StrategyContext(void* state, const Ops* ops) noexcept

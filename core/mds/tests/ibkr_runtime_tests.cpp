@@ -6,6 +6,7 @@
 #include "utils/md/wire_codec.h"
 
 #include <atomic>
+#include <cstddef>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -102,6 +103,9 @@ class FakeClient final : public mds::ibkr::IbkrClient {
   std::string details_sec_type;
   std::int64_t assigned_con_id{0};
   double details_min_tick{0.01};
+  std::string details_min_size{"0.0001"};
+  std::string details_size_increment{"0.0001"};
+  std::string details_multiplier;
   mds::ibkr::IbkrContractRequest last_market_request{};
 
   void set_listener(mds::ibkr::IbkrClientListener *listener) noexcept override {
@@ -354,6 +358,9 @@ class FakeClient final : public mds::ibkr::IbkrClient {
     details.currency = request.currency.empty() ? "USD" : request.currency;
     details.primary_exchange = request.primary_exchange;
     details.min_tick = details_min_tick;
+    details.min_size_text = details_min_size;
+    details.size_increment_text = details_size_increment;
+    details.multiplier_text = details_multiplier;
     listener->on_contract_details(req_id, details);
     listener->on_contract_details_end(req_id);
   }
@@ -390,6 +397,10 @@ struct Seen {
   std::string base;
   std::string quote;
   std::uint8_t price_scale{};
+  std::int64_t tick_size{};
+  std::int64_t lot_size{};
+  std::int64_t contract_multiplier{};
+  utils::md::IbkrSecurityType security{utils::md::IbkrSecurityType::Unknown};
 };
 
 class RingTail {
@@ -431,6 +442,10 @@ class RingTail {
         seen.base = catalog.catalog.base_asset.data();
         seen.quote = catalog.catalog.quote_asset.data();
         seen.price_scale = catalog.catalog.price_scale;
+        seen.tick_size = catalog.catalog.tick_size;
+        seen.lot_size = catalog.catalog.lot_size;
+        seen.contract_multiplier = catalog.catalog.contract_multiplier;
+        seen.security = catalog.catalog.ibkr_security_type;
       }
       utils::md::wire::BboRecord bbo{};
       if (utils::md::wire::DecodeBbo(read.value->payload, bbo) ==
@@ -548,7 +563,10 @@ void test_catalog_bbo_and_coalesce() {
   check(seen.venue == utils::md::Venue::Ibkr &&
             seen.product == utils::md::ProductType::Equity &&
             seen.symbol == "AAPL" && seen.venue_symbol == "265598" &&
-            seen.instrument_id == runtime.instrument_id(0),
+            seen.instrument_id == runtime.instrument_id(0) &&
+            seen.tick_size == 100 && seen.lot_size == 1 &&
+            seen.contract_multiplier == 1 &&
+            seen.security == utils::md::IbkrSecurityType::Stock,
         "catalog identity was not ibkr|equity|AAPL|265598");
 
   client.emit_book(1, 10.25, 10.5);
@@ -1331,6 +1349,144 @@ void test_health_requires_selected_active_and_catalog() {
   runtime.stop();
 }
 
+void test_execution_metadata_catalog() {
+  check(offsetof(utils::md::InstrumentCatalog, tick_size) == 24 &&
+            sizeof(utils::md::InstrumentCatalog::reserved) == 4,
+        "catalog layout changed");
+
+  FakeClient fractional;
+  fractional.details_min_size = "0.5";
+  fractional.details_size_increment = "0.5";
+  auto fractional_options = options_for(prefix_for("fractional"));
+  fractional_options.subscriptions.push_back(spec_for("AAPL", 265598));
+  mds::ibkr::IbkrRuntime fractional_runtime(fractional_options, fractional);
+  std::string error;
+  check(fractional_runtime.start(error), error);
+  check(wait_until([&] { return fractional_runtime.live(); },
+                   std::chrono::seconds(2)),
+        "fractional stock did not become live");
+  RingTail fractional_tail(fractional_runtime.segment_name());
+  Seen fractional_seen;
+  check(wait_until(
+            [&] {
+              fractional_tail.drain(fractional_seen);
+              return fractional_seen.catalogs > 0;
+            },
+            std::chrono::seconds(2)),
+        "fractional catalog missing");
+  check(fractional_seen.security == utils::md::IbkrSecurityType::Stock &&
+            fractional_seen.lot_size == 5000 &&
+            fractional_seen.contract_multiplier == 1 &&
+            fractional_seen.tick_size == 100,
+        "fractional stock metadata");
+  fractional.emit_book(1, 10.25, 10.5);
+  check(wait_until(
+            [&] {
+              fractional_tail.drain(fractional_seen);
+              return fractional_seen.bbos > 0;
+            },
+            std::chrono::seconds(2)),
+        "fractional BBO missing");
+  check(fractional_seen.bid_price == 102500 &&
+            fractional_seen.ask_price == 105000,
+        "BBO recording changed");
+  fractional_runtime.stop();
+
+  FakeClient metal;
+  metal.assigned_con_id = 69067924;
+  metal.details_sec_type = "CMDTY";
+  metal.details_multiplier = "100";
+  metal.details_min_tick = 0.01;
+  auto metal_options = options_for(prefix_for("gold"));
+  mds::ibkr::InstrumentSpec gold;
+  gold.canonical_symbol = "XAUUSD";
+  gold.request_symbol = "XAUUSD";
+  gold.sec_type = "CMDTY";
+  gold.exchange = "SMART";
+  gold.currency = "USD";
+  gold.price_scale = 4;
+  gold.quantity_scale = 4;
+  metal_options.subscriptions.push_back(gold);
+  mds::ibkr::IbkrRuntime metal_runtime(metal_options, metal);
+  check(metal_runtime.start(error), error);
+  check(wait_until([&] { return metal_runtime.live(); }, std::chrono::seconds(2)),
+        "commodity did not become live");
+  RingTail metal_tail(metal_runtime.segment_name());
+  Seen metal_seen;
+  check(wait_until(
+            [&] {
+              metal_tail.drain(metal_seen);
+              return metal_seen.symbol == "XAUUSD";
+            },
+            std::chrono::seconds(2)),
+        "commodity catalog missing");
+  check(metal_seen.security == utils::md::IbkrSecurityType::Commodity &&
+            metal_seen.contract_multiplier == 100,
+        "commodity multiplier");
+  metal_runtime.stop();
+
+  FakeClient bare;
+  bare.assigned_con_id = 69067925;
+  bare.details_sec_type = "CMDTY";
+  auto bare_options = options_for(prefix_for("gold-empty"));
+  bare_options.subscriptions.push_back(gold);
+  mds::ibkr::IbkrRuntime bare_runtime(bare_options, bare);
+  check(bare_runtime.start(error), error);
+  check(wait_until([&] { return bare_runtime.live(); }, std::chrono::seconds(2)),
+        "empty commodity multiplier did not finish");
+  check(bare_runtime.metrics().catalog_publish_count == 0,
+        "missing commodity multiplier was published");
+  bare_runtime.stop();
+
+  FakeClient fx;
+  fx.details_sec_type = "CASH";
+  fx.details_min_tick = 0.00001;
+  fx.assigned_con_id = 12087792;
+  auto fx_options = options_for(prefix_for("eurusd"));
+  mds::ibkr::InstrumentSpec eurusd;
+  eurusd.canonical_symbol = "EURUSD";
+  eurusd.request_symbol = "EUR";
+  eurusd.sec_type = "CASH";
+  eurusd.exchange = "IDEALPRO";
+  eurusd.currency = "USD";
+  eurusd.price_scale = std::nullopt;
+  eurusd.quantity_scale = 4;
+  fx_options.subscriptions.push_back(eurusd);
+  mds::ibkr::IbkrRuntime fx_runtime(fx_options, fx);
+  check(fx_runtime.start(error), error);
+  check(wait_until([&] { return fx_runtime.live(); }, std::chrono::seconds(2)),
+        "EURUSD did not become live");
+  RingTail fx_tail(fx_runtime.segment_name());
+  Seen fx_seen;
+  check(wait_until(
+            [&] {
+              fx_tail.drain(fx_seen);
+              return fx_seen.symbol == "EURUSD";
+            },
+            std::chrono::seconds(2)),
+        "EURUSD catalog missing");
+  check(fx_seen.security == utils::md::IbkrSecurityType::Cash &&
+            fx_seen.contract_multiplier == 1 && fx_seen.base == "EUR" &&
+            fx_seen.quote == "USD",
+        "cash metadata");
+  fx_runtime.stop();
+
+  FakeClient invalid;
+  invalid.details_min_tick = 0.001;
+  auto invalid_options = options_for(prefix_for("bad-tick"));
+  auto bad = spec_for("AAPL", 265598);
+  bad.price_scale = 2;
+  invalid_options.subscriptions.push_back(bad);
+  mds::ibkr::IbkrRuntime invalid_runtime(invalid_options, invalid);
+  check(invalid_runtime.start(error), error);
+  check(wait_until([&] { return invalid_runtime.live(); },
+                   std::chrono::seconds(2)),
+        "invalid tick did not finish");
+  check(invalid_runtime.metrics().catalog_publish_count == 0,
+        "unrepresentable tick was published");
+  invalid_runtime.stop();
+}
+
 void test_second_writer_is_rejected_by_shared_memory() {
   FakeClient first_client;
   FakeClient second_client;
@@ -1371,6 +1527,7 @@ int main() {
   test_stale_contract_callbacks_and_permission_scope();
   test_req_id_exhaustion_is_process_fatal();
   test_health_requires_selected_active_and_catalog();
+  test_execution_metadata_catalog();
   test_second_writer_is_rejected_by_shared_memory();
   return 0;
 }

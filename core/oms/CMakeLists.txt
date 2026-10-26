@@ -3,6 +3,8 @@ project(self_quant_oms VERSION 0.1.0 LANGUAGES CXX)
 
 option(OMS_BUILD_TESTS "Build OMS unit tests" ON)
 option(OMS_BUILD_ACCEPTANCE "Build credential-safe OMS acceptance tool" ON)
+option(SELF_QUANT_ENABLE_IBKR_OMS
+  "Link the official IBKR TWS execution client into OMS" OFF)
 
 add_library(self_quant_oms STATIC
   internal/oms/exchange/adapter_router.cpp
@@ -13,6 +15,14 @@ add_library(self_quant_oms STATIC
   internal/oms/exchange/polymarket/crypto.cpp
   internal/oms/exchange/polymarket/protocol.cpp
   internal/oms/exchange/polymarket/trade_adapter.cpp
+  internal/oms/exchange/hyperliquid/metadata.cpp
+  internal/oms/exchange/hyperliquid/protocol.cpp
+  internal/oms/exchange/hyperliquid/session.cpp
+  internal/oms/exchange/hyperliquid/trade_adapter.cpp
+  internal/oms/exchange/ibkr/order_rules.cpp
+  internal/oms/exchange/ibkr/exec_client.cpp
+  internal/oms/exchange/ibkr/session.cpp
+  internal/oms/exchange/ibkr/trade_adapter.cpp
   internal/oms/exchange/rest_request_pool.cpp
   internal/oms/runtime/deadline_scheduler.cpp
   internal/oms/runtime/event_notifier.cpp
@@ -39,10 +49,24 @@ if(TARGET self_quant_warnings)
   target_link_libraries(self_quant_oms PRIVATE self_quant_warnings)
 endif()
 
+if(SELF_QUANT_ENABLE_IBKR_OMS)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/IbkrTwsApi.cmake)
+  self_quant_add_ibkr_tws_api()
+  target_sources(self_quant_oms PRIVATE
+    internal/oms/exchange/ibkr/tws_exec_client.cpp)
+  target_compile_definitions(self_quant_oms PUBLIC OMS_HAS_IBKR=1)
+  target_link_libraries(self_quant_oms PUBLIC ibkr_tws_api)
+endif()
+
 if(OMS_BUILD_ACCEPTANCE)
   add_executable(oms_acceptance cmd/oms_acceptance/main.cpp)
   target_compile_features(oms_acceptance PRIVATE cxx_std_20)
   target_compile_options(oms_acceptance PRIVATE -Wall -Wextra -Wpedantic)
+
+  add_executable(oms_ibkr_acceptance cmd/oms_ibkr_acceptance/main.cpp)
+  target_link_libraries(oms_ibkr_acceptance PRIVATE self_quant_oms)
+  target_compile_features(oms_ibkr_acceptance PRIVATE cxx_std_20)
+  target_compile_options(oms_ibkr_acceptance PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 add_executable(oms_benchmark cmd/oms_benchmark/main.cpp)
@@ -146,4 +170,24 @@ if(OMS_BUILD_TESTS)
     OMS_REPLAY_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/replay")
   target_link_libraries(oms_dual_mode_tests PRIVATE self_quant_oms)
   add_test(NAME oms_dual_mode_tests COMMAND oms_dual_mode_tests)
+
+  add_executable(oms_tradefi_tests tests/tradefi_oms_tests.cpp)
+  target_include_directories(oms_tradefi_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/internal)
+  target_link_libraries(oms_tradefi_tests PRIVATE self_quant_oms)
+  add_test(NAME oms_tradefi_tests COMMAND oms_tradefi_tests)
+
+  add_executable(oms_hyperliquid_adapter_tests
+    tests/hyperliquid_adapter_tests.cpp)
+  target_include_directories(oms_hyperliquid_adapter_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/internal)
+  target_link_libraries(oms_hyperliquid_adapter_tests PRIVATE self_quant_oms)
+  add_test(NAME oms_hyperliquid_adapter_tests
+    COMMAND oms_hyperliquid_adapter_tests)
+
+  add_executable(oms_ibkr_fake_tests tests/ibkr_fake_tests.cpp)
+  target_include_directories(oms_ibkr_fake_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/internal)
+  target_link_libraries(oms_ibkr_fake_tests PRIVATE self_quant_oms)
+  add_test(NAME oms_ibkr_fake_tests COMMAND oms_ibkr_fake_tests)
 endif()

@@ -143,6 +143,7 @@ void clear_leg_order(LegOrder& leg) noexcept {
   leg.saw_fill = false;
   leg.cancel_attempts = 0;
   leg.last_error = 0;
+  leg.uncertain_since_ns = 0;
 }
 
 void commit_lifecycle(LegOrder& leg, const LifecycleResult& result) noexcept {

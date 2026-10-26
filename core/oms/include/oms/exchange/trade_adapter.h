@@ -52,6 +52,11 @@ class TradeAdapter {
   [[nodiscard]] virtual AdapterResult commit_cancel(
       AdapterReservation reservation,
       const AdapterCancelCommand& command) noexcept = 0;
+  [[nodiscard]] virtual AdapterResult commit_cancel_venue(
+      AdapterReservation,
+      const AdapterCancelVenueCommand&) noexcept {
+    return AdapterResult::Unsupported;
+  }
   [[nodiscard]] virtual AdapterResult query_open_orders(
       const AdapterQueryRequest&, const AdapterEventSink&) noexcept {
     return AdapterResult::Unsupported;
@@ -59,6 +64,28 @@ class TradeAdapter {
   [[nodiscard]] virtual AdapterResult query_positions(
       const AdapterQueryRequest&, const AdapterEventSink&) noexcept {
     return AdapterResult::Unsupported;
+  }
+  [[nodiscard]] virtual AdapterResult query_balances(
+      const AdapterQueryRequest&, const AdapterEventSink&) noexcept {
+    return AdapterResult::Unsupported;
+  }
+  [[nodiscard]] virtual AdapterResult register_instrument(
+      api::InstrumentId, const api::ResolvedInstrument&) noexcept {
+    return AdapterResult::Ok;
+  }
+  [[nodiscard]] virtual AdapterResult retire_instrument(
+      api::InstrumentId, const api::ResolvedInstrument&) noexcept {
+    return AdapterResult::Ok;
+  }
+  // Default readiness is the adapter session. IB overrides this with the
+  // per-contract state. Callers on another thread must use the OMS snapshot
+  // unless tracks_instrument_readiness() is true.
+  [[nodiscard]] virtual bool instrument_ready(
+      const api::ResolvedInstrument&) const noexcept {
+    return status() == AdapterStatus::Ready;
+  }
+  [[nodiscard]] virtual bool tracks_instrument_readiness() const noexcept {
+    return false;
   }
 
   [[nodiscard]] virtual AdapterServiceResult service_io(

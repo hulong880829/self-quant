@@ -20,6 +20,8 @@ class StateEngine {
                            const api::UpdateSink& sink) noexcept;
   api::Error Apply(const api::VenueEvent& event,
                    const api::UpdateSink& sink) noexcept;
+  api::Error ExpireOneForRetirement(api::InstrumentId instrument_id,
+                                    const api::UpdateSink& sink) noexcept;
 
  private:
   struct FillDedupEntry {
@@ -37,6 +39,7 @@ class StateEngine {
       std::size_t& insert_slot) const noexcept;
   void RecordFill(std::size_t slot, api::OrderHandle handle,
                   const api::VenueEvent& event) noexcept;
+  void ObserveTerminal(api::OrderHandle handle) noexcept;
   static void EmitOrder(api::UpdateType type, api::OrderHandle handle,
                         const OrderRecord& record,
                         const api::UpdateSink& sink) noexcept;

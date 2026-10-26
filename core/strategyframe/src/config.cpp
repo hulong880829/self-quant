@@ -164,6 +164,9 @@ VenueExecutionConfig::Kind ParseVenueKind(std::string_view value) {
     return VenueExecutionConfig::Kind::BinanceUsdm;
   if (value == "polymarket")
     return VenueExecutionConfig::Kind::Polymarket;
+  if (value == "hyperliquid")
+    return VenueExecutionConfig::Kind::Hyperliquid;
+  if (value == "ibkr") return VenueExecutionConfig::Kind::Ibkr;
   throw std::runtime_error("unsupported OMS venue: " + std::string(value));
 }
 
@@ -572,7 +575,9 @@ Result<StrategyFrameConfig> load_config(const std::string& path) noexcept {
             {"enabled", "account_id", "rest", "trading_websocket",
              "user_websocket",
              "api_key_env", "secret_env", "passphrase_env",
-             "funder_address_env", "private_key_env", "signature_type"},
+             "funder_address_env", "private_key_env", "signature_type",
+             "account_address_env", "vault_address_env", "account",
+             "gateway", "client_id"},
             "oms.venues." + venue_name);
         VenueExecutionConfig config;
         config.kind = ParseVenueKind(venue_name);
@@ -592,6 +597,15 @@ Result<StrategyFrameConfig> load_config(const std::string& path) noexcept {
             ValueOr<std::string>(venue, "passphrase_env", {});
         config.private_key_env =
             ValueOr<std::string>(venue, "private_key_env", {});
+        config.account_address_env =
+            ValueOr<std::string>(venue, "account_address_env", {});
+        config.vault_address_env =
+            ValueOr<std::string>(venue, "vault_address_env", {});
+        config.account = ValueOr<std::string>(venue, "account", {});
+        config.gateway =
+            ParseEndpoint(venue["gateway"], venue_name + ".gateway");
+        if (venue["client_id"])
+          config.client_id = venue["client_id"].as<int>();
         const YAML::Node signature_node = venue["signature_type"];
         const YAML::Node funder_node = venue["funder_address_env"];
         if (config.kind != VenueExecutionConfig::Kind::Polymarket) {
@@ -634,14 +648,29 @@ Result<StrategyFrameConfig> load_config(const std::string& path) noexcept {
               "oms.venues." + venue_name +
               ": enabled polymarket requires signature_type");
         }
+        if (config.kind == VenueExecutionConfig::Kind::Ibkr &&
+            (config.client_id == 30 || config.client_id == 31)) {
+          throw std::runtime_error(
+              "oms.venues." + venue_name +
+              ": client_id conflicts with discovery 30 or mds 31");
+        }
         if (config.enabled) {
           if (config.account_id == 0) {
             throw std::runtime_error("enabled venue requires credential envs");
           }
-          if (config.kind == VenueExecutionConfig::Kind::Polymarket) {
-            if (config.private_key_env.empty()) {
+          if (config.kind == VenueExecutionConfig::Kind::Polymarket ||
+              config.kind == VenueExecutionConfig::Kind::Hyperliquid) {
+            if (config.private_key_env.empty() ||
+                (config.kind == VenueExecutionConfig::Kind::Hyperliquid &&
+                 config.account_address_env.empty())) {
               throw std::runtime_error(
                   "enabled venue requires credential envs");
+            }
+          } else if (config.kind == VenueExecutionConfig::Kind::Ibkr) {
+            if (config.account.empty() || config.gateway.host.empty() ||
+                config.client_id < 0) {
+              throw std::runtime_error(
+                  "enabled ibkr requires gateway, client_id, and account");
             }
           } else if (config.api_key_env.empty() || config.secret_env.empty()) {
             throw std::runtime_error("enabled venue requires credential envs");

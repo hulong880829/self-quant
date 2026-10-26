@@ -14,9 +14,11 @@ import (
 )
 
 var (
-	ErrInvalidTradingAccount = errors.New("invalid trading account")
-	ErrUnsupportedExchange   = errors.New("unsupported exchange")
-	ErrPassphraseRequired    = errors.New("passphrase is required")
+	ErrInvalidTradingAccount   = errors.New("invalid trading account")
+	ErrUnsupportedExchange     = errors.New("unsupported exchange")
+	ErrPassphraseRequired      = errors.New("passphrase is required")
+	ErrInvalidIdempotencyKey   = errors.New("invalid idempotency key")
+	ErrBindIdempotencyConflict = errors.New("idempotency key conflict")
 )
 
 var cexTradingExchanges = map[string]struct{}{
@@ -100,6 +102,7 @@ type tradingStore interface {
 	GetByOwner(context.Context, string, int64) (TradingAccountRecord, error)
 	ListByOwnerProduct(context.Context, string, string) ([]TradingAccountRecord, error)
 	Create(context.Context, TradingAccountRecord) (TradingAccountRecord, error)
+	CreateIdempotent(context.Context, string, string, TradingAccountRecord) (TradingAccountRecord, bool, error)
 	UpdateIndexes(context.Context, string, int64, *int64, *int16) error
 	DeleteByOwner(context.Context, string, int64) error
 }
@@ -146,6 +149,7 @@ type CreateTradingAccountInput struct {
 	VaultAddress     string
 	AccountIndex     *int64
 	APIKeyIndex      *int32
+	IdempotencyKey   string
 }
 
 func (s *Service) ListTradingAccounts(ctx context.Context, token string) ([]TradingAccountView, error) {
@@ -196,6 +200,10 @@ func (s *Service) CreateTradingAccount(
 	if s.trading == nil || s.cipher == nil {
 		return TradingAccountView{}, fmt.Errorf("trading accounts not configured")
 	}
+	key, err := normalizeBindIdempotencyKey(input.IdempotencyKey)
+	if err != nil {
+		return TradingAccountView{}, err
+	}
 	normalized, err := normalizeCreateInput(input)
 	if err != nil {
 		return TradingAccountView{}, err
@@ -233,7 +241,7 @@ func (s *Service) CreateTradingAccount(
 		value := int16(*normalized.APIKeyIndex)
 		apiKeyIndex = &value
 	}
-	created, err := s.trading.Create(ctx, TradingAccountRecord{
+	record := TradingAccountRecord{
 		OwnerUsername:       session.Username,
 		ProductName:         normalized.ProductName,
 		Exchange:            normalized.Exchange,
@@ -248,9 +256,22 @@ func (s *Service) CreateTradingAccount(
 		VaultAddress:        normalized.VaultAddress,
 		AccountIndex:        accountIndex,
 		APIKeyIndex:         apiKeyIndex,
-	})
+	}
+	if key == "" {
+		created, err := s.trading.Create(ctx, record)
+		if err != nil {
+			return TradingAccountView{}, err
+		}
+		return s.afterTradingAccountBound(ctx, created), nil
+	}
+	created, replayed, err := s.trading.CreateIdempotent(ctx, key, bindRequestHash(normalized), record)
 	if err != nil {
 		return TradingAccountView{}, err
+	}
+	if replayed {
+		view := s.toTradingAccountView(created)
+		s.attachFeeView(ctx, &view)
+		return view, nil
 	}
 	return s.afterTradingAccountBound(ctx, created), nil
 }

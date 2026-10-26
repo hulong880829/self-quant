@@ -1,0 +1,10 @@
+mds:
+  source: replay
+oms:
+  venues:
+    ibkr:
+      enabled: true
+      account_id: 2
+      client_id: 32
+      account: DU123
+strategy: {}

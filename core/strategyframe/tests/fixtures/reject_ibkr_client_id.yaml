@@ -1,0 +1,9 @@
+mds:
+  source: replay
+oms:
+  venues:
+    ibkr:
+      enabled: false
+      account_id: 2
+      client_id: 31
+strategy: {}

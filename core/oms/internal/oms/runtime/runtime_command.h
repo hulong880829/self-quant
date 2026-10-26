@@ -17,6 +17,8 @@ enum class RuntimeCommandKind : std::uint8_t {
   RetireInstrument = 6,
   QueryOpenOrders = 7,
   QueryPositions = 8,
+  QueryBalances = 9,
+  CancelVenue = 10,
 };
 
 // The inactive request remains zero-filled. Keeping fixed fields makes command
@@ -29,6 +31,7 @@ struct RuntimeCommand {
   union {
     api::SubmitOrderRequest place;
     api::CancelOrderRequest cancel;
+    api::CancelVenueOrderRequest cancel_venue;
     api::RegisterInstrumentRequest register_instrument;
     api::RetireInstrumentRequest retire_instrument;
     exchange::AdapterQueryRequest query;
@@ -42,7 +45,7 @@ static_assert(std::is_standard_layout_v<RuntimeCommandKind>);
 static_assert(std::is_trivially_copyable_v<RuntimeCommand>);
 static_assert(std::is_standard_layout_v<RuntimeCommand>);
 static_assert(sizeof(RuntimeCommandKind) == 1);
-static_assert(sizeof(RuntimeCommand) == 272);
+static_assert(sizeof(RuntimeCommand) == 336);
 static_assert(alignof(RuntimeCommand) == 8);
 static_assert(static_cast<std::uint8_t>(RuntimeCommandKind::Place) == 1);
 static_assert(static_cast<std::uint8_t>(RuntimeCommandKind::Cancel) == 2);
@@ -54,5 +57,13 @@ static_assert(
     static_cast<std::uint8_t>(RuntimeCommandKind::RegisterInstrument) == 5);
 static_assert(
     static_cast<std::uint8_t>(RuntimeCommandKind::RetireInstrument) == 6);
+static_assert(
+    static_cast<std::uint8_t>(RuntimeCommandKind::QueryOpenOrders) == 7);
+static_assert(
+    static_cast<std::uint8_t>(RuntimeCommandKind::QueryPositions) == 8);
+static_assert(
+    static_cast<std::uint8_t>(RuntimeCommandKind::QueryBalances) == 9);
+static_assert(
+    static_cast<std::uint8_t>(RuntimeCommandKind::CancelVenue) == 10);
 
 }  // namespace oms::runtime

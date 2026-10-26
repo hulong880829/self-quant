@@ -195,6 +195,9 @@ type ClientOrderIDEncoder interface {
 type Fill struct {
 	TradeID, VenueOrderID, Quantity, Price string
 	ExecutedAt                             time.Time
+	// FeeAmount is a per-trade fee tied to TradeID. Positive is a cost and
+	// negative is a rebate. Empty means the venue report did not confirm one.
+	FeeAmount, FeeCurrency, LiquidityRole string
 }
 
 type FillReader interface {

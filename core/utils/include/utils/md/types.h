@@ -24,6 +24,12 @@ enum class Venue : std::uint16_t {
   Ibkr = 11
 };
 enum class ProductType : std::uint8_t { Unknown = 0, Spot = 1, Perpetual = 2, Future = 3, BinaryOption = 4, Equity = 5 };
+enum class IbkrSecurityType : std::uint8_t {
+  Unknown = 0,
+  Stock = 1,
+  Commodity = 2,
+  Cash = 3,
+};
 enum class Side : std::uint8_t { Bid = 1, Ask = 2 };
 enum class BookState : std::uint8_t { Empty = 0, Building = 1, Live = 2, Invalid = 3, NeedsRestart = 4 };
 enum class BboOrigin : std::uint16_t {
@@ -123,7 +129,8 @@ struct InstrumentCatalog {
   std::uint8_t flags{};
   std::uint8_t signature_type{};
   std::uint8_t negative_risk{};
-  std::array<std::uint8_t, 5> reserved{};
+  IbkrSecurityType ibkr_security_type{IbkrSecurityType::Unknown};
+  std::array<std::uint8_t, 4> reserved{};
   std::int64_t tick_size{};
   std::int64_t lot_size{};
   std::int64_t contract_multiplier{};
@@ -151,6 +158,9 @@ static_assert(static_cast<std::uint16_t>(MessageType::InstrumentUpdate) == 7);
 static_assert(static_cast<std::uint16_t>(MessageType::InstrumentCatalog) == 10);
 static_assert(static_cast<std::uint16_t>(MessageType::FairPrice) == 11);
 static_assert(static_cast<std::uint16_t>(MessageType::FairPriceV2) == 12);
+static_assert(offsetof(InstrumentCatalog, tick_size) == 24);
+static_assert(sizeof(InstrumentCatalog::reserved) == 4);
+static_assert(std::is_trivially_copyable_v<InstrumentCatalog>);
 static_assert(std::is_trivially_copyable_v<Instrument>);
 static_assert(std::is_trivially_copyable_v<BboEvent>);
 static_assert(std::is_trivially_copyable_v<TickerEvent>);

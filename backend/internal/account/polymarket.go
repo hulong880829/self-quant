@@ -20,11 +20,12 @@ type polymarketCredentialIssuer interface {
 }
 
 type CreatePolymarketTradingAccountInput struct {
-	ProductName   string
-	AccountName   string
-	PrivateKey    string
-	WalletType    string
-	FunderAddress string
+	ProductName    string
+	AccountName    string
+	PrivateKey     string
+	WalletType     string
+	FunderAddress  string
+	IdempotencyKey string
 }
 
 type PolymarketCredentials struct {
@@ -51,6 +52,10 @@ func (s *Service) CreatePolymarketTradingAccount(
 	}
 	if s.polymarket == nil || s.polymarketIssuer == nil || s.cipher == nil {
 		return TradingAccountView{}, errors.New("polymarket account binding not configured")
+	}
+	key, err := normalizeBindIdempotencyKey(input.IdempotencyKey)
+	if err != nil {
+		return TradingAccountView{}, err
 	}
 	productName := strings.TrimSpace(input.ProductName)
 	if productName == "" {
@@ -111,7 +116,7 @@ func (s *Service) CreatePolymarketTradingAccount(
 		return TradingAccountView{}, err
 	}
 
-	record, stored, err := s.polymarket.Create(ctx, TradingAccountRecord{
+	accountRecord := TradingAccountRecord{
 		OwnerUsername: session.Username,
 		ProductName:   productName,
 		Exchange:      "polymarket",
@@ -119,7 +124,8 @@ func (s *Service) CreatePolymarketTradingAccount(
 		APIKeyEnc:     apiKeyEnc,
 		APISecretEnc:  apiSecretEnc,
 		PassphraseEnc: passphraseEnc,
-	}, PolymarketCredentialRecord{
+	}
+	credentialRecord := PolymarketCredentialRecord{
 		SignerAddress:   signerAddress,
 		FunderAddress:   funderAddress,
 		WalletType:      walletType,
@@ -129,7 +135,20 @@ func (s *Service) CreatePolymarketTradingAccount(
 		APIKeyEnc:       apiKeyEnc,
 		APISecretEnc:    apiSecretEnc,
 		PassphraseEnc:   passphraseEnc,
-	})
+	}
+	var record TradingAccountRecord
+	var stored PolymarketCredentialRecord
+	if key == "" {
+		record, stored, err = s.polymarket.Create(ctx, accountRecord, credentialRecord)
+	} else {
+		hashInput := CreatePolymarketTradingAccountInput{
+			ProductName: productName, AccountName: accountName, PrivateKey: privateKey,
+			WalletType: walletType, FunderAddress: funderAddress,
+		}
+		record, stored, _, err = s.polymarket.CreateIdempotent(
+			ctx, key, polymarketBindRequestHash(hashInput), accountRecord, credentialRecord,
+		)
+	}
 	if err != nil {
 		return TradingAccountView{}, err
 	}

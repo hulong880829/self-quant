@@ -41,6 +41,10 @@ class MarketDataSource {
   [[nodiscard]] bool ready() const noexcept;
   [[nodiscard]] const RuntimeMetrics& metrics() const noexcept;
   void retire_instrument(InstrumentId instrument_id) noexcept;
+  [[nodiscard]] bool note_retired_expiry(
+      Venue venue, ProductType product, const char* canonical_symbol,
+      std::uint64_t expiry_unix_ns) noexcept;
+  [[nodiscard]] std::size_t retired_expiry_slots() const noexcept;
 
   // Deterministic in-memory source used by runtime/MDS tests. Each entry is one
   // complete utils::md::wire record payload.

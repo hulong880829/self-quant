@@ -66,11 +66,20 @@ func TestDefaultLegLeverage(t *testing.T) {
 	if err != nil || !got.Equal(decimal.NewFromInt(1)) {
 		t.Fatalf("spot default=%s err=%v", got, err)
 	}
-	for _, raw := range []string{"4.5", "1.2", "0", "-1", "abc"} {
+	for _, raw := range []string{"1", "10"} {
+		got, err = defaultLegLeverage("perpetual", raw)
+		if err != nil || got.String() != raw {
+			t.Fatalf("raw=%s got=%s err=%v", raw, got, err)
+		}
+	}
+	for _, raw := range []string{"4.5", "1.2", "0", "-1", "abc", "11"} {
 		_, err := defaultLegLeverage("perpetual", raw)
 		var createErr *ArbitrageCreateError
 		if !errors.As(err, &createErr) || createErr.Code != "invalid_leverage" {
 			t.Fatalf("raw=%q err=%v", raw, err)
+		}
+		if createErr.Details["min"] != "1" || createErr.Details["max"] != "10" || createErr.Details["step"] != "1" {
+			t.Fatalf("raw=%q details=%v", raw, createErr.Details)
 		}
 	}
 	_, err = defaultLegLeverage("spot", "2")
@@ -142,6 +151,20 @@ func TestCreateArbitrageCombinationRejectsFractionalLeverageBeforeVenue(t *testi
 	}
 	if adapterA.leverageSets != 0 || adapterB.leverageSets != 0 {
 		t.Fatalf("leverage sets a=%d b=%d", adapterA.leverageSets, adapterB.leverageSets)
+	}
+	_, err = service.CreateArbitrageCombination(context.Background(), CreateArbitrageInput{
+		Token: "token", LegATradingAccountID: 1, LegAInstrumentID: 11,
+		LegBTradingAccountID: 2, LegBInstrumentID: 22,
+		AskThresholdBps: "12", BidThresholdBps: "-8",
+		TargetNotional: "100", ExecutionMode: "simultaneous_market", MakerLeg: "a",
+		LegALeverage: "11", IdempotencyKey: "leverage-11",
+	})
+	if !errors.As(err, &createErr) || createErr.Code != "invalid_leverage" || createErr.Leg != "a" ||
+		createErr.Details["max"] != "10" {
+		t.Fatalf("11x err=%v", err)
+	}
+	if adapterA.leverageSets != 0 || adapterB.leverageSets != 0 || adapterA.bboCalls != 0 || adapterA.calls != 0 {
+		t.Fatalf("venue calls after 11x sets=%d bbo=%d calls=%d", adapterA.leverageSets, adapterA.bboCalls, adapterA.calls)
 	}
 }
 

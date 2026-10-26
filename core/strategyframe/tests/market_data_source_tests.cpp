@@ -688,6 +688,120 @@ void OrderBookOnlyAndLegacyPolicies() {
   }
 }
 
+void ExpiryWatermarkRejectsOldPolymarketSeries() {
+  Captured captured;
+  strategyframe::MdsConfig config;
+  config.source = strategyframe::MdsSourceMode::Replay;
+  strategyframe::MarketDataSource source(config, Sink(captured));
+  const auto publish_catalog =
+      [&](std::uint64_t id, std::uint32_t generation, std::uint64_t expiry,
+          utils::md::Venue venue, utils::md::ProductType product,
+          std::string_view symbol, std::uint64_t sequence) {
+        utils::md::InstrumentCatalog catalog{};
+        catalog.instrument_id = id;
+        catalog.venue = venue;
+        catalog.product_type = product;
+        catalog.price_scale = 2;
+        catalog.quantity_scale = 3;
+        catalog.tick_size = 1;
+        catalog.lot_size = 1;
+        catalog.expiry_unix_ns = expiry;
+        std::copy(symbol.begin(), symbol.end(),
+                  catalog.canonical_symbol.begin());
+        auto bytes = Encode(
+            sizeof(utils::md::wire::InstrumentCatalogRecord),
+            [&](std::span<std::byte> output) {
+              return utils::md::wire::EncodeInstrumentCatalog(
+                  output, Header(utils::md::MessageType::InstrumentCatalog,
+                                 sequence, generation, id),
+                  catalog);
+            });
+        Require(source.enqueue_replay(bytes) == strategyframe::Error::Ok);
+      };
+  const auto publish_instrument =
+      [&](std::uint64_t id, utils::md::Venue venue,
+          utils::md::ProductType product, std::string_view symbol,
+          std::uint64_t sequence) {
+        utils::md::Instrument instrument{};
+        instrument.instrument_id = id;
+        instrument.venue = venue;
+        instrument.product_type = product;
+        instrument.price_scale = 2;
+        instrument.quantity_scale = 3;
+        std::copy(symbol.begin(), symbol.end(),
+                  instrument.canonical_symbol.begin());
+        auto bytes = Encode(
+            sizeof(utils::md::wire::InstrumentUpdateRecord),
+            [&](std::span<std::byte> output) {
+              return utils::md::wire::EncodeInstrument(
+                  output, Header(utils::md::MessageType::InstrumentUpdate,
+                                 sequence, 1, id),
+                  instrument);
+            });
+        Require(source.enqueue_replay(bytes) == strategyframe::Error::Ok);
+      };
+  const auto publish_bbo = [&](std::uint64_t id, std::uint64_t sequence) {
+    auto bytes = Encode(
+        sizeof(utils::md::wire::BboRecord),
+        [&](std::span<std::byte> output) {
+          return utils::md::wire::EncodeBbo(
+              output, Header(utils::md::MessageType::Bbo, sequence, 1, id),
+              {10000, 1}, {10001, 1});
+        });
+    Require(source.enqueue_replay(bytes) == strategyframe::Error::Ok);
+  };
+
+  publish_catalog(42, 1, 1'000, utils::md::Venue::Polymarket,
+                  utils::md::ProductType::BinaryOption, "btc5mup", 1);
+  publish_instrument(42, utils::md::Venue::Polymarket,
+                     utils::md::ProductType::BinaryOption, "btc5mup", 2);
+  publish_bbo(42, 3);
+  Require(source.start() == strategyframe::Error::Ok);
+  std::size_t dispatched{};
+  Require(source.poll(8, dispatched) == strategyframe::Error::Ok);
+  Require(captured.catalogs == 1);
+  Require(captured.bbo == 1);
+  Require(source.note_retired_expiry(
+      utils::md::Venue::Polymarket, utils::md::ProductType::BinaryOption,
+      "btc5mup", 1'000));
+  source.retire_instrument(42);
+  publish_catalog(99, 9, 1'000, utils::md::Venue::Polymarket,
+                  utils::md::ProductType::BinaryOption, "btc5mup", 4);
+  publish_instrument(99, utils::md::Venue::Polymarket,
+                     utils::md::ProductType::BinaryOption, "btc5mup", 5);
+  publish_bbo(99, 6);
+  Require(source.poll(8, dispatched) == strategyframe::Error::Ok);
+  Require(captured.catalogs == 1);
+  Require(captured.bbo == 1);
+
+  publish_catalog(100, 1, 2'000, utils::md::Venue::Polymarket,
+                  utils::md::ProductType::BinaryOption, "btc5mup", 7);
+  publish_instrument(100, utils::md::Venue::Polymarket,
+                     utils::md::ProductType::BinaryOption, "btc5mup", 8);
+  publish_bbo(100, 9);
+  Require(source.poll(8, dispatched) == strategyframe::Error::Ok);
+  Require(captured.catalogs == 2);
+  Require(captured.bbo == 2);
+
+  publish_instrument(7, utils::md::Venue::Binance,
+                     utils::md::ProductType::Spot, "BTCUSDT", 10);
+  publish_bbo(7, 11);
+  publish_instrument(8, utils::md::Venue::Hyperliquid,
+                     utils::md::ProductType::Perpetual, "ETH", 12);
+  publish_bbo(8, 13);
+  publish_instrument(9, utils::md::Venue::Ibkr, utils::md::ProductType::Equity,
+                     "AAPL", 14);
+  publish_bbo(9, 15);
+  Require(source.poll(16, dispatched) == strategyframe::Error::Ok);
+  Require(captured.bbo == 5);
+  for (int index = 0; index < 1000; ++index) {
+    Require(source.note_retired_expiry(
+        utils::md::Venue::Polymarket, utils::md::ProductType::BinaryOption,
+        "btc5mup", 1'000 + static_cast<std::uint64_t>(index)));
+  }
+  Require(source.retired_expiry_slots() == 1);
+}
+
 void ZeroTimeDoesNotEraseFreshnessHighWater() {
   Captured captured;
   strategyframe::MdsConfig config;
@@ -721,6 +835,7 @@ int main() {
   CrossSourceDedupAndBookValidation();
   GenerationAndNewestTieBreak();
   OrderBookOnlyAndLegacyPolicies();
+  ExpiryWatermarkRejectsOldPolymarketSeries();
   ZeroTimeDoesNotEraseFreshnessHighWater();
   return 0;
 }

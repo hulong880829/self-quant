@@ -414,3 +414,27 @@ func TestHyperliquidUserFills(t *testing.T) {
 		}
 	})
 }
+
+func TestPerTradeFeeIsNotCopiedFromCumulativeReports(t *testing.T) {
+	received := time.Unix(1_700_000_000, 0).UTC()
+	key := Key{Venue: VenueBinance, Product: ProductPerpetual}
+	updates, matched, err := parseBinance(key, []byte(
+		`{"e":"ORDER_TRADE_UPDATE","E":1,"o":{"c":"c","i":1,"X":"FILLED","z":"2","ap":"10","t":-1,"n":"9","N":"USDT","m":false}}`,
+	), received)
+	if err != nil || !matched || updates[0].FeeAmount != "" {
+		t.Fatalf("cumulative-style report without a trade id stored fee: %+v err=%v", updates, err)
+	}
+	updates, _, err = parseBinance(key, []byte(
+		`{"e":"ORDER_TRADE_UPDATE","E":1,"o":{"c":"c","i":1,"X":"FILLED","z":"2","ap":"10","t":8,"n":"0.2","N":"usdt","m":true}}`,
+	), received)
+	if err != nil || updates[0].FeeAmount != "0.2" || updates[0].FeeCurrency != "USDT" || updates[0].LiquidityRole != "maker" {
+		t.Fatalf("binance fill=%+v err=%v", updates, err)
+	}
+	okxKey := Key{Venue: VenueOKX, Product: ProductPerpetual}
+	updates, _, err = parseOKX(okxKey, []byte(
+		`{"arg":{"channel":"orders"},"data":[{"clOrdId":"c","ordId":"1","state":"filled","accFillSz":"1","avgPx":"10","tradeId":"9","fillFee":"-0.3","fillFeeCcy":"usdt","execType":"M"}]}`,
+	), received)
+	if err != nil || updates[0].FeeAmount != "0.3" || updates[0].FeeCurrency != "USDT" || updates[0].LiquidityRole != "maker" {
+		t.Fatalf("okx fill=%+v err=%v", updates, err)
+	}
+}

@@ -16,6 +16,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(SELF_QUANT_ENABLE_WERROR "Treat compiler warnings as errors" OFF)
 option(SELF_QUANT_ENABLE_MDS "Build the market data service" ON)
 option(SELF_QUANT_ENABLE_OMS "Build the order management service" OFF)
+option(SELF_QUANT_ENABLE_IBKR_OMS
+  "Link the official IBKR TWS execution client into OMS" OFF)
 option(SELF_QUANT_ENABLE_STRATEGYFRAME "Build the strategy framework" OFF)
 option(SELF_QUANT_ENABLE_FAIRPRICE "Build the C++ fairprice service" OFF)
 option(SELF_QUANT_BUILD_BENCHMARKS "Build SDK hot-path benchmarks" OFF)
@@ -95,6 +97,19 @@ if(SELF_QUANT_INSTALL)
   endif()
   if(SELF_QUANT_ENABLE_OMS)
     list(APPEND SELF_QUANT_EXPORT_TARGETS self_quant_oms)
+  endif()
+  set(SELF_QUANT_WITH_IBKR OFF)
+  if(TARGET ibkr_tws_api)
+    list(APPEND SELF_QUANT_EXPORT_TARGETS ibkr_tws_api)
+    if(NOT IBKR_DECIMAL_LIBRARY OR NOT EXISTS "${IBKR_DECIMAL_LIBRARY}")
+      message(FATAL_ERROR "IBKR libbid is missing; cannot install ibkr_tws_api")
+    endif()
+    get_filename_component(IBKR_DECIMAL_LIBRARY_REAL
+      "${IBKR_DECIMAL_LIBRARY}" REALPATH)
+    install(FILES "${IBKR_DECIMAL_LIBRARY_REAL}"
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      RENAME libbid.a)
+    set(SELF_QUANT_WITH_IBKR ON)
   endif()
   if(SELF_QUANT_ENABLE_STRATEGYFRAME)
     list(APPEND SELF_QUANT_EXPORT_TARGETS

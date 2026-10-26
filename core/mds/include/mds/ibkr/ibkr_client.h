@@ -46,6 +46,10 @@ struct IbkrContractDetails {
   std::string currency;
   std::string sec_type;
   double min_tick{};
+  // Empty text means the venue did not return the field.
+  std::string min_size_text;
+  std::string size_increment_text;
+  std::string multiplier_text;
 };
 
 enum class ReferencePriceSource : std::uint8_t {

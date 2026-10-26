@@ -14,11 +14,14 @@ int main(int argc, char** argv) {
   std::uint32_t seconds = 30;
   if (argc > 1) config.fairprice_host = argv[1];
   if (argc > 2) config.fairprice_service = argv[2];
+  else config.fairprice_service = "9093";
   if (argc > 3) config.fairprice_profile = argv[3];
   if (argc > 4) config.fairprice_symbol = argv[4];
   if (argc > 5)
     seconds = static_cast<std::uint32_t>(std::strtoul(argv[5], nullptr, 10));
-  if (const char* token = std::getenv("AGGDATA_BROWSER_TOKEN"))
+  if (const char* token = std::getenv("FAIRPRICE_BROWSER_TOKEN"))
+    config.fairprice_token = token;
+  else if (const char* token = std::getenv("AGGDATA_BROWSER_TOKEN"))
     config.fairprice_token = token;
   if (const char* origin = std::getenv("FAIRPRICE_ORIGIN"))
     config.fairprice_origin = origin;

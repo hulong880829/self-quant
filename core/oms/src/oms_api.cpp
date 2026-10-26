@@ -4,6 +4,8 @@
 #include <atomic>
 #include <bit>
 #include <cerrno>
+#include <charconv>
+#include <cstdio>
 #include <chrono>
 #include <limits>
 #include <mutex>
@@ -32,6 +34,13 @@
 namespace oms::api {
 namespace {
 
+std::uint64_t WallNowNs() noexcept {
+  timespec value{};
+  if (::clock_gettime(CLOCK_REALTIME, &value) != 0) return 0;
+  return static_cast<std::uint64_t>(value.tv_sec) * 1000000000ULL +
+         static_cast<std::uint64_t>(value.tv_nsec);
+}
+
 std::uint64_t NowNs() noexcept {
   timespec value{};
   if (::clock_gettime(CLOCK_MONOTONIC, &value) != 0) return 0;
@@ -53,7 +62,9 @@ bool InitialRoute(const InstrumentInit& source,
   const auto& instrument = source.instrument;
   routing.kind = instrument.venue == utils::md::Venue::Polymarket
                      ? ExecutionRouteKind::Polymarket
-                     : ExecutionRouteKind::Crypto;
+                     : instrument.venue == utils::md::Venue::Ibkr
+                           ? ExecutionRouteKind::Ibkr
+                           : ExecutionRouteKind::Crypto;
   routing.venue = static_cast<std::uint8_t>(instrument.venue);
   routing.product_type = static_cast<std::uint8_t>(instrument.product_type);
   routing.price_scale = instrument.price_scale;
@@ -70,6 +81,29 @@ bool InitialRoute(const InstrumentInit& source,
         std::max<std::int64_t>(1, source.minimum_order_size);
     routing.polymarket.condition_id = source.polymarket_condition_id;
     routing.polymarket.token_id = source.polymarket_token_id;
+    return true;
+  }
+  if (routing.kind == ExecutionRouteKind::Ibkr) {
+    const auto venue_end =
+        std::find(instrument.venue_symbol.begin(),
+                  instrument.venue_symbol.end(), '\0');
+    const std::string_view text(
+        instrument.venue_symbol.data(),
+        static_cast<std::size_t>(venue_end - instrument.venue_symbol.begin()));
+    if (text.empty() ||
+        source.ibkr_security_type == utils::md::IbkrSecurityType::Unknown)
+      return false;
+    std::int64_t con_id = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(),
+                                        con_id);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+        con_id <= 0)
+      return false;
+    routing.ibkr.con_id = con_id;
+    routing.ibkr.security_type = source.ibkr_security_type;
+    routing.ibkr.contract_multiplier = instrument.contract_multiplier;
+    routing.ibkr.contract_multiplier_scale =
+        instrument.contract_multiplier_scale;
     return true;
   }
 
@@ -368,11 +402,22 @@ struct OmsApi::Impl {
 
   exchange::TradeAdapter* Route(
       const ResolvedInstrument& routing) noexcept {
-    utils::md::Instrument instrument{};
-    instrument.venue = static_cast<utils::md::Venue>(routing.venue);
-    instrument.product_type =
-        static_cast<utils::md::ProductType>(routing.product_type);
-    return router.route(instrument);
+    return router.route(routing);
+  }
+
+  const exchange::TradeAdapter* Route(
+      const ResolvedInstrument& routing) const noexcept {
+    return router.route(routing);
+  }
+
+  bool SnapshotReady(exchange::AdapterKind kind) const noexcept {
+    for (std::size_t index = 0; index < adapter_count; ++index) {
+      if (adapters[index]->identity().kind != kind) continue;
+      return static_cast<exchange::AdapterStatus>(
+                 status_snapshots[index].load(std::memory_order_acquire)) ==
+             exchange::AdapterStatus::Ready;
+    }
+    return false;
   }
 
   static exchange::AdapterResult OnAdapterEvent(
@@ -403,6 +448,22 @@ struct OmsApi::Impl {
       OrderRecord* record = EventRecord(event.venue);
       StagedUpdates staged{};
       const Error applied = engine.Apply(event.venue, staged.sink());
+      if (applied == Error::NotFound &&
+          orders.WasRetiredToken(event.venue.token)) {
+        late_event_after_retirement.fetch_add(1, std::memory_order_relaxed);
+        if (event.venue.type == VenueEventType::Fill)
+          unmatched_fill_after_retirement.fetch_add(1,
+                                                    std::memory_order_relaxed);
+        const std::uint64_t now = NowNs();
+        if (last_late_log_ns == 0 || now < last_late_log_ns ||
+            now - last_late_log_ns >= 1'000'000'000ULL) {
+          last_late_log_ns = now;
+          std::fputs(
+              "oms: dropping late event after instrument retirement\n",
+              stderr);
+        }
+        return exchange::AdapterResult::Ok;
+      }
       if (applied == Error::NotFound && event.venue.token.sequence != 0)
         return exchange::AdapterResult::WouldBlock;
       if (applied == Error::NotFound) {
@@ -438,13 +499,17 @@ struct OmsApi::Impl {
     }
     if (event.kind == exchange::AdapterEventKind::OpenOrderSnapshot ||
         event.kind == exchange::AdapterEventKind::PositionSnapshot ||
+        event.kind == exchange::AdapterEventKind::BalanceSnapshot ||
         event.kind == exchange::AdapterEventKind::QueryComplete) {
       const api::QueryToken token =
           event.kind == exchange::AdapterEventKind::OpenOrderSnapshot
               ? event.open_order.query_token
               : (event.kind == exchange::AdapterEventKind::PositionSnapshot
                      ? event.position.query_token
-                     : event.query_complete.query_token);
+                     : (event.kind ==
+                                exchange::AdapterEventKind::BalanceSnapshot
+                            ? event.balance.query_token
+                            : event.query_complete.query_token));
       Lane* lane = FindLane(token.lane);
       if (lane == nullptr) return exchange::AdapterResult::Ok;
       if (!HasRoom(*lane, 1)) return exchange::AdapterResult::WouldBlock;
@@ -456,6 +521,10 @@ struct OmsApi::Impl {
                  exchange::AdapterEventKind::PositionSnapshot) {
         update.kind = RuntimeUpdateKind::PositionSnapshot;
         update.position = event.position;
+      } else if (event.kind ==
+                 exchange::AdapterEventKind::BalanceSnapshot) {
+        update.kind = RuntimeUpdateKind::BalanceSnapshot;
+        update.balance = event.balance;
       } else {
         update.kind = RuntimeUpdateKind::QueryComplete;
         update.query_complete = event.query_complete;
@@ -538,7 +607,9 @@ struct OmsApi::Impl {
     const auto command_kind =
         kind == QueryKind::OpenOrders
             ? runtime::RuntimeCommandKind::QueryOpenOrders
-            : runtime::RuntimeCommandKind::QueryPositions;
+            : (kind == QueryKind::Positions
+                   ? runtime::RuntimeCommandKind::QueryPositions
+                   : runtime::RuntimeCommandKind::QueryBalances);
     if (config.mode == ExecutionMode::DedicatedIo) {
       if (lane->producer_busy.test_and_set(std::memory_order_acquire))
         return {{}, Error::InvalidTransition};
@@ -581,7 +652,9 @@ struct OmsApi::Impl {
   Result<RequestToken> SubmitInstrumentCommand(
       std::uint32_t lane_id, runtime::RuntimeCommandKind kind,
       InstrumentId instrument_id,
-      const ResolvedInstrument* routing = nullptr) noexcept {
+      const ResolvedInstrument* routing = nullptr,
+      InstrumentRetirementMode retirement_mode =
+          InstrumentRetirementMode::Normal) noexcept {
     if (stopping.load(std::memory_order_acquire))
       return {{}, Error::ShuttingDown};
     Lane* lane = FindLane(lane_id);
@@ -601,7 +674,7 @@ struct OmsApi::Impl {
       if (kind == runtime::RuntimeCommandKind::RegisterInstrument) {
         command.register_instrument = {token, instrument_id, *routing};
       } else {
-        command.retire_instrument = {token, instrument_id};
+        command.retire_instrument = {token, instrument_id, retirement_mode};
       }
       return command;
     };
@@ -700,8 +773,10 @@ struct OmsApi::Impl {
     const NewOrderRequest* placed_order = &command.place.order;
     const std::size_t required =
         command.kind == runtime::RuntimeCommandKind::RegisterInstrument ||
-                command.kind == runtime::RuntimeCommandKind::RetireInstrument
+                command.kind == runtime::RuntimeCommandKind::CancelVenue
             ? 1
+            : command.kind == runtime::RuntimeCommandKind::RetireInstrument
+            ? 2
             : (placing &&
                        placed_order->time_in_force == TimeInForce::GTD
                    ? 3
@@ -836,17 +911,52 @@ struct OmsApi::Impl {
       PublishStaged(lane, staged);
       CommandResult(lane, RuntimeCommandResultKind::Cancel, result,
                     correlation);
+    } else if (command.kind ==
+               runtime::RuntimeCommandKind::CancelVenue) {
+      const auto& request = command.cancel_venue;
+      Error result = Error::InvalidArgument;
+      if (ValidateToken(lane, request.request_token)) {
+        exchange::TradeAdapter* adapter = Route(request.routing);
+        if (adapter != nullptr &&
+            adapter == AccountAdapter(request.account_id)) {
+          exchange::AdapterReservation reservation{};
+          const exchange::AdapterResult reserved =
+              adapter->reserve_command(exchange::AdapterCommandKind::Cancel,
+                                       reservation);
+          if (reserved == exchange::AdapterResult::Ok) {
+            exchange::AdapterCancelVenueCommand adapter_command{};
+            adapter_command.command_id =
+                (static_cast<std::uint64_t>(lane.config.lane_id) << 32U) ^
+                request.request_token.sequence;
+            adapter_command.request = request;
+            const exchange::AdapterResult committed =
+                adapter->commit_cancel_venue(reservation, adapter_command);
+            if (committed != exchange::AdapterResult::Ok)
+              adapter->cancel_reservation(reservation);
+            result = AdapterError(committed);
+          } else {
+            result = AdapterError(reserved);
+          }
+        }
+      }
+      InstrumentResult(lane, RuntimeCommandResultKind::CancelVenue, result,
+                       request.request_token, request.instrument_id);
     } else if (command.kind == runtime::RuntimeCommandKind::QueryOpenOrders ||
-               command.kind == runtime::RuntimeCommandKind::QueryPositions) {
+               command.kind == runtime::RuntimeCommandKind::QueryPositions ||
+               command.kind == runtime::RuntimeCommandKind::QueryBalances) {
       const auto& request = command.query;
       if (!ValidateToken(lane, request.token)) return true;
       exchange::AdapterResult result = exchange::AdapterResult::Unsupported;
       if (exchange::TradeAdapter* adapter =
               AccountAdapter(request.request.account_id);
           adapter != nullptr) {
-        result = command.kind == runtime::RuntimeCommandKind::QueryOpenOrders
-                     ? adapter->query_open_orders(request, AdapterSink())
-                     : adapter->query_positions(request, AdapterSink());
+        result =
+            command.kind == runtime::RuntimeCommandKind::QueryOpenOrders
+                ? adapter->query_open_orders(request, AdapterSink())
+                : (command.kind ==
+                           runtime::RuntimeCommandKind::QueryPositions
+                       ? adapter->query_positions(request, AdapterSink())
+                       : adapter->query_balances(request, AdapterSink()));
       } else {
         result = exchange::AdapterResult::InvalidArgument;
       }
@@ -858,7 +968,10 @@ struct OmsApi::Impl {
         update.query_complete.kind =
             command.kind == runtime::RuntimeCommandKind::QueryOpenOrders
                 ? QueryKind::OpenOrders
-                : QueryKind::Positions;
+                : (command.kind ==
+                           runtime::RuntimeCommandKind::QueryPositions
+                       ? QueryKind::Positions
+                       : QueryKind::Balances);
         update.query_complete.error = AdapterError(result);
         Publish(lane, update);
       }
@@ -866,8 +979,33 @@ struct OmsApi::Impl {
                runtime::RuntimeCommandKind::RegisterInstrument) {
       const auto& request = command.register_instrument;
       Error result = Error::InvalidArgument;
-      if (ValidateToken(lane, request.request_token))
-        result = directory.Register(request.instrument_id, request.routing);
+      if (ValidateToken(lane, request.request_token)) {
+        exchange::TradeAdapter* adapter = Route(request.routing);
+        if (adapter == nullptr) {
+          result = Error::InvalidArgument;
+        } else {
+          const Error registered =
+              directory.Register(request.instrument_id, request.routing);
+          if (registered == Error::Ok) {
+            const auto accepted = adapter->register_instrument(
+                request.instrument_id, request.routing);
+            if (accepted != exchange::AdapterResult::Ok) {
+              (void)directory.Retire(request.instrument_id, false);
+              result = AdapterError(accepted);
+            } else {
+              result = Error::Ok;
+            }
+          } else if (registered == Error::Duplicate) {
+            const auto accepted = adapter->register_instrument(
+                request.instrument_id, request.routing);
+            result = accepted == exchange::AdapterResult::Ok
+                         ? Error::Ok
+                         : AdapterError(accepted);
+          } else {
+            result = registered;
+          }
+        }
+      }
       InstrumentResult(lane, RuntimeCommandResultKind::RegisterInstrument,
                        result, request.request_token, request.instrument_id);
     } else if (command.kind ==
@@ -875,11 +1013,57 @@ struct OmsApi::Impl {
       const auto& request = command.retire_instrument;
       Error result = Error::InvalidArgument;
       if (ValidateToken(lane, request.request_token)) {
-        // Only the OMS owner scans OrderTable. StrategyFrame owns and scans
-        // its pending-query/position containers before issuing this command.
-        result = directory.Retire(
-            request.instrument_id,
-            orders.HasActiveOrInflight(request.instrument_id));
+        const ExecutionDirectory::Entry* entry =
+            directory.Find(request.instrument_id);
+        const bool non_terminal =
+            orders.FindNonTerminal(request.instrument_id).generation != 0;
+        if (entry == nullptr) {
+          if (non_terminal) {
+            result = Error::InconsistentState;
+          } else {
+            const Error erased =
+                orders.EraseTerminalByInstrument(request.instrument_id);
+            result = erased == Error::Ok ? Error::NotFound : erased;
+          }
+        } else if (non_terminal) {
+          const bool force_expire =
+              request.mode == InstrumentRetirementMode::LifecycleEnded &&
+              entry->routing.instrument_expiry_ns != 0 &&
+              WallNowNs() >= entry->routing.instrument_expiry_ns;
+          if (!force_expire) {
+            result = Error::Deferred;
+          } else {
+            StagedUpdates staged{};
+            const Error expired = engine.ExpireOneForRetirement(
+                request.instrument_id, staged.sink());
+            if (expired == Error::Ok) {
+              PublishStaged(lane, staged);
+              result = Error::Deferred;
+            } else {
+              result = expired;
+            }
+          }
+        } else {
+          const ResolvedInstrument routing = entry->routing;
+          exchange::TradeAdapter* adapter = Route(routing);
+          const auto retired =
+              adapter == nullptr
+                  ? exchange::AdapterResult::Ok
+                  : adapter->retire_instrument(request.instrument_id, routing);
+          if (retired != exchange::AdapterResult::Ok) {
+            result = AdapterError(retired);
+          } else {
+            result = directory.Retire(request.instrument_id, false);
+            if (result == Error::Ok || result == Error::NotFound) {
+              const Error erased =
+                  orders.EraseTerminalByInstrument(request.instrument_id);
+              if (erased != Error::Ok) result = erased;
+            } else if (adapter != nullptr) {
+              (void)adapter->register_instrument(request.instrument_id,
+                                                 routing);
+            }
+          }
+        }
       }
       InstrumentResult(lane, RuntimeCommandResultKind::RetireInstrument,
                        result, request.request_token, request.instrument_id);
@@ -1266,6 +1450,9 @@ struct OmsApi::Impl {
   std::atomic<std::uint64_t> deadline_capacity_exceeded{0};
   std::atomic<std::uint64_t> unmatched_venue_events{0};
   std::atomic<std::uint64_t> unmatched_fills{0};
+  std::atomic<std::uint64_t> late_event_after_retirement{0};
+  std::atomic<std::uint64_t> unmatched_fill_after_retirement{0};
+  std::uint64_t last_late_log_ns{};
   int epoll_fd{-1};
   std::atomic<bool> stopping{false};
   std::atomic_flag inline_busy = ATOMIC_FLAG_INIT;
@@ -1448,6 +1635,67 @@ Result<RequestToken> OmsApi::cancel_order(std::uint32_t lane_id,
   return {token.value, processed ? Error::Ok : Error::QueueFull};
 }
 
+Result<RequestToken> OmsApi::cancel_venue_order(
+    std::uint32_t lane_id, CancelVenueOrderRequest request) noexcept {
+  if (impl_->stopping.load(std::memory_order_acquire))
+    return {{}, Error::ShuttingDown};
+  auto* lane = impl_->FindLane(lane_id);
+  if (lane == nullptr || request.account_id == 0 ||
+      request.instrument_id == 0 ||
+      request.client_order_id.length == 0 ||
+      request.client_order_id.length > request.client_order_id.value.size() ||
+      request.venue_order_id.length == 0 ||
+      request.venue_order_id.length > request.venue_order_id.value.size())
+    return {{}, Error::InvalidArgument};
+  if (!impl_->IsInlineOwner()) return {{}, Error::InvalidTransition};
+  if (impl_->config.mode == ExecutionMode::DedicatedIo) {
+    if (lane->producer_busy.test_and_set(std::memory_order_acquire))
+      return {{}, Error::InvalidTransition};
+    struct ProducerGuard {
+      std::atomic_flag& flag;
+      ~ProducerGuard() { flag.clear(std::memory_order_release); }
+    } producer_guard{lane->producer_busy};
+    auto lease = lane->commands->try_reserve();
+    if (!lease) {
+      lane->command_full_count.fetch_add(1, std::memory_order_relaxed);
+      return {{}, Error::QueueFull};
+    }
+    const auto token = impl_->AllocateToken(*lane);
+    if (!token) return token;
+    request.request_token = token.value;
+    auto& command = lease->emplace();
+    command.kind = runtime::RuntimeCommandKind::CancelVenue;
+    command.lane = lane_id;
+    command.enqueue_time_ns = NowNs();
+    command.cancel_venue = request;
+    const bool was_empty = lane->commands->empty();
+    (void)lease->commit();
+    if (was_empty) (void)impl_->command_notifier.notify();
+    return token;
+  }
+  if (impl_->inline_busy.test_and_set(std::memory_order_acquire))
+    return {{}, Error::InvalidTransition};
+  if (!impl_->HasRoom(*lane, 1)) {
+    impl_->inline_busy.clear(std::memory_order_release);
+    lane->update_full_count.fetch_add(1, std::memory_order_relaxed);
+    return {{}, Error::QueueFull};
+  }
+  const auto token = impl_->AllocateToken(*lane);
+  if (!token) {
+    impl_->inline_busy.clear(std::memory_order_release);
+    return token;
+  }
+  request.request_token = token.value;
+  runtime::RuntimeCommand command{};
+  command.kind = runtime::RuntimeCommandKind::CancelVenue;
+  command.lane = lane_id;
+  command.enqueue_time_ns = NowNs();
+  command.cancel_venue = request;
+  const bool processed = impl_->ProcessCommand(*lane, command);
+  impl_->inline_busy.clear(std::memory_order_release);
+  return {token.value, processed ? Error::Ok : Error::QueueFull};
+}
+
 Result<RequestToken> OmsApi::register_instrument(
     std::uint32_t lane_id, RegisterInstrumentRequest request) noexcept {
   return impl_->SubmitInstrumentCommand(
@@ -1457,8 +1705,16 @@ Result<RequestToken> OmsApi::register_instrument(
 
 Result<RequestToken> OmsApi::retire_instrument(
     std::uint32_t lane_id, InstrumentId instrument_id) noexcept {
+  return retire_instrument(lane_id, instrument_id,
+                           InstrumentRetirementMode::Normal);
+}
+
+Result<RequestToken> OmsApi::retire_instrument(
+    std::uint32_t lane_id, InstrumentId instrument_id,
+    InstrumentRetirementMode mode) noexcept {
   return impl_->SubmitInstrumentCommand(
-      lane_id, runtime::RuntimeCommandKind::RetireInstrument, instrument_id);
+      lane_id, runtime::RuntimeCommandKind::RetireInstrument, instrument_id,
+      nullptr, mode);
 }
 
 Result<QueryToken> OmsApi::query_open_orders(std::uint32_t lane_id,
@@ -1483,6 +1739,18 @@ Result<QueryToken> OmsApi::query_positions(std::uint32_t lane_id,
 Result<QueryToken> OmsApi::query_positions(std::uint32_t lane_id,
                                            QueryRequest request) noexcept {
   return impl_->SubmitQuery(lane_id, request, QueryKind::Positions);
+}
+
+Result<QueryToken> OmsApi::query_balances(std::uint32_t lane_id,
+                                          AccountId account_id) noexcept {
+  QueryRequest request{};
+  request.account_id = account_id;
+  return query_balances(lane_id, request);
+}
+
+Result<QueryToken> OmsApi::query_balances(std::uint32_t lane_id,
+                                          QueryRequest request) noexcept {
+  return impl_->SubmitQuery(lane_id, request, QueryKind::Balances);
 }
 
 Error OmsApi::service_io(int timeout_ms) noexcept {
@@ -1547,6 +1815,10 @@ RuntimeMetrics OmsApi::metrics() const noexcept {
       impl_->unmatched_venue_events.load(std::memory_order_relaxed);
   result.unmatched_fills =
       impl_->unmatched_fills.load(std::memory_order_relaxed);
+  result.late_event_after_retirement =
+      impl_->late_event_after_retirement.load(std::memory_order_relaxed);
+  result.unmatched_fill_after_retirement =
+      impl_->unmatched_fill_after_retirement.load(std::memory_order_relaxed);
   for (std::size_t index = 0; index < impl_->lanes.size(); ++index) {
     const auto& source = *impl_->lanes[index];
     auto& target = result.lanes[index];
@@ -1581,6 +1853,14 @@ RuntimeMetrics OmsApi::metrics() const noexcept {
         source.starvation_count.load(std::memory_order_relaxed);
   }
   return result;
+}
+
+bool OmsApi::instrument_ready(const ResolvedInstrument& routing) const noexcept {
+  const exchange::TradeAdapter* adapter = impl_->Route(routing);
+  if (adapter == nullptr) return false;
+  if (adapter->tracks_instrument_readiness())
+    return adapter->instrument_ready(routing);
+  return impl_->SnapshotReady(adapter->identity().kind);
 }
 
 Result<AdapterStatusSnapshot> OmsApi::adapter_status(

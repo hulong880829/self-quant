@@ -253,11 +253,12 @@ func (s *AccountServer) CreatePolymarketTradingAccount(
 		ctx,
 		token,
 		account.CreatePolymarketTradingAccountInput{
-			ProductName:   request.GetProductName(),
-			AccountName:   request.GetAccountName(),
-			PrivateKey:    request.GetPrivateKey(),
-			WalletType:    request.GetWalletType(),
-			FunderAddress: request.GetFunderAddress(),
+			ProductName:    request.GetProductName(),
+			AccountName:    request.GetAccountName(),
+			PrivateKey:     request.GetPrivateKey(),
+			WalletType:     request.GetWalletType(),
+			FunderAddress:  request.GetFunderAddress(),
+			IdempotencyKey: request.GetIdempotencyKey(),
 		},
 	)
 	if err != nil {
@@ -440,6 +441,7 @@ func (s *AccountServer) CreateTradingAccount(
 		VaultAddress:     request.GetVaultAddress(),
 		AccountIndex:     request.AccountIndex,
 		APIKeyIndex:      request.ApiKeyIndex,
+		IdempotencyKey:   request.GetIdempotencyKey(),
 	})
 	if err != nil {
 		return nil, mapTradingAccountError(err, "create trading account failed")
@@ -743,8 +745,11 @@ func mapTradingAccountError(err error, internalMessage string) error {
 		return status.Error(codes.Unauthenticated, "invalid session")
 	case errors.Is(err, account.ErrInvalidTradingAccount),
 		errors.Is(err, account.ErrUnsupportedExchange),
-		errors.Is(err, account.ErrPassphraseRequired):
+		errors.Is(err, account.ErrPassphraseRequired),
+		errors.Is(err, account.ErrInvalidIdempotencyKey):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, account.ErrBindIdempotencyConflict):
+		return status.Error(codes.AlreadyExists, "idempotency key conflict")
 	case errors.Is(err, account.ErrInvalidPolymarketAccount):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, account.ErrPolymarketCredentialsInvalid):

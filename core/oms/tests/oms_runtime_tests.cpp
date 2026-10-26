@@ -220,6 +220,41 @@ class ContractAdapter final : public oms::exchange::TradeAdapter {
     reserved_ = false;
     return oms::exchange::AdapterResult::Ok;
   }
+  oms::exchange::AdapterResult commit_cancel_venue(
+      oms::exchange::AdapterReservation reservation,
+      const oms::exchange::AdapterCancelVenueCommand& command) noexcept override {
+    if (!reserved_ ||
+        reserved_kind_ != oms::exchange::AdapterCommandKind::Cancel ||
+        reservation.generation != generation_)
+      return oms::exchange::AdapterResult::StaleReservation;
+    reserved_ = false;
+    venue_cancel_instrument.store(command.request.instrument_id,
+                                  std::memory_order_release);
+    return oms::exchange::AdapterResult::Ok;
+  }
+  oms::exchange::AdapterResult query_balances(
+      const oms::exchange::AdapterQueryRequest& request,
+      const oms::exchange::AdapterEventSink& sink) noexcept override {
+    oms::exchange::AdapterEvent snapshot{};
+    snapshot.kind = oms::exchange::AdapterEventKind::BalanceSnapshot;
+    snapshot.source = identity();
+    snapshot.balance.query_token = request.token;
+    snapshot.balance.account_id = request.request.account_id;
+    std::memcpy(snapshot.balance.asset_or_currency.data(), "USDC", 4);
+    snapshot.balance.total_quantity = 12500;
+    snapshot.balance.held_quantity = 2500;
+    snapshot.balance.available_quantity = 10000;
+    snapshot.balance.scale = 2;
+    const auto offered = sink.on_event(sink.context, snapshot);
+    if (offered != oms::exchange::AdapterResult::Ok) return offered;
+    oms::exchange::AdapterEvent complete{};
+    complete.kind = oms::exchange::AdapterEventKind::QueryComplete;
+    complete.source = identity();
+    complete.query_complete.query_token = request.token;
+    complete.query_complete.account_id = request.request.account_id;
+    complete.query_complete.kind = oms::api::QueryKind::Balances;
+    return sink.on_event(sink.context, complete);
+  }
   oms::exchange::AdapterServiceResult service_io(
       std::uint64_t, std::uint32_t budget,
       const oms::exchange::AdapterEventSink& sink) noexcept override {
@@ -271,6 +306,7 @@ class ContractAdapter final : public oms::exchange::TradeAdapter {
   std::atomic<bool> committed{false};
   std::atomic<unsigned> canceled{0};
   std::atomic<unsigned> reconciles{0};
+  std::atomic<oms::api::InstrumentId> venue_cancel_instrument{0};
 
  private:
   std::mutex mutex_;
@@ -483,6 +519,83 @@ void TestAccountRoutedQueryUnsupported() {
   REQUIRE(capture.values[0].query_complete.account_id == 41);
   REQUIRE(capture.values[0].query_complete.error ==
           oms::api::Error::Unsupported);
+}
+
+void TestBalanceQueryPipeline() {
+  const auto instrument = Instrument();
+  ContractAdapter adapter;
+  std::array<oms::exchange::TradeAdapter*, 1> adapters{&adapter};
+  const std::array<oms::api::AdapterRuntimeConfig::AccountRoute, 1> routes{{
+      {41, oms::exchange::AdapterKind::BinanceSpot},
+  }};
+  oms::api::AdapterRuntimeConfig adapter_config{};
+  adapter_config.adapters = adapters;
+  adapter_config.enable_fake_fallback = false;
+  adapter_config.account_routes = routes;
+  const auto created = oms::api::OmsApi::Create(
+      Config(oms::api::ExecutionMode::Inline, 8, 1), {&instrument, 1}, {},
+      adapter_config);
+  REQUIRE(created);
+  auto& api = *created.value;
+  REQUIRE(api.initialize_lane(1, 3));
+  const auto query = api.query_balances(1, 41);
+  REQUIRE(query);
+  Capture capture;
+  REQUIRE(api.drain_updates(1, &Capture::Add, &capture) == 2);
+  REQUIRE(capture.values[0].kind ==
+          oms::api::RuntimeUpdateKind::BalanceSnapshot);
+  REQUIRE(capture.values[0].balance.query_token == query.value);
+  REQUIRE(capture.values[0].balance.account_id == 41);
+  REQUIRE(std::string_view(
+              capture.values[0].balance.asset_or_currency.data()) == "USDC");
+  REQUIRE(capture.values[0].balance.total_quantity == 12500);
+  REQUIRE(capture.values[0].balance.held_quantity == 2500);
+  REQUIRE(capture.values[0].balance.available_quantity == 10000);
+  REQUIRE(capture.values[0].balance.scale == 2);
+  REQUIRE(capture.values[1].kind ==
+          oms::api::RuntimeUpdateKind::QueryComplete);
+  REQUIRE(capture.values[1].query_complete.kind ==
+          oms::api::QueryKind::Balances);
+}
+
+void TestVenueCancelBypassesOrderTable() {
+  const auto instrument = Instrument();
+  ContractAdapter adapter;
+  std::array<oms::exchange::TradeAdapter*, 1> adapters{&adapter};
+  const std::array<oms::api::AdapterRuntimeConfig::AccountRoute, 1> routes{{
+      {41, oms::exchange::AdapterKind::BinanceSpot},
+  }};
+  oms::api::AdapterRuntimeConfig adapter_config{};
+  adapter_config.adapters = adapters;
+  adapter_config.enable_fake_fallback = false;
+  adapter_config.account_routes = routes;
+  const auto created = oms::api::OmsApi::Create(
+      Config(oms::api::ExecutionMode::Inline, 8, 1), {&instrument, 1}, {},
+      adapter_config);
+  REQUIRE(created);
+  auto& api = *created.value;
+  REQUIRE(api.initialize_lane(1, 9));
+  oms::api::CancelVenueOrderRequest request{};
+  request.account_id = 41;
+  request.instrument_id = instrument.instrument.instrument_id;
+  request.routing = Order(1).routing;
+  std::memcpy(request.client_order_id.value.data(), "native-client", 13);
+  request.client_order_id.length = 13;
+  std::memcpy(request.venue_order_id.value.data(), "native-venue", 12);
+  request.venue_order_id.length = 12;
+  const auto canceled = api.cancel_venue_order(1, request);
+  REQUIRE(canceled);
+  REQUIRE(adapter.venue_cancel_instrument.load(std::memory_order_acquire) ==
+          request.instrument_id);
+  Capture capture;
+  REQUIRE(api.drain_updates(1, &Capture::Add, &capture) == 1);
+  REQUIRE(capture.values[0].kind ==
+          oms::api::RuntimeUpdateKind::CommandResult);
+  REQUIRE(capture.values[0].command_result.kind ==
+          oms::api::RuntimeCommandResultKind::CancelVenue);
+  REQUIRE(capture.values[0].command_result.error == oms::api::Error::Ok);
+  REQUIRE(capture.values[0].command_result.instrument.request_token ==
+          canceled.value);
 }
 
 void TestInlineTimeoutsAndThreadGuard() {
@@ -892,6 +1005,8 @@ int main() {
   TestMode(oms::api::ExecutionMode::DedicatedIo);
   TestReserveBeforeMutate();
   TestAccountRoutedQueryUnsupported();
+  TestVenueCancelBypassesOrderTable();
+  TestBalanceQueryPipeline();
   TestInlineTimeoutsAndThreadGuard();
   TestOwnedIoDriver(oms::api::ExecutionMode::Inline);
   TestOwnedIoDriver(oms::api::ExecutionMode::DedicatedIo);

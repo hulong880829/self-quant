@@ -432,6 +432,31 @@ services:
     volumes:
       - ibgateway-settings:/home/ibgateway/tws_settings
 
+  # Isolated paper-only gateway for OMS acceptance. It never shares the live
+  # settings volume or host ports and is not started by the normal ibkr profile.
+  ibkr-paper:
+    profiles: ["ibkr-paper"]
+    container_name: selfquant-ibkr-paper
+    image: ghcr.io/gnzsnz/ib-gateway:10.45.1j@sha256:91165c0752ca534c0dad3c40683ae7c2745974d4d277651a90e90411ca609d8d
+    restart: "no"
+    environment:
+      TRADING_MODE: paper
+      READ_ONLY_API: ${IBKR_PAPER_READ_ONLY_API:-no}
+      TWS_ACCEPT_INCOMING: accept
+      TWS_USERID: ${IBKR_PAPER_TWS_USERID:-}
+      TWS_PASSWORD: ${IBKR_PAPER_TWS_PASSWORD:-}
+      TWOFA_TIMEOUT_ACTION: ${IBKR_PAPER_TWOFA_TIMEOUT_ACTION:-exit}
+      RELOGIN_AFTER_TWOFA_TIMEOUT: "no"
+      TWOFA_EXIT_INTERVAL: ${IBKR_PAPER_TWOFA_EXIT_INTERVAL:-120}
+      TWOFA_DEVICE: ${IBKR_PAPER_TWOFA_DEVICE:-}
+      TIME_ZONE: ${IBKR_TIME_ZONE:-Etc/UTC}
+      TZ: ${IBKR_TIME_ZONE:-Etc/UTC}
+      TWS_SETTINGS_PATH: /home/ibgateway/tws_settings
+    ports:
+      - "127.0.0.1:4102:4004"
+    volumes:
+      - ibgateway-paper-settings:/home/ibgateway/tws_settings
+
   # Optional host-equivalent web image. Omit --profile web to keep running
   # the frontend on the host. Build args are browser-facing URLs.
   web:
@@ -456,3 +481,4 @@ volumes:
   clickhouse-data:
   broker-jwt-private:
   ibgateway-settings:
+  ibgateway-paper-settings:

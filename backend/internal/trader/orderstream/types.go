@@ -137,6 +137,11 @@ type Update struct {
 	EventTime        time.Time
 	Sequence         int64
 	Error            string
+	// FeeAmount is set only for a fee that belongs to TradeID. Positive is a
+	// cost and negative is a rebate.
+	FeeAmount     string
+	FeeCurrency   string
+	LiquidityRole string
 }
 
 type VenueURLs struct {

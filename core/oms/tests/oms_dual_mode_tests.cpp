@@ -189,6 +189,90 @@ void TestRegisterSubmitRetireOrdering(oms::api::ExecutionMode mode) {
   REQUIRE(api.execution_directory_access_count() == before + 2);
 }
 
+void Drain(oms::api::OmsApi& api, Capture& capture, std::size_t count) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (capture.values.size() < count &&
+         std::chrono::steady_clock::now() < deadline) {
+    REQUIRE(api.service_io(0) == oms::api::Error::Ok);
+    (void)api.drain_updates(1, &Capture::Add, &capture);
+  }
+}
+
+void Flush(oms::api::OmsApi& api) {
+  Capture discard;
+  for (int round = 0; round < 16; ++round) {
+    REQUIRE(api.service_io(0) == oms::api::Error::Ok);
+    const std::size_t before = discard.values.size();
+    (void)api.drain_updates(1, &Capture::Add, &discard);
+    if (discard.values.size() == before) return;
+  }
+}
+
+void TestLifecycleRetirement() {
+  REQUIRE(sizeof(oms::api::RetireInstrumentRequest) == 32);
+  const auto initial = Instrument();
+  auto created =
+      oms::api::OmsApi::Create(Config(oms::api::ExecutionMode::Inline),
+                               {&initial, 1});
+  REQUIRE(created);
+  auto& api = *created.value;
+  REQUIRE(api.initialize_lane(1, 101));
+
+  constexpr oms::api::InstrumentId expired_id = 778;
+  auto order = Order(expired_id, "EXPIRED");
+  constexpr char expired_client[] = "expired-client";
+  order.order.client_order_id = {};
+  std::memcpy(order.order.client_order_id.value.data(), expired_client,
+              sizeof(expired_client) - 1);
+  order.order.client_order_id.length = sizeof(expired_client) - 1;
+  oms::api::RegisterInstrumentRequest registration{};
+  registration.instrument_id = expired_id;
+  registration.routing = order.routing;
+  registration.routing.instrument_expiry_ns = 1;
+  REQUIRE(api.register_instrument(1, registration));
+  REQUIRE(api.submit_order(1, order));
+  Flush(api);
+  REQUIRE(api.retire_instrument(
+      1, expired_id, oms::api::InstrumentRetirementMode::LifecycleEnded));
+  Capture forced;
+  Drain(api, forced, 2);
+  REQUIRE(forced.values[0].kind == oms::api::RuntimeUpdateKind::Order);
+  REQUIRE(forced.values[0].order.type == oms::api::UpdateType::Expired);
+  REQUIRE(forced.values[1].command_result.kind ==
+          oms::api::RuntimeCommandResultKind::RetireInstrument);
+  REQUIRE(forced.values[1].command_result.error == oms::api::Error::Deferred);
+
+  constexpr oms::api::InstrumentId open_id = 779;
+  auto live = Order(open_id, "LIVE");
+  constexpr char live_client[] = "live-client";
+  live.order.client_order_id = {};
+  std::memcpy(live.order.client_order_id.value.data(), live_client,
+              sizeof(live_client) - 1);
+  live.order.client_order_id.length = sizeof(live_client) - 1;
+  registration = {};
+  registration.instrument_id = open_id;
+  registration.routing = live.routing;
+  REQUIRE(api.register_instrument(1, registration));
+  REQUIRE(api.submit_order(1, live));
+  Flush(api);
+  REQUIRE(api.retire_instrument(
+      1, open_id, oms::api::InstrumentRetirementMode::LifecycleEnded));
+  Capture blocked;
+  Drain(api, blocked, 1);
+  REQUIRE(blocked.values[0].command_result.error ==
+          oms::api::Error::Deferred);
+  REQUIRE(blocked.values[0].kind ==
+          oms::api::RuntimeUpdateKind::CommandResult);
+  Flush(api);
+
+  const auto missing = api.retire_instrument(1, 424242);
+  REQUIRE(missing);
+  Capture gone;
+  Drain(api, gone, 1);
+  REQUIRE(gone.values[0].command_result.error == oms::api::Error::NotFound);
+}
+
 void TestSubmitCancelDirectoryIsolation(oms::api::ExecutionMode mode) {
   const auto initial = Instrument();
   auto created = oms::api::OmsApi::Create(Config(mode), {&initial, 1});
@@ -237,6 +321,7 @@ int main() {
   REQUIRE(std::memcmp(inline_updates.data(), dedicated_updates.data(),
                       inline_updates.size() *
                           sizeof(oms::api::RuntimeUpdate)) == 0);
+  TestLifecycleRetirement();
   TestRegisterSubmitRetireOrdering(oms::api::ExecutionMode::Inline);
   TestRegisterSubmitRetireOrdering(oms::api::ExecutionMode::DedicatedIo);
   TestSubmitCancelDirectoryIsolation(oms::api::ExecutionMode::Inline);

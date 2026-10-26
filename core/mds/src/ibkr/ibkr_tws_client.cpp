@@ -91,6 +91,10 @@ class Wrapper final : public DefaultEWrapper {
     parsed.currency = details.contract.currency;
     parsed.sec_type = details.contract.secType;
     parsed.min_tick = details.minTick;
+    parsed.min_size_text = DecimalFunctions::decimalToString(details.minSize);
+    parsed.size_increment_text =
+        DecimalFunctions::decimalToString(details.sizeIncrement);
+    parsed.multiplier_text = details.contract.multiplier;
     target->on_contract_details(req_id, parsed);
   }
 

@@ -224,6 +224,7 @@ func NewRouter(
 		router.Post("/api/v1/trader/arbitrage-combinations/preflight", handler.preflightArbitrageCombination)
 		router.Post("/api/v1/trader/arbitrage-combinations", handler.createArbitrageCombination)
 		router.Get("/api/v1/trader/arbitrage-combinations", handler.listArbitrageCombinations)
+		router.Post("/api/v1/trader/arbitrage-combinations/{id}/preflight-target", handler.preflightIncreaseTarget)
 		router.Get("/api/v1/trader/arbitrage-combinations/{id}", handler.getArbitrageCombination)
 		router.Get("/api/v1/trader/arbitrage-combinations/{id}/orders", handler.listArbitrageCombinationOrders)
 		router.Get("/api/v1/trader/arbitrage-combinations/{id}/executions", handler.listArbitrageCombinationExecutions)
@@ -644,7 +645,10 @@ func (h *Handler) writeAccountError(writer http.ResponseWriter, err error, fallb
 		message = status.Convert(err).Message()
 	case codes.AlreadyExists:
 		httpStatus = http.StatusConflict
-		message = "trading account already exists"
+		message = status.Convert(err).Message()
+		if message == "" {
+			message = "trading account already exists"
+		}
 	case codes.NotFound:
 		httpStatus = http.StatusNotFound
 		message = "trading account not found"
@@ -698,6 +702,7 @@ func (h *Handler) createTradingAccount(writer http.ResponseWriter, request *http
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
 	defer cancel()
+	idempotencyKey := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
 	var created *accountv1.TradingAccount
 	var err error
 	if strings.EqualFold(strings.TrimSpace(body.Exchange), "polymarket") {
@@ -707,6 +712,7 @@ func (h *Handler) createTradingAccount(writer http.ResponseWriter, request *http
 				Token: token, ProductName: body.ProductName,
 				AccountName: body.AccountName, PrivateKey: body.PrivateKey,
 				WalletType: body.WalletType, FunderAddress: body.FunderAddress,
+				IdempotencyKey: idempotencyKey,
 			},
 		)
 		err = createErr
@@ -728,6 +734,7 @@ func (h *Handler) createTradingAccount(writer http.ResponseWriter, request *http
 			VaultAddress:     body.VaultAddress,
 			AccountIndex:     body.AccountIndex,
 			ApiKeyIndex:      body.APIKeyIndex,
+			IdempotencyKey:   idempotencyKey,
 		})
 		err = createErr
 		if response != nil {

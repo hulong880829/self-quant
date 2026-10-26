@@ -143,6 +143,7 @@ message CreateTradingAccountRequest {
   string vault_address = 11;
   optional int64 account_index = 12;
   optional int32 api_key_index = 13;
+  string idempotency_key = 14;
 }
 
 message CreateTradingAccountResponse {
@@ -156,6 +157,7 @@ message CreatePolymarketTradingAccountRequest {
   string private_key = 4;
   string wallet_type = 5;
   string funder_address = 6;
+  string idempotency_key = 7;
 }
 
 message CreatePolymarketTradingAccountResponse {

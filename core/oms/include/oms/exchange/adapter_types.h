@@ -9,13 +9,15 @@
 
 namespace oms::exchange {
 
-inline constexpr std::size_t kMaxTradeAdapters = 4;
+inline constexpr std::size_t kMaxTradeAdapters = 6;
 
 enum class AdapterKind : std::uint8_t {
   BinanceSpot = 1,
   BinanceUsdm = 2,
   Polymarket = 3,
   Fake = 4,
+  Hyperliquid = 5,
+  Ibkr = 6,
 };
 
 enum class AdapterStatus : std::uint8_t {
@@ -52,6 +54,7 @@ enum class AdapterEventKind : std::uint8_t {
   OpenOrderSnapshot = 5,
   PositionSnapshot = 6,
   QueryComplete = 7,
+  BalanceSnapshot = 8,
 };
 
 enum class AdapterDeadlineKind : std::uint8_t {
@@ -194,6 +197,11 @@ struct AdapterCancelCommand {
   api::CancelOrderRequest request{};
 };
 
+struct AdapterCancelVenueCommand {
+  std::uint64_t command_id{};
+  api::CancelVenueOrderRequest request{};
+};
+
 struct AdapterCommand {
   AdapterCommandKind kind{AdapterCommandKind::Place};
   std::uint8_t reserved[7]{};
@@ -239,6 +247,7 @@ struct AdapterEvent {
   AdapterReconcileEvent reconcile{};
   api::OpenOrderSnapshotItem open_order{};
   api::PositionSnapshotItem position{};
+  api::BalanceSnapshot balance{};
   api::QueryComplete query_complete{};
 };
 
@@ -266,6 +275,7 @@ static_assert(std::is_trivially_copyable_v<AdapterCapabilities>);
 static_assert(std::is_trivially_copyable_v<AdapterIdentity>);
 static_assert(std::is_trivially_copyable_v<AdapterReservation>);
 static_assert(std::is_trivially_copyable_v<AdapterPlaceCommand>);
+static_assert(std::is_trivially_copyable_v<AdapterCancelVenueCommand>);
 static_assert(std::is_trivially_copyable_v<AdapterCommand>);
 static_assert(std::is_trivially_copyable_v<AdapterQueryRequest>);
 static_assert(std::is_trivially_copyable_v<AdapterEvent>);
@@ -276,6 +286,7 @@ static_assert(std::is_standard_layout_v<AdapterCapabilities>);
 static_assert(std::is_standard_layout_v<AdapterIdentity>);
 static_assert(std::is_standard_layout_v<AdapterReservation>);
 static_assert(std::is_standard_layout_v<AdapterPlaceCommand>);
+static_assert(std::is_standard_layout_v<AdapterCancelVenueCommand>);
 static_assert(std::is_standard_layout_v<AdapterCommand>);
 static_assert(std::is_standard_layout_v<AdapterQueryRequest>);
 static_assert(std::is_standard_layout_v<AdapterEvent>);
@@ -296,9 +307,10 @@ static_assert(sizeof(AdapterReservation) == 16);
 static_assert(sizeof(AdapterPlaceCommand) == 280);
 static_assert(alignof(AdapterPlaceCommand) == 8);
 static_assert(sizeof(AdapterCancelCommand) == 56);
+static_assert(sizeof(AdapterCancelVenueCommand) == 328);
 static_assert(sizeof(AdapterCommand) == 344);
 static_assert(sizeof(AdapterCommandResult) == 32);
-static_assert(sizeof(AdapterQueryRequest) == 96);
+static_assert(sizeof(AdapterQueryRequest) == 104);
 static_assert(sizeof(AdapterStatusEvent) == 24);
 static_assert(sizeof(AdapterReconcileEvent) == 16);
 static_assert(sizeof(AdapterEventSink) == 16);
@@ -309,10 +321,19 @@ static_assert(static_cast<std::uint8_t>(AdapterKind::BinanceSpot) == 1);
 static_assert(static_cast<std::uint8_t>(AdapterKind::BinanceUsdm) == 2);
 static_assert(static_cast<std::uint8_t>(AdapterKind::Polymarket) == 3);
 static_assert(static_cast<std::uint8_t>(AdapterKind::Fake) == 4);
+static_assert(static_cast<std::uint8_t>(AdapterKind::Hyperliquid) == 5);
+static_assert(static_cast<std::uint8_t>(AdapterKind::Ibkr) == 6);
 static_assert(static_cast<std::uint8_t>(AdapterResult::WouldBlock) == 1);
 static_assert(static_cast<std::uint8_t>(AdapterStatus::Ready) == 3);
 static_assert(static_cast<std::uint8_t>(AdapterStatus::Reconciling) == 6);
 static_assert(static_cast<std::uint8_t>(AdapterEventKind::Venue) == 1);
+static_assert(static_cast<std::uint8_t>(
+                  AdapterEventKind::OpenOrderSnapshot) == 5);
+static_assert(static_cast<std::uint8_t>(
+                  AdapterEventKind::PositionSnapshot) == 6);
+static_assert(static_cast<std::uint8_t>(AdapterEventKind::QueryComplete) == 7);
+static_assert(static_cast<std::uint8_t>(AdapterEventKind::BalanceSnapshot) ==
+              8);
 static_assert(static_cast<std::uint64_t>(
                   AdapterCapability::ReconcileOpenOrders) ==
               (1ULL << 13U));

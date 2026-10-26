@@ -76,7 +76,12 @@ enum class CommandType : std::uint8_t {
   Cancel = 2,
   RegisterInstrument = 3,
   RetireInstrument = 4,
+  CancelVenue = 5,
 };
+enum class RetirementReason : std::uint8_t {
+  LifecycleEnded = 1,
+};
+
 enum class OrderStatus : std::uint8_t {
   PendingSubmit = 1,
   Open = 2,
@@ -122,6 +127,12 @@ struct InstrumentCatalogInfo {
   std::int64_t tick_size{};
   std::int64_t lot_size{};
   std::int64_t contract_multiplier{};
+  std::uint8_t contract_multiplier_scale{};
+  utils::md::IbkrSecurityType ibkr_security_type{
+      utils::md::IbkrSecurityType::Unknown};
+  std::array<char, 16> base_asset{};
+  std::array<char, 16> quote_asset{};
+  std::array<char, 16> settle_asset{};
 };
 
 struct InstrumentSelector {
@@ -304,14 +315,22 @@ struct PositionView {
 struct QueriedOrderView {
   AccountId account_id{};
   InstrumentId instrument_id{};
+  OrderToken tracked_token{};
+  ClientOrderId client_order_id{};
   VenueOrderId venue_order_id{};
+  std::uint32_t snapshot_flags{};
   OrderStatus status{OrderStatus::Unknown};
   Side side{Side::Buy};
-  std::uint8_t reserved[6]{};
+  std::uint8_t reserved[2]{};
   FixedPoint quantity{};
   FixedPoint price{};
   FixedPoint matched_quantity{};
   FixedPoint remaining_quantity{};
+};
+
+enum SnapshotFlag : std::uint32_t {
+  SnapshotOwnedExternal = 1U << 1U,
+  SnapshotTracked = 1U << 2U,
 };
 
 struct QueriedPositionView {
@@ -332,10 +351,22 @@ struct PositionsSnapshot {
   std::span<const QueriedPositionView> positions{};
 };
 
+struct BalanceSnapshot {
+  QueryToken query_token{};
+  AccountId account_id{};
+  std::array<char, 16> asset_or_currency{};
+  std::int64_t total_quantity{};
+  std::int64_t held_quantity{};
+  std::int64_t available_quantity{};
+  std::uint8_t scale{};
+  std::array<std::uint8_t, 7> reserved{};
+};
+
 struct QueryComplete {
   enum class Kind : std::uint8_t {
     OpenOrders = 1,
     Positions = 2,
+    Balances = 3,
   };
   QueryToken token{};
   AccountId account_id{};
@@ -351,6 +382,11 @@ static_assert(std::is_trivially_copyable_v<BboUpdate>);
 static_assert(std::is_trivially_copyable_v<OrderToken>);
 static_assert(std::is_trivially_copyable_v<ExecutionUpdate>);
 static_assert(std::is_trivially_copyable_v<OmsStatusUpdate>);
+static_assert(std::is_trivially_copyable_v<BalanceSnapshot>);
+static_assert(std::is_standard_layout_v<BalanceSnapshot>);
 static_assert(sizeof(OrderToken) == 16);
+static_assert(sizeof(BalanceSnapshot) == 72);
+static_assert(sizeof(QueryComplete::Kind) == 1);
+static_assert(static_cast<std::uint8_t>(QueryComplete::Kind::Balances) == 3);
 
 }  // namespace strategyframe

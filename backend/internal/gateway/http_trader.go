@@ -420,10 +420,7 @@ func (h *Handler) preflightArbitrageCombination(writer http.ResponseWriter, requ
 	}
 	warnings := make([]map[string]any, 0, len(response.GetWarnings()))
 	for _, warning := range response.GetWarnings() {
-		warnings = append(warnings, map[string]any{
-			"code": warning.GetCode(), "message": warning.GetMessage(),
-			"leg": warning.GetLeg(), "exchange": warning.GetExchange(),
-		})
+		warnings = append(warnings, traderPreflightWarningJSON(warning))
 	}
 	writePrivateJSON(writer, http.StatusOK, map[string]any{"data": map[string]any{
 		"executable": response.GetExecutable(),
@@ -436,10 +433,86 @@ func (h *Handler) preflightArbitrageCombination(writer http.ResponseWriter, requ
 	}})
 }
 
-func traderPreflightLegJSON(leg *traderv1.PreflightLeg) map[string]any {
-	field := func(value *traderv1.PreflightDecimal) map[string]any {
-		return map[string]any{"value": emptyToNil(value.GetValue()), "status": value.GetStatus()}
+func (h *Handler) preflightIncreaseTarget(writer http.ResponseWriter, request *http.Request) {
+	token, ok := h.userSession(writer, request)
+	if !ok {
+		return
 	}
+	var body struct {
+		NewTargetNotional string `json:"newTargetNotional"`
+	}
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid increase preflight payload"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
+	defer cancel()
+	response, err := h.trader.PreflightIncreaseTarget(ctx, &traderv1.PreflightIncreaseTargetRequest{
+		Token: token, CombinationId: chi.URLParam(request, "id"),
+		NewTargetNotional: body.NewTargetNotional,
+	})
+	if err != nil {
+		h.writeTraderError(writer, err)
+		return
+	}
+	warnings := make([]map[string]any, 0, len(response.GetWarnings()))
+	for _, warning := range response.GetWarnings() {
+		warnings = append(warnings, traderPreflightWarningJSON(warning))
+	}
+	writePrivateJSON(writer, http.StatusOK, map[string]any{"data": map[string]any{
+		"executable":            response.GetExecutable(),
+		"currentTargetNotional": response.GetCurrentTargetNotional(),
+		"newTargetNotional":     response.GetNewTargetNotional(),
+		"requestedTargetDelta":  response.GetRequestedTargetDelta(),
+		"targetNotionalUnit":    response.GetTargetNotionalUnit(),
+		"legA":                  traderIncreaseLegJSON(response.GetLegA()),
+		"legB":                  traderIncreaseLegJSON(response.GetLegB()),
+		"warnings":              warnings,
+		"checkedAt":             protoTimeJSON(response.GetCheckedAt()),
+		"expiresAt":             protoTimeJSON(response.GetExpiresAt()),
+		"code":                  response.GetCode(),
+		"message":               response.GetMessage(),
+		"leg":                   response.GetLeg(),
+		"exchange":              response.GetExchange(),
+	}})
+}
+
+func traderPreflightDecimalJSON(value *traderv1.PreflightDecimal) map[string]any {
+	return map[string]any{
+		"value": emptyToNil(value.GetValue()), "status": value.GetStatus(), "unit": value.GetUnit(),
+	}
+}
+
+func traderPreflightWarningJSON(warning *traderv1.PreflightWarning) map[string]any {
+	details := warning.GetDetails()
+	if details == nil {
+		details = map[string]string{}
+	}
+	return map[string]any{
+		"code": warning.GetCode(), "message": warning.GetMessage(),
+		"leg": warning.GetLeg(), "exchange": warning.GetExchange(),
+		"details": details,
+	}
+}
+
+func traderIncreaseLegJSON(leg *traderv1.PreflightIncreaseLeg) map[string]any {
+	return map[string]any{
+		"additionalNotional":      leg.GetAdditionalNotional(),
+		"incrementalQuantity":     leg.GetIncrementalQuantity(),
+		"incrementalQuantityUnit": leg.GetIncrementalQuantityUnit(),
+		"incrementalMargin":       traderPreflightDecimalJSON(leg.GetIncrementalMargin()),
+		"estimatedFee":            traderPreflightDecimalJSON(leg.GetEstimatedFee()),
+		"availableFunds":          traderPreflightDecimalJSON(leg.GetAvailableFunds()),
+		"minQuantity":             traderPreflightDecimalJSON(leg.GetMinQuantity()),
+		"minNotional":             traderPreflightDecimalJSON(leg.GetMinNotional()),
+		"quantityStep":            traderPreflightDecimalJSON(leg.GetQuantityStep()),
+	}
+}
+
+func traderPreflightLegJSON(leg *traderv1.PreflightLeg) map[string]any {
+	field := traderPreflightDecimalJSON
 	return map[string]any{
 		"availableFunds":      field(leg.GetAvailableFunds()),
 		"requiredMargin":      field(leg.GetRequiredMargin()),
@@ -818,6 +891,16 @@ func traderInstrumentJSON(item *traderv1.Instrument) map[string]any {
 	}
 }
 
+func traderOrderFeesJSON(fees []*traderv1.OrderFee) []map[string]any {
+	out := make([]map[string]any, 0, len(fees))
+	for _, fee := range fees {
+		out = append(out, map[string]any{
+			"amount": fee.GetAmount(), "currency": fee.GetCurrency(),
+		})
+	}
+	return out
+}
+
 func traderOrderJSON(item *traderv1.Order) map[string]any {
 	return map[string]any{
 		"id": item.GetId(), "idempotencyKey": item.GetIdempotencyKey(),
@@ -836,6 +919,9 @@ func traderOrderJSON(item *traderv1.Order) map[string]any {
 		"twapAttemptIndex":     item.GetTwapAttemptIndex(),
 		"arbitrageExecutionId": item.GetArbitrageExecutionId(),
 		"arbitrageLeg":         item.GetArbitrageLeg(), "arbitrageRole": item.GetArbitrageRole(),
+		"lastFilledAt":  protoTimeJSON(item.GetLastFilledAt()),
+		"actualFees":    traderOrderFeesJSON(item.GetActualFees()),
+		"liquidityRole": item.GetLiquidityRole(),
 	}
 }
 

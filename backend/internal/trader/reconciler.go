@@ -459,6 +459,8 @@ func (r *Reconciler) applyPrivateStreamUpdate(
 		streamUpdate.Fills = []OrderFill{{
 			TradeID: update.TradeID, Quantity: fillQuantity.String(),
 			Price: fillPrice, ExecutedAt: update.EventTime,
+			FeeAmount: update.FeeAmount, FeeCurrency: update.FeeCurrency,
+			LiquidityRole: update.LiquidityRole,
 		}}
 	}
 	return store.ApplyStreamUpdate(ctx, order.ID, streamUpdate)

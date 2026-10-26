@@ -163,13 +163,17 @@ api::Error OrderTable::Insert(const api::SubmitOrderRequest& submitted,
   if (impl_->by_token.Find(request.token) != nullptr ||
       impl_->by_client.Find(request.client_order_id) != nullptr)
     return api::Error::Conflict;
-  if (free_count_ == 0) return api::Error::CapacityExceeded;
+  if (free_count_ == 0 && ReclaimOldestTerminal() != api::Error::Ok)
+    return api::Error::CapacityExceeded;
 
   const std::uint32_t slot = free_slots_[--free_count_];
   OrderRecord& record = records_[slot];
   std::uint64_t generation = record.generation + 1;
   if (generation == 0) generation = 1;
   record = {};
+  record.terminal_prev = 0xffffffffu;
+  record.terminal_next = 0xffffffffu;
+  record.in_terminal = false;
   record.request = request;
   record.routing = submitted.routing;
   record.status = api::OrderStatus::PendingSubmit;
@@ -186,6 +190,9 @@ api::Error OrderTable::Insert(const api::SubmitOrderRequest& submitted,
     impl_->by_token.Erase(request.token);
     impl_->by_client.Erase(request.client_order_id);
     record.occupied = false;
+    record.in_terminal = false;
+    record.terminal_prev = 0xffffffffu;
+    record.terminal_next = 0xffffffffu;
     free_slots_[free_count_++] = slot;
     return api::Error::CapacityExceeded;
   }
@@ -223,11 +230,95 @@ OrderRecord* OrderTable::Find(api::VenueOrderId venue_id) noexcept {
   return handle == nullptr ? nullptr : Lookup(*handle);
 }
 
+bool OrderTable::IsTerminalStatus(api::OrderStatus status) noexcept {
+  return status == api::OrderStatus::Filled ||
+         status == api::OrderStatus::Canceled ||
+         status == api::OrderStatus::Rejected ||
+         status == api::OrderStatus::Expired;
+}
+
+void OrderTable::UnlinkTerminal(std::uint32_t slot) noexcept {
+  OrderRecord& record = records_[slot];
+  if (!record.in_terminal) return;
+  constexpr std::uint32_t kMissing = 0xffffffffu;
+  const std::uint32_t prev = record.terminal_prev;
+  const std::uint32_t next = record.terminal_next;
+  const bool prev_ok = prev < records_.size() && records_[prev].occupied &&
+                       records_[prev].in_terminal &&
+                       records_[prev].terminal_next == slot;
+  const bool next_ok = next < records_.size() && records_[next].occupied &&
+                       records_[next].in_terminal &&
+                       records_[next].terminal_prev == slot;
+  if (prev_ok) records_[prev].terminal_next = next_ok ? next : kMissing;
+  if (next_ok) records_[next].terminal_prev = prev_ok ? prev : kMissing;
+  if (terminal_head_.slot == slot &&
+      terminal_head_.generation == record.generation) {
+    terminal_head_ = next_ok ? TerminalLink{next, records_[next].generation}
+                             : TerminalLink{};
+  }
+  if (terminal_tail_.slot == slot &&
+      terminal_tail_.generation == record.generation) {
+    terminal_tail_ = prev_ok ? TerminalLink{prev, records_[prev].generation}
+                             : TerminalLink{};
+  }
+  record.in_terminal = false;
+  record.terminal_prev = kMissing;
+  record.terminal_next = kMissing;
+}
+
+api::Error OrderTable::ReclaimOldestTerminal() noexcept {
+  constexpr std::uint32_t kMissing = 0xffffffffu;
+  if (terminal_head_.slot == kMissing ||
+      terminal_head_.slot >= records_.size())
+    return api::Error::CapacityExceeded;
+  OrderRecord& record = records_[terminal_head_.slot];
+  if (!record.occupied || !record.in_terminal ||
+      record.generation != terminal_head_.generation ||
+      !IsTerminalStatus(record.status) ||
+      record.inflight != api::InflightAction::None)
+    return api::Error::CapacityExceeded;
+  return Erase({terminal_head_.slot, 0, record.generation});
+}
+
+api::Error OrderTable::MarkTerminal(api::OrderHandle handle) noexcept {
+  constexpr std::uint32_t kMissing = 0xffffffffu;
+  OrderRecord* record = Lookup(handle);
+  if (record == nullptr) return api::Error::StaleHandle;
+  if (!IsTerminalStatus(record->status)) return api::Error::InvalidTransition;
+  if (record->in_terminal) return api::Error::Ok;
+  record->terminal_prev = kMissing;
+  record->terminal_next = kMissing;
+  if (terminal_tail_.slot < records_.size()) {
+    OrderRecord& previous = records_[terminal_tail_.slot];
+    if (!previous.occupied || !previous.in_terminal ||
+        previous.generation != terminal_tail_.generation)
+      return api::Error::InvalidTransition;
+    previous.terminal_next = handle.slot;
+    record->terminal_prev = terminal_tail_.slot;
+  } else {
+    terminal_head_ = {handle.slot, handle.generation};
+  }
+  record->in_terminal = true;
+  terminal_tail_ = {handle.slot, handle.generation};
+  if (terminal_head_.slot >= records_.size()) terminal_head_ = terminal_tail_;
+  return api::Error::Ok;
+}
+
 api::OrderHandle OrderTable::HandleOf(const OrderRecord& record) const noexcept {
   const auto* begin = records_.data();
   const auto* pointer = &record;
   if (pointer < begin || pointer >= begin + records_.size()) return {};
   return {static_cast<std::uint32_t>(pointer - begin), 0, record.generation};
+}
+
+api::OrderHandle OrderTable::FindNonTerminal(
+    api::InstrumentId instrument_id) const noexcept {
+  for (const OrderRecord& record : records_) {
+    if (!record.occupied || record.request.instrument_id != instrument_id)
+      continue;
+    if (!IsTerminalStatus(record.status)) return HandleOf(record);
+  }
+  return {};
 }
 
 bool OrderTable::HasActiveOrInflight(
@@ -261,14 +352,55 @@ api::Error OrderTable::BindVenueId(api::OrderHandle handle,
 api::Error OrderTable::Erase(api::OrderHandle handle) noexcept {
   OrderRecord* record = Lookup(handle);
   if (record == nullptr) return api::Error::StaleHandle;
+  UnlinkTerminal(handle.slot);
   impl_->by_token.Erase(record->request.token);
   impl_->by_client.Erase(record->request.client_order_id);
   if (record->venue_order_id.length != 0)
     impl_->by_venue.Erase(record->venue_order_id);
   record->occupied = false;
+  record->in_terminal = false;
+  record->terminal_prev = 0xffffffffu;
+  record->terminal_next = 0xffffffffu;
   free_slots_[free_count_++] = handle.slot;
   --size_;
   return api::Error::Ok;
+}
+
+api::Error OrderTable::EraseTerminalByInstrument(
+    api::InstrumentId instrument_id) noexcept {
+  if (instrument_id == 0) return api::Error::InvalidArgument;
+  for (const OrderRecord& record : records_) {
+    if (!record.occupied || record.request.instrument_id != instrument_id)
+      continue;
+    if (!IsTerminalStatus(record.status) ||
+        record.inflight != api::InflightAction::None)
+      return api::Error::InconsistentState;
+  }
+  for (std::size_t slot = 0; slot < records_.size(); ++slot) {
+    OrderRecord& record = records_[slot];
+    if (!record.occupied || record.request.instrument_id != instrument_id)
+      continue;
+    RememberRetiredToken(record.request.token);
+    const api::Error erased =
+        Erase({static_cast<std::uint32_t>(slot), 0, record.generation});
+    if (erased != api::Error::Ok) return erased;
+  }
+  return api::Error::Ok;
+}
+
+void OrderTable::RememberRetiredToken(api::RequestToken token) noexcept {
+  if (token.sequence == 0) return;
+  retired_tokens_[retired_token_next_ % retired_tokens_.size()] = token;
+  if (retired_token_count_ < retired_tokens_.size()) ++retired_token_count_;
+  ++retired_token_next_;
+}
+
+bool OrderTable::WasRetiredToken(api::RequestToken token) const noexcept {
+  if (token.sequence == 0) return false;
+  for (std::uint32_t index = 0; index < retired_token_count_; ++index) {
+    if (retired_tokens_[index] == token) return true;
+  }
+  return false;
 }
 
 }  // namespace oms

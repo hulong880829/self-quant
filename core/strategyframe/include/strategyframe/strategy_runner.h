@@ -142,6 +142,17 @@ class StrategyRunner final {
           }
           return true;
         },
+        [](void* value, const BalanceSnapshot& update) noexcept {
+          if constexpr (requires(T& strategy,
+                                 const BalanceSnapshot& snapshot) {
+                          strategy.on_balances_snapshot(snapshot);
+                        }) {
+            return Invoke([&] {
+              static_cast<T*>(value)->on_balances_snapshot(update);
+            });
+          }
+          return true;
+        },
         [](void* value, const QueryComplete& update) noexcept {
           if constexpr (requires(T& strategy, const QueryComplete& complete) {
                           strategy.on_query_complete(complete);

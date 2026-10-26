@@ -147,7 +147,26 @@ func (s *TraderServer) GetOrder(
 	if err != nil {
 		return nil, mapTraderError(err)
 	}
+	order = s.orderWithFillSummary(ctx, order)
 	return &traderv1.GetOrderResponse{Order: traderOrderToProto(order)}, nil
+}
+
+func (s *TraderServer) orderWithFillSummary(ctx context.Context, order trader.Order) trader.Order {
+	items := s.ordersWithFillSummaries(ctx, []trader.Order{order})
+	if len(items) == 0 {
+		return order
+	}
+	return items[0]
+}
+
+func (s *TraderServer) ordersWithFillSummaries(ctx context.Context, items []trader.Order) []trader.Order {
+	attacher, ok := s.service.(interface {
+		AttachOrderFillSummaries(context.Context, []trader.Order) []trader.Order
+	})
+	if !ok {
+		return items
+	}
+	return attacher.AttachOrderFillSummaries(ctx, items)
 }
 
 func (s *TraderServer) ListOrders(
@@ -454,9 +473,7 @@ func (s *TraderServer) PreflightArbitrageCombination(
 	}
 	warnings := make([]*traderv1.PreflightWarning, 0, len(result.Warnings))
 	for _, warning := range result.Warnings {
-		warnings = append(warnings, &traderv1.PreflightWarning{
-			Code: warning.Code, Message: warning.Message, Leg: warning.Leg, Exchange: warning.Exchange,
-		})
+		warnings = append(warnings, preflightWarningToProto(warning))
 	}
 	return &traderv1.PreflightArbitrageCombinationResponse{
 		Executable: result.Executable, CheckedAt: optionalTraderTimestamp(result.CheckedAt),
@@ -465,6 +482,50 @@ func (s *TraderServer) PreflightArbitrageCombination(
 		Warnings: warnings, Code: result.Code, Message: result.Message,
 		Leg: result.Leg, Exchange: result.Exchange,
 	}, nil
+}
+
+func (s *TraderServer) PreflightIncreaseTarget(
+	ctx context.Context,
+	request *traderv1.PreflightIncreaseTargetRequest,
+) (*traderv1.PreflightIncreaseTargetResponse, error) {
+	service, ok := s.service.(interface {
+		PreflightIncreaseTarget(context.Context, string, string, string) (trader.IncreaseTargetPreflight, error)
+	})
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "increase preflight is unavailable")
+	}
+	result, err := service.PreflightIncreaseTarget(
+		ctx, request.GetToken(), request.GetCombinationId(), request.GetNewTargetNotional(),
+	)
+	if err != nil {
+		return nil, mapTraderError(err)
+	}
+	warnings := make([]*traderv1.PreflightWarning, 0, len(result.Warnings))
+	for _, warning := range result.Warnings {
+		warnings = append(warnings, preflightWarningToProto(warning))
+	}
+	return &traderv1.PreflightIncreaseTargetResponse{
+		Executable: result.Executable, CurrentTargetNotional: result.CurrentTargetNotional,
+		NewTargetNotional: result.NewTargetNotional, RequestedTargetDelta: result.RequestedTargetDelta,
+		TargetNotionalUnit: result.TargetNotionalUnit,
+		LegA:               increaseLegToProto(result.LegA), LegB: increaseLegToProto(result.LegB),
+		Warnings: warnings, CheckedAt: optionalTraderTimestamp(result.CheckedAt),
+		ExpiresAt: optionalTraderTimestamp(result.ExpiresAt),
+		Code:      result.Code, Message: result.Message, Leg: result.Leg, Exchange: result.Exchange,
+	}, nil
+}
+
+func increaseLegToProto(leg trader.IncreaseTargetLeg) *traderv1.PreflightIncreaseLeg {
+	return &traderv1.PreflightIncreaseLeg{
+		AdditionalNotional: leg.AdditionalNotional, IncrementalQuantity: leg.IncrementalQuantity,
+		IncrementalQuantityUnit: leg.IncrementalQuantityUnit,
+		IncrementalMargin:       preflightDecimalToProto(leg.IncrementalMargin),
+		EstimatedFee:            preflightDecimalToProto(leg.EstimatedFee),
+		AvailableFunds:          preflightDecimalToProto(leg.AvailableFunds),
+		MinQuantity:             preflightDecimalToProto(leg.MinQuantity),
+		MinNotional:             preflightDecimalToProto(leg.MinNotional),
+		QuantityStep:            preflightDecimalToProto(leg.QuantityStep),
+	}
 }
 
 func (s *TraderServer) ListArbitrageCombinationOrders(
@@ -534,7 +595,18 @@ func (s *TraderServer) ListArbitrageCombinationEvents(
 }
 
 func preflightDecimalToProto(value trader.PreflightDecimal) *traderv1.PreflightDecimal {
-	return &traderv1.PreflightDecimal{Value: value.Value, Status: value.Status}
+	status := value.Status
+	if status == "" {
+		status = "unknown"
+	}
+	return &traderv1.PreflightDecimal{Value: value.Value, Status: status, Unit: value.Unit}
+}
+
+func preflightWarningToProto(warning trader.PreflightWarning) *traderv1.PreflightWarning {
+	return &traderv1.PreflightWarning{
+		Code: warning.Code, Message: warning.Message, Leg: warning.Leg, Exchange: warning.Exchange,
+		Details: warning.Details,
+	}
 }
 
 func preflightLegToProto(value trader.PreflightLeg) *traderv1.PreflightLeg {
@@ -611,11 +683,35 @@ func traderOrderToProto(item trader.Order) *traderv1.Order {
 		Price: item.Price, FilledQuantity: item.FilledQuantity, AveragePrice: item.AveragePrice,
 		Status: item.Status, ErrorCode: item.ErrorCode, ErrorMessage: item.ErrorMessage,
 		CreatedAt: timestamppb.New(item.CreatedAt), UpdatedAt: timestamppb.New(item.UpdatedAt),
-		LastReconciledAt: optionalTraderTimestamp(item.LastReconciledAt), SyncState: item.SyncState,
-		TwapJobId: item.TwapJobID, TwapSliceIndex: int32(item.TwapSliceIndex),
+		LastReconciledAt: optionalTraderTimestamp(item.LastReconciledAt),
+		LastFilledAt:     optionalTraderTimestamp(item.LastFilledAt),
+		ActualFees:       orderFeesToProto(item.ActualFees),
+		LiquidityRole:    orderLiquidityRoleProto(item.LiquidityRole),
+		SyncState:        item.SyncState,
+		TwapJobId:        item.TwapJobID, TwapSliceIndex: int32(item.TwapSliceIndex),
 		TwapAttemptIndex:     int32(item.TwapAttemptIndex),
 		ArbitrageExecutionId: item.ArbitrageExecutionID,
 		ArbitrageLeg:         item.ArbitrageLeg, ArbitrageRole: item.ArbitrageRole,
+	}
+}
+
+func orderFeesToProto(fees []trader.OrderActualFee) []*traderv1.OrderFee {
+	if len(fees) == 0 {
+		return nil
+	}
+	out := make([]*traderv1.OrderFee, 0, len(fees))
+	for _, fee := range fees {
+		out = append(out, &traderv1.OrderFee{Amount: fee.Amount, Currency: fee.Currency})
+	}
+	return out
+}
+
+func orderLiquidityRoleProto(role string) string {
+	switch role {
+	case "maker", "taker", "mixed":
+		return role
+	default:
+		return "unknown"
 	}
 }
 

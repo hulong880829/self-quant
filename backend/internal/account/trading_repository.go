@@ -219,6 +219,204 @@ func (r *TradingRepository) Create(
 	return created, nil
 }
 
+func (r *TradingRepository) CreateIdempotent(
+	ctx context.Context,
+	key, requestHash string,
+	record TradingAccountRecord,
+) (TradingAccountRecord, bool, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return TradingAccountRecord{}, false, fmt.Errorf("create trading account: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for {
+		accountID, replay, claimErr := claimBindIdempotency(ctx, tx, record.OwnerUsername, key, requestHash)
+		if claimErr != nil {
+			return TradingAccountRecord{}, false, claimErr
+		}
+		if replay {
+			existing, err := tradingAccountByID(ctx, tx, record.OwnerUsername, accountID)
+			if err != nil {
+				return TradingAccountRecord{}, false, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return TradingAccountRecord{}, false, fmt.Errorf("create trading account: %w", err)
+			}
+			return existing, true, nil
+		}
+		created, err := insertTradingAccount(ctx, tx, record)
+		if err != nil {
+			return TradingAccountRecord{}, false, err
+		}
+		if _, err = tx.Exec(ctx, `
+			UPDATE trading_account_bind_idempotency
+			SET trading_account_id=$3, completed_at=now()
+			WHERE owner_username=$1 AND idempotency_key=$2`,
+			record.OwnerUsername, key, created.ID,
+		); err != nil {
+			return TradingAccountRecord{}, false, fmt.Errorf("create trading account: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return TradingAccountRecord{}, false, fmt.Errorf("create trading account: %w", err)
+		}
+		return created, false, nil
+	}
+}
+
+func claimBindIdempotency(
+	ctx context.Context,
+	tx pgx.Tx,
+	owner, key, requestHash string,
+) (int64, bool, error) {
+	for {
+		var claimed bool
+		err := tx.QueryRow(ctx, `
+			INSERT INTO trading_account_bind_idempotency (
+				owner_username, idempotency_key, request_hash
+			) VALUES ($1,$2,$3)
+			ON CONFLICT (owner_username, idempotency_key) DO NOTHING
+			RETURNING true`,
+			owner, key, requestHash,
+		).Scan(&claimed)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, fmt.Errorf("create trading account: %w", err)
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			var storedHash string
+			var accountID *int64
+			err = tx.QueryRow(ctx, `
+				SELECT request_hash, trading_account_id
+				FROM trading_account_bind_idempotency
+				WHERE owner_username=$1 AND idempotency_key=$2
+				FOR UPDATE`,
+				owner, key,
+			).Scan(&storedHash, &accountID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return 0, false, fmt.Errorf("create trading account: %w", err)
+			}
+			if storedHash != requestHash {
+				return 0, false, ErrBindIdempotencyConflict
+			}
+			if accountID == nil {
+				return 0, false, fmt.Errorf("create trading account: idempotency claim is incomplete")
+			}
+			return *accountID, true, nil
+		}
+		return 0, false, nil
+	}
+}
+
+type queryRower interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func insertTradingAccount(
+	ctx context.Context,
+	query queryRower,
+	record TradingAccountRecord,
+) (TradingAccountRecord, error) {
+	var created TradingAccountRecord
+	err := query.QueryRow(ctx, `
+		INSERT INTO trading_accounts (
+			owner_username, product_name, exchange, account_name,
+			api_key_enc, api_secret_enc, passphrase_enc, credential_kind,
+			trading_api_key_enc, trading_api_secret_enc, signing_address,
+			vault_address, account_index, api_key_index
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),NULLIF($12,''),$13,$14)
+		RETURNING id, owner_username, product_name, exchange, account_name,
+		          api_key_enc, api_secret_enc, passphrase_enc,
+		          COALESCE(credential_kind,''), trading_api_key_enc, trading_api_secret_enc,
+		          COALESCE(signing_address,''), COALESCE(vault_address,''),
+		          account_index, api_key_index, created_at, updated_at`,
+		record.OwnerUsername,
+		record.ProductName,
+		record.Exchange,
+		record.AccountName,
+		record.APIKeyEnc,
+		record.APISecretEnc,
+		nullableBytes(record.PassphraseEnc),
+		record.CredentialKind,
+		nullableBytes(record.TradingAPIKeyEnc),
+		nullableBytes(record.TradingAPISecretEnc),
+		record.SigningAddress,
+		record.VaultAddress,
+		record.AccountIndex,
+		record.APIKeyIndex,
+	).Scan(
+		&created.ID,
+		&created.OwnerUsername,
+		&created.ProductName,
+		&created.Exchange,
+		&created.AccountName,
+		&created.APIKeyEnc,
+		&created.APISecretEnc,
+		&created.PassphraseEnc,
+		&created.CredentialKind,
+		&created.TradingAPIKeyEnc,
+		&created.TradingAPISecretEnc,
+		&created.SigningAddress,
+		&created.VaultAddress,
+		&created.AccountIndex,
+		&created.APIKeyIndex,
+		&created.CreatedAt,
+		&created.UpdatedAt,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return TradingAccountRecord{}, ErrDuplicateTradingAccount
+		}
+		return TradingAccountRecord{}, fmt.Errorf("create trading account: %w", err)
+	}
+	return created, nil
+}
+
+func tradingAccountByID(
+	ctx context.Context,
+	query queryRower,
+	owner string,
+	id int64,
+) (TradingAccountRecord, error) {
+	var record TradingAccountRecord
+	err := query.QueryRow(ctx, `
+		SELECT id, owner_username, product_name, exchange, account_name,
+		       api_key_enc, api_secret_enc, passphrase_enc,
+		       COALESCE(credential_kind,''), trading_api_key_enc, trading_api_secret_enc,
+		       COALESCE(signing_address,''), COALESCE(vault_address,''),
+		       account_index, api_key_index, created_at, updated_at
+		FROM trading_accounts
+		WHERE owner_username=$1 AND id=$2`, owner, id).Scan(
+		&record.ID,
+		&record.OwnerUsername,
+		&record.ProductName,
+		&record.Exchange,
+		&record.AccountName,
+		&record.APIKeyEnc,
+		&record.APISecretEnc,
+		&record.PassphraseEnc,
+		&record.CredentialKind,
+		&record.TradingAPIKeyEnc,
+		&record.TradingAPISecretEnc,
+		&record.SigningAddress,
+		&record.VaultAddress,
+		&record.AccountIndex,
+		&record.APIKeyIndex,
+		&record.CreatedAt,
+		&record.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TradingAccountRecord{}, ErrTradingAccountNotFound
+	}
+	if err != nil {
+		return TradingAccountRecord{}, fmt.Errorf("create trading account: %w", err)
+	}
+	return record, nil
+}
+
 func (r *TradingRepository) UpdateIndexes(
 	ctx context.Context,
 	ownerUsername string,

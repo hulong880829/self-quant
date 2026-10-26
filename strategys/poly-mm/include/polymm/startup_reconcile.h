@@ -120,12 +120,14 @@ inline void inspect_window_inventory(
 
 [[nodiscard]] inline ReconcileVerdict reconcile_verdict(
     const StartupReconcile& state, std::uint64_t now_ns) noexcept {
-  if (state.oms_reconcile_failed) {
+  if (state.oms_reconcile_failed || state.saw_open_order ||
+      state.saw_position) {
     return ReconcileVerdict::Reject;
   }
   const bool timed_out =
       state.timeout_ns != 0 && now_ns >= state.started_ns + state.timeout_ns;
-  if (state.oms_reconcile_seen || timed_out) return ReconcileVerdict::Ready;
+  if (state.oms_reconcile_seen) return ReconcileVerdict::Ready;
+  if (timed_out) return ReconcileVerdict::Reject;
   return ReconcileVerdict::Pending;
 }
 

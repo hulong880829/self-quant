@@ -230,6 +230,66 @@ void TestOrderTableIndexesCapacityAndAba() {
           oms::api::Error::Conflict);
 }
 
+void TestOrderTableReclaimsOldestTerminal() {
+  oms::OrderTable table(16);
+  std::vector<oms::api::OrderHandle> handles;
+  handles.reserve(100000);
+  for (std::uint64_t sequence = 1; sequence <= 100000; ++sequence) {
+    oms::api::OrderHandle handle{};
+    REQUIRE(table.Insert(Submitted(Request(sequence)), handle) ==
+            oms::api::Error::Ok);
+    auto* record = table.Lookup(handle);
+    REQUIRE(record != nullptr);
+    record->status = oms::api::OrderStatus::Filled;
+    record->inflight = oms::api::InflightAction::None;
+    REQUIRE(table.MarkTerminal(handle) == oms::api::Error::Ok);
+    REQUIRE(table.MarkTerminal(handle) == oms::api::Error::Ok);
+    handles.push_back(handle);
+  }
+  REQUIRE(table.size() <= table.capacity());
+  REQUIRE(table.Lookup(handles.front()) == nullptr);
+  REQUIRE(table.Erase(handles.front()) == oms::api::Error::StaleHandle);
+  REQUIRE(table.Lookup(handles.back()) != nullptr);
+  REQUIRE(table.Lookup(handles.back())->generation == handles.back().generation);
+
+  oms::OrderTable active(4);
+  std::array<oms::api::OrderHandle, 4> live{};
+  for (std::size_t index = 0; index < live.size(); ++index) {
+    REQUIRE(active.Insert(Submitted(Request(index + 1)), live[index]) ==
+            oms::api::Error::Ok);
+  }
+  oms::api::OrderHandle overflow{};
+  REQUIRE(active.Insert(Submitted(Request(99)), overflow) ==
+          oms::api::Error::CapacityExceeded);
+  REQUIRE(active.Lookup(live[0]) != nullptr);
+  REQUIRE(active.Lookup(live[0])->status == oms::api::OrderStatus::PendingSubmit);
+
+  oms::OrderTable middle(3);
+  oms::api::OrderHandle first{};
+  oms::api::OrderHandle second{};
+  oms::api::OrderHandle third{};
+  REQUIRE(middle.Insert(Submitted(Request(1)), first) == oms::api::Error::Ok);
+  REQUIRE(middle.Insert(Submitted(Request(2)), second) == oms::api::Error::Ok);
+  REQUIRE(middle.Insert(Submitted(Request(3)), third) == oms::api::Error::Ok);
+  for (const auto handle : {first, second, third}) {
+    auto* record = middle.Lookup(handle);
+    record->status = oms::api::OrderStatus::Canceled;
+    record->inflight = oms::api::InflightAction::None;
+    REQUIRE(middle.MarkTerminal(handle) == oms::api::Error::Ok);
+  }
+  REQUIRE(middle.Erase(second) == oms::api::Error::Ok);
+  oms::api::OrderHandle reused{};
+  REQUIRE(middle.Insert(Submitted(Request(4)), reused) == oms::api::Error::Ok);
+  REQUIRE(reused.slot == second.slot);
+  REQUIRE(reused.generation != second.generation);
+  REQUIRE(middle.Lookup(second) == nullptr);
+  oms::api::OrderHandle fifth{};
+  REQUIRE(middle.Insert(Submitted(Request(5)), fifth) == oms::api::Error::Ok);
+  REQUIRE(middle.Lookup(reused) != nullptr);
+  REQUIRE(middle.Lookup(first) == nullptr);
+  REQUIRE(fifth.generation != first.generation);
+}
+
 void TestRoutingIsFrozenOnOrder() {
   oms::OrderTable table(1);
   oms::api::SubmitOrderRequest prepared{};
@@ -651,6 +711,45 @@ void TestFillDedupCapacityAndFullBeforeAck() {
           oms::api::InflightAction::None);
 }
 
+void TestFillDedupReusesRetiredOrders() {
+  Harness harness(4, 2);
+  for (std::uint64_t sequence = 1; sequence <= 40; ++sequence) {
+    const auto handle = harness.Submit(sequence, 1);
+    const std::string trade = "cycle-" + std::to_string(sequence);
+    REQUIRE(harness.engine.Apply(Fill(handle, trade, 1),
+                                 harness.updates.sink()) ==
+            oms::api::Error::Ok);
+    REQUIRE(harness.engine.Apply(Fill(handle, trade, 1),
+                                 harness.updates.sink()) ==
+            oms::api::Error::Ok);
+    REQUIRE(harness.engine.Apply(Fill(handle, trade, 2),
+                                 harness.updates.sink()) ==
+            oms::api::Error::ProtocolConflict);
+    REQUIRE(harness.engine.Apply(
+                Event(oms::api::VenueEventType::NewAck, handle),
+                harness.updates.sink()) == oms::api::Error::Ok);
+    REQUIRE(harness.table.Lookup(handle)->status ==
+            oms::api::OrderStatus::Filled);
+  }
+  REQUIRE(harness.table.size() <= harness.table.capacity());
+
+  Harness full(8, 1);
+  std::array<oms::api::OrderHandle, 4> live{};
+  for (std::size_t index = 0; index < live.size(); ++index) {
+    live[index] = full.Submit(100 + index, 1);
+    REQUIRE(full.engine.Apply(
+                Fill(live[index], "kept-" + std::to_string(index), 1),
+                full.updates.sink()) == oms::api::Error::Ok);
+  }
+  const auto overflow = full.Submit(200, 1);
+  REQUIRE(full.engine.Apply(Fill(overflow, "kept-overflow", 1),
+                            full.updates.sink()) ==
+          oms::api::Error::CapacityExceeded);
+  REQUIRE(full.engine.Apply(Fill(live[0], "kept-0", 1), full.updates.sink()) ==
+          oms::api::Error::Ok);
+  REQUIRE(full.updates.fills.size() == live.size());
+}
+
 void TestHotPathDoesNotAllocate() {
   Harness harness;
   const auto request = Request(99, 2);
@@ -845,6 +944,8 @@ int main() {
   const std::array tests{
       &TestExecutionDirectory,
       &TestOrderTableIndexesCapacityAndAba,
+      &TestOrderTableReclaimsOldestTerminal,
+      &TestFillDedupReusesRetiredOrders,
       &TestRoutingIsFrozenOnOrder,
       &TestSubmitValidationAndLocalReject,
       &TestAckCancelAndEarlyCancel,

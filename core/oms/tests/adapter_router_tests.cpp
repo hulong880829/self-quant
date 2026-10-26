@@ -91,11 +91,18 @@ int main() {
        utils::md::ProductType::BinaryOption, {}});
   StubAdapter fake({AdapterKind::Fake, 0, utils::md::Venue::Unknown,
                     utils::md::ProductType::Unknown, {}});
+  StubAdapter hyperliquid(
+      {AdapterKind::Hyperliquid, 0, utils::md::Venue::Hyperliquid,
+       utils::md::ProductType::Unknown, {}});
+  StubAdapter ibkr({AdapterKind::Ibkr, 0, utils::md::Venue::Ibkr,
+                    utils::md::ProductType::Unknown, {}});
   AdapterRouter router;
   REQUIRE(router.add(spot) == AdapterResult::Ok);
   REQUIRE(router.add(usdm) == AdapterResult::Ok);
   REQUIRE(router.add(polymarket) == AdapterResult::Ok);
   REQUIRE(router.add(fake) == AdapterResult::Ok);
+  REQUIRE(router.add(hyperliquid) == AdapterResult::Ok);
+  REQUIRE(router.add(ibkr) == AdapterResult::Ok);
   REQUIRE(router.add(spot) == AdapterResult::InvalidArgument);
   REQUIRE(router.route(
               Instrument(utils::md::Venue::Binance,
@@ -112,4 +119,15 @@ int main() {
   REQUIRE(router.route(
               Instrument(utils::md::Venue::Unknown,
                          utils::md::ProductType::Spot)) == nullptr);
+  REQUIRE(router.route(
+              Instrument(utils::md::Venue::Hyperliquid,
+                         utils::md::ProductType::Spot)) == &hyperliquid);
+  REQUIRE(router.route(
+              Instrument(utils::md::Venue::Hyperliquid,
+                         utils::md::ProductType::Perpetual)) == &hyperliquid);
+  REQUIRE(router.route(
+              Instrument(utils::md::Venue::Ibkr,
+                         utils::md::ProductType::Equity)) == &ibkr);
+  REQUIRE(static_cast<std::uint8_t>(AdapterKind::BinanceSpot) == 1);
+  REQUIRE(static_cast<std::uint8_t>(AdapterKind::Fake) == 4);
 }

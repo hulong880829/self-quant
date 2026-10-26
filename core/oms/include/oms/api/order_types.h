@@ -6,6 +6,7 @@
 #include <type_traits>
 
 #include "oms/api/error.h"
+#include "utils/md/types.h"
 
 namespace oms::api {
 
@@ -51,6 +52,7 @@ using QueryToken = RequestToken;
 enum class QueryKind : std::uint8_t {
   OpenOrders = 1,
   Positions = 2,
+  Balances = 3,
 };
 
 struct OrderHandle {
@@ -102,6 +104,8 @@ struct OpenOrderSnapshotItem {
   AccountId account_id{};
   std::uint32_t reserved{};
   InstrumentId instrument_id{};
+  RequestToken tracked_token{};
+  ClientOrderId client_order_id{};
   VenueOrderId venue_order_id{};
   Side side{Side::Buy};
   OrderStatus status{OrderStatus::Unknown};
@@ -118,6 +122,17 @@ struct PositionSnapshotItem {
   std::uint32_t reserved{};
   InstrumentId instrument_id{};
   FixedPoint quantity{};
+};
+
+struct BalanceSnapshot {
+  QueryToken query_token{};
+  AccountId account_id{};
+  std::array<char, 16> asset_or_currency{};
+  std::int64_t total_quantity{};
+  std::int64_t held_quantity{};
+  std::int64_t available_quantity{};
+  std::uint8_t scale{};
+  std::array<std::uint8_t, 7> reserved{};
 };
 
 struct QueryComplete {
@@ -167,6 +182,7 @@ struct NewOrderRequest {
 enum class ExecutionRouteKind : std::uint8_t {
   Crypto = 1,
   Polymarket = 2,
+  Ibkr = 3,
 };
 
 // Immutable execution data resolved from one catalog revision. The 48-byte
@@ -184,6 +200,14 @@ struct ResolvedInstrument {
   struct Polymarket {
     std::array<std::uint8_t, 32> condition_id{};
     std::array<std::uint8_t, 32> token_id{};
+  };
+  struct Ibkr {
+    std::int64_t con_id{};
+    utils::md::IbkrSecurityType security_type{
+        utils::md::IbkrSecurityType::Unknown};
+    std::uint8_t contract_multiplier_scale{};
+    std::uint8_t reserved[6]{};
+    std::int64_t contract_multiplier{};
   };
 
   ExecutionRouteKind kind{ExecutionRouteKind::Crypto};
@@ -203,6 +227,7 @@ struct ResolvedInstrument {
   union {
     Crypto crypto;
     Polymarket polymarket;
+    Ibkr ibkr;
   };
 
   constexpr ResolvedInstrument() noexcept : crypto{} {}
@@ -229,6 +254,7 @@ struct VenueInstrumentRef {
   union {
     ResolvedInstrument::Crypto crypto;
     Polymarket polymarket;
+    ResolvedInstrument::Ibkr ibkr;
   };
 
   constexpr VenueInstrumentRef() noexcept : crypto{} {}
@@ -238,11 +264,14 @@ struct QueryRequest {
   AccountId account_id{};
   QueryScope scope{QueryScope::All};
   std::uint8_t reserved[3]{};
+  InstrumentId instrument_id{};
   VenueInstrumentRef instrument{};
 };
 
 enum SnapshotFlag : std::uint32_t {
   SnapshotUnmapped = 1U << 0U,
+  SnapshotOwnedExternal = 1U << 1U,
+  SnapshotTracked = 1U << 2U,
 };
 
 struct SubmitOrderRequest {
@@ -256,15 +285,31 @@ struct CancelOrderRequest {
   OrderHandle handle{};
 };
 
+struct CancelVenueOrderRequest {
+  RequestToken request_token{};
+  AccountId account_id{};
+  std::uint32_t reserved{};
+  InstrumentId instrument_id{};
+  ClientOrderId client_order_id{};
+  VenueOrderId venue_order_id{};
+  ResolvedInstrument routing{};
+};
+
 struct RegisterInstrumentRequest {
   RequestToken request_token{};
   InstrumentId instrument_id{};
   ResolvedInstrument routing{};
 };
 
+enum class InstrumentRetirementMode : std::uint8_t {
+  Normal = 0,
+  LifecycleEnded = 1,
+};
+
 struct RetireInstrumentRequest {
   RequestToken request_token{};
   InstrumentId instrument_id{};
+  InstrumentRetirementMode mode{InstrumentRetirementMode::Normal};
 };
 
 // Cancel updates keep using target_token as the order identity. This explicit
@@ -357,8 +402,10 @@ static_assert(std::is_trivially_copyable_v<ClientOrderId>);
 static_assert(std::is_trivially_copyable_v<VenueOrderId>);
 static_assert(std::is_trivially_copyable_v<TradeId>);
 static_assert(std::is_trivially_copyable_v<RequestToken>);
+static_assert(std::is_trivially_copyable_v<QueryKind>);
 static_assert(std::is_trivially_copyable_v<OrderHandle>);
 static_assert(std::is_trivially_copyable_v<FixedPoint>);
+static_assert(std::is_trivially_copyable_v<BalanceSnapshot>);
 static_assert(std::is_trivially_copyable_v<PolymarketOutcome>);
 static_assert(std::is_trivially_copyable_v<VenueSymbol>);
 static_assert(std::is_trivially_copyable_v<ResolvedInstrument::Crypto>);
@@ -382,7 +429,7 @@ static_assert(sizeof(VenueSymbol) == 40);
 static_assert(sizeof(ResolvedInstrument::Crypto) == 64);
 static_assert(sizeof(ResolvedInstrument::Polymarket) == 64);
 static_assert(sizeof(RegisterInstrumentRequest) == 136);
-static_assert(sizeof(RetireInstrumentRequest) == 24);
+static_assert(sizeof(RetireInstrumentRequest) == 32);
 static_assert(sizeof(InstrumentCommandResult) == 24);
 static_assert(std::is_trivially_copyable_v<NewOrderRequest>);
 static_assert(std::is_trivially_copyable_v<ResolvedInstrument>);
@@ -390,6 +437,7 @@ static_assert(std::is_trivially_copyable_v<VenueInstrumentRef>);
 static_assert(std::is_trivially_copyable_v<QueryRequest>);
 static_assert(std::is_trivially_copyable_v<SubmitOrderRequest>);
 static_assert(std::is_trivially_copyable_v<CancelOrderRequest>);
+static_assert(std::is_trivially_copyable_v<CancelVenueOrderRequest>);
 static_assert(std::is_trivially_copyable_v<CancelCommandCorrelation>);
 static_assert(std::is_trivially_copyable_v<VenueEvent>);
 static_assert(std::is_trivially_copyable_v<OrderUpdate>);
@@ -399,14 +447,17 @@ static_assert(std::is_standard_layout_v<ClientOrderId>);
 static_assert(std::is_standard_layout_v<VenueOrderId>);
 static_assert(std::is_standard_layout_v<TradeId>);
 static_assert(std::is_standard_layout_v<RequestToken>);
+static_assert(std::is_standard_layout_v<QueryKind>);
 static_assert(std::is_standard_layout_v<OrderHandle>);
 static_assert(std::is_standard_layout_v<FixedPoint>);
+static_assert(std::is_standard_layout_v<BalanceSnapshot>);
 static_assert(std::is_standard_layout_v<NewOrderRequest>);
 static_assert(std::is_standard_layout_v<ResolvedInstrument>);
 static_assert(std::is_standard_layout_v<VenueInstrumentRef>);
 static_assert(std::is_standard_layout_v<QueryRequest>);
 static_assert(std::is_standard_layout_v<SubmitOrderRequest>);
 static_assert(std::is_standard_layout_v<CancelOrderRequest>);
+static_assert(std::is_standard_layout_v<CancelVenueOrderRequest>);
 static_assert(std::is_standard_layout_v<CancelCommandCorrelation>);
 static_assert(std::is_standard_layout_v<VenueEvent>);
 static_assert(std::is_standard_layout_v<OrderUpdate>);
@@ -415,14 +466,17 @@ static_assert(sizeof(ClientOrderId) == 72);
 static_assert(sizeof(VenueOrderId) == 104);
 static_assert(sizeof(TradeId) == 104);
 static_assert(sizeof(RequestToken) == 16);
+static_assert(sizeof(QueryKind) == 1);
 static_assert(sizeof(OrderHandle) == 16);
 static_assert(sizeof(FixedPoint) == 16);
+static_assert(sizeof(BalanceSnapshot) == 72);
 static_assert(sizeof(NewOrderRequest) == 144);
 static_assert(sizeof(ResolvedInstrument) == 112);
 static_assert(sizeof(VenueInstrumentRef) == 72);
-static_assert(sizeof(QueryRequest) == 80);
+static_assert(sizeof(QueryRequest) == 88);
 static_assert(sizeof(SubmitOrderRequest) == 256);
 static_assert(sizeof(CancelOrderRequest) == 48);
+static_assert(sizeof(CancelVenueOrderRequest) == 320);
 static_assert(sizeof(CancelCommandCorrelation) == 32);
 static_assert(sizeof(VenueEvent) == 368);
 static_assert(sizeof(OrderUpdate) == 224);
@@ -434,5 +488,8 @@ static_assert(static_cast<std::uint8_t>(TimeInForce::FOK) == 4);
 static_assert(static_cast<std::uint8_t>(TimeInForce::FAK) == 5);
 static_assert(static_cast<std::uint16_t>(OrderFlag::PostOnly) == 1);
 static_assert(static_cast<std::uint16_t>(OrderFlag::QuoteQuantity) == 8);
+static_assert(static_cast<std::uint8_t>(QueryKind::OpenOrders) == 1);
+static_assert(static_cast<std::uint8_t>(QueryKind::Positions) == 2);
+static_assert(static_cast<std::uint8_t>(QueryKind::Balances) == 3);
 
 }  // namespace oms::api

@@ -19,6 +19,10 @@ struct ManagerAccess {
     return manager.reconcile_open(order);
   }
   static void Clear(OrderManager& manager) noexcept { manager.clear(); }
+  static void RetireOrders(OrderManager& manager,
+                           InstrumentId instrument) noexcept {
+    manager.retire_instrument(instrument);
+  }
 
   static Error ApplyFill(PositionManager& manager, AccountId account,
                          InstrumentId instrument, Side side,

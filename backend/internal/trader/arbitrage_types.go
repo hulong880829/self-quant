@@ -199,6 +199,7 @@ type ArbitrageHistoryQuery struct {
 type PreflightDecimal struct {
 	Value  string
 	Status string
+	Unit   string
 }
 
 type PreflightLeg struct {
@@ -216,6 +217,36 @@ type PreflightWarning struct {
 	Message  string
 	Leg      string
 	Exchange string
+	Details  map[string]string
+}
+
+type IncreaseTargetPreflight struct {
+	Executable            bool
+	CurrentTargetNotional string
+	NewTargetNotional     string
+	RequestedTargetDelta  string
+	TargetNotionalUnit    string
+	LegA                  IncreaseTargetLeg
+	LegB                  IncreaseTargetLeg
+	Warnings              []PreflightWarning
+	CheckedAt             time.Time
+	ExpiresAt             time.Time
+	Code                  string
+	Message               string
+	Leg                   string
+	Exchange              string
+}
+
+type IncreaseTargetLeg struct {
+	AdditionalNotional      string
+	IncrementalQuantity     string
+	IncrementalQuantityUnit string
+	IncrementalMargin       PreflightDecimal
+	EstimatedFee            PreflightDecimal
+	AvailableFunds          PreflightDecimal
+	MinQuantity             PreflightDecimal
+	MinNotional             PreflightDecimal
+	QuantityStep            PreflightDecimal
 }
 
 type ArbitragePreflight struct {

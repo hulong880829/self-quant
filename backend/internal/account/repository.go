@@ -13,9 +13,9 @@ import (
 var ErrNotFound = errors.New("account not found")
 
 const (
-	AccountStatusActive   = "active"
-	AccountStatusDisabled = "disabled"
-	AccountStatusArchived = "archived"
+	AccountStatusActive    = "active"
+	AccountStatusDisabled  = "disabled"
+	AccountStatusArchived  = "archived"
 	CreatedSourceSelfQuant = "selfquant"
 	CreatedSourceBroker    = "broker"
 )

@@ -114,6 +114,7 @@ func parseBinance(key Key, payload []byte, received time.Time) ([]Update, bool, 
 	update.Type = UpdateOrder
 	if update.TradeID != "" && update.TradeID != "-1" {
 		update.Type = UpdateTrade
+		assignPerTradeFee(&update, rawString(order["n"]), rawString(order["N"]), binanceLiquidity(order["m"]))
 	}
 	return []Update{update}, true, nil
 }
@@ -188,12 +189,15 @@ func parseHyperliquid(key Key, payload []byte, received time.Time) ([]Update, bo
 	case "userFills":
 		var data struct {
 			Fills []struct {
-				Price string          `json:"px"`
-				Size  string          `json:"sz"`
-				OID   json.RawMessage `json:"oid"`
-				TID   json.RawMessage `json:"tid"`
-				Cloid string          `json:"cloid"`
-				Time  int64           `json:"time"`
+				Price    string          `json:"px"`
+				Size     string          `json:"sz"`
+				OID      json.RawMessage `json:"oid"`
+				TID      json.RawMessage `json:"tid"`
+				Cloid    string          `json:"cloid"`
+				Time     int64           `json:"time"`
+				Fee      string          `json:"fee"`
+				FeeToken string          `json:"feeToken"`
+				Crossed  *bool           `json:"crossed"`
 			} `json:"fills"`
 		}
 		if err := json.Unmarshal(message.Data, &data); err != nil {
@@ -210,6 +214,7 @@ func parseHyperliquid(key Key, payload []byte, received time.Time) ([]Update, bo
 			update.VenueOrderID, update.TradeID = oid, tid
 			update.LastFilled, update.LastPrice = fill.Size, fill.Price
 			update.EventTime, update.Sequence = time.UnixMilli(fill.Time), fill.Time
+			assignPerTradeFee(&update, fill.Fee, fill.FeeToken, hyperliquidLiquidity(fill.Crossed))
 			updates = append(updates, update)
 		}
 		return updates, len(updates) > 0, nil
@@ -290,6 +295,12 @@ func parseOKX(key Key, payload []byte, received time.Time) ([]Update, bool, erro
 		update.Sequence = rawInt64(item["seqId"])
 		if update.TradeID != "" {
 			update.Type = UpdateTrade
+			assignPerTradeFee(
+				&update,
+				negateDecimalString(rawString(item["fillFee"])),
+				rawString(item["fillFeeCcy"]),
+				okxLiquidity(rawString(item["execType"])),
+			)
 		}
 		updates = append(updates, update)
 	}
@@ -332,6 +343,12 @@ func parseBybit(key Key, payload []byte, received time.Time) ([]Update, bool, er
 		update.Sequence = rawInt64(first(item["seq"], message.ID))
 		if message.Topic == "execution" || message.Topic == "execution.fast" {
 			update.Type = UpdateTrade
+			assignPerTradeFee(
+				&update,
+				rawString(item["execFee"]),
+				rawString(item["feeCurrency"]),
+				bybitLiquidity(rawString(item["isMaker"])),
+			)
 		}
 		updates = append(updates, update)
 	}
@@ -661,6 +678,81 @@ func first(values ...json.RawMessage) json.RawMessage {
 func positiveDecimal(value string) bool {
 	parsed, err := decimal.NewFromString(strings.TrimSpace(value))
 	return err == nil && parsed.IsPositive()
+}
+
+func assignPerTradeFee(update *Update, fee, currency, role string) {
+	if update == nil || strings.TrimSpace(update.TradeID) == "" || update.TradeID == "-1" {
+		return
+	}
+	fee = strings.TrimSpace(fee)
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if fee != "" && currency != "" {
+		if amount, err := decimal.NewFromString(fee); err == nil {
+			update.FeeAmount = amount.String()
+			update.FeeCurrency = currency
+		}
+	}
+	switch role {
+	case "maker", "taker":
+		update.LiquidityRole = role
+	default:
+		update.LiquidityRole = "unknown"
+	}
+}
+
+func binanceLiquidity(raw json.RawMessage) string {
+	switch strings.ToLower(rawString(raw)) {
+	case "true":
+		return "maker"
+	case "false":
+		return "taker"
+	default:
+		return ""
+	}
+}
+
+func hyperliquidLiquidity(crossed *bool) string {
+	if crossed == nil {
+		return ""
+	}
+	if *crossed {
+		return "taker"
+	}
+	return "maker"
+}
+
+func okxLiquidity(execType string) string {
+	switch strings.ToUpper(strings.TrimSpace(execType)) {
+	case "M":
+		return "maker"
+	case "T":
+		return "taker"
+	default:
+		return ""
+	}
+}
+
+func bybitLiquidity(isMaker string) string {
+	switch strings.ToLower(strings.TrimSpace(isMaker)) {
+	case "true":
+		return "maker"
+	case "false":
+		return "taker"
+	default:
+		return ""
+	}
+}
+
+func negateDecimalString(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	value, err := decimal.NewFromString(raw)
+	if err != nil {
+		return ""
+	}
+	return value.Neg().String()
 }
 
 func quotient(numerator, denominator string) string {

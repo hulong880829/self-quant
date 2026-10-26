@@ -42,18 +42,6 @@ func (s *Service) CreateArbitrageCombination(
 		!exchangeEnabled(s.arbitrageExchanges, accountB.Exchange) {
 		return ArbitrageCombination{}, ErrUnsupportedExchange
 	}
-	accountA, err = s.ensureArbitrageAccountReady(ctx, normalized.Token, accountA)
-	if err != nil {
-		return ArbitrageCombination{}, err
-	}
-	if accountB.TradingAccountID == accountA.TradingAccountID {
-		accountB = accountA
-	} else {
-		accountB, err = s.ensureArbitrageAccountReady(ctx, normalized.Token, accountB)
-		if err != nil {
-			return ArbitrageCombination{}, err
-		}
-	}
 	if accountA.ProductName != accountB.ProductName {
 		return ArbitrageCombination{}, ErrInvalidArgument
 	}
@@ -67,6 +55,28 @@ func (s *Service) CreateArbitrageCombination(
 	}
 	if !validArbitrageInstrumentPair(accountA, instrumentA, accountB, instrumentB) {
 		return ArbitrageCombination{}, ErrInvalidArgument
+	}
+	levA, err := defaultLegLeverage(instrumentA.ContractType, normalized.LegALeverage)
+	if err != nil {
+		return ArbitrageCombination{}, tagCreateErrorLeg(err, "a")
+	}
+	levB, err := defaultLegLeverage(instrumentB.ContractType, normalized.LegBLeverage)
+	if err != nil {
+		return ArbitrageCombination{}, tagCreateErrorLeg(err, "b")
+	}
+	normalized.LegALeverage = levA.String()
+	normalized.LegBLeverage = levB.String()
+	accountA, err = s.ensureArbitrageAccountReady(ctx, normalized.Token, accountA)
+	if err != nil {
+		return ArbitrageCombination{}, err
+	}
+	if accountB.TradingAccountID == accountA.TradingAccountID {
+		accountB = accountA
+	} else {
+		accountB, err = s.ensureArbitrageAccountReady(ctx, normalized.Token, accountB)
+		if err != nil {
+			return ArbitrageCombination{}, err
+		}
 	}
 	requiredA, requiredB := preflightOrderTypes(normalized, instrumentA, instrumentB)
 	if !instrumentRulesReady(instrumentA, requiredA) ||
@@ -103,16 +113,6 @@ func (s *Service) CreateArbitrageCombination(
 	); err != nil {
 		return ArbitrageCombination{}, err
 	}
-	levA, err := defaultLegLeverage(instrumentA.ContractType, normalized.LegALeverage)
-	if err != nil {
-		return ArbitrageCombination{}, tagCreateErrorLeg(err, "a")
-	}
-	levB, err := defaultLegLeverage(instrumentB.ContractType, normalized.LegBLeverage)
-	if err != nil {
-		return ArbitrageCombination{}, tagCreateErrorLeg(err, "b")
-	}
-	normalized.LegALeverage = levA.String()
-	normalized.LegBLeverage = levB.String()
 	legA := arbitrageLeg(accountA, instrumentA)
 	legB := arbitrageLeg(accountB, instrumentB)
 	probe := ArbitrageCombination{

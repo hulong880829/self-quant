@@ -21,6 +21,7 @@ struct CallbackTable {
   bool (*catalog)(void*, const InstrumentCatalogInfo&) noexcept{};
   bool (*open_orders_snapshot)(void*, const OpenOrdersSnapshot&) noexcept{};
   bool (*positions_snapshot)(void*, const PositionsSnapshot&) noexcept{};
+  bool (*balances_snapshot)(void*, const BalanceSnapshot&) noexcept{};
   bool (*query_complete)(void*, const QueryComplete&) noexcept{};
 };
 

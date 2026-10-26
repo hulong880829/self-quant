@@ -151,7 +151,7 @@ func TestInspectLighterDiscoversZeroIndexes(t *testing.T) {
 				return
 			}
 			_ = json.NewEncoder(writer).Encode(map[string]any{
-				"code": 200,
+				"code":     200,
 				"accounts": []map[string]any{{"account_index": 0, "index": 0}},
 			})
 		case "/api/v1/apikeys":
@@ -209,7 +209,7 @@ func TestInspectLighterAmbiguousKeys(t *testing.T) {
 		switch request.URL.Path {
 		case "/api/v1/account":
 			_ = json.NewEncoder(writer).Encode(map[string]any{
-				"code": 200,
+				"code":     200,
 				"accounts": []map[string]any{{"account_index": 1}},
 			})
 		case "/api/v1/apikeys":
@@ -261,7 +261,7 @@ func TestInspectTimeoutIsUnknown(t *testing.T) {
 	}
 	created, err := service.CreateTradingAccount(context.Background(), session.Token, CreateTradingAccountInput{
 		ProductName: "DEX", Exchange: "hyperliquid", AccountName: "hy",
-		APIKey: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+		APIKey:    "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
 		APISecret: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
 	})
 	if err != nil {

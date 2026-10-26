@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+
+#include "polymm/risk.h"
 
 namespace polymm {
 namespace {
@@ -53,17 +56,53 @@ bool PnlLedger::remember_order(strategyframe::OrderToken token,
                                strategyframe::InstrumentId instrument_id,
                                strategyframe::Side side,
                                OrderPurpose purpose,
-                               std::uint32_t window_generation) noexcept {
+                               std::uint32_t window_generation,
+                               bool taker) noexcept {
   for (OrderRef& value : orders_) {
     if (value.used && value.token == token) return true;
   }
   for (OrderRef& value : orders_) {
     if (!value.used) {
-      value = {true, token, instrument_id, side, purpose, window_generation};
+      value = {};
+      value.used = true;
+      value.token = token;
+      value.instrument_id = instrument_id;
+      value.side = side;
+      value.purpose = purpose;
+      value.window_generation = window_generation;
+      value.taker = taker;
       return true;
     }
   }
   return false;
+}
+
+void PnlLedger::set_fee_rate(double fee_rate) noexcept {
+  fee_rate_ = fee_rate;
+}
+
+bool PnlLedger::row_flat(const Row& value) noexcept {
+  return std::abs(value.quantity) < 1e-9 &&
+         std::abs(value.entry_fee_basis) < 1e-9;
+}
+
+void PnlLedger::archive_flat_row(Row& value) noexcept {
+  archived_gross_ += value.gross_realized;
+  archived_net_ += value.realized;
+  archived_realized_fees_ += value.realized_fees;
+  archived_total_fees_ += value.total_estimated_fees;
+  value = {};
+}
+
+void PnlLedger::archive_settled_row(Row& value, double payout) noexcept {
+  const double settlement_gross =
+      payout - (value.cost - value.entry_fee_basis);
+  const double settlement_net = payout - value.cost;
+  archived_gross_ += value.gross_realized + settlement_gross;
+  archived_net_ += value.realized + settlement_net;
+  archived_realized_fees_ += value.realized_fees + value.entry_fee_basis;
+  archived_total_fees_ += value.total_estimated_fees;
+  value = {};
 }
 
 const PnlLedger::OrderRef* PnlLedger::order(
@@ -115,9 +154,25 @@ bool PnlLedger::apply_fill(
   const double quantity_value = Fixed(update.fill_quantity);
   const double price = Fixed(update.fill_price);
   if (!(quantity_value > 0.0) || !(price > 0.0)) return false;
+  const bool taker = reference->taker;
+  const char* purpose =
+      reference->purpose == OrderPurpose::Open
+          ? "open"
+          : reference->purpose == OrderPurpose::ForceFlatten ? "flatten"
+                                                             : "close";
   if (reference->side == strategyframe::Side::Buy) {
+    const double fee =
+        taker ? polymarket_taker_fee(price, quantity_value, fee_rate_) : 0.0;
     value->quantity += quantity_value;
-    value->cost += quantity_value * price;
+    value->cost += quantity_value * price + fee;
+    value->entry_fee_basis += fee;
+    value->total_estimated_fees += fee;
+    std::fprintf(stderr,
+                 "poly-mm fill purpose=%s liquidity=%s quantity=%.8f "
+                 "price=%.8f estimated_fee=%.8f net_cost=%.8f "
+                 "fee_source=estimated\n",
+                 purpose, taker ? "taker" : "maker", quantity_value, price,
+                 fee, quantity_value * price + fee);
     return true;
   }
   if (!(value->quantity > 0.0) ||
@@ -125,15 +180,40 @@ bool PnlLedger::apply_fill(
     ++orphan_fills_;
     return false;
   }
-  const double closed = quantity_value;
-  const double average = value->cost / value->quantity;
-  value->realized += (price - average) * closed;
+  double closed = quantity_value;
+  double allocated_cost = value->cost * (closed / value->quantity);
+  double allocated_entry = value->entry_fee_basis * (closed / value->quantity);
+  if (closed >= value->quantity - 1e-12) {
+    closed = value->quantity;
+    allocated_cost = value->cost;
+    allocated_entry = value->entry_fee_basis;
+  }
+  const double gross_cost = allocated_cost - allocated_entry;
+  const double proceeds = price * closed;
+  const double exit_fee =
+      taker ? polymarket_taker_fee(price, closed, fee_rate_) : 0.0;
+  const double gross_delta = proceeds - gross_cost;
+  const double net_delta = proceeds - exit_fee - allocated_cost;
+  value->gross_realized += gross_delta;
+  value->realized += net_delta;
+  value->realized_fees += allocated_entry + exit_fee;
+  value->total_estimated_fees += exit_fee;
+  value->entry_fee_basis -= allocated_entry;
+  value->cost -= allocated_cost;
   value->quantity -= closed;
-  value->cost -= average * closed;
   if (value->quantity < 1e-12) {
+    value->realized_fees += value->entry_fee_basis;
+    value->realized -= value->entry_fee_basis;
     value->quantity = 0.0;
     value->cost = 0.0;
+    value->entry_fee_basis = 0.0;
   }
+  std::fprintf(stderr,
+               "poly-mm fill purpose=%s liquidity=%s quantity=%.8f "
+               "price=%.8f estimated_fee=%.8f gross_realized=%.8f "
+               "net_realized=%.8f fee_source=estimated\n",
+               purpose, taker ? "taker" : "maker", closed, price, exit_fee,
+               gross_delta, net_delta);
   return true;
 }
 
@@ -143,6 +223,88 @@ void PnlLedger::update_bbo(
   if (value == nullptr) return;
   value->bid = Fixed(update.bid.price);
   value->ask = Fixed(update.ask.price);
+}
+
+StoredPnl PnlLedger::stored(
+    strategyframe::InstrumentId instrument_id) const noexcept {
+  const Row* value = row(instrument_id);
+  if (value == nullptr) return {};
+  return {true,
+          value->quantity,
+          value->cost,
+          value->realized,
+          value->gross_realized,
+          value->entry_fee_basis,
+          value->realized_fees,
+          value->total_estimated_fees};
+}
+
+bool PnlLedger::release_expired_window(
+    strategyframe::InstrumentId up,
+    strategyframe::InstrumentId down) noexcept {
+  if (up == 0 || down == 0 || up == down) return false;
+  Row* up_row = row(up);
+  Row* down_row = row(down);
+  if ((up_row != nullptr && !row_flat(*up_row)) ||
+      (down_row != nullptr && !row_flat(*down_row))) {
+    return false;
+  }
+  if (up_row != nullptr) archive_flat_row(*up_row);
+  if (down_row != nullptr) archive_flat_row(*down_row);
+  return true;
+}
+
+bool PnlLedger::settle_expired_window(
+    strategyframe::InstrumentId up, strategyframe::InstrumentId down,
+    Outcome winner) noexcept {
+  if (up == 0 || down == 0 || up == down) return false;
+  for (const SettledWindow& settled : settled_windows_) {
+    if (settled.up == up && settled.down == down) return true;
+  }
+  Row* up_row = row(up);
+  Row* down_row = row(down);
+  if (up_row == nullptr || down_row == nullptr) return false;
+  const double up_payout = winner == Outcome::Up ? up_row->quantity : 0.0;
+  const double down_payout =
+      winner == Outcome::Down ? down_row->quantity : 0.0;
+  last_window_pnl_ = up_row->realized + (up_payout - up_row->cost) +
+                     down_row->realized + (down_payout - down_row->cost);
+  archive_settled_row(*up_row, up_payout);
+  archive_settled_row(*down_row, down_payout);
+  settled_windows_[settled_cursor_ % settled_windows_.size()] = {up, down};
+  ++settled_cursor_;
+  std::fprintf(stderr,
+               "poly-mm window settlement up=%llu down=%llu winner=%s "
+               "pnl=%.8f\n",
+               static_cast<unsigned long long>(up),
+               static_cast<unsigned long long>(down),
+               winner == Outcome::Up ? "up" : "down", last_window_pnl_);
+  return true;
+}
+
+double PnlLedger::last_window_pnl() const noexcept {
+  return last_window_pnl_;
+}
+
+bool PnlLedger::remember_late_fill(
+    strategyframe::AccountId account,
+    strategyframe::InstrumentId instrument,
+    const strategyframe::TradeId& trade_id) noexcept {
+  return remember_trade(account, instrument, trade_id);
+}
+
+double PnlLedger::archived_realized() const noexcept { return archived_net_; }
+
+double PnlLedger::archived_gross() const noexcept { return archived_gross_; }
+
+double PnlLedger::archived_net() const noexcept { return archived_net_; }
+
+double PnlLedger::archived_realized_fees() const noexcept {
+  return archived_realized_fees_;
+}
+
+double PnlLedger::archived_total_fees() const noexcept {
+  return archived_total_fees_;
 }
 
 PnlView PnlLedger::view(
@@ -205,12 +367,9 @@ bool PnlLedger::has_live_order(
 }
 
 bool PnlLedger::archive_active_rows() noexcept {
-  const bool keep =
-      active_[0].quantity != 0.0 || active_[1].quantity != 0.0 ||
-      has_live_order(active_[0].instrument_id) ||
-      has_live_order(active_[1].instrument_id);
-  if (!keep) {
-    for (Row& value : active_) archived_realized_ += value.realized;
+  const bool occupied =
+      active_[0].instrument_id != 0 || active_[1].instrument_id != 0;
+  if (!occupied) {
     active_ = {};
     return true;
   }
@@ -259,11 +418,8 @@ bool PnlLedger::activate_window(
 }
 
 bool PnlLedger::can_archive_active() const noexcept {
-  const bool keep =
-      active_[0].quantity != 0.0 || active_[1].quantity != 0.0 ||
-      has_live_order(active_[0].instrument_id) ||
-      has_live_order(active_[1].instrument_id);
-  if (!keep) return true;
+  if (active_[0].instrument_id == 0 && active_[1].instrument_id == 0)
+    return true;
   std::size_t free = 0;
   for (const Row& value : retired_)
     if (value.instrument_id == 0) ++free;
@@ -310,6 +466,8 @@ void PnlLedger::confirm_zero(
     strategyframe::InstrumentId instrument_id) noexcept {
   Row* value = row(instrument_id);
   if (value == nullptr) return;
+  value->total_estimated_fees -= value->entry_fee_basis;
+  value->entry_fee_basis = 0.0;
   value->quantity = 0.0;
   value->cost = 0.0;
 }
@@ -318,9 +476,11 @@ void PnlLedger::recycle_instrument(
     strategyframe::InstrumentId instrument_id) noexcept {
   for (Row& value : retired_) {
     if (value.instrument_id != instrument_id) continue;
-    if (value.quantity != 0.0 || has_live_order(instrument_id)) return;
-    archived_realized_ += value.realized;
-    value = {};
+    if (value.quantity != 0.0 || std::abs(value.entry_fee_basis) >= 1e-9 ||
+        has_live_order(instrument_id)) {
+      return;
+    }
+    archive_flat_row(value);
     return;
   }
 }

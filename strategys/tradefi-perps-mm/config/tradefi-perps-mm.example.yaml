@@ -1,0 +1,99 @@
+mds:
+  source: external_shm
+  bbo_policy: ticker_only
+  segments:
+    - name: /selfquant.mds.hyperliquid.perpetual.xyz.ticker.1
+      expected_reader_budget: 1
+    - name: /selfquant.mds.ibkr.equity.xyz.ticker.1
+      expected_reader_budget: 1
+  required_instruments:
+    - {venue: hyperliquid, product: perpetual, symbol: XYZ}
+    - {venue: ibkr, product: equity, symbol: XYZ}
+
+oms:
+  threading: single_thread
+  venues:
+    hyperliquid:
+      enabled: false
+      account_id: 1
+      private_key_env: HYPERLIQUID_PRIVATE_KEY
+      account_address_env: HYPERLIQUID_ACCOUNT_ADDRESS
+      rest: {host: api.hyperliquid.xyz, port: "443"}
+      user_websocket: {host: api.hyperliquid.xyz, port: "443"}
+    ibkr:
+      enabled: false
+      account_id: 2
+      client_id: 32
+      account: DU123456
+      gateway:
+        host: 127.0.0.1
+        port: "4002"
+
+strategy:
+  # 跨进程保持不变的策略实例标识，用于识别本策略遗留订单。
+  strategy_instance: hl-xyz-ibkr-xyz-01
+  # IB 腿卖出策略：inventory_only 禁止预计可用库存为负；allow 允许尝试卖空。
+  ibkr_short_policy: inventory_only
+  # 挂单价相对对冲腿盘口的固定基差。买价用对冲买一加它，卖价用对冲卖一加它。
+  basis_offset: "0.00"
+  # 每单位基础资产再留出的基差缓冲，从买价扣除、加到卖价上。必须 >= 0。
+  basis_buffer: "0.01"
+  # 每单位基础资产预留的滑点，买卖报价都会扣掉或加上。
+  slippage_per_base: "0.01"
+  # 每单位基础资产的目标利润，同样计入买卖报价的保护边。
+  target_profit_per_base: "0.01"
+  # 每一笔 maker 报价的基础资产数量。对冲腿必须能按合约乘数完整覆盖这么多。
+  quote_size_base: "1"
+  # maker 腿持仓绝对值上限。再买一笔或再卖一笔会越过它时，对应一侧不再报价。
+  max_maker_position: "100"
+  # 对冲腿持仓上限。必须大于 0，否则策略无法启动。
+  max_hedge_position: "100"
+  # 净敞口上限。maker 再买入一笔后的持仓不能超过它。必须大于 0。
+  max_net_delta: "100"
+  # 净敞口绝对值不超过它时不再对冲，视为可接受残差。必须 >= 0，且小于最小可交易数量。
+  delta_tolerance: "0"
+  # 单笔报价名义金额上限，按对冲盘口价格乘报价数量计算。任一方向超过则两侧都不报。
+  max_notional_usd: "10000.00"
+  # maker 报价价格按交易所最小变动价位的这个倍数对齐。必须为正整数。
+  maker_tick_multiplier: 1
+  # 买卖盘口超过这么多毫秒没有更新，就视为过期并停止报价。
+  max_bbo_age_ms: 1000
+  # 对冲失败后的重试次数，超过后策略停在 halted。
+  max_hedge_retries: 2
+  # IOC 对冲超过此时间仍不确定时先查询，不直接重复下单。
+  hedge_timeout_ms: 2000
+  # IOC 对冲价相对最新盘口最多跨越的 tick 数。
+  max_hedge_slippage_ticks: 5
+  # 未对冲名义金额上限，超过后停止报价并进入恢复。
+  max_unhedged_notional: "100.00"
+  # 首次小额实盘建议为 1：完成一次 maker→hedge 后撤单、Halt 并退出。0 表示不限制。
+  stop_after_hedge_cycles: 1
+  # 首次实盘只允许一个活动 maker 单；稳定验证后才可显式改为 2。
+  max_active_maker_orders: 1
+  # Hyperliquid 手续费，单位是 bps（1 bps = 0.01%）。maker 挂单用 maker，对冲吃单用 taker。
+  hl_maker_bps: 1
+  hl_taker_bps: 3
+  # IBKR 作为对冲腿时，买入和卖出分别使用的手续费，单位 bps。
+  ib_buy_bps: 1
+  ib_sell_bps: 1
+  # IBKR 作为 maker 时仍按可能立即成交处理，并使用 taker/最高适用费率。
+  ib_passive_bps: 1
+  ib_taker_bps: 2
+  # 被动报价腿。必须是 hyperliquid 或 ibkr，且不能和对冲腿是同一家。
+  maker:
+    venue: hyperliquid
+    account_id: 1
+    # strict：Hyperliquid 挂单带原生 post-only；IBKR 仍只是本地防穿价的 best-effort 被动限价。
+    passive_mode: strict
+    instrument:
+      product: perpetual
+      symbol: XYZ
+  # 对冲腿，和 maker 必须一腿 Hyperliquid、一腿 IBKR。
+  hedge:
+    venue: ibkr
+    account_id: 2
+    instrument:
+      product: equity
+      symbol: XYZ
+      # IB 合约类型：STK | CMDTY | CASH。CASH 的库存门禁使用币种 available balance。
+      security: STK

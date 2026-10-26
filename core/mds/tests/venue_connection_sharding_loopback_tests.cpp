@@ -269,6 +269,7 @@ enum class Protocol {
   BybitBulkCrossPageDuplicate,
   BybitBulkMissingSymbol,
   BybitScaleRefreshBoth,
+  BybitOneSidedBook,
   Bitget,
   BitgetRateLimit,
   BitgetRateLimitMissingArg,
@@ -439,6 +440,9 @@ class Server {
   unsigned gate_connections() const { return gate_connections_.load(); }
   unsigned websocket_requests() const {
     return websocket_requests_.load();
+  }
+  unsigned bybit_one_sided_connections() const {
+    return bybit_one_sided_connections_.load();
   }
   unsigned websocket_accepted() const {
     return websocket_accepted_.load();
@@ -741,6 +745,12 @@ class Server {
                protocol_ == Protocol::BybitMetadataMalformedOnce ||
                protocol_ == Protocol::BybitMetadataParameterOnce) {
       body = bybit_btc_metadata;
+    } else if (protocol_ == Protocol::BybitOneSidedBook) {
+      bybit_generated = bybit_instruments_info(
+          bybit_linear_instrument("BTCUSDT", "BTC") + "," +
+              bybit_linear_instrument("SPORTFUNUSDT", "SPORTFUN"),
+          "");
+      body = bybit_generated;
     } else if (protocol_ == Protocol::BybitScaleRefreshBoth) {
       if (request.find("symbol=") != std::string::npos) {
         const auto symbol =
@@ -814,6 +824,28 @@ class Server {
         std::string(accept.data()) + "\r\n\r\n";
     if (!write_all(ssl, response)) return;
     const auto subscription = read_masked_text(ssl);
+    if (protocol_ == Protocol::BybitOneSidedBook) {
+      if (subscription.find("BTCUSDT") == std::string::npos ||
+          subscription.find("SPORTFUNUSDT") == std::string::npos ||
+          !send_text(
+              ssl,
+              R"({"success":true,"ret_msg":"subscribe","op":"subscribe","conn_id":"loopback"})")) {
+        return;
+      }
+      ++bybit_one_sided_connections_;
+      while (!stopping_.load()) {
+        if (!send_text(
+                ssl,
+                R"({"topic":"orderbook.1.SPORTFUNUSDT","type":"snapshot","ts":10,"data":{"s":"SPORTFUNUSDT","b":[],"a":[],"u":1,"seq":1}})") ||
+            !send_text(
+                ssl,
+                R"({"topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":10,"data":{"s":"BTCUSDT","b":[["100.00","1.000"]],"a":[["100.01","2.000"]],"u":1,"seq":1}})")) {
+          return;
+        }
+        std::this_thread::sleep_for(10ms);
+      }
+      return;
+    }
     if (is_bybit_protocol(protocol_)) {
       if (subscription.empty()) {
         return;
@@ -1455,6 +1487,7 @@ class Server {
   std::atomic<unsigned> gate_sol_updates_{};
   std::atomic<unsigned> gate_connections_{};
   std::atomic<unsigned> websocket_requests_{};
+  std::atomic<unsigned> bybit_one_sided_connections_{};
   std::atomic<unsigned> websocket_accepted_{};
   std::atomic<bool> scale_mismatch_release_{true};
   std::atomic<unsigned> websocket_decimal_headers_{};
@@ -4212,6 +4245,69 @@ void test_late_reader_generation_switch() {
   rebuild_manager.stop();
 }
 
+void test_bybit_one_sided_book_does_not_reconnect_shard() {
+  Certificate identity;
+  auto tls = client_context(identity);
+  Server server(identity, Protocol::BybitOneSidedBook);
+  mds::service::VenueConnectionManager manager(tls);
+  mds::service::VenueConnectionOptions options;
+  options.venue = utils::md::Venue::Bybit;
+  options.product = utils::md::ProductType::Perpetual;
+  options.websocket_endpoint = server.endpoint("wss", "/v5/public/linear");
+  options.rest_endpoint = server.endpoint("https");
+  options.connect_timeout = 1s;
+  options.request_timeout = 1s;
+  options.idle_timeout = 5s;
+  options.reconnect_base = 20ms;
+  options.reconnect_max = 40ms;
+  for (const auto symbol : {"SPORTFUNUSDT", "BTCUSDT"}) {
+    mds::service::SymbolStreamOptions stream;
+    stream.symbol = symbol;
+    stream.ticker = true;
+    stream.ticker_channel = "orderbook.1";
+    stream.ring_layout = mds::publish::RingLayout::Multiplex;
+    stream.shard_count = 1;
+    stream.shm_prefix =
+        "/mds.bybit.one-sided.loopback." + std::to_string(::getpid());
+    stream.multiplex_ring.ring_bytes = 64U << 10U;
+    stream.multiplex_ring.max_record_bytes = 4096;
+    stream.multiplex_ring.max_readers = 4;
+    stream.multiplex_ring.unlink_on_close = true;
+    options.streams.push_back(std::move(stream));
+  }
+  auto created = manager.create(std::move(options));
+  assert(created);
+  auto *connection = created.value;
+  const auto btc_shard = connection->websocket_shard("BTCUSDT");
+  const auto sportfun_shard = connection->websocket_shard("SPORTFUNUSDT");
+  assert(btc_shard.has_value());
+  assert(sportfun_shard.has_value());
+  assert(*btc_shard == *sportfun_shard);
+  assert(connection->websocket_shard_count() == 1);
+  assert(connection->metrics().ws_shards == 1);
+
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (std::chrono::steady_clock::now() < deadline &&
+         (connection->state() != mds::service::MarketDataState::Live ||
+          connection->metrics().ticker_updates == 0 ||
+          connection->metrics().one_sided_book_frames == 0)) {
+    (void)manager.run_once(5);
+  }
+  assert(connection->state() == mds::service::MarketDataState::Live);
+  const auto settled = std::chrono::steady_clock::now() + 200ms;
+  while (std::chrono::steady_clock::now() < settled) {
+    (void)manager.run_once(5);
+  }
+  assert(connection->metrics().ws_shards == 1);
+  assert(connection->metrics().one_sided_book_frames == 1);
+  assert(connection->metrics().ticker_updates == 1);
+  assert(connection->metrics().parse_errors == 0);
+  assert(connection->metrics().reconnects == 0);
+  assert(server.websocket_requests() == 1);
+  assert(server.bybit_one_sided_connections() == 1);
+  manager.stop();
+}
+
 int main() {
   std::signal(SIGPIPE, SIG_IGN);
   test_aster_lighter_full_pipeline(
@@ -4269,6 +4365,7 @@ int main() {
   test_bybit_bulk_pagination_failure(Protocol::BybitBulkCrossPageDuplicate, 2);
   test_bybit_bulk_missing_symbol_is_quarantined();
   test_bybit_multi_symbol_scale_refresh_stays_exact();
+  test_bybit_one_sided_book_does_not_reconnect_shard();
   test_bybit_candidate_like_replace_adds_tusdt();
   test_subscription_reject_isolates_one_symbol();
   test_hyperliquid_subscription_window();

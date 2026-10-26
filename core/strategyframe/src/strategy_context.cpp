@@ -17,6 +17,16 @@ Result<OrderToken> StrategyContext::cancel(OrderToken token) noexcept {
   return ops_->cancel(state_, token);
 }
 
+Result<OrderToken> StrategyContext::cancel_venue_order(
+    AccountId account_id, InstrumentId instrument_id,
+    const ClientOrderId& client_order_id,
+    const VenueOrderId& venue_order_id) noexcept {
+  if (!state_ || !ops_ || !ops_->cancel_venue_order)
+    return {{}, Error::InvalidState};
+  return ops_->cancel_venue_order(state_, account_id, instrument_id,
+                                  client_order_id, venue_order_id);
+}
+
 Result<QueryToken> StrategyContext::query_open_orders(
     AccountId account_id) noexcept {
   if (!state_ || !ops_ || !ops_->query_open_orders)
@@ -43,6 +53,20 @@ Result<QueryToken> StrategyContext::query_positions(
   if (!state_ || !ops_ || !ops_->query_positions_for)
     return {{}, Error::NotReady};
   return ops_->query_positions_for(state_, account_id, instrument_id);
+}
+
+Result<QueryToken> StrategyContext::query_balances(
+    AccountId account_id) noexcept {
+  if (!state_ || !ops_ || !ops_->query_balances)
+    return {{}, Error::NotReady};
+  return ops_->query_balances(state_, account_id);
+}
+
+Result<void> StrategyContext::request_instrument_retirement(
+    InstrumentId instrument_id, RetirementReason reason) noexcept {
+  if (!state_ || !ops_ || !ops_->request_instrument_retirement)
+    return {Error::NotReady};
+  return ops_->request_instrument_retirement(state_, instrument_id, reason);
 }
 
 Result<TimerHandle> StrategyContext::schedule_timer(

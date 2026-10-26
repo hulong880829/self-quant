@@ -1,0 +1,16 @@
+mds:
+  source: replay
+oms:
+  venues:
+    hyperliquid:
+      enabled: false
+      account_id: 1
+    ibkr:
+      enabled: false
+      account_id: 2
+      client_id: 32
+      account: DU123
+      gateway:
+        host: 127.0.0.1
+        port: "4002"
+strategy: {}

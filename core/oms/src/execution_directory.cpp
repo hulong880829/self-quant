@@ -46,6 +46,11 @@ std::size_t HashRoute(const api::ResolvedInstrument& value) noexcept {
     return Mix(&value.crypto.venue_symbol.length,
                sizeof(value.crypto.venue_symbol.length), hash);
   }
+  if (value.kind == api::ExecutionRouteKind::Ibkr) {
+    hash = Mix(&value.ibkr.con_id, sizeof(value.ibkr.con_id), hash);
+    return Mix(&value.ibkr.security_type, sizeof(value.ibkr.security_type),
+               hash);
+  }
   hash = Mix(value.polymarket.condition_id.data(),
              value.polymarket.condition_id.size(), hash);
   hash = Mix(value.polymarket.token_id.data(),
@@ -60,6 +65,9 @@ bool SameRoute(const api::ResolvedInstrument& left,
     return false;
   if (left.kind == api::ExecutionRouteKind::Crypto)
     return left.crypto.venue_symbol == right.crypto.venue_symbol;
+  if (left.kind == api::ExecutionRouteKind::Ibkr)
+    return left.ibkr.con_id == right.ibkr.con_id &&
+           left.ibkr.security_type == right.ibkr.security_type;
   return left.outcome == right.outcome &&
          left.polymarket.condition_id == right.polymarket.condition_id &&
          left.polymarket.token_id == right.polymarket.token_id;
@@ -79,6 +87,8 @@ api::ResolvedInstrument RouteKey(
   key.outcome = reference.outcome;
   if (reference.kind == api::ExecutionRouteKind::Crypto) {
     key.crypto = reference.crypto;
+  } else if (reference.kind == api::ExecutionRouteKind::Ibkr) {
+    key.ibkr = reference.ibkr;
   } else {
     key.polymarket.condition_id = reference.polymarket.condition_id;
     key.polymarket.token_id = reference.polymarket.token_id;
@@ -96,6 +106,9 @@ bool Valid(const api::ResolvedInstrument& value) noexcept {
     return value.crypto.venue_symbol.length != 0 &&
            value.crypto.venue_symbol.length <=
                value.crypto.venue_symbol.value.size();
+  if (value.kind == api::ExecutionRouteKind::Ibkr)
+    return value.ibkr.con_id > 0 &&
+           value.ibkr.security_type != utils::md::IbkrSecurityType::Unknown;
   return value.kind == api::ExecutionRouteKind::Polymarket &&
          (value.outcome == api::PolymarketOutcome::Yes ||
           value.outcome == api::PolymarketOutcome::No) &&

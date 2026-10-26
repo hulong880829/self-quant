@@ -95,6 +95,12 @@ void StateEngine::EmitOrder(api::UpdateType type, api::OrderHandle handle,
   sink.on_order(sink.context, update);
 }
 
+void StateEngine::ObserveTerminal(api::OrderHandle handle) noexcept {
+  const OrderRecord* record = orders_.Lookup(handle);
+  if (record != nullptr && IsTerminal(record->status))
+    orders_.MarkTerminal(handle);
+}
+
 api::Error StateEngine::Submit(const api::SubmitOrderRequest& prepared,
                                api::OrderHandle& handle,
                                const api::UpdateSink& sink) noexcept {
@@ -105,10 +111,12 @@ api::Error StateEngine::Submit(const api::SubmitOrderRequest& prepared,
       api::QuoteQuantity;
   const bool polymarket =
       routing.kind == api::ExecutionRouteKind::Polymarket;
+  const bool ibkr = routing.kind == api::ExecutionRouteKind::Ibkr;
   const bool polymarket_venue =
       routing.venue ==
       static_cast<std::uint8_t>(utils::md::Venue::Polymarket);
-  if ((routing.kind != api::ExecutionRouteKind::Crypto && !polymarket) ||
+  if ((routing.kind != api::ExecutionRouteKind::Crypto && !polymarket &&
+       !ibkr) ||
       routing.venue == 0 || routing.product_type == 0 ||
       routing.catalog_revision == 0 ||
       polymarket != polymarket_venue ||
@@ -154,6 +162,21 @@ api::Error StateEngine::Submit(const api::SubmitOrderRequest& prepared,
   return api::Error::Ok;
 }
 
+api::Error StateEngine::ExpireOneForRetirement(
+    api::InstrumentId instrument_id, const api::UpdateSink& sink) noexcept {
+  if (instrument_id == 0) return api::Error::InvalidArgument;
+  const api::OrderHandle handle = orders_.FindNonTerminal(instrument_id);
+  if (handle.generation == 0) return api::Error::NotFound;
+  OrderRecord* record = orders_.Lookup(handle);
+  if (record == nullptr) return api::Error::StaleHandle;
+  if (IsTerminal(record->status)) return api::Error::NotFound;
+  record->status = api::OrderStatus::Expired;
+  record->inflight = api::InflightAction::None;
+  ObserveTerminal(handle);
+  EmitOrder(api::UpdateType::Expired, handle, *record, sink);
+  return api::Error::Ok;
+}
+
 api::Error StateEngine::RejectLocal(api::OrderHandle handle,
                                     const api::UpdateSink& sink) noexcept {
   OrderRecord* record = orders_.Lookup(handle);
@@ -163,6 +186,7 @@ api::Error StateEngine::RejectLocal(api::OrderHandle handle,
     return api::Error::InvalidTransition;
   record->status = api::OrderStatus::Rejected;
   record->inflight = api::InflightAction::None;
+  ObserveTerminal(handle);
   EmitOrder(api::UpdateType::Rejected, handle, *record, sink);
   return api::Error::Ok;
 }
@@ -237,19 +261,42 @@ api::Error StateEngine::CheckDuplicate(
     return api::Error::InvalidArgument;
   const std::size_t mask = fill_dedup_.size() - 1;
   std::size_t index = FillHash(handle, event.trade_id) & mask;
+  const std::size_t missing = fill_dedup_.size();
+  std::size_t stale = missing;
+  std::size_t tombstone = missing;
+  std::size_t empty = missing;
   for (std::size_t probe = 0; probe < fill_dedup_.size(); ++probe) {
     const FillDedupEntry& entry = fill_dedup_[index];
     if (entry.state == 0) {
-      insert_slot = index;
-      return api::Error::Ok;
+      empty = index;
+      break;
     }
-    if (entry.handle == handle && entry.trade_id == event.trade_id) {
+    if (entry.state == 2) {
+      if (tombstone == missing) tombstone = index;
+      index = (index + 1) & mask;
+      continue;
+    }
+    const bool live = orders_.Lookup(entry.handle) != nullptr;
+    if (live && entry.handle == handle && entry.trade_id == event.trade_id) {
       return entry.quantity == event.fill_quantity.value &&
                      entry.price == event.fill_price.value
                  ? api::Error::Duplicate
                  : api::Error::ProtocolConflict;
     }
+    if (!live && stale == missing) stale = index;
     index = (index + 1) & mask;
+  }
+  if (stale != missing) {
+    insert_slot = stale;
+    return api::Error::Ok;
+  }
+  if (tombstone != missing) {
+    insert_slot = tombstone;
+    return api::Error::Ok;
+  }
+  if (empty != missing) {
+    insert_slot = empty;
+    return api::Error::Ok;
   }
   return api::Error::CapacityExceeded;
 }
@@ -292,7 +339,11 @@ api::Error StateEngine::Apply(const api::VenueEvent& event,
         record->inflight = api::InflightAction::None;
         changed = true;
       }
-      if (!changed) return api::Error::Ok;
+      if (!changed) {
+        ObserveTerminal(handle);
+        return api::Error::Ok;
+      }
+      ObserveTerminal(handle);
       EmitOrder(api::UpdateType::Accepted, handle, *record, sink);
       return api::Error::Ok;
       }
@@ -305,6 +356,7 @@ api::Error StateEngine::Apply(const api::VenueEvent& event,
         return api::Error::ProtocolConflict;
       record->status = api::OrderStatus::Rejected;
       record->inflight = api::InflightAction::None;
+      ObserveTerminal(handle);
       EmitOrder(api::UpdateType::Rejected, handle, *record, sink);
       return api::Error::Ok;
 
@@ -316,6 +368,7 @@ api::Error StateEngine::Apply(const api::VenueEvent& event,
         return api::Error::InvalidTransition;
       record->status = api::OrderStatus::Canceled;
       record->inflight = api::InflightAction::None;
+      ObserveTerminal(handle);
       EmitOrder(api::UpdateType::Canceled, handle, *record, sink);
       return api::Error::Ok;
 
@@ -337,6 +390,7 @@ api::Error StateEngine::Apply(const api::VenueEvent& event,
         return api::Error::ProtocolConflict;
       record->status = api::OrderStatus::Expired;
       record->inflight = api::InflightAction::None;
+      ObserveTerminal(handle);
       EmitOrder(api::UpdateType::Expired, handle, *record, sink);
       return api::Error::Ok;
 
@@ -365,6 +419,7 @@ api::Error StateEngine::Apply(const api::VenueEvent& event,
         return api::Error::Ok;
       record->status = event.reconciled_status;
       record->inflight = api::InflightAction::None;
+      ObserveTerminal(handle);
       EmitOrder(api::UpdateType::Reconciled, handle, *record, sink);
       return api::Error::Ok;
 
@@ -431,6 +486,7 @@ api::Error StateEngine::Apply(const api::VenueEvent& event,
     if (record->status == api::OrderStatus::Filled)
       record->inflight = api::InflightAction::None;
   }
+  ObserveTerminal(handle);
   RecordFill(fill_slot, handle, event);
 
   if (sink.on_fill != nullptr) {

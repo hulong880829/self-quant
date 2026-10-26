@@ -230,12 +230,19 @@ func TestCreateArbitrageCombinationMapsFunding8hFloor(t *testing.T) {
 type readOnlyTrader struct {
 	fakeTrader
 	preflight trader.ArbitragePreflight
+	increase  trader.IncreaseTargetPreflight
 }
 
 func (r readOnlyTrader) PreflightArbitrageCombination(
 	context.Context, trader.CreateArbitrageInput,
 ) (trader.ArbitragePreflight, error) {
 	return r.preflight, nil
+}
+
+func (r readOnlyTrader) PreflightIncreaseTarget(
+	context.Context, string, string, string,
+) (trader.IncreaseTargetPreflight, error) {
+	return r.increase, nil
 }
 
 func (r readOnlyTrader) ListArbitrageCombinationOrders(
@@ -277,6 +284,65 @@ func TestPreflightArbitrageCombinationMapping(t *testing.T) {
 		len(response.GetWarnings()) != 1 ||
 		response.GetExpiresAt().AsTime().Sub(response.GetCheckedAt().AsTime()) != 3*time.Second {
 		t.Fatalf("response=%+v err=%v", response, err)
+	}
+}
+
+func TestPreflightEmptyStatusBecomesUnknown(t *testing.T) {
+	server := NewTraderServer(readOnlyTrader{
+		preflight: trader.ArbitragePreflight{LegA: trader.PreflightLeg{
+			RequiredMargin: trader.PreflightDecimal{Unit: "USD_EQUIVALENT"},
+			EstimatedFee:   trader.PreflightDecimal{},
+			MinQuantity:    trader.PreflightDecimal{Value: "1", Status: "known", Unit: "BTC"},
+		}},
+		increase: trader.IncreaseTargetPreflight{
+			TargetNotionalUnit: "USD_EQUIVALENT",
+			LegA: trader.IncreaseTargetLeg{
+				IncrementalQuantityUnit: "BTC",
+				EstimatedFee:            trader.PreflightDecimal{},
+				IncrementalMargin:       trader.PreflightDecimal{Unit: "USD_EQUIVALENT"},
+			},
+			Warnings: []trader.PreflightWarning{{
+				Code: "margin_unknown", Leg: "a", Exchange: "hyperliquid",
+				Details: map[string]string{
+					"reason": "margin_preview_unavailable", "unit": "USD_EQUIVALENT",
+				},
+			}},
+		},
+	})
+	created, err := server.PreflightArbitrageCombination(
+		context.Background(), &traderv1.PreflightArbitrageCombinationRequest{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPreflightStatus(t, created.GetLegA().GetRequiredMargin(), "", "unknown", "USD_EQUIVALENT")
+	assertPreflightStatus(t, created.GetLegA().GetEstimatedFee(), "", "unknown", "")
+	assertPreflightStatus(t, created.GetLegA().GetMinQuantity(), "1", "known", "BTC")
+	assertPreflightStatus(t, created.GetLegB().GetAvailableFunds(), "", "unknown", "")
+	increased, err := server.PreflightIncreaseTarget(
+		context.Background(), &traderv1.PreflightIncreaseTargetRequest{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if increased.GetTargetNotionalUnit() != "USD_EQUIVALENT" ||
+		increased.GetLegA().GetIncrementalQuantityUnit() != "BTC" {
+		t.Fatalf("increase=%+v", increased)
+	}
+	assertPreflightStatus(t, increased.GetLegA().GetEstimatedFee(), "", "unknown", "")
+	assertPreflightStatus(t, increased.GetLegA().GetIncrementalMargin(), "", "unknown", "USD_EQUIVALENT")
+	warning := increased.GetWarnings()[0]
+	if warning.GetDetails()["reason"] != "margin_preview_unavailable" ||
+		warning.GetDetails()["unit"] != "USD_EQUIVALENT" {
+		t.Fatalf("warning=%+v", warning)
+	}
+}
+
+func assertPreflightStatus(t *testing.T, got *traderv1.PreflightDecimal, value, status, unit string) {
+	t.Helper()
+	if got.GetValue() != value || got.GetStatus() != status || got.GetUnit() != unit ||
+		(got.GetStatus() != "known" && got.GetStatus() != "unknown") {
+		t.Fatalf("decimal=%+v want value=%s status=%s unit=%s", got, value, status, unit)
 	}
 }
 

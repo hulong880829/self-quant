@@ -56,7 +56,11 @@ func (s *Service) ListArbitrageCombinationOrders(
 	if err != nil {
 		return nil, "", err
 	}
-	return store.ListArbitrageOrderHistory(ctx, owner, combinationID, normalized)
+	items, next, err := store.ListArbitrageOrderHistory(ctx, owner, combinationID, normalized)
+	if err != nil {
+		return nil, "", err
+	}
+	return s.AttachOrderFillSummaries(ctx, items), next, nil
 }
 
 func (s *Service) ListArbitrageCombinationExecutions(

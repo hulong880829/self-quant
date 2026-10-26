@@ -26,6 +26,12 @@ bool ValidIdentity(const AdapterIdentity& identity) noexcept {
     case AdapterKind::Fake:
       return identity.venue == utils::md::Venue::Unknown &&
              identity.product_type == utils::md::ProductType::Unknown;
+    case AdapterKind::Hyperliquid:
+      return identity.venue == utils::md::Venue::Hyperliquid &&
+             identity.product_type == utils::md::ProductType::Unknown;
+    case AdapterKind::Ibkr:
+      return identity.venue == utils::md::Venue::Ibkr &&
+             identity.product_type == utils::md::ProductType::Unknown;
   }
   return false;
 }
@@ -64,6 +70,12 @@ AdapterKind AdapterRouter::route_kind(
   if (instrument.venue == utils::md::Venue::Polymarket &&
       instrument.product_type == utils::md::ProductType::BinaryOption)
     return AdapterKind::Polymarket;
+  if (instrument.venue == utils::md::Venue::Hyperliquid &&
+      (instrument.product_type == utils::md::ProductType::Spot ||
+       instrument.product_type == utils::md::ProductType::Perpetual))
+    return AdapterKind::Hyperliquid;
+  if (instrument.venue == utils::md::Venue::Ibkr)
+    return AdapterKind::Ibkr;
   return AdapterKind::Fake;
 }
 
@@ -81,6 +93,32 @@ TradeAdapter* AdapterRouter::route(
 const TradeAdapter* AdapterRouter::route(
     const utils::md::Instrument& instrument) const noexcept {
   return const_cast<AdapterRouter*>(this)->route(instrument);
+}
+
+AdapterKind AdapterRouter::route_kind(
+    const api::ResolvedInstrument& routing) noexcept {
+  if (routing.kind == api::ExecutionRouteKind::Ibkr)
+    return AdapterKind::Ibkr;
+  if (routing.kind == api::ExecutionRouteKind::Polymarket)
+    return AdapterKind::Polymarket;
+  utils::md::Instrument instrument{};
+  instrument.venue = static_cast<utils::md::Venue>(routing.venue);
+  instrument.product_type =
+      static_cast<utils::md::ProductType>(routing.product_type);
+  return route_kind(instrument);
+}
+
+TradeAdapter* AdapterRouter::route(
+    const api::ResolvedInstrument& routing) noexcept {
+  const AdapterKind kind = route_kind(routing);
+  if (TradeAdapter* adapter = find(kind); adapter != nullptr) return adapter;
+  if (kind == AdapterKind::Fake) return nullptr;
+  return find(AdapterKind::Fake);
+}
+
+const TradeAdapter* AdapterRouter::route(
+    const api::ResolvedInstrument& routing) const noexcept {
+  return const_cast<AdapterRouter*>(this)->route(routing);
 }
 
 }  // namespace oms::exchange

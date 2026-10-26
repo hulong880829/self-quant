@@ -71,12 +71,36 @@ struct PolymarketExecutionConfig {
   void* credential_context{};
 };
 
+struct HyperliquidExecutionConfig {
+  AccountId account_id{};
+  bool enabled{};
+  VenueEndpointOverrides endpoints{};
+  std::string_view private_key{};
+  std::string_view account_address{};
+  std::string_view vault_address{};
+  std::string_view strategy_instance{};
+};
+
+struct IbkrExecutionConfig {
+  AccountId account_id{};
+  bool enabled{};
+  EndpointOverride gateway{};
+  int client_id{-1};
+  std::string_view account{};
+  std::size_t order_capacity{0};
+  std::size_t exec_capacity{0};
+  std::size_t query_waiter_capacity{0};
+  std::string_view strategy_instance{};
+};
+
 struct ExecutionChannelConfig {
   RuntimeConfig runtime{};
   TransportSocketConfig socket{};
   BinanceExecutionConfig binance_spot{};
   BinanceExecutionConfig binance_usdm{};
   PolymarketExecutionConfig polymarket{};
+  HyperliquidExecutionConfig hyperliquid{};
+  IbkrExecutionConfig ibkr{};
   std::uint32_t event_budget{64};
 };
 
@@ -108,10 +132,15 @@ class ExecutionChannel {
   Result<RequestToken> cancel_order(std::uint32_t lane_id,
                                     RequestToken target,
                                     OrderHandle handle = {}) noexcept;
+  Result<RequestToken> cancel_venue_order(
+      std::uint32_t lane_id, CancelVenueOrderRequest request) noexcept;
   Result<RequestToken> register_instrument(
       std::uint32_t lane_id, RegisterInstrumentRequest request) noexcept;
   Result<RequestToken> retire_instrument(std::uint32_t lane_id,
                                          InstrumentId instrument_id) noexcept;
+  Result<RequestToken> retire_instrument(
+      std::uint32_t lane_id, InstrumentId instrument_id,
+      InstrumentRetirementMode mode) noexcept;
   Result<QueryToken> query_open_orders(std::uint32_t lane_id,
                                       AccountId account_id) noexcept;
   Result<QueryToken> query_open_orders(std::uint32_t lane_id,
@@ -120,6 +149,10 @@ class ExecutionChannel {
                                     AccountId account_id) noexcept;
   Result<QueryToken> query_positions(std::uint32_t lane_id,
                                      QueryRequest request) noexcept;
+  Result<QueryToken> query_balances(std::uint32_t lane_id,
+                                   AccountId account_id) noexcept;
+  Result<QueryToken> query_balances(std::uint32_t lane_id,
+                                   QueryRequest request) noexcept;
   Error service_io(int timeout_ms) noexcept;
   std::size_t drain_updates(std::uint32_t lane_id, UpdateCallback callback,
                             void* context,
@@ -128,6 +161,8 @@ class ExecutionChannel {
   [[nodiscard]] RuntimeMetrics metrics() const noexcept;
   [[nodiscard]] Result<AdapterStatusSnapshot> venue_status(
       exchange::AdapterKind kind) const noexcept;
+  [[nodiscard]] bool instrument_ready(
+      const ResolvedInstrument& routing) const noexcept;
   Error reconcile(exchange::AdapterKind kind) noexcept;
   Error shutdown() noexcept;
 

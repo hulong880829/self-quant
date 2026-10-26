@@ -164,6 +164,81 @@ func (r *Repository) ListByOwnerAccount(
 	return result, next, nil
 }
 
+func (r *Repository) AttachOrderFillSummaries(ctx context.Context, orders []Order) ([]Order, error) {
+	if len(orders) == 0 {
+		return orders, nil
+	}
+	ids := make([]string, 0, len(orders))
+	byID := make(map[string]int, len(orders))
+	for index, order := range orders {
+		orders[index].LiquidityRole = "unknown"
+		if strings.TrimSpace(order.ID) == "" {
+			continue
+		}
+		ids = append(ids, order.ID)
+		byID[order.ID] = index
+	}
+	if len(ids) == 0 {
+		return orders, nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		WITH fills AS (
+			SELECT order_id, executed_at, fee_amount, fee_currency, liquidity_role
+			FROM trader_order_fills
+			WHERE order_id::text = ANY($1::text[])
+		)
+		SELECT facts.order_id, facts.last_filled_at, facts.maker_count, facts.taker_count,
+		       facts.other_count, fees.currency, fees.amount
+		FROM (
+			SELECT order_id::text AS order_id,
+			       MAX(executed_at) AS last_filled_at,
+			       COUNT(*) FILTER (WHERE liquidity_role='maker') AS maker_count,
+			       COUNT(*) FILTER (WHERE liquidity_role='taker') AS taker_count,
+			       COUNT(*) FILTER (
+			           WHERE COALESCE(liquidity_role, '') NOT IN ('maker', 'taker')
+			       ) AS other_count
+			FROM fills
+			GROUP BY order_id
+		) facts
+		LEFT JOIN (
+			SELECT order_id::text AS order_id,
+			       upper(fee_currency) AS currency,
+			       SUM(fee_amount)::text AS amount
+			FROM fills
+			WHERE fee_amount IS NOT NULL AND btrim(COALESCE(fee_currency, '')) <> ''
+			GROUP BY order_id, upper(fee_currency)
+		) fees ON fees.order_id = facts.order_id`, ids)
+	if err != nil {
+		return orders, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var orderID string
+		var currency, amount *string
+		var lastFilledAt *time.Time
+		var makerCount, takerCount, otherCount int64
+		if err := rows.Scan(
+			&orderID, &lastFilledAt, &makerCount, &takerCount, &otherCount, &currency, &amount,
+		); err != nil {
+			return orders, err
+		}
+		index, ok := byID[orderID]
+		if !ok {
+			continue
+		}
+		if lastFilledAt != nil {
+			orders[index].LastFilledAt = *lastFilledAt
+		}
+		orders[index].LiquidityRole = orderLiquidityRole(int(makerCount), int(takerCount), int(otherCount))
+		if currency != nil && amount != nil && *currency != "" && *amount != "" {
+			orders[index].ActualFees = append(orders[index].ActualFees, OrderActualFee{
+				Amount: *amount, Currency: *currency,
+			})
+		}
+	}
+	return orders, rows.Err()
+}
+
 func (r *Repository) UpdateResult(ctx context.Context, orderID string, result VenueResult) (Order, error) {
 	updated, _, err := r.UpdateResultWithFillDelta(ctx, orderID, result)
 	return updated, err
@@ -296,16 +371,18 @@ func (r *Repository) applyOrderUpdate(
 		if !fill.ExecutedAt.IsZero() {
 			executedAt = fill.ExecutedAt
 		}
+		feeAmount, feeCurrency, liquidityRole := normalizeStoredFillFee(fill)
 		var inserted int
 		err = tx.QueryRow(ctx, `
 			INSERT INTO trader_order_fills(
 				order_id,trading_account_id,exchange,venue_order_id,trade_id,
-				quantity,price,executed_at
-			) VALUES($1::uuid,$2,$3,$4,$5,$6::numeric,$7::numeric,$8)
+				quantity,price,executed_at,fee_amount,fee_currency,liquidity_role
+			) VALUES($1::uuid,$2,$3,$4,$5,$6::numeric,$7::numeric,$8,$9::numeric,$10,$11)
 			ON CONFLICT (trading_account_id,exchange,venue_order_id,trade_id) DO NOTHING
 			RETURNING 1`,
 			current.ID, current.TradingAccountID, current.Exchange, venueOrderID,
 			fill.TradeID, quantity.String(), price.String(), executedAt,
+			feeAmount, feeCurrency, liquidityRole,
 		).Scan(&inserted)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue

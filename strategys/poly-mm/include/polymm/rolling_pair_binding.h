@@ -40,6 +40,12 @@ struct ActiveWindow {
   strategyframe::InstrumentCatalogInfo down{};
 };
 
+[[nodiscard]] inline bool same_market_condition(
+    const strategyframe::ConditionId& up,
+    const strategyframe::ConditionId& down) noexcept {
+  return up.length != 0 && up == down;
+}
+
 enum class CatalogAdmit : std::uint8_t {
   Ignored = 0,
   Cached = 1,

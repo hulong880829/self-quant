@@ -390,6 +390,11 @@ OrderSigningContext::OrderSigningContext(
 
 OrderSigningContext::~OrderSigningContext() noexcept { delete impl_; }
 
+CryptoResult OrderSigningContext::SignRecoverable(
+    const Bytes32& digest, std::array<std::uint8_t, 65>& signature) noexcept {
+  return SignDigest(digest, signature);
+}
+
 CryptoResult OrderSigningContext::status() const noexcept { return status_; }
 
 const Address& OrderSigningContext::signer_address() const noexcept {

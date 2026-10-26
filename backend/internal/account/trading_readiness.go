@@ -58,11 +58,11 @@ func (s *Service) inspectRecord(
 	record TradingAccountRecord,
 ) (TradingReadiness, error) {
 	ready := TradingReadiness{
-		TradingAccountID:   record.ID,
-		Exchange:           record.Exchange,
-		CredentialsPresent: len(record.APIKeyEnc) > 0 && len(record.APISecretEnc) > 0,
-		TradingMode:        resolvedCredentialKind(record),
-		TradingStatus:      TradingStatusChecking,
+		TradingAccountID:     record.ID,
+		Exchange:             record.Exchange,
+		CredentialsPresent:   len(record.APIKeyEnc) > 0 && len(record.APISecretEnc) > 0,
+		TradingMode:          resolvedCredentialKind(record),
+		TradingStatus:        TradingStatusChecking,
 		ResolvedAccountIndex: record.AccountIndex,
 	}
 	if record.APIKeyIndex != nil {

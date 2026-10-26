@@ -4199,6 +4199,8 @@ func (e *ArbitrageExecutor) applyOrderStreamUpdate(
 		streamUpdate.Fills = []OrderFill{{
 			TradeID: update.TradeID, Quantity: fillQuantity.String(),
 			Price: fillPrice, ExecutedAt: update.EventTime,
+			FeeAmount: update.FeeAmount, FeeCurrency: update.FeeCurrency,
+			LiquidityRole: update.LiquidityRole,
 		}}
 	}
 	updated, err := e.orders.ApplyStreamUpdate(ctx, order.ID, streamUpdate)

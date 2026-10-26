@@ -236,10 +236,10 @@ func (r *Repository) FinalizeConfirmedAbsentZeroFillExecution(
 		return "", err
 	}
 
-	encoded, err := json.Marshal(redactPayload(map[string]any{
+	encoded, err := json.Marshal(withEventSchema(redactPayload(map[string]any{
 		"reason": "confirmed_absent_zero_fill",
 		"result": string(outcome),
-	}))
+	})))
 	if err != nil {
 		return "", err
 	}

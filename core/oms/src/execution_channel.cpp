@@ -15,6 +15,11 @@
 
 #include "net/tls_websocket.h"
 #include "oms/exchange/binance/trade_adapter.h"
+#include "oms/exchange/hyperliquid/trade_adapter.h"
+#include "oms/exchange/ibkr/trade_adapter.h"
+#if defined(OMS_HAS_IBKR)
+#include "oms/exchange/ibkr/tws_exec_client.h"
+#endif
 #include "oms/exchange/live_transport.h"
 #include "oms/exchange/polymarket/trade_adapter.h"
 
@@ -51,6 +56,8 @@ constexpr EndpointDefaults kBinanceUsdmEndpoints{
 constexpr EndpointDefaults kPolymarketEndpoints{
     "clob.polymarket.com", "443", "ws-subscriptions-clob.polymarket.com",
     "443", {}, {}};
+constexpr EndpointDefaults kHyperliquidEndpoints{
+    "api.hyperliquid.xyz", "443", "api.hyperliquid.xyz", "443", {}, {}};
 constexpr std::string_view kPolymarketDataHost = "data-api.polymarket.com";
 constexpr std::string_view kPolymarketDataService = "443";
 
@@ -89,6 +96,8 @@ struct SecretStore {
   BinanceSecrets spot;
   BinanceSecrets usdm;
   PolymarketSecrets polymarket;
+  SecretText hyperliquid_key;
+  std::string ibkr_account;
 };
 
 bool HasControl(std::string_view value) noexcept {
@@ -285,6 +294,14 @@ struct ExecutionChannel::Impl {
   std::unique_ptr<BinanceTradeAdapter> spot_adapter;
   std::unique_ptr<BinanceTradeAdapter> usdm_adapter;
   std::unique_ptr<PolymarketTradeAdapter> polymarket_adapter;
+  std::unique_ptr<LiveTransport> hyperliquid_transport;
+  std::unique_ptr<exchange::hyperliquid::HyperliquidTradeAdapter>
+      hyperliquid_adapter;
+  std::unique_ptr<exchange::ibkr::IbkrTradeAdapter> ibkr_adapter;
+#if defined(OMS_HAS_IBKR)
+  std::unique_ptr<exchange::ibkr::TwsExecClient> ibkr_client;
+  std::unique_ptr<exchange::ibkr::IbkrWakeDriver> ibkr_wake;
+#endif
   std::unique_ptr<OmsApi> api;
 };
 
@@ -308,10 +325,15 @@ Result<std::unique_ptr<ExecutionChannel>> ExecutionChannel::Create(
 Result<std::unique_ptr<ExecutionChannel>> ExecutionChannel::Create(
     const ExecutionChannelConfig& config,
     std::span<const InstrumentInit> instruments) {
+#if !defined(OMS_HAS_IBKR)
+  if (config.ibkr.enabled) return {{}, Error::Unsupported};
+#endif
   const std::size_t adapter_count =
       static_cast<std::size_t>(config.binance_spot.enabled) +
       static_cast<std::size_t>(config.binance_usdm.enabled) +
-      static_cast<std::size_t>(config.polymarket.enabled);
+      static_cast<std::size_t>(config.polymarket.enabled) +
+      static_cast<std::size_t>(config.hyperliquid.enabled) +
+      static_cast<std::size_t>(config.ibkr.enabled);
   if (adapter_count == 0 ||
       adapter_count > exchange::kMaxTradeAdapters ||
       config.event_budget == 0 || instruments.empty() ||
@@ -388,9 +410,9 @@ Result<std::unique_ptr<ExecutionChannel>> ExecutionChannel::Create(
     impl->ssl_context = net::make_client_ssl_context(ssl_error);
     if (!impl->ssl_context) return {{}, Error::NotReady};
 
-    std::array<TradeAdapter*, 3> adapters{};
-    std::array<AsyncIoDriver*, 6> drivers{};
-    std::array<AdapterRuntimeConfig::AccountRoute, 3> account_routes{};
+    std::array<TradeAdapter*, 5> adapters{};
+    std::array<AsyncIoDriver*, 8> drivers{};
+    std::array<AdapterRuntimeConfig::AccountRoute, 5> account_routes{};
     std::size_t adapter_index = 0;
     std::size_t driver_index = 0;
 
@@ -495,6 +517,95 @@ Result<std::unique_ptr<ExecutionChannel>> ExecutionChannel::Create(
       drivers[driver_index++] = impl->polymarket_data_transport.get();
     }
 
+    if (config.hyperliquid.enabled) {
+      if (config.hyperliquid.account_id == 0 ||
+          !ValidSecret(config.hyperliquid.private_key)) {
+        return {{}, Error::InvalidArgument};
+      }
+      Config hyperliquid_transport_config{};
+      hyperliquid_transport_config.socket_options = socket_options;
+      if (!MakeTransportConfig(config.hyperliquid.endpoints,
+                               kHyperliquidEndpoints,
+                               hyperliquid_transport_config)) {
+        return {{}, Error::InvalidArgument};
+      }
+      impl->secrets.hyperliquid_key.assign(config.hyperliquid.private_key);
+      impl->hyperliquid_transport = std::make_unique<LiveTransport>(
+          impl->ssl_context, std::move(hyperliquid_transport_config));
+      exchange::hyperliquid::WireConfig wire;
+      wire.private_key = impl->secrets.hyperliquid_key.view();
+      wire.account_address = config.hyperliquid.account_address;
+      wire.vault_address = config.hyperliquid.vault_address;
+      wire.strategy_instance = config.hyperliquid.strategy_instance;
+      const std::string_view rest_host =
+          config.hyperliquid.endpoints.rest.host.empty()
+              ? kHyperliquidEndpoints.rest_host
+              : config.hyperliquid.endpoints.rest.host;
+      wire.mainnet = rest_host.find("testnet") == std::string_view::npos;
+      wire.transport = impl->hyperliquid_transport.get();
+      impl->hyperliquid_adapter =
+          std::make_unique<exchange::hyperliquid::HyperliquidTradeAdapter>(
+              wire);
+      if (impl->hyperliquid_adapter->status() ==
+          exchange::AdapterStatus::Failed) {
+        return {{}, Error::InvalidArgument};
+      }
+      adapters[adapter_index++] = impl->hyperliquid_adapter.get();
+      account_routes[adapter_index - 1] = {
+          config.hyperliquid.account_id,
+          exchange::AdapterKind::Hyperliquid};
+      drivers[driver_index++] = impl->hyperliquid_transport.get();
+    }
+
+    if (config.ibkr.enabled) {
+#if !defined(OMS_HAS_IBKR)
+      return {{}, Error::Unsupported};
+#else
+      if (config.ibkr.account_id == 0 ||
+          exchange::ibkr::client_id_conflicts(config.ibkr.client_id) ||
+          config.ibkr.account.empty() || config.ibkr.strategy_instance.empty() ||
+          config.ibkr.gateway.host.empty()) {
+        return {{}, Error::InvalidArgument};
+      }
+      impl->secrets.ibkr_account.assign(config.ibkr.account.begin(),
+                                        config.ibkr.account.end());
+      impl->ibkr_adapter = std::make_unique<exchange::ibkr::IbkrTradeAdapter>(
+          config.ibkr.client_id, impl->secrets.ibkr_account,
+          config.ibkr.strategy_instance);
+      if (impl->ibkr_adapter->status() == exchange::AdapterStatus::Failed) {
+        return {{}, Error::InvalidArgument};
+      }
+      const std::string gateway_service =
+          config.ibkr.gateway.service.empty()
+              ? std::string("4002")
+              : std::string(config.ibkr.gateway.service);
+      if (!ValidHost(config.ibkr.gateway.host) ||
+          !ValidService(gateway_service)) {
+        return {{}, Error::InvalidArgument};
+      }
+      int port = 0;
+      const auto parsed = std::from_chars(
+          gateway_service.data(), gateway_service.data() + gateway_service.size(),
+          port);
+      if (parsed.ec != std::errc{} || port <= 0) return {{}, Error::InvalidArgument};
+      impl->ibkr_client = std::make_unique<exchange::ibkr::TwsExecClient>();
+      impl->ibkr_adapter->attach_client(impl->ibkr_client.get());
+      if (config.ibkr.order_capacity > 64 || config.ibkr.exec_capacity > 128 ||
+          config.ibkr.query_waiter_capacity > 8) {
+        return {{}, Error::InvalidArgument};
+      }
+      impl->ibkr_adapter->configure_gateway(
+          std::string(config.ibkr.gateway.host), port, config.ibkr.order_capacity,
+          config.ibkr.exec_capacity, config.ibkr.query_waiter_capacity);
+      impl->ibkr_wake =
+          std::make_unique<exchange::ibkr::IbkrWakeDriver>(*impl->ibkr_client);
+      adapters[adapter_index++] = impl->ibkr_adapter.get();
+      account_routes[adapter_index - 1] = {config.ibkr.account_id,
+                                           exchange::AdapterKind::Ibkr};
+      drivers[driver_index++] = impl->ibkr_wake.get();
+#endif
+    }
+
     AdapterRuntimeConfig adapter_config{};
     adapter_config.adapters =
         std::span<TradeAdapter* const>(adapters.data(), adapter_index);
@@ -531,6 +642,11 @@ Result<RequestToken> ExecutionChannel::cancel_order(
   return impl_->api->cancel_order(lane_id, target, handle);
 }
 
+Result<RequestToken> ExecutionChannel::cancel_venue_order(
+    std::uint32_t lane_id, CancelVenueOrderRequest request) noexcept {
+  return impl_->api->cancel_venue_order(lane_id, request);
+}
+
 Result<RequestToken> ExecutionChannel::register_instrument(
     std::uint32_t lane_id, RegisterInstrumentRequest request) noexcept {
   return impl_->api->register_instrument(lane_id, request);
@@ -539,6 +655,12 @@ Result<RequestToken> ExecutionChannel::register_instrument(
 Result<RequestToken> ExecutionChannel::retire_instrument(
     std::uint32_t lane_id, InstrumentId instrument_id) noexcept {
   return impl_->api->retire_instrument(lane_id, instrument_id);
+}
+
+Result<RequestToken> ExecutionChannel::retire_instrument(
+    std::uint32_t lane_id, InstrumentId instrument_id,
+    InstrumentRetirementMode mode) noexcept {
+  return impl_->api->retire_instrument(lane_id, instrument_id, mode);
 }
 
 Result<QueryToken> ExecutionChannel::query_open_orders(
@@ -559,6 +681,16 @@ Result<QueryToken> ExecutionChannel::query_positions(
 Result<QueryToken> ExecutionChannel::query_positions(
     std::uint32_t lane_id, QueryRequest request) noexcept {
   return impl_->api->query_positions(lane_id, request);
+}
+
+Result<QueryToken> ExecutionChannel::query_balances(
+    std::uint32_t lane_id, AccountId account_id) noexcept {
+  return impl_->api->query_balances(lane_id, account_id);
+}
+
+Result<QueryToken> ExecutionChannel::query_balances(
+    std::uint32_t lane_id, QueryRequest request) noexcept {
+  return impl_->api->query_balances(lane_id, request);
 }
 
 Error ExecutionChannel::service_io(int timeout_ms) noexcept {
@@ -582,6 +714,11 @@ RuntimeMetrics ExecutionChannel::metrics() const noexcept {
 Result<AdapterStatusSnapshot> ExecutionChannel::venue_status(
     exchange::AdapterKind kind) const noexcept {
   return impl_->api->adapter_status(kind);
+}
+
+bool ExecutionChannel::instrument_ready(
+    const ResolvedInstrument& routing) const noexcept {
+  return impl_->api->instrument_ready(routing);
 }
 
 Error ExecutionChannel::reconcile(exchange::AdapterKind kind) noexcept {

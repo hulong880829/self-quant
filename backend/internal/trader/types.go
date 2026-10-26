@@ -45,8 +45,8 @@ var (
 	ErrArbitrageLastCloseClipUnbalancedConflict = errors.New(
 		"last close clip unbalanced conflict",
 	)
-	ErrCloseOrderOpen      = errors.New("close order remains open")
-	ErrCloseOrderUncertain = errors.New("close order state uncertain")
+	ErrCloseOrderOpen       = errors.New("close order remains open")
+	ErrCloseOrderUncertain  = errors.New("close order state uncertain")
 	ErrFinalMetricsNotReady = errors.New("final_metrics_not_ready")
 	ErrFinalMetricsPersist  = errors.New("final_metrics_persist_failed")
 )
@@ -183,6 +183,16 @@ type Order struct {
 	ArbitrageRole        string
 	ReduceOnly           bool
 	AbsenceConfirmations int
+	LastFilledAt         time.Time
+	ActualFees           []OrderActualFee
+	LiquidityRole        string
+}
+
+// OrderActualFee is one currency total of per-trade fees. Amount is positive
+// for cost and negative for maker rebate.
+type OrderActualFee struct {
+	Amount   string
+	Currency string
 }
 
 type PlaceOrderInput struct {
@@ -250,10 +260,13 @@ type VenueResult struct {
 // OrderFill identifies one venue execution. TradeID is scoped by account,
 // exchange, and venue order ID.
 type OrderFill struct {
-	TradeID    string
-	Quantity   string
-	Price      string
-	ExecutedAt time.Time
+	TradeID       string
+	Quantity      string
+	Price         string
+	ExecutedAt    time.Time
+	FeeAmount     string
+	FeeCurrency   string
+	LiquidityRole string
 }
 
 // StreamUpdate is an order snapshot plus any executions carried by the same

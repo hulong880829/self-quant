@@ -109,12 +109,27 @@ struct OrderManager::Impl {
     FixedText venue_id{};
   };
 
+  struct RecentTerminal {
+    bool used{};
+    AccountId account_id{};
+    InstrumentId instrument_id{};
+    OrderToken token{};
+    OrderStatus status{OrderStatus::Unknown};
+    Side side{Side::Buy};
+    FixedPoint quantity{};
+    FixedPoint cumulative_quantity{};
+    FixedPoint remaining_quantity{};
+  };
+
   explicit Impl(std::size_t requested)
       : capacity(IsPowerOfTwo(requested) ? requested : 2),
         mask(capacity - 1U),
         views(capacity),
         storage(capacity),
-        index(capacity, kEmpty) {}
+        index(capacity, kEmpty),
+        recent(capacity),
+        recent_mask(capacity * 2U - 1U),
+        recent_index(capacity * 2U, kEmpty) {}
 
   [[nodiscard]] std::uint32_t find_index(OrderToken token) const noexcept {
     std::size_t slot = static_cast<std::size_t>(TokenHash(token)) & mask;
@@ -197,12 +212,137 @@ struct OrderManager::Impl {
     --count;
   }
 
+  [[nodiscard]] std::uint32_t find_recent(OrderToken token) const noexcept {
+    std::size_t slot = static_cast<std::size_t>(TokenHash(token)) & recent_mask;
+    for (std::size_t probe = 0; probe < recent_index.size(); ++probe) {
+      const std::uint32_t value = recent_index[slot];
+      if (value == kEmpty) return kEmpty;
+      if (value != kTombstone && value < recent.size() && recent[value].used &&
+          recent[value].token == token)
+        return value;
+      slot = (slot + 1U) & recent_mask;
+    }
+    return kEmpty;
+  }
+
+  [[nodiscard]] bool add_recent_index(OrderToken token,
+                                      std::uint32_t dense) noexcept {
+    std::size_t slot = static_cast<std::size_t>(TokenHash(token)) & recent_mask;
+    std::size_t first_tombstone = recent_index.size();
+    for (std::size_t probe = 0; probe < recent_index.size(); ++probe) {
+      if (recent_index[slot] == kEmpty) {
+        recent_index[first_tombstone == recent_index.size() ? slot
+                                                            : first_tombstone] =
+            dense;
+        return true;
+      }
+      if (recent_index[slot] == kTombstone &&
+          first_tombstone == recent_index.size())
+        first_tombstone = slot;
+      slot = (slot + 1U) & recent_mask;
+    }
+    if (first_tombstone != recent_index.size()) {
+      recent_index[first_tombstone] = dense;
+      return true;
+    }
+    return false;
+  }
+
+  void remove_recent_index(OrderToken token) noexcept {
+    std::size_t slot = static_cast<std::size_t>(TokenHash(token)) & recent_mask;
+    for (std::size_t probe = 0; probe < recent_index.size(); ++probe) {
+      if (recent_index[slot] == kEmpty) return;
+      const std::uint32_t value = recent_index[slot];
+      if (value != kTombstone && value < recent.size() && recent[value].used &&
+          recent[value].token == token) {
+        recent_index[slot] = kTombstone;
+        return;
+      }
+      slot = (slot + 1U) & recent_mask;
+    }
+  }
+
+  void remember_terminal(const OrderView& order) noexcept {
+    if (const std::uint32_t existing = find_recent(order.token);
+        existing != kEmpty) {
+      RecentTerminal& cached = recent[existing];
+      cached.status = order.status;
+      cached.cumulative_quantity = order.cumulative_quantity;
+      cached.remaining_quantity = order.remaining_quantity;
+      return;
+    }
+    const auto slot = static_cast<std::uint32_t>(recent_next % capacity);
+    if (recent[slot].used) {
+      remove_recent_index(recent[slot].token);
+      ++terminal_overwrites;
+    }
+    RecentTerminal cached{};
+    cached.used = true;
+    cached.account_id = order.account_id;
+    cached.instrument_id = order.instrument_id;
+    cached.token = order.token;
+    cached.status = order.status;
+    cached.side = order.side;
+    cached.quantity = order.quantity;
+    cached.cumulative_quantity = order.cumulative_quantity;
+    cached.remaining_quantity = order.remaining_quantity;
+    recent[slot] = cached;
+    (void)add_recent_index(order.token, slot);
+    recent_next = (recent_next + 1U) % capacity;
+  }
+
+  [[nodiscard]] static OrderView recent_view(const RecentTerminal& cached) noexcept {
+    OrderView view{};
+    view.account_id = cached.account_id;
+    view.instrument_id = cached.instrument_id;
+    view.token = cached.token;
+    view.status = cached.status;
+    view.side = cached.side;
+    view.quantity = cached.quantity;
+    view.cumulative_quantity = cached.cumulative_quantity;
+    view.remaining_quantity = cached.remaining_quantity;
+    return view;
+  }
+
+  [[nodiscard]] Error apply_recent(const ExecutionUpdate& update) noexcept {
+    const std::uint32_t slot = find_recent(update.token);
+    if (slot == kEmpty) return Error::NotFound;
+    RecentTerminal& cached = recent[slot];
+    const bool terminal = update.status == OrderStatus::Filled ||
+                          update.status == OrderStatus::Canceled ||
+                          update.status == OrderStatus::Rejected ||
+                          update.status == OrderStatus::Expired;
+    if (update.kind == ExecutionUpdate::Kind::Fill) {
+      if (update.fill_quantity.value <= 0 ||
+          update.cumulative_quantity.value < cached.cumulative_quantity.value ||
+          update.cumulative_quantity.value > cached.quantity.value ||
+          update.remaining_quantity.value < 0 ||
+          update.remaining_quantity.value !=
+              cached.quantity.value - update.cumulative_quantity.value)
+        return Error::InvalidState;
+      cached.cumulative_quantity = update.cumulative_quantity;
+      cached.remaining_quantity = update.remaining_quantity;
+      if (update.status == OrderStatus::Filled ||
+          update.remaining_quantity.value == 0)
+        cached.status = OrderStatus::Filled;
+      return Error::Ok;
+    }
+    if (!terminal) return Error::InvalidState;
+    cached.status = update.status;
+    return Error::Ok;
+  }
+
   std::size_t capacity;
   std::size_t mask;
   std::size_t count{};
   std::vector<OrderView> views;
   std::vector<Storage> storage;
   std::vector<std::uint32_t> index;
+  std::vector<RecentTerminal> recent;
+  std::size_t recent_mask;
+  std::vector<std::uint32_t> recent_index;
+  std::size_t recent_next{};
+  std::uint64_t terminal_overwrites{};
 };
 
 OrderManager::OrderManager(std::size_t capacity)
@@ -217,8 +357,14 @@ std::span<const OrderView> OrderManager::open_orders() const noexcept {
 
 Result<OrderView> OrderManager::find(OrderToken token) const noexcept {
   const std::uint32_t index = impl_->find_index(token);
-  if (index == kEmpty) return {{}, Error::NotFound};
-  return {impl_->views[index], Error::Ok};
+  if (index != kEmpty) return {impl_->views[index], Error::Ok};
+  const std::uint32_t recent = impl_->find_recent(token);
+  if (recent == kEmpty) return {{}, Error::NotFound};
+  return {Impl::recent_view(impl_->recent[recent]), Error::Ok};
+}
+
+std::uint64_t OrderManager::terminal_overwrites() const noexcept {
+  return impl_->terminal_overwrites;
 }
 
 std::size_t OrderManager::size() const noexcept { return impl_->count; }
@@ -288,7 +434,7 @@ Error OrderManager::reconcile_open(const OrderView& order) noexcept {
 
 Error OrderManager::apply(const ExecutionUpdate& update) noexcept {
   const std::uint32_t dense = impl_->find_index(update.token);
-  if (dense == kEmpty) return Error::NotFound;
+  if (dense == kEmpty) return impl_->apply_recent(update);
   OrderView& order = impl_->views[dense];
   const auto refresh_ids = [&]() noexcept {
     if (update.client_order_id.length != 0) {
@@ -326,6 +472,8 @@ Error OrderManager::apply(const ExecutionUpdate& update) noexcept {
     order.remaining_quantity = update.remaining_quantity;
     if (update.status == OrderStatus::Filled ||
         update.remaining_quantity.value == 0) {
+      order.status = OrderStatus::Filled;
+      impl_->remember_terminal(order);
       impl_->erase(dense);
       return Error::Ok;
     }
@@ -357,6 +505,8 @@ Error OrderManager::apply(const ExecutionUpdate& update) noexcept {
     case OrderStatus::Canceled:
     case OrderStatus::Rejected:
     case OrderStatus::Expired:
+      order.status = update.status;
+      impl_->remember_terminal(order);
       impl_->erase(dense);
       break;
     case OrderStatus::Unknown:
@@ -365,11 +515,23 @@ Error OrderManager::apply(const ExecutionUpdate& update) noexcept {
   return Error::Ok;
 }
 
+void OrderManager::retire_instrument(InstrumentId instrument_id) noexcept {
+  for (std::size_t slot = 0; slot < impl_->recent.size(); ++slot) {
+    auto& cached = impl_->recent[slot];
+    if (!cached.used || cached.instrument_id != instrument_id) continue;
+    impl_->remove_recent_index(cached.token);
+    cached = {};
+  }
+}
+
 void OrderManager::clear() noexcept {
   std::fill(impl_->index.begin(), impl_->index.end(), kEmpty);
   std::fill(impl_->views.begin(), impl_->views.end(), OrderView{});
   std::fill(impl_->storage.begin(), impl_->storage.end(), Impl::Storage{});
+  std::fill(impl_->recent.begin(), impl_->recent.end(), Impl::RecentTerminal{});
+  std::fill(impl_->recent_index.begin(), impl_->recent_index.end(), kEmpty);
   impl_->count = 0;
+  impl_->recent_next = 0;
 }
 
 struct PositionManager::Impl {

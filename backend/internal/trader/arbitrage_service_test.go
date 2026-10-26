@@ -94,8 +94,9 @@ func (c arbitrageServiceCredentials) Meta(ctx context.Context, token string, id 
 
 type arbitrageCaptureStore struct {
 	arbitrageStore
-	item ArbitrageCombination
-	err  error
+	item     ArbitrageCombination
+	err      error
+	liveWork bool
 }
 
 func (s *arbitrageCaptureStore) CreateArbitrageCombination(
@@ -103,6 +104,19 @@ func (s *arbitrageCaptureStore) CreateArbitrageCombination(
 ) (ArbitrageCombination, bool, error) {
 	s.item = item
 	return item, s.err == nil, s.err
+}
+
+func (s *arbitrageCaptureStore) GetArbitrageCombinationByOwner(
+	context.Context, string, string,
+) (ArbitrageCombination, error) {
+	if s.item.ID == "" {
+		return ArbitrageCombination{}, ErrNotFound
+	}
+	return s.item, nil
+}
+
+func (s *arbitrageCaptureStore) HasUnfinishedArbitrageWork(context.Context, string) (bool, error) {
+	return s.liveWork, nil
 }
 
 func (s *arbitrageCaptureStore) GetArbitrageCombinationByIdempotencyKey(
@@ -440,6 +454,7 @@ func TestPreflightArbitrageCombinationIsReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !result.Executable || result.LegA.RequiredMargin.Value != "260" ||
+		result.LegA.RequiredMargin.Unit != preflightUSDEquivalent ||
 		result.LegA.RoundedBaseQuantity.Value != "10" || result.ExpiresAt.Sub(result.CheckedAt) != 3*time.Second {
 		t.Fatalf("result=%+v", result)
 	}
@@ -462,17 +477,31 @@ func TestPreflightArbitrageCombinationIsReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Executable || result.LegA.RequiredMargin.Status != "unknown" {
+	if !result.Executable || result.LegA.RequiredMargin.Status != "unknown" ||
+		result.LegA.RequiredMargin.Unit != preflightUSDEquivalent ||
+		result.LegB.RequiredMargin.Unit != preflightUSDEquivalent {
 		t.Fatalf("unknown margin result=%+v", result)
 	}
 	foundMarginWarning := false
 	for _, warning := range result.Warnings {
-		if warning.Code == "margin_unknown" && warning.Leg == "a" {
+		if warning.Code == "margin_unknown" && warning.Leg == "a" &&
+			warning.Details["reason"] == "margin_preview_unavailable" &&
+			warning.Details["unit"] == preflightUSDEquivalent {
 			foundMarginWarning = true
+		}
+		if warning.Code == "fee_unknown" &&
+			(warning.Details["reason"] != "fee_estimate_unavailable" || warning.Details["unit"] != "") {
+			t.Fatalf("fee warning=%+v", warning)
 		}
 	}
 	if !foundMarginWarning {
 		t.Fatalf("warnings=%+v", result.Warnings)
+	}
+	if result.LegA.MinNotional.Unit != "USDT" || result.LegA.MinQuantity.Unit != "BEAT" ||
+		result.LegA.QuantityStep.Unit != "BEAT" || result.LegA.RoundedBaseQuantity.Unit != "BEAT" ||
+		result.LegA.AvailableFunds.Unit != preflightUSDEquivalent ||
+		result.LegA.EstimatedFee.Status != "unknown" || result.LegA.EstimatedFee.Unit != "" {
+		t.Fatalf("units=%+v", result.LegA)
 	}
 }
 

@@ -22,7 +22,10 @@ struct OrderRecord {
   api::VenueOrderId venue_order_id{};
   api::OrderStatus status{api::OrderStatus::PendingSubmit};
   api::InflightAction inflight{api::InflightAction::None};
-  std::array<std::uint8_t, 6> reserved{};
+  bool in_terminal{};
+  std::uint8_t reserved[4]{};
+  std::uint32_t terminal_prev{0xffffffffu};
+  std::uint32_t terminal_next{0xffffffffu};
   std::int64_t cumulative_quantity{};
   std::int64_t remaining_quantity{};
   std::int64_t average_price{};
@@ -57,18 +60,38 @@ class OrderTable {
       const OrderRecord& record) const noexcept;
   [[nodiscard]] bool HasActiveOrInflight(
       api::InstrumentId instrument_id) const noexcept;
+  [[nodiscard]] api::OrderHandle FindNonTerminal(
+      api::InstrumentId instrument_id) const noexcept;
 
   api::Error BindVenueId(api::OrderHandle handle,
                          api::VenueOrderId venue_id) noexcept;
+  api::Error MarkTerminal(api::OrderHandle handle) noexcept;
   api::Error Erase(api::OrderHandle handle) noexcept;
+  api::Error EraseTerminalByInstrument(api::InstrumentId instrument_id) noexcept;
+  [[nodiscard]] bool WasRetiredToken(api::RequestToken token) const noexcept;
 
  private:
   struct Impl;
+  struct TerminalLink {
+    std::uint32_t slot{0xffffffffu};
+    std::uint64_t generation{};
+  };
+
+  void UnlinkTerminal(std::uint32_t slot) noexcept;
+  [[nodiscard]] api::Error ReclaimOldestTerminal() noexcept;
+  [[nodiscard]] static bool IsTerminalStatus(api::OrderStatus status) noexcept;
 
   std::vector<OrderRecord> records_;
   std::vector<std::uint32_t> free_slots_;
   std::size_t free_count_{};
   std::size_t size_{};
+  void RememberRetiredToken(api::RequestToken token) noexcept;
+
+  TerminalLink terminal_head_{};
+  TerminalLink terminal_tail_{};
+  std::array<api::RequestToken, 128> retired_tokens_{};
+  std::uint32_t retired_token_count_{};
+  std::uint32_t retired_token_next_{};
   Impl* impl_{};
 };
 

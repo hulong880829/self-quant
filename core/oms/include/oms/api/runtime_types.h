@@ -115,6 +115,7 @@ enum class RuntimeCommandResultKind : std::uint8_t {
   Cancel = 2,
   RegisterInstrument = 3,
   RetireInstrument = 4,
+  CancelVenue = 5,
 };
 
 struct RuntimeCommandResult {
@@ -137,6 +138,7 @@ enum class RuntimeUpdateKind : std::uint8_t {
   OpenOrderSnapshot = 5,
   PositionSnapshot = 6,
   QueryComplete = 7,
+  BalanceSnapshot = 8,
 };
 
 enum class RuntimeControlKind : std::uint8_t {
@@ -166,6 +168,7 @@ struct RuntimeUpdate {
   RuntimeControlUpdate control{};
   OpenOrderSnapshotItem open_order{};
   PositionSnapshotItem position{};
+  BalanceSnapshot balance{};
   QueryComplete query_complete{};
 };
 
@@ -209,6 +212,8 @@ struct RuntimeMetrics {
   DeadlineMetrics deadlines{};
   std::uint64_t unmatched_venue_events{};
   std::uint64_t unmatched_fills{};
+  std::uint64_t late_event_after_retirement{};
+  std::uint64_t unmatched_fill_after_retirement{};
   LaneMetrics lanes[kMaxRuntimeLanes]{};
 };
 
@@ -256,13 +261,13 @@ static_assert(sizeof(RuntimeCommandResult) == 40);
 static_assert(sizeof(RuntimeUpdateKind) == 1);
 static_assert(sizeof(RuntimeControlKind) == 1);
 static_assert(sizeof(RuntimeControlUpdate) == 24);
-static_assert(sizeof(RuntimeUpdate) == 984);
+static_assert(sizeof(RuntimeUpdate) == 1144);
 static_assert(alignof(RuntimeUpdate) == 8);
 static_assert(sizeof(QueueMetrics) == 32);
 static_assert(sizeof(LatencyMetrics) == 32);
 static_assert(sizeof(DeadlineMetrics) == 32);
 static_assert(sizeof(LaneMetrics) == 144);
-static_assert(sizeof(RuntimeMetrics) == 9272);
+static_assert(sizeof(RuntimeMetrics) == 9288);
 
 static_assert(static_cast<std::uint8_t>(ExecutionMode::Inline) == 0);
 static_assert(static_cast<std::uint8_t>(ExecutionMode::DedicatedIo) == 1);
@@ -277,10 +282,20 @@ static_assert(
         RuntimeCommandResultKind::RegisterInstrument) == 3);
 static_assert(static_cast<std::uint8_t>(
                   RuntimeCommandResultKind::RetireInstrument) == 4);
+static_assert(static_cast<std::uint8_t>(
+                  RuntimeCommandResultKind::CancelVenue) == 5);
 static_assert(static_cast<std::uint8_t>(RuntimeUpdateKind::Order) == 1);
 static_assert(static_cast<std::uint8_t>(RuntimeUpdateKind::Fill) == 2);
 static_assert(static_cast<std::uint8_t>(RuntimeUpdateKind::CommandResult) == 3);
 static_assert(static_cast<std::uint8_t>(RuntimeUpdateKind::Control) == 4);
+static_assert(static_cast<std::uint8_t>(
+                  RuntimeUpdateKind::OpenOrderSnapshot) == 5);
+static_assert(static_cast<std::uint8_t>(
+                  RuntimeUpdateKind::PositionSnapshot) == 6);
+static_assert(static_cast<std::uint8_t>(
+                  RuntimeUpdateKind::QueryComplete) == 7);
+static_assert(static_cast<std::uint8_t>(
+                  RuntimeUpdateKind::BalanceSnapshot) == 8);
 static_assert(static_cast<std::uint8_t>(RuntimeControlKind::VenueStatus) == 1);
 static_assert(static_cast<std::uint8_t>(
                   RuntimeControlKind::ReconcileComplete) == 2);

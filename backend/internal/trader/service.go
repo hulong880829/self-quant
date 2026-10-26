@@ -381,7 +381,25 @@ func (s *Service) ListOrders(
 	if _, err := s.credentials.Meta(ctx, token, accountID); err != nil {
 		return nil, "", err
 	}
-	return s.store.ListByOwnerAccount(ctx, owner, accountID, view, limit, cursor)
+	items, next, err := s.store.ListByOwnerAccount(ctx, owner, accountID, view, limit, cursor)
+	if err != nil {
+		return nil, "", err
+	}
+	return s.AttachOrderFillSummaries(ctx, items), next, nil
+}
+
+func (s *Service) AttachOrderFillSummaries(ctx context.Context, orders []Order) []Order {
+	attacher, ok := s.store.(interface {
+		AttachOrderFillSummaries(context.Context, []Order) ([]Order, error)
+	})
+	if !ok || len(orders) == 0 {
+		return orders
+	}
+	attached, err := attacher.AttachOrderFillSummaries(ctx, orders)
+	if err != nil {
+		return orders
+	}
+	return attached
 }
 
 func (s *Service) CancelOrder(ctx context.Context, token, orderID string) (Order, error) {

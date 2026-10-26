@@ -206,7 +206,7 @@ func (r *Repository) CreateArbitrageCombination(
 			event["legBVenueBaselineBasePosition"] = created.LegBVenueBaselineBasePosition
 			event["venueBaselineCapturedAt"] = created.VenueBaselineCapturedAt
 		}
-		payload, _ := json.Marshal(event)
+		payload, _ := json.Marshal(withEventSchema(event))
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO trader_arbitrage_events(combination_id,event_type,payload)
 			VALUES($1::uuid,'created',$2::jsonb)`, created.ID, payload); err != nil {
@@ -330,6 +330,22 @@ func (r *Repository) CountArbitrageCombinations(
 	return count, err
 }
 
+func (r *Repository) HasUnfinishedArbitrageWork(ctx context.Context, combinationID string) (bool, error) {
+	var live bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM trader_arbitrage_executions e
+			WHERE e.combination_id=$1::uuid
+			  AND e.status NOT IN ('completed','failed','canceled','dry_run')
+		) OR EXISTS (
+			SELECT 1 FROM trader_orders o
+			JOIN trader_arbitrage_executions e ON e.id=o.arbitrage_execution_id
+			WHERE e.combination_id=$1::uuid
+			  AND o.status NOT IN ('filled','canceled','rejected','expired')
+		)`, combinationID).Scan(&live)
+	return live, err
+}
+
 func (r *Repository) UpdateArbitrageCombinationConfig(
 	ctx context.Context,
 	owner, id string,
@@ -425,7 +441,7 @@ func (r *Repository) UpdateArbitrageCombinationConfig(
 			return ArbitrageCombination{}, err
 		}
 	}
-	payload, err := json.Marshal(map[string]any{
+	payload, err := json.Marshal(withEventSchema(map[string]any{
 		"previous": previous,
 		"updated": map[string]any{
 			"askThresholdBps":                   ask,
@@ -436,7 +452,7 @@ func (r *Repository) UpdateArbitrageCombinationConfig(
 			"earlyExitFunding8hAnnualizedFloor": input.EarlyExitFunding8hAnnualizedFloor,
 			"earlyExitLiquidationDistancePct":   input.EarlyExitLiquidationDistancePct,
 		},
-	})
+	}))
 	if err != nil {
 		return ArbitrageCombination{}, err
 	}
@@ -2178,11 +2194,11 @@ func (r *Repository) prepareArbitrageHedgeIntentOnce(
 	}
 
 	if created && previousStatus != "hedging" {
-		payload, _ := json.Marshal(redactPayload(map[string]any{
+		payload, _ := json.Marshal(withEventSchema(redactPayload(map[string]any{
 			"leg": in.HedgeLeg.InstrumentID, "side": in.HedgeSide,
 			"targetBaseQuantity": in.TargetQuantity,
 			"carryBaseQuantity":  in.CarryQuantity,
-		}))
+		})))
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO trader_arbitrage_events(combination_id,execution_id,event_type,payload)
 			VALUES($1::uuid,$2::uuid,'hedge_started',$3::jsonb)`,
@@ -2560,7 +2576,7 @@ func (r *Repository) failLastCloseClipUnbalancedOnce(
 		return FailLastCloseClipUnbalancedResult{}, err
 	}
 
-	payload, err := json.Marshal(redactPayload(lastCloseClipUnbalancedPayload(fillA, fillB, remaining)))
+	payload, err := json.Marshal(withEventSchema(redactPayload(lastCloseClipUnbalancedPayload(fillA, fillB, remaining))))
 	if err != nil {
 		return FailLastCloseClipUnbalancedResult{}, err
 	}
@@ -3282,7 +3298,7 @@ func (r *Repository) ApplyCircuitOpenExternalReconcile(
 		return ArbitrageCombination{}, false, err
 	}
 
-	payload, err := json.Marshal(redactPayload(map[string]any{
+	payload, err := json.Marshal(withEventSchema(redactPayload(map[string]any{
 		"executionId":            execution.ID,
 		"errorMessage":           combo.ErrorMessage,
 		"legAVenue":              request.VenueA.String(),
@@ -3303,7 +3319,7 @@ func (r *Repository) ApplyCircuitOpenExternalReconcile(
 			comboNotional, parsePositiveDecimal(combo.TargetNotional),
 		),
 		"externally_reconciled": true,
-	}))
+	})))
 	if err != nil {
 		return ArbitrageCombination{}, false, err
 	}
@@ -3503,7 +3519,7 @@ func (r *Repository) ApplyClosingExternalFlatReconcile(
 	}
 
 	reason := closingExternalFlatReason(combo.ErrorMessage)
-	payload, err := json.Marshal(redactPayload(map[string]any{
+	payload, err := json.Marshal(withEventSchema(redactPayload(map[string]any{
 		"reason":                    reason,
 		"legALocalBasePosition":     combo.LegABasePosition,
 		"legBLocalBasePosition":     combo.LegBBasePosition,
@@ -3518,7 +3534,7 @@ func (r *Repository) ApplyClosingExternalFlatReconcile(
 		"legAAdjustment":            adjustmentA.String(),
 		"legBAdjustment":            adjustmentB.String(),
 		"previousError":             combo.ErrorMessage,
-	}))
+	})))
 	if err != nil {
 		return ArbitrageCombination{}, false, err
 	}
@@ -3642,7 +3658,7 @@ func (r *Repository) AppendArbitrageEvent(
 	combinationID, executionID, eventType string,
 	payload map[string]any,
 ) error {
-	encoded, err := json.Marshal(redactPayload(payload))
+	encoded, err := json.Marshal(redactPayload(withEventSchema(payload)))
 	if err != nil {
 		return err
 	}
@@ -3667,7 +3683,7 @@ func (r *Repository) RecordLastCloseRecoveryBlocked(
 	}
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO trader_arbitrage_events(combination_id,execution_id,event_type,payload)
-		SELECT $1::uuid,$2::uuid,$3,'{}'::jsonb
+		SELECT $1::uuid,$2::uuid,$3,'{"schemaVersion":1}'::jsonb
 		WHERE NOT EXISTS (
 			SELECT 1
 			FROM trader_arbitrage_events
@@ -3685,11 +3701,11 @@ func (r *Repository) RecordLastCloseResidualRecovered(
 	if strings.TrimSpace(combinationID) == "" || strings.TrimSpace(executionID) == "" {
 		return ErrInvalidArgument
 	}
-	payload, err := json.Marshal(redactPayload(map[string]any{
+	payload, err := json.Marshal(withEventSchema(redactPayload(map[string]any{
 		"makerFill":          makerFill,
 		"residualFill":       residualFill,
 		"effectiveHedgeFill": effectiveHedgeFill,
-	}))
+	})))
 	if err != nil {
 		return err
 	}
@@ -3932,7 +3948,7 @@ func (r *Repository) CloseLastCloseResidualWithDust(
 		close.LegANotional.IsNegative() || close.LegBNotional.IsNegative() {
 		return ArbitrageCombination{}, false, nil
 	}
-	payload, err := json.Marshal(redactPayload(close.Payload))
+	payload, err := json.Marshal(withEventSchema(redactPayload(close.Payload)))
 	if err != nil {
 		return ArbitrageCombination{}, false, err
 	}

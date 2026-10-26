@@ -467,6 +467,48 @@ class BybitAdapter final : public VenueAdapter {
         }
         auto bids = data["b"].get_array().value();
         auto asks = data["a"].get_array().value();
+        const bool bids_empty = bids.begin() == bids.end();
+        const bool asks_empty = asks.begin() == asks.end();
+        if (bids_empty || asks_empty) {
+          if (!(bids_empty && asks_empty)) {
+            std::uint8_t price_scale =
+                state->has_scales ? state->price_scale : 0;
+            std::uint8_t quantity_scale =
+                state->has_scales ? state->quantity_scale : 0;
+            if (!state->has_scales &&
+                (!parse_level_scales(bids, price_scale, quantity_scale) ||
+                 !parse_level_scales(asks, price_scale, quantity_scale))) {
+              error = "unable to infer Bybit order book scales";
+              return false;
+            }
+            if (!parse_levels(bids, price_scale, quantity_scale, 1,
+                              event.bids, error) ||
+                !parse_levels(asks, price_scale, quantity_scale, 1,
+                              event.asks, error)) {
+              return false;
+            }
+            if (event.bids.size() + event.asks.size() != 1) {
+              if (error.empty()) {
+                error =
+                    "Bybit orderbook.1 snapshot must contain one bid and ask";
+              }
+              return false;
+            }
+          }
+          event.bids.clear();
+          event.asks.clear();
+          event.bid = {};
+          event.ask = {};
+          event.type = AdapterEventType::Ignored;
+          event.ignore_reason = IgnoreReason::OneSidedBook;
+          event.first_sequence = update_id;
+          event.final_sequence = update_id;
+          event.exchange_time_ms = optional_timestamp(document);
+          state->last_bbo_u = update_id;
+          state->has_bbo_u = true;
+          error.clear();
+          return true;
+        }
         if (!ensure_scales(*state, bids, asks, error) ||
             !parse_levels(bids, state->price_scale, state->quantity_scale, 1,
                           event.bids, error) ||

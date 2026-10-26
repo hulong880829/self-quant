@@ -25,6 +25,7 @@ service TraderService {
   rpc ListArbitrageCombinations(ListArbitrageCombinationsRequest) returns (ListArbitrageCombinationsResponse);
   rpc CloseArbitrageCombination(CloseArbitrageCombinationRequest) returns (CloseArbitrageCombinationResponse);
   rpc PreflightArbitrageCombination(PreflightArbitrageCombinationRequest) returns (PreflightArbitrageCombinationResponse);
+  rpc PreflightIncreaseTarget(PreflightIncreaseTargetRequest) returns (PreflightIncreaseTargetResponse);
   rpc ListArbitrageCombinationOrders(ListArbitrageCombinationOrdersRequest) returns (ListArbitrageCombinationOrdersResponse);
   rpc ListArbitrageCombinationExecutions(ListArbitrageCombinationExecutionsRequest) returns (ListArbitrageCombinationExecutionsResponse);
   rpc ListArbitrageCombinationEvents(ListArbitrageCombinationEventsRequest) returns (ListArbitrageCombinationEventsResponse);
@@ -76,6 +77,14 @@ message Order {
   string arbitrage_execution_id = 29;
   string arbitrage_leg = 30;
   string arbitrage_role = 31;
+  google.protobuf.Timestamp last_filled_at = 32;
+  repeated OrderFee actual_fees = 33;
+  string liquidity_role = 34;
+}
+
+message OrderFee {
+  string amount = 1;
+  string currency = 2;
 }
 
 message TwapJob {
@@ -486,6 +495,7 @@ message PreflightArbitrageCombinationRequest {
 message PreflightDecimal {
   string value = 1;
   string status = 2;
+  string unit = 3;
 }
 
 message PreflightLeg {
@@ -503,6 +513,42 @@ message PreflightWarning {
   string message = 2;
   string leg = 3;
   string exchange = 4;
+  map<string, string> details = 5;
+}
+
+message PreflightIncreaseTargetRequest {
+  string token = 1;
+  string combination_id = 2;
+  string new_target_notional = 3;
+}
+
+message PreflightIncreaseLeg {
+  string additional_notional = 1;
+  string incremental_quantity = 2;
+  PreflightDecimal incremental_margin = 3;
+  PreflightDecimal estimated_fee = 4;
+  PreflightDecimal available_funds = 5;
+  PreflightDecimal min_quantity = 6;
+  PreflightDecimal min_notional = 7;
+  PreflightDecimal quantity_step = 8;
+  string incremental_quantity_unit = 9;
+}
+
+message PreflightIncreaseTargetResponse {
+  bool executable = 1;
+  string current_target_notional = 2;
+  string new_target_notional = 3;
+  string requested_target_delta = 4;
+  PreflightIncreaseLeg leg_a = 5;
+  PreflightIncreaseLeg leg_b = 6;
+  repeated PreflightWarning warnings = 7;
+  google.protobuf.Timestamp checked_at = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  string code = 10;
+  string message = 11;
+  string leg = 12;
+  string exchange = 13;
+  string target_notional_unit = 14;
 }
 
 message PreflightArbitrageCombinationResponse {

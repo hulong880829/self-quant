@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -10,6 +11,12 @@ import (
 type memoryTradingStore struct {
 	nextID  int64
 	records []TradingAccountRecord
+	claims  map[string]memoryBindClaim
+}
+
+type memoryBindClaim struct {
+	hash string
+	id   int64
 }
 
 func (m *memoryTradingStore) ListByOwner(_ context.Context, owner string) ([]TradingAccountRecord, error) {
@@ -57,6 +64,30 @@ func (m *memoryTradingStore) Create(_ context.Context, record TradingAccountReco
 	record.UpdatedAt = now
 	m.records = append(m.records, record)
 	return record, nil
+}
+
+func (m *memoryTradingStore) CreateIdempotent(
+	ctx context.Context,
+	key, requestHash string,
+	record TradingAccountRecord,
+) (TradingAccountRecord, bool, error) {
+	if m.claims == nil {
+		m.claims = map[string]memoryBindClaim{}
+	}
+	claimKey := record.OwnerUsername + "\x00" + key
+	if existing, ok := m.claims[claimKey]; ok {
+		if existing.hash != requestHash {
+			return TradingAccountRecord{}, false, ErrBindIdempotencyConflict
+		}
+		stored, err := m.GetByOwner(ctx, record.OwnerUsername, existing.id)
+		return stored, true, err
+	}
+	created, err := m.Create(ctx, record)
+	if err != nil {
+		return TradingAccountRecord{}, false, err
+	}
+	m.claims[claimKey] = memoryBindClaim{hash: requestHash, id: created.ID}
+	return created, false, nil
 }
 
 func (m *memoryTradingStore) UpdateIndexes(_ context.Context, owner string, id int64, accountIndex *int64, apiKeyIndex *int16) error {
@@ -404,6 +435,35 @@ func TestIncompleteExtensionGroupIsNotMixed(t *testing.T) {
 	meta, err := service.GetTradingAccountMeta(context.Background(), session.Token, created.ID)
 	if err != nil || meta.Exchange != "aster" {
 		t.Fatalf("meta should not load secrets: %+v err=%v", meta, err)
+	}
+}
+
+func TestBindIdempotencyReplaysSameRequest(t *testing.T) {
+	service, _ := newTradingTestService(t)
+	session, err := service.Login(context.Background(), "admin", "admin123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := CreateTradingAccountInput{
+		ProductName: "alpha", Exchange: "bybit", AccountName: "main",
+		APIKey: "abcdefghijklmnop", APISecret: "secret", IdempotencyKey: "bind-1",
+	}
+	first, err := service.CreateTradingAccount(context.Background(), session.Token, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CreateTradingAccount(context.Background(), session.Token, input)
+	if err != nil || second.ID != first.ID {
+		t.Fatalf("replay id=%d err=%v", second.ID, err)
+	}
+	input.APISecret = "other"
+	if _, err := service.CreateTradingAccount(context.Background(), session.Token, input); !errors.Is(err, ErrBindIdempotencyConflict) {
+		t.Fatalf("conflict err=%v", err)
+	}
+	if _, err := service.CreateTradingAccount(context.Background(), session.Token, CreateTradingAccountInput{
+		IdempotencyKey: strings.Repeat("k", 129),
+	}); !errors.Is(err, ErrInvalidIdempotencyKey) {
+		t.Fatalf("length err=%v", err)
 	}
 }
 

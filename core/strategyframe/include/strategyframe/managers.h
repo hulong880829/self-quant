@@ -26,12 +26,14 @@ class OrderManager {
   [[nodiscard]] Result<OrderView> find(OrderToken token) const noexcept;
   [[nodiscard]] std::size_t size() const noexcept;
   [[nodiscard]] std::size_t capacity() const noexcept;
+  [[nodiscard]] std::uint64_t terminal_overwrites() const noexcept;
 
  private:
   [[nodiscard]] Error insert_pending(const OrderRequest& request,
                                      OrderToken token) noexcept;
   [[nodiscard]] Error reconcile_open(const OrderView& order) noexcept;
   [[nodiscard]] Error apply(const ExecutionUpdate& update) noexcept;
+  void retire_instrument(InstrumentId instrument_id) noexcept;
   void clear() noexcept;
   struct Impl;
   std::unique_ptr<Impl> impl_;

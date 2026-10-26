@@ -5,8 +5,11 @@
 #include <cstring>
 #include <cstdlib>
 #include <iostream>
+#include <string>
 #include <string_view>
 
+#include "polymm/fairprice_client.h"
+#include "polymm/gamma_resolution.h"
 #include "polymm/halt_policy.h"
 #include "polymm/market_window.h"
 #include "polymm/order_lifecycle.h"
@@ -52,17 +55,36 @@ void TestSignal() {
   parameters.min_edge_ticks = 0.0;
   polymm::SignalEngine signal(parameters, 16);
   Require(signal.update({100.0, 0.0, 1'000'000'000ULL,
-                         1'000'000'000ULL}),
+                         1'000'000'000ULL}) == polymm::FairUpdate::Accepted,
           "first fair price");
   Require(signal.update({100.1, 0.0, 2'000'000'000ULL,
-                         2'000'000'000ULL}),
+                         2'000'000'000ULL}) == polymm::FairUpdate::Accepted,
           "second fair price");
   Require(signal.update({100.3, 0.0, 3'000'000'000ULL,
-                         3'000'000'000ULL}),
+                         3'000'000'000ULL}) == polymm::FairUpdate::Accepted,
           "third fair price");
   Require(signal.update({100.6, 0.0, 4'000'000'000ULL,
-                         4'000'000'000ULL}),
+                         4'000'000'000ULL}) == polymm::FairUpdate::Accepted,
           "fourth fair price");
+  Require(signal.update({100.6, 0.0, 4'000'000'000ULL, 9'000'000'000ULL}) ==
+              polymm::FairUpdate::Duplicate,
+          "duplicate wall does not advance source time");
+  Require(signal.latest_wall_ns() == 4'000'000'000ULL, "source time unchanged");
+  Require(signal.update({100.6, 0.0, 3'000'000'000ULL, 9'000'000'000ULL}) ==
+              polymm::FairUpdate::OutOfOrder,
+          "older wall is discarded");
+  Require(signal.update({0.0, 0.0, 5'000'000'000ULL, 5'000'000'000ULL}) ==
+              polymm::FairUpdate::Invalid,
+          "nonpositive price is invalid");
+  Require(polymm::fairprice_gates_fresh(10'000'000'000ULL, 9'000'000'000ULL,
+                                        9'000'000'000ULL),
+          "both gates fresh");
+  Require(!polymm::fairprice_gates_fresh(10'000'000'000ULL, 9'000'000'000ULL,
+                                         7'000'000'000ULL),
+          "stale source blocks opening");
+  Require(!polymm::fairprice_gates_fresh(10'000'000'000ULL, 7'000'000'000ULL,
+                                         9'000'000'000ULL),
+          "stale receive blocks opening");
   const auto evaluation =
       signal.evaluate(0.5, 0.0, 0.01, 60'000'000'000ULL);
   Require(evaluation.volatility_ready, "volatility ready");
@@ -122,9 +144,18 @@ void TestRisk() {
           "balancing exception");
   polymm::PnlView position;
   position.quantity = 2.0;
-  position.unrealized_exit = -0.11;
-  Require(polymm::stop_loss_triggered(position, 0.01, 5.0),
+  position.average_cost = 0.50;
+  Require(polymm::stop_loss_triggered(position, 0.44, 0.01, 5.0, 0.0),
           "stop loss");
+  Require(!polymm::stop_loss_triggered(position, 0.46, 0.01, 5.0, 0.0),
+          "smaller net loss stays open");
+  Require(polymm::allows_open(0.0, 0.0, 5.0, 5.0, 0.1), "empty side buys 5");
+  Require(!polymm::allows_open(5.0, 0.0, 5.0, 5.0, 0.1),
+          "same leg cannot add another 5");
+  Require(polymm::allows_open(0.0, 5.0, 5.0, 5.0, 0.1),
+          "opposite leg can still buy 5");
+  Require(!polymm::allows_open(5.0, 5.0, 5.0, 5.0, 0.1),
+          "full opposite leg stays capped");
   Require(polymm::near_expiry(10'000'000ULL, 10),
           "expiry boundary");
 }
@@ -427,8 +458,8 @@ void TestStartupReconcile() {
               polymm::ReconcileVerdict::Pending,
           "pending reconcile");
   Require(polymm::reconcile_verdict(state, 20) ==
-              polymm::ReconcileVerdict::Ready,
-          "empty timeout ready");
+              polymm::ReconcileVerdict::Reject,
+          "timeout without reconcile rejects");
 
   strategyframe::OmsStatusUpdate status;
   status.kind = strategyframe::OmsStatusUpdate::Kind::ReconcileComplete;
@@ -439,13 +470,14 @@ void TestStartupReconcile() {
 
   strategyframe::OrderView leftover{};
   leftover.account_id = 7;
+  leftover.instrument_id = 10;
   leftover.remaining_quantity = {1, 0, {}};
   std::array<strategyframe::OrderView, 1> orders{leftover};
   polymm::inspect_local_account(state, orders, {}, 7, 10, 11);
   Require(state.saw_open_order, "historical order");
   Require(polymm::reconcile_verdict(state, 5) ==
-              polymm::ReconcileVerdict::Ready,
-          "open order does not reject reconcile");
+              polymm::ReconcileVerdict::Reject,
+          "current window order rejects reconcile");
 
   polymm::StartupReconcile positions_state;
   positions_state.oms_reconcile_seen = true;
@@ -457,8 +489,8 @@ void TestStartupReconcile() {
   polymm::inspect_local_account(positions_state, {}, positions, 7, 10, 11);
   Require(positions_state.saw_position, "historical position");
   Require(polymm::reconcile_verdict(positions_state, 5) ==
-              polymm::ReconcileVerdict::Ready,
-          "position does not reject reconcile");
+              polymm::ReconcileVerdict::Reject,
+          "current window position rejects reconcile");
 
   polymm::StartupReconcile window;
   strategyframe::PositionView old_window{};
@@ -620,6 +652,350 @@ void TestBboActivityKeepsBooksReady() {
           "swallowed callbacks make books_ready false");
 }
 
+void TestExpiryRelease() {
+  polymm::SubscribeGate gate;
+  Require(gate.should_send(true, true), "idle may subscribe");
+  gate.mark_sent(1'000, 1'000);
+  Require(!gate.should_send(true, true), "pending ack does not resend");
+  Require(!gate.timed_out(1'000), "ack wait has not expired");
+  Require(gate.timed_out(1'000 + 1'000'000'000ULL), "ack deadline expires");
+  polymm::SubscribeGate acked;
+  acked.mark_sent(1, 1'000);
+  Require(!acked.note_ack(true), "ok subscribe does not disconnect");
+  Require(acked.phase == polymm::SubscribePhase::Acked, "subscribe acked");
+  Require(!acked.should_send(true, true), "acked does not resend");
+
+  Require(polymm::cancel_on_stop_opening(polymm::OrderPurpose::Open,
+                                         polymm::OrderState::PendingOpen),
+          "stop opening cancels open");
+  Require(!polymm::cancel_on_stop_opening(polymm::OrderPurpose::Close,
+                                          polymm::OrderState::PendingClose),
+          "stop opening keeps close");
+  Require(polymm::classify_open_order_query(true, true, false) ==
+              polymm::OpenOrderQueryResult::EmptyUnknown,
+          "empty open orders are not a fill");
+  Require(polymm::classify_open_order_query(true, true, true) ==
+              polymm::OpenOrderQueryResult::StillOpen,
+          "visible open order keeps canceling");
+
+  strategyframe::ConditionId up;
+  strategyframe::ConditionId down;
+  const char* market = "0xabc";
+  up.length = 5;
+  down.length = 5;
+  std::memcpy(up.value, market, 5);
+  std::memcpy(down.value, market, 5);
+  Require(polymm::same_market_condition(up, down), "same condition");
+  down.value[0] = '1';
+  Require(!polymm::same_market_condition(up, down), "different condition");
+
+  polymm::PnlLedger ledger(7);
+  Require(ledger.commit_active_window(10, 11), "window");
+  const strategyframe::OrderToken buy{1, 1, 1};
+  const strategyframe::OrderToken sell{1, 1, 2};
+  Require(ledger.remember_order(buy, 10, strategyframe::Side::Buy,
+                                polymm::OrderPurpose::Open, 1),
+          "remember release buy");
+  strategyframe::ExecutionUpdate fill;
+  fill.kind = strategyframe::ExecutionUpdate::Kind::Fill;
+  fill.account_id = 7;
+  fill.instrument_id = 10;
+  fill.token = buy;
+  fill.trade_id = Trade("rel-buy");
+  fill.fill_quantity = {2, 0, {}};
+  fill.fill_price = {40, 2, {}};
+  Require(ledger.apply_fill(fill), "release buy");
+  Require(ledger.remember_order(sell, 10, strategyframe::Side::Sell,
+                                polymm::OrderPurpose::Close, 1),
+          "remember release sell");
+  fill.token = sell;
+  fill.trade_id = Trade("rel-sell");
+  fill.fill_quantity = {1, 0, {}};
+  fill.fill_price = {60, 2, {}};
+  Require(ledger.apply_fill(fill), "release sell");
+  ledger.clear_terminal_order(buy);
+  ledger.clear_terminal_order(sell);
+  Require(ledger.archive_active(), "park rows");
+  const auto up_stored = ledger.stored(10);
+  const auto down_stored = ledger.stored(11);
+  Require(up_stored.present && std::abs(up_stored.quantity - 1.0) < 1e-12,
+          "remaining quantity is logged");
+  Require(std::abs(up_stored.cost - 0.4) < 1e-12, "remaining cost is logged");
+  Require(std::abs(up_stored.realized - 0.2) < 1e-12, "realized is logged");
+  Require(!ledger.release_expired_window(10, 11), "nonzero release rejected");
+  Require(ledger.has_instrument(10), "nonzero row remains");
+  Require(std::abs(ledger.archived_realized()) < 1e-12,
+          "rejected release does not archive");
+  const strategyframe::OrderToken sell_rest{1, 1, 3};
+  Require(ledger.remember_order(sell_rest, 10, strategyframe::Side::Sell,
+                                polymm::OrderPurpose::Close, 1),
+          "remember flatten");
+  fill.token = sell_rest;
+  fill.trade_id = Trade("rel-flat");
+  fill.fill_quantity = {1, 0, {}};
+  fill.fill_price = {60, 2, {}};
+  Require(ledger.apply_fill(fill), "flatten remainder");
+  Require(ledger.release_expired_window(10, 11), "release");
+  Require(std::abs(ledger.archived_realized() - 0.4) < 1e-12,
+          "realized is kept");
+  Require(!ledger.has_instrument(10) && !ledger.has_instrument(11),
+          "rows cleared");
+  Require(ledger.release_expired_window(10, 11), "release is idempotent");
+  Require(std::abs(ledger.archived_realized() - 0.4) < 1e-12,
+          "second release does not add realized");
+  fill.trade_id = Trade("late-released");
+  fill.token = buy;
+  Require(!ledger.apply_fill(fill), "deleted row does not apply");
+  Require(ledger.remember_late_fill(7, 10, fill.trade_id), "first late fill");
+  Require(!ledger.remember_late_fill(7, 10, fill.trade_id),
+          "duplicate late fill");
+  Require(!ledger.has_instrument(10), "late fill does not recreate a row");
+
+  double archived = 0.0;
+  for (int round = 0; round < 1000; ++round) {
+    const strategyframe::InstrumentId up_id =
+        1'000 + static_cast<strategyframe::InstrumentId>(round) * 2;
+    const strategyframe::InstrumentId down_id = up_id + 1;
+    Require(ledger.commit_active_window(up_id, down_id), "rolling window");
+    Require(ledger.release_expired_window(up_id, down_id), "rolling release");
+    archived = ledger.archived_realized();
+  }
+  Require(std::abs(archived - 0.4) < 1e-12, "flat windows add no loss");
+  Require(!ledger.has_instrument(1000) && !ledger.retired_nonzero(),
+          "released windows do not accumulate");
+}
+
+void TestResolutionPnl() {
+  const auto buy = [](polymm::PnlLedger& ledger,
+                      strategyframe::InstrumentId instrument,
+                      strategyframe::OrderToken token, std::int64_t quantity,
+                      std::int64_t price) {
+    Require(ledger.remember_order(token, instrument, strategyframe::Side::Buy,
+                                  polymm::OrderPurpose::Open, 1),
+            "remember settlement order");
+    strategyframe::ExecutionUpdate fill;
+    fill.kind = strategyframe::ExecutionUpdate::Kind::Fill;
+    fill.account_id = 7;
+    fill.instrument_id = instrument;
+    fill.token = token;
+    fill.trade_id = Trade("settle");
+    fill.trade_id.value[6] = static_cast<char>('0' + token.sequence);
+    fill.trade_id.length = 7;
+    fill.fill_quantity = {quantity, 0, {}};
+    fill.fill_price = {price, 2, {}};
+    Require(ledger.apply_fill(fill), "settlement fill");
+    ledger.clear_terminal_order(token);
+  };
+  const auto expect_settlement = [](polymm::PnlLedger& ledger,
+                                    strategyframe::InstrumentId up,
+                                    strategyframe::InstrumentId down,
+                                    polymm::Outcome winner, double payout_up,
+                                    double payout_down) {
+    const auto up_row = ledger.stored(up);
+    const auto down_row = ledger.stored(down);
+    const double expected = up_row.realized + down_row.realized + payout_up -
+                            up_row.cost + payout_down - down_row.cost;
+    const double before = ledger.archived_realized();
+    Require(ledger.settle_expired_window(up, down, winner), "settle");
+    Require(std::abs(ledger.last_window_pnl() - expected) < 1e-9,
+            "window pnl");
+    Require(std::abs(ledger.archived_realized() - (before + expected)) < 1e-9,
+            "archived settlement");
+    Require(ledger.settle_expired_window(up, down, winner), "settle once");
+    Require(std::abs(ledger.archived_realized() - (before + expected)) < 1e-9,
+            "settlement is idempotent");
+  };
+
+  polymm::PnlLedger up_wins(7);
+  Require(up_wins.commit_active_window(10, 11), "up window");
+  buy(up_wins, 10, {1, 1, 1}, 5, 40);
+  Require(up_wins.archive_active(), "park up");
+  expect_settlement(up_wins, 10, 11, polymm::Outcome::Up, 5.0, 0.0);
+  Require(std::abs(up_wins.last_window_pnl() - 3.0) < 1e-9, "up wins +3");
+
+  polymm::PnlLedger down_held(7);
+  Require(down_held.commit_active_window(12, 13), "down held window");
+  buy(down_held, 13, {1, 1, 2}, 5, 60);
+  Require(down_held.archive_active(), "park down held");
+  expect_settlement(down_held, 12, 13, polymm::Outcome::Up, 0.0, 0.0);
+  Require(std::abs(down_held.last_window_pnl() - (-3.0)) < 1e-9,
+          "down held while up wins is -3");
+
+  polymm::PnlLedger down_wins(7);
+  Require(down_wins.commit_active_window(20, 21), "down window");
+  buy(down_wins, 21, {1, 1, 3}, 5, 60);
+  Require(down_wins.archive_active(), "park down");
+  expect_settlement(down_wins, 20, 21, polymm::Outcome::Down, 0.0, 5.0);
+  Require(std::abs(down_wins.last_window_pnl() - 2.0) < 1e-9,
+          "down wins pays 5 against cost 3");
+
+  polymm::PnlLedger both(7);
+  Require(both.commit_active_window(30, 31), "both window");
+  buy(both, 30, {1, 1, 4}, 5, 40);
+  buy(both, 31, {1, 1, 5}, 5, 60);
+  Require(both.archive_active(), "park both");
+  expect_settlement(both, 30, 31, polymm::Outcome::Up, 5.0, 0.0);
+  Require(std::abs(both.last_window_pnl() - 0.0) < 1e-9,
+          "both legs net to zero when up wins");
+
+  polymm::PnlLedger partial(7);
+  Require(partial.commit_active_window(32, 33), "partial window");
+  buy(partial, 32, {1, 1, 6}, 5, 40);
+  Require(partial.remember_order({1, 1, 7}, 32, strategyframe::Side::Sell,
+                                 polymm::OrderPurpose::Close, 1),
+          "remember partial sell");
+  strategyframe::ExecutionUpdate sold;
+  sold.kind = strategyframe::ExecutionUpdate::Kind::Fill;
+  sold.account_id = 7;
+  sold.instrument_id = 32;
+  sold.token = {1, 1, 7};
+  sold.trade_id = Trade("partial");
+  sold.fill_quantity = {2, 0, {}};
+  sold.fill_price = {50, 2, {}};
+  Require(partial.apply_fill(sold), "partial close");
+  partial.clear_terminal_order({1, 1, 7});
+  Require(partial.archive_active(), "park partial");
+  expect_settlement(partial, 32, 33, polymm::Outcome::Up, 3.0, 0.0);
+
+  polymm::PnlLedger flat(7);
+  Require(flat.commit_active_window(40, 41), "flat window");
+  Require(flat.archive_active(), "park flat");
+  expect_settlement(flat, 40, 41, polymm::Outcome::Up, 0.0, 0.0);
+
+  for (int round = 0; round < 1000; ++round) {
+    const strategyframe::InstrumentId up =
+        2'000 + static_cast<strategyframe::InstrumentId>(round) * 2;
+    Require(flat.commit_active_window(up, up + 1), "capacity window");
+    Require(flat.settle_expired_window(up, up + 1, polymm::Outcome::Down),
+            "capacity settle");
+  }
+  Require(!flat.retired_nonzero(), "settled windows stay bounded");
+
+  const auto condition = [](std::string_view text) {
+    strategyframe::ConditionId id{};
+    std::memcpy(id.value, text.data(), text.size());
+    id.length = static_cast<std::uint16_t>(text.size());
+    return id;
+  };
+  const auto market = [](std::string_view id, std::string_view outcomes,
+                         std::string_view prices, bool closed,
+                         std::string_view status) {
+    std::string body = "[{\"conditionId\":\"";
+    body += id;
+    body += "\",\"closed\":";
+    body += closed ? "true" : "false";
+    body += ",\"umaResolutionStatus\":\"";
+    body += status;
+    body += "\",\"outcomes\":\"";
+    body += outcomes;
+    body += "\",\"outcomePrices\":\"";
+    body += prices;
+    body += "\"}]";
+    return body;
+  };
+  const auto expected = condition("0xabc");
+  const auto up = polymm::parse_gamma_resolution(
+      market("0xabc", R"([\"Up\", \"Down\"])", R"([\"1\", \"0\"])", true,
+             "resolved"),
+      expected);
+  Require(up.status == polymm::GammaResolutionStatus::Resolved &&
+              up.winner == polymm::Outcome::Up,
+          "up index wins");
+  const auto reversed = polymm::parse_gamma_resolution(
+      market("0xabc", R"([\"Down\", \"Up\"])", R"([\"1\", \"0\"])", true,
+             "resolved"),
+      expected);
+  Require(reversed.status == polymm::GammaResolutionStatus::Resolved &&
+              reversed.winner == polymm::Outcome::Down,
+          "reversed outcomes are not assumed up");
+  const auto yes_no = polymm::parse_gamma_resolution(
+      market("0xabc", R"([\"Yes\", \"No\"])", R"([\"1\", \"0\"])", true,
+             "resolved"),
+      expected);
+  Require(yes_no.status == polymm::GammaResolutionStatus::InvalidResponse,
+          "yes no is not a winner");
+  const auto duplicate = polymm::parse_gamma_resolution(
+      market("0xabc", R"([\"Up\", \"Up\"])", R"([\"1\", \"0\"])", true,
+             "resolved"),
+      expected);
+  Require(duplicate.status == polymm::GammaResolutionStatus::InvalidResponse,
+          "duplicate outcome");
+  const auto short_prices = polymm::parse_gamma_resolution(
+      market("0xabc", R"([\"Up\", \"Down\"])", R"([\"1\"])", true, "resolved"),
+      expected);
+  Require(short_prices.status == polymm::GammaResolutionStatus::InvalidResponse,
+          "price length mismatch");
+  const auto near = polymm::parse_gamma_resolution(
+      market("0xabc", R"([\"Up\", \"Down\"])", R"([\"0.005\", \"0.995\"])",
+             true, "resolved"),
+      expected);
+  Require(near.status == polymm::GammaResolutionStatus::InvalidResponse,
+          "near prices are not payouts");
+  const auto proposed = polymm::parse_gamma_resolution(
+      market("0xabc", R"([\"Up\", \"Down\"])", R"([\"0.005\", \"0.995\"])",
+             true, "proposed"),
+      expected);
+  Require(proposed.status == polymm::GammaResolutionStatus::Pending,
+          "unresolved market stays pending");
+  const auto wrong = polymm::parse_gamma_resolution(
+      market("0xother", R"([\"Up\", \"Down\"])", R"([\"1\", \"0\"])", true,
+             "resolved"),
+      expected);
+  Require(wrong.status == polymm::GammaResolutionStatus::InvalidResponse,
+          "wrong condition");
+  const auto empty = polymm::parse_gamma_resolution("[]", expected);
+  Require(empty.status == polymm::GammaResolutionStatus::Pending,
+          "empty gamma list is pending");
+  const auto many = polymm::parse_gamma_resolution(
+      "[{\"conditionId\":\"0xabc\",\"closed\":true,\"umaResolutionStatus\":\"resolved\"},{\"conditionId\":\"0xabc\",\"closed\":true,\"umaResolutionStatus\":\"resolved\"}]",
+      expected);
+  Require(many.status == polymm::GammaResolutionStatus::InvalidResponse,
+          "multiple markets");
+  char target[160];
+  std::size_t target_length = 0;
+  Require(polymm::format_gamma_markets_target(expected, target, sizeof(target),
+                                              target_length),
+          "gamma target");
+  const auto target_text = std::string_view(target, target_length);
+  Require(target_text.find("&closed=any&limit=1") != std::string_view::npos,
+          "closed any query");
+  Require(polymm::kGammaHttpTimeoutMs == 5'000, "gamma timeout is 5s");
+  Require(polymm::resolution_backoff_ns(0) == 2'000'000'000ULL, "backoff 2s");
+  Require(polymm::resolution_backoff_ns(1) == 5'000'000'000ULL, "backoff 5s");
+  Require(polymm::resolution_backoff_ns(2) == 10'000'000'000ULL, "backoff 10s");
+  Require(polymm::resolution_backoff_ns(3) == 30'000'000'000ULL, "backoff 30s");
+  Require(polymm::resolution_backoff_ns(9) == 30'000'000'000ULL, "backoff cap");
+  Require(polymm::resolution_disposition(7, expected, 8, expected) ==
+              polymm::ResolutionDisposition::DropLate,
+          "late request id is dropped");
+  strategyframe::ConditionId other = condition("0xdef");
+  Require(polymm::resolution_disposition(7, expected, 7, other) ==
+              polymm::ResolutionDisposition::FailActive,
+          "condition mismatch fails the active request");
+  Require(polymm::resolution_disposition(7, expected, 7, expected) ==
+              polymm::ResolutionDisposition::Apply,
+          "matching result applies");
+  Require(!polymm::resolution_http_allowed(true, 0, false),
+          "held result blocks the next http request");
+  Require(!polymm::resolution_http_allowed(false, 1, false),
+          "unconsumed result blocks the next http request");
+  Require(polymm::resolution_http_allowed(false, 0, false),
+          "idle gamma client can start");
+  polymm::SidecarConfig sidecar_config;
+  sidecar_config.fairprice_service = "1";
+  polymm::FairPriceClient sidecar(sidecar_config);
+  polymm::ResolutionRequest request;
+  request.condition_id = expected;
+  for (std::uint64_t id = 1; id <= 16; ++id) {
+    request.request_id = id;
+    Require(sidecar.try_push_resolution(request), "resolution queue accepts");
+  }
+  request.request_id = 17;
+  Require(!sidecar.try_push_resolution(request),
+          "full resolution queue does not become inflight");
+  Require(polymm::kMaxRetiredWindows == 16, "sixteen retired slots");
+}
+
 void TestExecutableEdge() {
   polymm::Parameters parameters;
   parameters.vol_lookback_ms = 3'000;
@@ -628,22 +1004,257 @@ void TestExecutableEdge() {
   parameters.min_market_price = 0.1;
   parameters.max_market_price = 0.9;
   parameters.min_edge_ticks = 0.0;
+  parameters.polymarket_taker_fee_rate = 0.0;
+  parameters.order_shares = 5.0;
   parameters.fairprice_timer_us = 1'000;
   Require(polymm::signal_sample_capacity(parameters) >= 16, "capacity");
   polymm::SignalEngine signal(parameters, 16);
-  Require(signal.update({100.0, 0.0, 1'000'000'000ULL, 1'000'000'000ULL}),
+  Require(signal.update({100.0, 0.0, 1'000'000'000ULL, 1'000'000'000ULL}) ==
+              polymm::FairUpdate::Accepted,
           "fp1");
-  Require(signal.update({100.1, 0.0, 2'000'000'000ULL, 2'000'000'000ULL}),
+  Require(signal.update({100.1, 0.0, 2'000'000'000ULL, 2'000'000'000ULL}) ==
+              polymm::FairUpdate::Accepted,
           "fp2");
-  Require(signal.update({100.3, 0.0, 3'000'000'000ULL, 3'000'000'000ULL}),
+  Require(signal.update({100.3, 0.0, 3'000'000'000ULL, 3'000'000'000ULL}) ==
+              polymm::FairUpdate::Accepted,
           "fp3");
-  Require(signal.update({100.6, 0.0, 4'000'000'000ULL, 4'000'000'000ULL}),
+  Require(signal.update({100.6, 0.0, 4'000'000'000ULL, 4'000'000'000ULL}) ==
+              polymm::FairUpdate::Accepted,
           "fp4");
   const auto evaluation = signal.evaluate_executable(
       0.499, 0.50, 0.499, 0.50, 0.01, 60'000'000'000ULL);
   Require(evaluation.volatility_ready, "executable vol");
   Require(evaluation.direction == polymm::SignalEvaluation::Direction::Up,
           "executable up ask");
+}
+
+polymm::SignalEvaluation ExecutableEdge(double fee_rate, double min_edge) {
+  polymm::Parameters parameters;
+  parameters.vol_lookback_ms = 3'000;
+  parameters.signal_horizon_ms = 1'000;
+  parameters.vol_threshold = 0.0;
+  parameters.min_market_price = 0.1;
+  parameters.max_market_price = 0.9;
+  parameters.min_edge_ticks = min_edge;
+  parameters.polymarket_taker_fee_rate = fee_rate;
+  parameters.order_shares = 5.0;
+  parameters.slippage_ticks = 1.0;
+  parameters.fairprice_timer_us = 1'000;
+  polymm::SignalEngine signal(parameters, 16);
+  Require(signal.update({100.0, 0.0, 1'000'000'000ULL, 1'000'000'000ULL}) ==
+              polymm::FairUpdate::Accepted,
+          "edge fp1");
+  Require(signal.update({100.1, 0.0, 2'000'000'000ULL, 2'000'000'000ULL}) ==
+              polymm::FairUpdate::Accepted,
+          "edge fp2");
+  Require(signal.update({100.3, 0.0, 3'000'000'000ULL, 3'000'000'000ULL}) ==
+              polymm::FairUpdate::Accepted,
+          "edge fp3");
+  Require(signal.update({100.6, 0.0, 4'000'000'000ULL, 4'000'000'000ULL}) ==
+              polymm::FairUpdate::Accepted,
+          "edge fp4");
+  return signal.evaluate_executable(0.499, 0.50, 0.499, 0.50, 0.01,
+                                    60'000'000'000ULL);
+}
+
+void TestFeeEdgeAndPnl() {
+  const double mid = polymm::polymarket_taker_fee(0.5, 5.0, 0.07);
+  const double low = polymm::polymarket_taker_fee(0.2, 5.0, 0.07);
+  const double high = polymm::polymarket_taker_fee(0.8, 5.0, 0.07);
+  Require(std::abs(mid - 0.0875) < 1e-12, "mid fee");
+  Require(std::abs(low - high) < 1e-12, "fee symmetry");
+  Require(std::abs(low - 0.056) < 1e-12, "wing fee");
+  const double rounded = polymm::polymarket_taker_fee(0.004, 5.0, 0.07);
+  const double raised = polymm::polymarket_taker_fee(
+      0.004, 5.0, 0.07, polymm::FeeRounding::Up);
+  Require(std::abs(rounded - 0.00139) < 1e-12, "fee rounds to 5 decimals");
+  Require(std::abs(raised - 0.00140) < 1e-12, "signal fee rounds up");
+  Require(raised > rounded, "ceil is stricter than nearest");
+  Require(polymm::polymarket_taker_fee(0.0, 5.0, 0.07) == 0.0, "bad price");
+  Require(polymm::polymarket_taker_fee(1.0, 5.0, 0.07) == 0.0, "price one");
+  Require(!polymm::order_terms_ok(0.0, 5.0, 0.01, 0.07), "reject bad price");
+  Require(!polymm::order_terms_ok(0.5, 0.0, 0.01, 0.07), "reject bad quantity");
+  Require(!polymm::order_terms_ok(0.5, 5.0, 0.0, 0.07), "reject bad tick");
+  Require(!polymm::order_terms_ok(0.5, 5.0, 0.01, 1.1), "reject bad fee rate");
+
+  const auto gross = ExecutableEdge(0.0, 0.0);
+  Require(gross.direction == polymm::SignalEvaluation::Direction::Up,
+          "zero fee can open");
+  Require(gross.edge_ticks > 4.0, "gross edge exceeds four ticks");
+  const auto short_edge = ExecutableEdge(0.07, gross.edge_ticks);
+  Require(short_edge.direction == polymm::SignalEvaluation::Direction::None,
+          "edge below spread fee slippage and min edge does not open");
+  Require(short_edge.entry_fee_ticks > 0.0, "entry fee is visible");
+  Require(std::abs(short_edge.required_ticks -
+                   (short_edge.spread_ticks + short_edge.entry_fee_ticks +
+                    short_edge.slippage_ticks + gross.edge_ticks)) < 1e-9,
+          "required ticks add the cost");
+  const auto covered = ExecutableEdge(0.07, 0.0);
+  Require(covered.edge_ticks >= covered.required_ticks, "covered edge");
+  Require(covered.direction == polymm::SignalEvaluation::Direction::Up,
+          "covered edge opens");
+
+  polymm::PnlLedger ledger(7, 10, 11);
+  ledger.set_fee_rate(0.07);
+  const strategyframe::OrderToken buy{1, 1, 1};
+  const strategyframe::OrderToken maker_sell{1, 1, 2};
+  const strategyframe::OrderToken taker_sell{1, 1, 3};
+  Require(ledger.remember_order(buy, 10, strategyframe::Side::Buy,
+                                polymm::OrderPurpose::Open, 1, true),
+          "taker buy");
+  strategyframe::ExecutionUpdate fill;
+  fill.kind = strategyframe::ExecutionUpdate::Kind::Fill;
+  fill.account_id = 7;
+  fill.instrument_id = 10;
+  fill.token = buy;
+  fill.trade_id = Trade("fee-buy");
+  fill.fill_quantity = {5, 0, {}};
+  fill.fill_price = {50, 2, {}};
+  Require(ledger.apply_fill(fill), "apply taker buy");
+  const auto bought = ledger.stored(10);
+  const double entry_fee = polymm::polymarket_taker_fee(0.5, 5.0, 0.07);
+  Require(std::abs(bought.cost - (2.5 + entry_fee)) < 1e-9, "fee in cost");
+  Require(std::abs(bought.entry_fee_basis - entry_fee) < 1e-9, "fee basis");
+  Require(std::abs(bought.gross_realized - bought.realized_fees -
+                   bought.realized) < 1e-9,
+          "buy identity");
+  Require(std::abs(bought.total_estimated_fees - bought.realized_fees -
+                   bought.entry_fee_basis) < 1e-9,
+          "buy fee split");
+
+  Require(ledger.remember_order(maker_sell, 10, strategyframe::Side::Sell,
+                                polymm::OrderPurpose::Close, 1, false),
+          "maker sell");
+  fill.token = maker_sell;
+  fill.trade_id = Trade("fee-maker");
+  fill.fill_quantity = {2, 0, {}};
+  fill.fill_price = {60, 2, {}};
+  Require(ledger.apply_fill(fill), "partial maker sell");
+  const auto partial = ledger.stored(10);
+  Require(std::abs(partial.quantity - 3.0) < 1e-9, "three shares remain");
+  Require(partial.entry_fee_basis > 0.0, "open fee stays with the remainder");
+  Require(std::abs(partial.gross_realized - partial.realized_fees -
+                   partial.realized) < 1e-9,
+          "partial identity");
+  Require(std::abs(partial.total_estimated_fees - partial.realized_fees -
+                   partial.entry_fee_basis) < 1e-9,
+          "partial fee split");
+
+  Require(!ledger.release_expired_window(10, 11), "open inventory is not released");
+  Require(ledger.has_instrument(10), "row remains after rejected release");
+
+  Require(ledger.remember_order(taker_sell, 10, strategyframe::Side::Sell,
+                                polymm::OrderPurpose::ForceFlatten, 1, true),
+          "taker flatten");
+  fill.token = taker_sell;
+  fill.trade_id = Trade("fee-ioc");
+  fill.fill_quantity = {3, 0, {}};
+  fill.fill_price = {55, 2, {}};
+  Require(ledger.apply_fill(fill), "taker flatten fill");
+  fill.trade_id = Trade("fee-dup");
+  Require(!ledger.apply_fill(fill), "duplicate taker fill");
+  const auto flat = ledger.stored(10);
+  Require(std::abs(flat.quantity) < 1e-9, "flat after taker sell");
+  Require(std::abs(flat.entry_fee_basis) < 1e-9, "entry fee fully allocated");
+  Require(std::abs(flat.gross_realized - flat.realized_fees - flat.realized) <
+              1e-9,
+          "flat identity");
+  Require(std::abs(flat.total_estimated_fees - flat.realized_fees) < 1e-9,
+          "flat fees are realized");
+  Require(ledger.release_expired_window(10, 11), "flat release");
+  Require(std::abs(ledger.archived_gross() - ledger.archived_realized_fees() -
+                   ledger.archived_net()) < 1e-9,
+          "archived flat identity");
+  Require(std::abs(ledger.archived_total_fees() -
+                   ledger.archived_realized_fees()) < 1e-9,
+          "archived flat fees");
+
+  polymm::PnlLedger settled(7, 12, 13);
+  settled.set_fee_rate(0.07);
+  Require(settled.remember_order(buy, 12, strategyframe::Side::Buy,
+                                 polymm::OrderPurpose::Open, 1, true),
+          "settlement buy");
+  fill.instrument_id = 12;
+  fill.token = buy;
+  fill.trade_id = Trade("fee-settle");
+  fill.fill_quantity = {5, 0, {}};
+  fill.fill_price = {50, 2, {}};
+  Require(settled.apply_fill(fill), "settlement taker buy");
+  Require(settled.settle_expired_window(12, 13, polymm::Outcome::Up),
+          "settle remaining inventory");
+  Require(std::abs(settled.archived_gross() - settled.archived_realized_fees() -
+                   settled.archived_net()) < 1e-9,
+          "settled identity");
+  Require(std::abs(settled.archived_total_fees() -
+                   settled.archived_realized_fees()) < 1e-9,
+          "settled fees include the open basis");
+  Require(!settled.has_instrument(12), "settled row cleared");
+
+  const double target = polymm::close_target_price(0.50, 0.01, 4);
+  Require(polymm::select_close_liquidity(target, 5.0, target, 0.07) ==
+              polymm::CloseLiquidity::PostOnly,
+          "gross bid does not pay the exit fee");
+  const double exit_per = polymm::polymarket_taker_fee_per_share(
+      0.70, 5.0, 0.07, polymm::FeeRounding::Up);
+  Require(polymm::select_close_liquidity(0.70, 5.0, target, 0.07) ==
+              polymm::CloseLiquidity::Ioc,
+          "bid covering the exit fee can take");
+  Require(0.70 - exit_per >= target, "covered example really clears the fee");
+
+  polymm::SignalHorizonTracker tracker;
+  const std::uint64_t signal_ns = 1'000'000'000ULL;
+  Require(tracker.record(signal_ns, 1, 10, polymm::SignalEvaluation::Direction::Up,
+                         0.50, 0.49, 0.51, 8.0, 6.0, 0.01, 0.01, 0.07, 5.0),
+          "record horizon");
+  tracker.sample(signal_ns + 60'000'000ULL, 10, 1, 0.56, 0.57,
+                 signal_ns + 55'000'000ULL);
+  Require(tracker.summary().horizons[0].valid == 0, "100ms waits for its target");
+  tracker.sample(signal_ns + 100'000'000ULL, 10, 1, 0.56, 0.57,
+                 signal_ns + 95'000'000ULL);
+  Require(tracker.summary().horizons[0].valid == 1, "100ms accepts a quote 5ms early");
+  Require(tracker.summary().horizons[0].mark_to_bid_sum > 0.0, "up move is positive");
+  tracker.sample(signal_ns + 200'000'000ULL, 10, 1, 0.56, 0.57,
+                 signal_ns + 190'000'000ULL);
+  tracker.sample(signal_ns + 500'000'000ULL, 10, 1, 0.40, 0.41,
+                 signal_ns + 500'000'000ULL);
+  Require(tracker.summary().horizons[1].valid == 1, "200ms completed on time");
+  Require(tracker.summary().horizons[1].missing == 0, "500ms quote does not fill 200ms");
+  tracker.sample(signal_ns + 1'000'000'000ULL, 10, 1, 0.40, 0.41,
+                 signal_ns + 1'000'000'000ULL);
+  Require(tracker.summary().completed == 1, "all horizons complete one sample");
+  Require(tracker.inflight() == 0, "completed sample leaves the slot");
+
+  polymm::SignalHorizonTracker late;
+  Require(late.record(signal_ns, 1, 10, polymm::SignalEvaluation::Direction::Down,
+                      0.50, 0.49, 0.51, 8.0, 6.0, 0.0, 0.01, 0.0, 5.0),
+          "late record");
+  late.sample(signal_ns + 600'000'000ULL, 10, 1, 0.20, 0.21,
+              signal_ns + 500'000'000ULL);
+  Require(late.summary().horizons[0].missing == 1, "100ms is missing");
+  Require(late.summary().horizons[1].missing == 1, "200ms is missing");
+  Require(late.summary().horizons[2].valid == 1, "500ms quote fills only 500ms");
+
+  polymm::SignalHorizonTracker full;
+  for (std::uint32_t index = 0; index < polymm::kSignalHorizonSlots; ++index) {
+    Require(full.record(signal_ns, 1, 10, polymm::SignalEvaluation::Direction::Up,
+                        0.5, 0.49, 0.51, 1.0, 1.0, 0.0, 0.01, 0.0, 5.0),
+            "fill inflight slots");
+  }
+  Require(!full.record(signal_ns, 1, 10, polymm::SignalEvaluation::Direction::Up,
+                       0.5, 0.49, 0.51, 1.0, 1.0, 0.0, 0.01, 0.0, 5.0),
+          "inflight overflow drops");
+  Require(full.summary().dropped == 1, "dropped counter");
+  full.discard_generation(1);
+  Require(full.inflight() == 0, "generation discard frees slots");
+  Require(full.summary().horizons[0].missing == 0,
+          "discard does not invent missing horizons");
+  Require(full.record(signal_ns, 2, 11, polymm::SignalEvaluation::Direction::Up,
+                      0.5, 0.49, 0.51, 1.0, 1.0, 0.0, 0.01, 0.0, 5.0),
+          "next generation records");
+  full.sample(signal_ns + 100'000'000ULL, 10, 1, 0.9, 0.91,
+              signal_ns + 100'000'000ULL);
+  Require(full.summary().horizons[0].valid == 0,
+          "old instrument does not complete the new sample");
 }
 
 }  // namespace
@@ -661,6 +1272,9 @@ int main() {
   TestStartupReconcile();
   TestDustAndHalt();
   TestBboActivityKeepsBooksReady();
+  TestExpiryRelease();
+  TestResolutionPnl();
   TestExecutableEdge();
+  TestFeeEdgeAndPnl();
   return 0;
 }

@@ -17,6 +17,7 @@ struct CompleteStrategy {
   void on_order_update(const strategyframe::ExecutionUpdate&) {}
   void on_oms_status(const strategyframe::OmsStatusUpdate&) {}
   void on_timer(const strategyframe::TimerEvent&) {}
+  void on_balances_snapshot(const strategyframe::BalanceSnapshot&) {}
 };
 
 struct IncompleteStrategy {
@@ -30,6 +31,17 @@ static_assert(
     std::is_same_v<strategyframe::ProductType, utils::md::ProductType>);
 static_assert(
     std::is_same_v<strategyframe::InstrumentId, utils::md::InstrumentId>);
+static_assert(requires(strategyframe::StrategyContext& context) {
+  { context.query_balances(1) } ->
+      std::same_as<strategyframe::Result<strategyframe::QueryToken>>;
+  { context.cancel_venue_order(
+        1, 2, strategyframe::ClientOrderId{},
+        strategyframe::VenueOrderId{}) } ->
+      std::same_as<strategyframe::Result<strategyframe::OrderToken>>;
+});
+static_assert(std::is_trivially_copyable_v<strategyframe::BalanceSnapshot>);
+static_assert(std::is_standard_layout_v<strategyframe::BalanceSnapshot>);
+static_assert(sizeof(strategyframe::BalanceSnapshot) == 72);
 static_assert(std::is_same_v<std::underlying_type_t<strategyframe::Venue>,
                              std::uint16_t>);
 static_assert(
@@ -77,5 +89,20 @@ int main() {
   strategyframe::FixedPoint value{42, 2, {}};
   Require(value.value == 42);
   Require(sizeof(strategyframe::OrderToken) == 16);
+  strategyframe::BalanceSnapshot balance{};
+  strategyframe::QueriedOrderView queried{};
+  queried.snapshot_flags = strategyframe::SnapshotOwnedExternal;
+  Require((queried.snapshot_flags &
+           strategyframe::SnapshotOwnedExternal) != 0);
+  balance.query_token = {1, 2, 3};
+  balance.asset_or_currency[0] = 'U';
+  balance.total_quantity = 100;
+  balance.held_quantity = 25;
+  balance.available_quantity = 75;
+  balance.scale = 2;
+  Require(balance.query_token.sequence == 3 &&
+          balance.asset_or_currency[0] == 'U' &&
+          balance.total_quantity ==
+              balance.held_quantity + balance.available_quantity);
   return 0;
 }

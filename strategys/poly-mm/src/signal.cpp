@@ -4,6 +4,8 @@
 #include <cmath>
 #include <limits>
 
+#include "polymm/risk.h"
+
 namespace polymm {
 namespace {
 
@@ -63,12 +65,15 @@ const SignalEngine::Sample& SignalEngine::at(std::size_t logical) const noexcept
   return samples_[(begin_ + logical) % samples_.size()];
 }
 
-bool SignalEngine::update(const FairPriceEvent& event) noexcept {
+FairUpdate SignalEngine::update(const FairPriceEvent& event) noexcept {
   if (!std::isfinite(event.price_raw) || event.price_raw <= 0.0 ||
       event.wall_ns == 0) {
-    return false;
+    return FairUpdate::Invalid;
   }
-  if (size_ != 0 && event.wall_ns <= at(size_ - 1).time_ns) return false;
+  if (size_ != 0 && event.wall_ns < at(size_ - 1).time_ns)
+    return FairUpdate::OutOfOrder;
+  if (size_ != 0 && event.wall_ns == at(size_ - 1).time_ns)
+    return FairUpdate::Duplicate;
   const Sample sample{event.price_raw, event.wall_ns};
   if (size_ == samples_.size()) {
     samples_[begin_] = sample;
@@ -87,7 +92,11 @@ bool SignalEngine::update(const FairPriceEvent& event) noexcept {
     begin_ = (begin_ + 1) % samples_.size();
     --size_;
   }
-  return true;
+  return FairUpdate::Accepted;
+}
+
+std::uint64_t SignalEngine::latest_wall_ns() const noexcept {
+  return size_ == 0 ? 0 : at(size_ - 1).time_ns;
 }
 
 const SignalEngine::Sample* SignalEngine::sample_from_ago(
@@ -169,14 +178,20 @@ SignalEvaluation SignalEngine::evaluate(
 
 namespace {
 
-double RequiredTicks(const Parameters& parameters, double market_price,
-                     double spread, double tick_size) noexcept {
-  const double fee_ticks =
-      tick_size > 0.0
-          ? (market_price * parameters.taker_fee_bps / 10'000.0) / tick_size
+void FillExecutableCost(SignalEvaluation& result, const Parameters& parameters,
+                        double bid, double ask, double tick_size) noexcept {
+  result.spread_ticks =
+      tick_size > 0.0 ? std::max(0.0, (ask - bid) / tick_size) : 0.0;
+  result.slippage_ticks = std::max(0.0, parameters.slippage_ticks);
+  const double fee = polymarket_taker_fee(
+      ask, parameters.order_shares, parameters.polymarket_taker_fee_rate,
+      FeeRounding::Up);
+  result.entry_fee_ticks =
+      parameters.order_shares > 0.0 && tick_size > 0.0
+          ? (fee / parameters.order_shares) / tick_size
           : 0.0;
-  return std::max(0.0, spread / tick_size) + parameters.min_edge_ticks +
-         parameters.slippage_ticks + std::max(0.0, fee_ticks);
+  result.required_ticks = result.spread_ticks + result.entry_fee_ticks +
+                          result.slippage_ticks + parameters.min_edge_ticks;
 }
 
 }  // namespace
@@ -193,7 +208,9 @@ SignalEvaluation SignalEngine::evaluate_executable(
   const bool buy_up = result.fair_move > 0.0;
   const double bid = buy_up ? up_bid : down_bid;
   const double ask = buy_up ? up_ask : down_ask;
-  if (!(ask > 0.0 && ask < 1.0) || !(bid > 0.0 && bid < ask)) {
+  if (!order_terms_ok(ask, parameters_.order_shares, tick_size,
+                      parameters_.polymarket_taker_fee_rate) ||
+      !(bid > 0.0 && bid < ask)) {
     result.direction = SignalEvaluation::Direction::None;
     return result;
   }
@@ -213,9 +230,8 @@ SignalEvaluation SignalEngine::evaluate_executable(
   const double density = inv_sqrt_2pi * std::exp(-0.5 * d * d);
   result.option_edge = result.fair_move * density / remaining_sigma;
   result.edge_ticks = std::abs(result.option_edge) / tick_size;
-  const double required =
-      RequiredTicks(parameters_, ask, ask - bid, tick_size);
-  if (result.price_in_range && result.edge_ticks >= required) {
+  FillExecutableCost(result, parameters_, bid, ask, tick_size);
+  if (result.price_in_range && result.edge_ticks >= result.required_ticks) {
     result.direction = buy_up ? SignalEvaluation::Direction::Up
                               : SignalEvaluation::Direction::Down;
   } else {
@@ -228,6 +244,145 @@ bool SignalEngine::ready() const noexcept { return size_ >= 3; }
 
 double SignalEngine::latest_price() const noexcept {
   return size_ == 0 ? 0.0 : at(size_ - 1).price;
+}
+
+bool SignalHorizonTracker::record(
+    std::uint64_t signal_ns, std::uint32_t window_generation,
+    strategyframe::InstrumentId instrument_id,
+    SignalEvaluation::Direction direction, double initial_mid,
+    double initial_bid, double entry_ask, double edge_ticks,
+    double required_ticks, double entry_fee_per_share, double tick_size,
+    double fee_rate, double quantity) noexcept {
+  if (instrument_id == 0 || !(tick_size > 0.0) || !(quantity > 0.0) ||
+      !(entry_ask > 0.0 && entry_ask < 1.0)) {
+    ++dropped_;
+    return false;
+  }
+  for (Observation& slot : slots_) {
+    if (slot.used) continue;
+    slot = {};
+    slot.used = true;
+    slot.signal_ns = signal_ns;
+    slot.window_generation = window_generation;
+    slot.instrument_id = instrument_id;
+    slot.direction = direction;
+    slot.initial_mid = initial_mid;
+    slot.initial_bid = initial_bid;
+    slot.entry_ask = entry_ask;
+    slot.edge_ticks = edge_ticks;
+    slot.required_ticks = required_ticks;
+    slot.entry_fee_per_share = entry_fee_per_share;
+    slot.tick_size = tick_size;
+    slot.fee_rate = fee_rate;
+    slot.quantity = quantity;
+    ++inflight_;
+    return true;
+  }
+  ++dropped_;
+  return false;
+}
+
+void SignalHorizonTracker::resolve(Observation& observation, int horizon,
+                                   bool valid, double bid, double ask) noexcept {
+  HorizonAggregate& aggregate = horizons_[static_cast<std::size_t>(horizon)];
+  if (valid && observation.tick_size > 0.0 && bid > 0.0 && bid < 1.0 &&
+      ask > bid) {
+    const double future_mid = (bid + ask) * 0.5;
+    const double mid_move =
+        (future_mid - observation.initial_mid) / observation.tick_size;
+    const double exit_fee = polymarket_taker_fee(
+        bid, observation.quantity, observation.fee_rate, FeeRounding::Up);
+    const double exit_per_share =
+        observation.quantity > 0.0 ? exit_fee / observation.quantity : 0.0;
+    const double mark =
+        (bid - observation.entry_ask - observation.entry_fee_per_share) /
+        observation.tick_size;
+    const double taker_exit = (bid - observation.entry_ask -
+                               observation.entry_fee_per_share - exit_per_share) /
+                              observation.tick_size;
+    ++aggregate.valid;
+    aggregate.mid_move_sum += mid_move;
+    aggregate.mark_to_bid_sum += mark;
+    aggregate.taker_exit_net_sum += taker_exit;
+    if (mark > 0.0) ++aggregate.mark_positive;
+    if (taker_exit > 0.0) ++aggregate.taker_positive;
+  } else {
+    ++aggregate.missing;
+  }
+  observation.resolved =
+      static_cast<std::uint8_t>(observation.resolved | (1U << horizon));
+}
+
+void SignalHorizonTracker::finish_if_complete(Observation& observation) noexcept {
+  if (observation.resolved != 0x0F) return;
+  observation = {};
+  if (inflight_ > 0) --inflight_;
+  ++completed_;
+  if (completed_ % 100ULL == 0) summary_due_ = true;
+}
+
+void SignalHorizonTracker::sample(
+    std::uint64_t now_ns, strategyframe::InstrumentId instrument_id,
+    std::uint32_t window_generation, double bid, double ask,
+    std::uint64_t bbo_ns) noexcept {
+  if (inflight_ == 0) return;
+  for (Observation& observation : slots_) {
+    if (!observation.used || observation.instrument_id != instrument_id ||
+        observation.window_generation != window_generation) {
+      continue;
+    }
+    for (int horizon = 0; horizon < 4; ++horizon) {
+      const auto bit = static_cast<std::uint8_t>(1U << horizon);
+      if ((observation.resolved & bit) != 0) continue;
+      const std::uint64_t target =
+          observation.signal_ns + kSignalHorizonNs[horizon];
+      if (now_ns < target) continue;
+      const std::uint64_t lower =
+          target > kSignalHorizonSlackNs ? target - kSignalHorizonSlackNs
+                                         : 0;
+      const std::uint64_t upper = target + kSignalHorizonSlackNs;
+      const bool quote_ok = bbo_ns >= observation.signal_ns &&
+                            bbo_ns >= lower && bbo_ns <= upper && bid > 0.0 &&
+                            bid < 1.0 && ask > bid;
+      if (quote_ok) {
+        resolve(observation, horizon, true, bid, ask);
+      } else if (now_ns > upper) {
+        resolve(observation, horizon, false, 0.0, 0.0);
+      }
+    }
+    finish_if_complete(observation);
+  }
+}
+
+void SignalHorizonTracker::discard_generation(
+    std::uint32_t window_generation) noexcept {
+  for (Observation& observation : slots_) {
+    if (!observation.used ||
+        observation.window_generation != window_generation) {
+      continue;
+    }
+    observation = {};
+    if (inflight_ > 0) --inflight_;
+    ++dropped_;
+  }
+}
+
+HorizonSummary SignalHorizonTracker::summary() const noexcept {
+  HorizonSummary result;
+  result.dropped = dropped_;
+  result.completed = completed_;
+  result.horizons = horizons_;
+  return result;
+}
+
+bool SignalHorizonTracker::take_summary_request() noexcept {
+  if (!summary_due_) return false;
+  summary_due_ = false;
+  return true;
+}
+
+std::uint64_t SignalHorizonTracker::inflight() const noexcept {
+  return inflight_;
 }
 
 }  // namespace polymm

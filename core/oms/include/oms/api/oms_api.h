@@ -20,7 +20,8 @@ struct InstrumentInit {
   PolymarketOutcome polymarket_outcome{PolymarketOutcome::Unknown};
   bool polymarket_negative_risk{};
   std::uint8_t polymarket_signature_type{};
-  std::uint8_t reserved{};
+  utils::md::IbkrSecurityType ibkr_security_type{
+      utils::md::IbkrSecurityType::Unknown};
   std::int64_t minimum_order_size{1};
   std::uint32_t polymarket_taker_delay_ms{};
 };
@@ -95,10 +96,15 @@ class OmsApi {
   Result<RequestToken> cancel_order(std::uint32_t lane_id,
                                     RequestToken target,
                                     OrderHandle handle = {}) noexcept;
+  Result<RequestToken> cancel_venue_order(
+      std::uint32_t lane_id, CancelVenueOrderRequest request) noexcept;
   Result<RequestToken> register_instrument(
       std::uint32_t lane_id, RegisterInstrumentRequest request) noexcept;
   Result<RequestToken> retire_instrument(std::uint32_t lane_id,
                                          InstrumentId instrument_id) noexcept;
+  Result<RequestToken> retire_instrument(
+      std::uint32_t lane_id, InstrumentId instrument_id,
+      InstrumentRetirementMode mode) noexcept;
   Result<QueryToken> query_open_orders(std::uint32_t lane_id,
                                       AccountId account_id) noexcept;
   Result<QueryToken> query_open_orders(std::uint32_t lane_id,
@@ -107,6 +113,10 @@ class OmsApi {
                                     AccountId account_id) noexcept;
   Result<QueryToken> query_positions(std::uint32_t lane_id,
                                      QueryRequest request) noexcept;
+  Result<QueryToken> query_balances(std::uint32_t lane_id,
+                                   AccountId account_id) noexcept;
+  Result<QueryToken> query_balances(std::uint32_t lane_id,
+                                   QueryRequest request) noexcept;
 
   // Inline only: timeout 0 polls, timeout >0 waits at most that many
   // milliseconds, and -1 waits indefinitely.
@@ -118,6 +128,8 @@ class OmsApi {
   [[nodiscard]] RuntimeMetrics metrics() const noexcept;
   [[nodiscard]] Result<AdapterStatusSnapshot> adapter_status(
       exchange::AdapterKind kind) const noexcept;
+  [[nodiscard]] bool instrument_ready(
+      const ResolvedInstrument& routing) const noexcept;
   [[nodiscard]] InstrumentId resolve_polymarket_token(
       const std::array<std::uint8_t, 32>& token_id) const noexcept;
   [[nodiscard]] std::uint64_t execution_directory_access_count() const

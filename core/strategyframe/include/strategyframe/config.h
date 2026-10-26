@@ -61,6 +61,8 @@ struct VenueExecutionConfig {
     BinanceSpot = 1,
     BinanceUsdm = 2,
     Polymarket = 3,
+    Hyperliquid = 4,
+    Ibkr = 5,
   };
 
   Kind kind{Kind::BinanceSpot};
@@ -74,6 +76,11 @@ struct VenueExecutionConfig {
   std::string passphrase_env{};
   std::string funder_address_env{};
   std::string private_key_env{};
+  std::string account_address_env{};
+  std::string vault_address_env{};
+  std::string account{};
+  EndpointConfig gateway{};
+  int client_id{-1};
   std::uint8_t signature_type{0xff};
 };
 

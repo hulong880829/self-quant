@@ -35,6 +35,13 @@ type polymarketCredentialStore interface {
 		TradingAccountRecord,
 		PolymarketCredentialRecord,
 	) (TradingAccountRecord, PolymarketCredentialRecord, error)
+	CreateIdempotent(
+		context.Context,
+		string,
+		string,
+		TradingAccountRecord,
+		PolymarketCredentialRecord,
+	) (TradingAccountRecord, PolymarketCredentialRecord, bool, error)
 	ListMetadataByOwner(context.Context, string) ([]PolymarketCredentialRecord, error)
 	GetByOwner(context.Context, string, int64) (PolymarketCredentialRecord, error)
 	UpdateCredentialsByOwner(context.Context, string, int64, []byte, []byte, []byte, string) error
@@ -137,6 +144,171 @@ func (r *PolymarketCredentialRepository) Create(
 	if err := tx.Commit(ctx); err != nil {
 		return TradingAccountRecord{}, PolymarketCredentialRecord{}, err
 	}
+	return created, stored, nil
+}
+
+func (r *PolymarketCredentialRepository) CreateIdempotent(
+	ctx context.Context,
+	key, requestHash string,
+	account TradingAccountRecord,
+	credentials PolymarketCredentialRecord,
+) (TradingAccountRecord, PolymarketCredentialRecord, bool, error) {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return TradingAccountRecord{}, PolymarketCredentialRecord{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	accountID, replay, err := claimBindIdempotency(ctx, tx, account.OwnerUsername, key, requestHash)
+	if err != nil {
+		return TradingAccountRecord{}, PolymarketCredentialRecord{}, false, err
+	}
+	if replay {
+		existing, err := tradingAccountByID(ctx, tx, account.OwnerUsername, accountID)
+		if err != nil {
+			return TradingAccountRecord{}, PolymarketCredentialRecord{}, false, err
+		}
+		stored, err := r.credentialByAccount(ctx, tx, accountID)
+		if err != nil {
+			return TradingAccountRecord{}, PolymarketCredentialRecord{}, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return TradingAccountRecord{}, PolymarketCredentialRecord{}, false, err
+		}
+		return existing, stored, true, nil
+	}
+	created, stored, err := insertPolymarketAccount(ctx, tx, account, credentials)
+	if err != nil {
+		return TradingAccountRecord{}, PolymarketCredentialRecord{}, false, err
+	}
+	if _, err = tx.Exec(ctx, `
+		UPDATE trading_account_bind_idempotency
+		SET trading_account_id=$3, completed_at=now()
+		WHERE owner_username=$1 AND idempotency_key=$2`,
+		account.OwnerUsername, key, created.ID,
+	); err != nil {
+		return TradingAccountRecord{}, PolymarketCredentialRecord{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return TradingAccountRecord{}, PolymarketCredentialRecord{}, false, err
+	}
+	return created, stored, false, nil
+}
+
+func (r *PolymarketCredentialRepository) credentialByAccount(
+	ctx context.Context,
+	query queryRower,
+	accountID int64,
+) (PolymarketCredentialRecord, error) {
+	var stored PolymarketCredentialRecord
+	err := query.QueryRow(ctx, `
+		SELECT p.trading_account_id, t.owner_username, t.account_name,
+		       p.signer_address, p.funder_address, p.wallet_type, p.signature_type,
+		       p.credential_nonce, p.private_key_enc, p.api_key_enc, p.api_secret_enc,
+		       p.passphrase_enc, p.binding_status, p.created_at, p.updated_at
+		FROM polymarket_account_credentials p
+		JOIN trading_accounts t ON t.id=p.trading_account_id
+		WHERE p.trading_account_id=$1`, accountID).Scan(
+		&stored.TradingAccountID,
+		&stored.OwnerUsername,
+		&stored.AccountName,
+		&stored.SignerAddress,
+		&stored.FunderAddress,
+		&stored.WalletType,
+		&stored.SignatureType,
+		&stored.CredentialNonce,
+		&stored.PrivateKeyEnc,
+		&stored.APIKeyEnc,
+		&stored.APISecretEnc,
+		&stored.PassphraseEnc,
+		&stored.BindingStatus,
+		&stored.CreatedAt,
+		&stored.UpdatedAt,
+	)
+	if err != nil {
+		return PolymarketCredentialRecord{}, err
+	}
+	return stored, nil
+}
+
+func insertPolymarketAccount(
+	ctx context.Context,
+	tx pgx.Tx,
+	account TradingAccountRecord,
+	credentials PolymarketCredentialRecord,
+) (TradingAccountRecord, PolymarketCredentialRecord, error) {
+	var created TradingAccountRecord
+	err := tx.QueryRow(ctx, `
+		INSERT INTO trading_accounts (
+			owner_username, product_name, exchange, account_name,
+			api_key_enc, api_secret_enc, passphrase_enc
+		) VALUES ($1,$2,'polymarket',$3,$4,$5,$6)
+		RETURNING id, owner_username, product_name, exchange, account_name,
+		          api_key_enc, api_secret_enc, passphrase_enc, created_at, updated_at`,
+		account.OwnerUsername,
+		account.ProductName,
+		account.AccountName,
+		account.APIKeyEnc,
+		account.APISecretEnc,
+		account.PassphraseEnc,
+	).Scan(
+		&created.ID,
+		&created.OwnerUsername,
+		&created.ProductName,
+		&created.Exchange,
+		&created.AccountName,
+		&created.APIKeyEnc,
+		&created.APISecretEnc,
+		&created.PassphraseEnc,
+		&created.CreatedAt,
+		&created.UpdatedAt,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return TradingAccountRecord{}, PolymarketCredentialRecord{}, ErrDuplicateTradingAccount
+		}
+		return TradingAccountRecord{}, PolymarketCredentialRecord{}, fmt.Errorf("create polymarket account: %w", err)
+	}
+	var stored PolymarketCredentialRecord
+	err = tx.QueryRow(ctx, `
+		INSERT INTO polymarket_account_credentials (
+			trading_account_id, signer_address, funder_address, wallet_type,
+			signature_type, credential_nonce, private_key_enc, api_key_enc,
+			api_secret_enc, passphrase_enc, binding_status
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active')
+		RETURNING trading_account_id, signer_address, funder_address, wallet_type,
+		          signature_type, credential_nonce, private_key_enc, api_key_enc,
+		          api_secret_enc, passphrase_enc, binding_status, created_at, updated_at`,
+		created.ID,
+		credentials.SignerAddress,
+		credentials.FunderAddress,
+		credentials.WalletType,
+		credentials.SignatureType,
+		credentials.CredentialNonce,
+		credentials.PrivateKeyEnc,
+		credentials.APIKeyEnc,
+		credentials.APISecretEnc,
+		credentials.PassphraseEnc,
+	).Scan(
+		&stored.TradingAccountID,
+		&stored.SignerAddress,
+		&stored.FunderAddress,
+		&stored.WalletType,
+		&stored.SignatureType,
+		&stored.CredentialNonce,
+		&stored.PrivateKeyEnc,
+		&stored.APIKeyEnc,
+		&stored.APISecretEnc,
+		&stored.PassphraseEnc,
+		&stored.BindingStatus,
+		&stored.CreatedAt,
+		&stored.UpdatedAt,
+	)
+	if err != nil {
+		return TradingAccountRecord{}, PolymarketCredentialRecord{}, fmt.Errorf("store polymarket credentials: %w", err)
+	}
+	stored.OwnerUsername = created.OwnerUsername
+	stored.AccountName = created.AccountName
 	return created, stored, nil
 }
 

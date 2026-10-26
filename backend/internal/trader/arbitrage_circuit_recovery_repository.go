@@ -424,7 +424,7 @@ func (r *Repository) CompleteCircuitOpenRecovery(
 	}
 	payload["executionId"] = execution.ID
 	payload["kind"] = request.Kind
-	body, err := json.Marshal(redactPayload(payload))
+	body, err := json.Marshal(withEventSchema(redactPayload(payload)))
 	if err != nil {
 		return ArbitrageCombination{}, false, err
 	}

@@ -20,6 +20,17 @@ struct PnlView {
   double total_exit{};
 };
 
+struct StoredPnl {
+  bool present{};
+  double quantity{};
+  double cost{};
+  double realized{};
+  double gross_realized{};
+  double entry_fee_basis{};
+  double realized_fees{};
+  double total_estimated_fees{};
+};
+
 class PnlLedger {
  public:
   explicit PnlLedger(strategyframe::AccountId account_id) noexcept;
@@ -30,11 +41,31 @@ class PnlLedger {
   bool remember_order(strategyframe::OrderToken token,
                       strategyframe::InstrumentId instrument_id,
                       strategyframe::Side side, OrderPurpose purpose,
-                      std::uint32_t window_generation) noexcept;
+                      std::uint32_t window_generation,
+                      bool taker = false) noexcept;
+  void set_fee_rate(double fee_rate) noexcept;
   bool apply_fill(const strategyframe::ExecutionUpdate& update) noexcept;
   void update_bbo(const strategyframe::BboUpdate& update) noexcept;
   [[nodiscard]] PnlView view(
       strategyframe::InstrumentId instrument_id) const noexcept;
+  [[nodiscard]] StoredPnl stored(
+      strategyframe::InstrumentId instrument_id) const noexcept;
+  [[nodiscard]] bool release_expired_window(
+      strategyframe::InstrumentId up,
+      strategyframe::InstrumentId down) noexcept;
+  [[nodiscard]] bool settle_expired_window(
+      strategyframe::InstrumentId up,
+      strategyframe::InstrumentId down, Outcome winner) noexcept;
+  [[nodiscard]] double last_window_pnl() const noexcept;
+  [[nodiscard]] bool remember_late_fill(
+      strategyframe::AccountId account,
+      strategyframe::InstrumentId instrument,
+      const strategyframe::TradeId& trade_id) noexcept;
+  [[nodiscard]] double archived_realized() const noexcept;
+  [[nodiscard]] double archived_gross() const noexcept;
+  [[nodiscard]] double archived_net() const noexcept;
+  [[nodiscard]] double archived_realized_fees() const noexcept;
+  [[nodiscard]] double archived_total_fees() const noexcept;
   [[nodiscard]] double quantity(
       strategyframe::InstrumentId instrument_id) const noexcept;
   [[nodiscard]] bool flat() const noexcept;
@@ -67,7 +98,11 @@ class PnlLedger {
     strategyframe::InstrumentId instrument_id{};
     double quantity{};
     double cost{};
+    double entry_fee_basis{};
+    double gross_realized{};
     double realized{};
+    double realized_fees{};
+    double total_estimated_fees{};
     double bid{};
     double ask{};
     bool retired{};
@@ -79,6 +114,7 @@ class PnlLedger {
     strategyframe::Side side{strategyframe::Side::Buy};
     OrderPurpose purpose{OrderPurpose::Open};
     std::uint32_t window_generation{};
+    bool taker{};
   };
   struct SeenTrade {
     bool used{};
@@ -98,8 +134,19 @@ class PnlLedger {
       strategyframe::InstrumentId instrument_id,
       const strategyframe::TradeId& trade_id) noexcept;
   [[nodiscard]] bool archive_active_rows() noexcept;
+  [[nodiscard]] static bool row_flat(const Row& value) noexcept;
+  void archive_flat_row(Row& value) noexcept;
+  void archive_settled_row(Row& value, double payout) noexcept;
+
+  struct SettledWindow {
+    strategyframe::InstrumentId up{};
+    strategyframe::InstrumentId down{};
+  };
 
   strategyframe::AccountId account_id_{};
+  std::array<SettledWindow, 32> settled_windows_{};
+  std::size_t settled_cursor_{};
+  double last_window_pnl_{};
   std::array<Row, 2> active_{};
   std::array<Row, kPnlRetiredRows> retired_{};
   std::array<OrderRef, 64> orders_{};
@@ -109,7 +156,11 @@ class PnlLedger {
   std::size_t trade_cursor_{};
   std::uint64_t duplicate_fills_{};
   std::uint64_t orphan_fills_{};
-  double archived_realized_{};
+  double fee_rate_{};
+  double archived_gross_{};
+  double archived_net_{};
+  double archived_realized_fees_{};
+  double archived_total_fees_{};
 };
 
 }  // namespace polymm

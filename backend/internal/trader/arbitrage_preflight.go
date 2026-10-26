@@ -13,15 +13,41 @@ import (
 	"selfquant/backend/internal/trader/exchange"
 )
 
-func knownPreflightDecimal(value string) PreflightDecimal {
+const preflightUSDEquivalent = "USD_EQUIVALENT"
+
+func knownPreflightDecimal(value, unit string) PreflightDecimal {
 	if strings.TrimSpace(value) == "" {
-		return PreflightDecimal{Status: "unknown"}
+		return PreflightDecimal{Status: "unknown", Unit: unit}
 	}
-	return PreflightDecimal{Value: value, Status: "known"}
+	return PreflightDecimal{Value: value, Status: "known", Unit: unit}
 }
 
-func unknownPreflightDecimal() PreflightDecimal {
-	return PreflightDecimal{Status: "unknown"}
+func unknownPreflightDecimal(unit string) PreflightDecimal {
+	return PreflightDecimal{Status: "unknown", Unit: unit}
+}
+
+func setPreflightUnit(value *PreflightDecimal, unit string) {
+	if value.Unit == "" {
+		value.Unit = unit
+	}
+}
+
+func stampResolvedPreflightLeg(leg *PreflightLeg, instrument Instrument) {
+	base := strings.TrimSpace(instrument.BaseAsset)
+	quote := strings.TrimSpace(instrument.QuoteAsset)
+	setPreflightUnit(&leg.AvailableFunds, preflightUSDEquivalent)
+	setPreflightUnit(&leg.RequiredMargin, preflightUSDEquivalent)
+	setPreflightUnit(&leg.MinQuantity, base)
+	setPreflightUnit(&leg.MinNotional, quote)
+	setPreflightUnit(&leg.QuantityStep, base)
+	setPreflightUnit(&leg.RoundedBaseQuantity, base)
+}
+
+func preflightWarning(code, message, leg, exchange, reason, unit string) PreflightWarning {
+	return PreflightWarning{
+		Code: code, Message: message, Leg: leg, Exchange: exchange,
+		Details: map[string]string{"reason": reason, "unit": unit},
+	}
 }
 
 func (s *Service) PreflightArbitrageCombination(
@@ -31,8 +57,8 @@ func (s *Service) PreflightArbitrageCombination(
 	now := time.Now().UTC()
 	result := ArbitragePreflight{
 		CheckedAt: now, ExpiresAt: now.Add(3 * time.Second),
-		LegA: PreflightLeg{EstimatedFee: unknownPreflightDecimal()},
-		LegB: PreflightLeg{EstimatedFee: unknownPreflightDecimal()},
+		LegA: PreflightLeg{EstimatedFee: unknownPreflightDecimal("")},
+		LegB: PreflightLeg{EstimatedFee: unknownPreflightDecimal("")},
 	}
 	input.IdempotencyKey = "preflight-read-only"
 	if strings.TrimSpace(input.AskThresholdBps) == "" {
@@ -82,6 +108,18 @@ func (s *Service) PreflightArbitrageCombination(
 	if !validArbitrageInstrumentPair(accountA, instrumentA, accountB, instrumentB) {
 		return result, ErrInvalidArgument
 	}
+	stampResolvedPreflightLeg(&result.LegA, instrumentA)
+	stampResolvedPreflightLeg(&result.LegB, instrumentB)
+	levA, err := defaultLegLeverage(instrumentA.ContractType, normalized.LegALeverage)
+	if err != nil {
+		return preflightFailure(result, tagCreateErrorLeg(err, "a")), nil
+	}
+	levB, err := defaultLegLeverage(instrumentB.ContractType, normalized.LegBLeverage)
+	if err != nil {
+		return preflightFailure(result, tagCreateErrorLeg(err, "b")), nil
+	}
+	normalized.LegALeverage = levA.String()
+	normalized.LegBLeverage = levB.String()
 	requiredA, requiredB := preflightOrderTypes(normalized, instrumentA, instrumentB)
 	if !instrumentRulesReady(instrumentA, requiredA) ||
 		!instrumentRulesReady(instrumentB, requiredB) {
@@ -117,14 +155,6 @@ func (s *Service) PreflightArbitrageCombination(
 	if err := preflightPositionModes(ctx, s.timeout, accountA, instrumentA, adapterA, accountB, instrumentB, adapterB); err != nil {
 		return preflightFailure(result, err), nil
 	}
-	levA, err := defaultLegLeverage(instrumentA.ContractType, normalized.LegALeverage)
-	if err != nil {
-		return preflightFailure(result, tagCreateErrorLeg(err, "a")), nil
-	}
-	levB, err := defaultLegLeverage(instrumentB.ContractType, normalized.LegBLeverage)
-	if err != nil {
-		return preflightFailure(result, tagCreateErrorLeg(err, "b")), nil
-	}
 	snapshotA, snapshotB, err := s.preflightSnapshots(ctx, accountA, accountB)
 	if err != nil {
 		return preflightFailure(result, err), nil
@@ -155,24 +185,28 @@ func (s *Service) PreflightArbitrageCombination(
 		leg      string
 		out      PreflightLeg
 		exchange string
-	}{{"a", result.LegA, accountA.Exchange}, {"b", result.LegB, accountB.Exchange}} {
+		base     string
+	}{
+		{"a", result.LegA, accountA.Exchange, instrumentA.BaseAsset},
+		{"b", result.LegB, accountB.Exchange, instrumentB.BaseAsset},
+	} {
 		if item.out.RoundedBaseQuantity.Status == "unknown" {
-			result.Warnings = append(result.Warnings, PreflightWarning{
-				Code: "price_unknown", Message: "rounded quantity is unavailable without a reliable current price",
-				Leg: item.leg, Exchange: item.exchange,
-			})
+			result.Warnings = append(result.Warnings, preflightWarning(
+				"price_unknown", "rounded quantity is unavailable without a reliable current price",
+				item.leg, item.exchange, "reliable_price_unavailable", strings.TrimSpace(item.base),
+			))
 		}
 		if item.out.EstimatedFee.Status == "unknown" {
-			result.Warnings = append(result.Warnings, PreflightWarning{
-				Code: "fee_unknown", Message: "an exact fee estimate is unavailable",
-				Leg: item.leg, Exchange: item.exchange,
-			})
+			result.Warnings = append(result.Warnings, preflightWarning(
+				"fee_unknown", "an exact fee estimate is unavailable",
+				item.leg, item.exchange, "fee_estimate_unavailable", "",
+			))
 		}
 		if item.out.RequiredMargin.Status == "unknown" {
-			result.Warnings = append(result.Warnings, PreflightWarning{
-				Code: "margin_unknown", Message: "an exact post-leverage margin requirement is unavailable",
-				Leg: item.leg, Exchange: item.exchange,
-			})
+			result.Warnings = append(result.Warnings, preflightWarning(
+				"margin_unknown", "an exact post-leverage margin requirement is unavailable",
+				item.leg, item.exchange, "margin_preview_unavailable", preflightUSDEquivalent,
+			))
 		}
 	}
 	result.Executable = true
@@ -285,18 +319,20 @@ func buildPreflightLeg(
 		step, minQty, minNotional = instrument.MarketQuantityStep, instrument.MarketMinQuantity, instrument.MarketMinNotional
 		stepStatus, minQtyStatus, minNotionalStatus = instrument.MarketQuantityStepStatus, instrument.MarketMinQuantityStatus, instrument.MarketMinNotionalStatus
 	}
+	base := strings.TrimSpace(instrument.BaseAsset)
+	quote := strings.TrimSpace(instrument.QuoteAsset)
 	out := PreflightLeg{
-		AvailableFunds:      knownPreflightDecimal(available.String()),
-		RequiredMargin:      knownPreflightDecimal(required.String()),
-		EstimatedFee:        unknownPreflightDecimal(),
-		MinQuantity:         constraintPreflightDecimal(minQty, minQtyStatus),
-		MinNotional:         constraintPreflightDecimal(minNotional, minNotionalStatus),
-		QuantityStep:        constraintPreflightDecimal(step, stepStatus),
-		RoundedBaseQuantity: unknownPreflightDecimal(),
+		AvailableFunds:      knownPreflightDecimal(available.String(), preflightUSDEquivalent),
+		RequiredMargin:      knownPreflightDecimal(required.String(), preflightUSDEquivalent),
+		EstimatedFee:        unknownPreflightDecimal(""),
+		MinQuantity:         constraintPreflightDecimal(minQty, minQtyStatus, base),
+		MinNotional:         constraintPreflightDecimal(minNotional, minNotionalStatus, quote),
+		QuantityStep:        constraintPreflightDecimal(step, stepStatus, base),
+		RoundedBaseQuantity: unknownPreflightDecimal(base),
 	}
 	stepValue := parsePositiveDecimal(step)
 	if price.IsPositive() && stepValue.IsPositive() {
-		out.RoundedBaseQuantity = knownPreflightDecimal(floorToStep(target.Div(price), stepValue).String())
+		out.RoundedBaseQuantity = knownPreflightDecimal(floorToStep(target.Div(price), stepValue).String(), base)
 	}
 	return out
 }
@@ -369,11 +405,11 @@ func (s *Service) preflightMargin(
 	snapshot portfolio.Snapshot,
 ) (PreflightDecimal, error) {
 	if strings.EqualFold(instrument.ContractType, "spot") {
-		return knownPreflightDecimal(target.String()), nil
+		return knownPreflightDecimal(target.String(), preflightUSDEquivalent), nil
 	}
 	previewer, ok := adapter.(exchange.LeverageSetPreviewer)
 	if !ok {
-		return unknownPreflightDecimal(), nil
+		return unknownPreflightDecimal(preflightUSDEquivalent), nil
 	}
 	queryCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
@@ -381,7 +417,7 @@ func (s *Service) preflightMargin(
 		queryCtx, toVenueCredentials(account), toVenueInstrument(instrument), leverage,
 	)
 	if err != nil {
-		return unknownPreflightDecimal(), nil
+		return unknownPreflightDecimal(preflightUSDEquivalent), nil
 	}
 	targetMargin := target.Div(leverage)
 	delta := preview.MarginChange
@@ -403,11 +439,11 @@ func (s *Service) preflightMargin(
 		)
 	}
 	if strings.TrimSpace(preview.EstMaxOpenUnit) != exchange.EstMaxOpenUnitQuoteNotional {
-		return unknownPreflightDecimal(), nil
+		return unknownPreflightDecimal(preflightUSDEquivalent), nil
 	}
 	maxOpen := parsePositiveDecimal(preview.EstMaxOpen)
 	if !maxOpen.IsPositive() {
-		return unknownPreflightDecimal(), nil
+		return unknownPreflightDecimal(preflightUSDEquivalent), nil
 	}
 	existing, existingErr := existingQuoteNotional(snapshot, account, instrument)
 	if existingErr != nil {
@@ -424,12 +460,12 @@ func (s *Service) preflightMargin(
 			},
 		)
 	}
-	return knownPreflightDecimal(required.String()), nil
+	return knownPreflightDecimal(required.String(), preflightUSDEquivalent), nil
 }
 
-func constraintPreflightDecimal(value, status string) PreflightDecimal {
+func constraintPreflightDecimal(value, status, unit string) PreflightDecimal {
 	if status != exchange.ConstraintKnown || strings.TrimSpace(value) == "" {
-		return unknownPreflightDecimal()
+		return unknownPreflightDecimal(unit)
 	}
-	return knownPreflightDecimal(value)
+	return knownPreflightDecimal(value, unit)
 }

@@ -19,17 +19,23 @@ class AdapterRouter {
       const utils::md::Instrument& instrument) noexcept;
   [[nodiscard]] const TradeAdapter* route(
       const utils::md::Instrument& instrument) const noexcept;
+  [[nodiscard]] TradeAdapter* route(
+      const api::ResolvedInstrument& routing) noexcept;
+  [[nodiscard]] const TradeAdapter* route(
+      const api::ResolvedInstrument& routing) const noexcept;
 
   [[nodiscard]] std::size_t size() const noexcept { return size_; }
 
  private:
   [[nodiscard]] static AdapterKind route_kind(
       const utils::md::Instrument& instrument) noexcept;
+  [[nodiscard]] static AdapterKind route_kind(
+      const api::ResolvedInstrument& routing) noexcept;
 
   std::array<TradeAdapter*, kMaxTradeAdapters> adapters_{};
   std::size_t size_{};
 };
 
-static_assert(sizeof(AdapterRouter) == 40);
+static_assert(sizeof(AdapterRouter) == 56);
 
 }  // namespace oms::exchange

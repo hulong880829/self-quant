@@ -131,5 +131,18 @@ int main() {
   Require(static_cast<bool>(disabled));
   Require(disabled.value.venues[0].signature_type == 0xff);
   Require(disabled.value.venues[0].funder_address_env.empty());
+
+  const auto tradefi = strategyframe::load_config(
+      Fixture("hyperliquid_ibkr_disabled.yaml"));
+  Require(static_cast<bool>(tradefi));
+  Require(tradefi.value.venues.size() == 2);
+  Require(tradefi.value.venues[0].kind ==
+          strategyframe::VenueExecutionConfig::Kind::Hyperliquid);
+  Require(!tradefi.value.venues[0].enabled);
+  Require(tradefi.value.venues[1].kind ==
+          strategyframe::VenueExecutionConfig::Kind::Ibkr);
+  Require(tradefi.value.venues[1].client_id == 32);
+  RequireInvalid("reject_ibkr_client_id.yaml");
+  RequireInvalid("reject_ibkr_enabled_incomplete.yaml");
   return 0;
 }

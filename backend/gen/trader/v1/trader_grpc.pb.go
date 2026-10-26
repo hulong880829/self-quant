@@ -36,6 +36,7 @@ const (
 	TraderService_ListArbitrageCombinations_FullMethodName          = "/trader.v1.TraderService/ListArbitrageCombinations"
 	TraderService_CloseArbitrageCombination_FullMethodName          = "/trader.v1.TraderService/CloseArbitrageCombination"
 	TraderService_PreflightArbitrageCombination_FullMethodName      = "/trader.v1.TraderService/PreflightArbitrageCombination"
+	TraderService_PreflightIncreaseTarget_FullMethodName            = "/trader.v1.TraderService/PreflightIncreaseTarget"
 	TraderService_ListArbitrageCombinationOrders_FullMethodName     = "/trader.v1.TraderService/ListArbitrageCombinationOrders"
 	TraderService_ListArbitrageCombinationExecutions_FullMethodName = "/trader.v1.TraderService/ListArbitrageCombinationExecutions"
 	TraderService_ListArbitrageCombinationEvents_FullMethodName     = "/trader.v1.TraderService/ListArbitrageCombinationEvents"
@@ -63,6 +64,7 @@ type TraderServiceClient interface {
 	ListArbitrageCombinations(ctx context.Context, in *ListArbitrageCombinationsRequest, opts ...grpc.CallOption) (*ListArbitrageCombinationsResponse, error)
 	CloseArbitrageCombination(ctx context.Context, in *CloseArbitrageCombinationRequest, opts ...grpc.CallOption) (*CloseArbitrageCombinationResponse, error)
 	PreflightArbitrageCombination(ctx context.Context, in *PreflightArbitrageCombinationRequest, opts ...grpc.CallOption) (*PreflightArbitrageCombinationResponse, error)
+	PreflightIncreaseTarget(ctx context.Context, in *PreflightIncreaseTargetRequest, opts ...grpc.CallOption) (*PreflightIncreaseTargetResponse, error)
 	ListArbitrageCombinationOrders(ctx context.Context, in *ListArbitrageCombinationOrdersRequest, opts ...grpc.CallOption) (*ListArbitrageCombinationOrdersResponse, error)
 	ListArbitrageCombinationExecutions(ctx context.Context, in *ListArbitrageCombinationExecutionsRequest, opts ...grpc.CallOption) (*ListArbitrageCombinationExecutionsResponse, error)
 	ListArbitrageCombinationEvents(ctx context.Context, in *ListArbitrageCombinationEventsRequest, opts ...grpc.CallOption) (*ListArbitrageCombinationEventsResponse, error)
@@ -247,6 +249,16 @@ func (c *traderServiceClient) PreflightArbitrageCombination(ctx context.Context,
 	return out, nil
 }
 
+func (c *traderServiceClient) PreflightIncreaseTarget(ctx context.Context, in *PreflightIncreaseTargetRequest, opts ...grpc.CallOption) (*PreflightIncreaseTargetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreflightIncreaseTargetResponse)
+	err := c.cc.Invoke(ctx, TraderService_PreflightIncreaseTarget_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *traderServiceClient) ListArbitrageCombinationOrders(ctx context.Context, in *ListArbitrageCombinationOrdersRequest, opts ...grpc.CallOption) (*ListArbitrageCombinationOrdersResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListArbitrageCombinationOrdersResponse)
@@ -308,6 +320,7 @@ type TraderServiceServer interface {
 	ListArbitrageCombinations(context.Context, *ListArbitrageCombinationsRequest) (*ListArbitrageCombinationsResponse, error)
 	CloseArbitrageCombination(context.Context, *CloseArbitrageCombinationRequest) (*CloseArbitrageCombinationResponse, error)
 	PreflightArbitrageCombination(context.Context, *PreflightArbitrageCombinationRequest) (*PreflightArbitrageCombinationResponse, error)
+	PreflightIncreaseTarget(context.Context, *PreflightIncreaseTargetRequest) (*PreflightIncreaseTargetResponse, error)
 	ListArbitrageCombinationOrders(context.Context, *ListArbitrageCombinationOrdersRequest) (*ListArbitrageCombinationOrdersResponse, error)
 	ListArbitrageCombinationExecutions(context.Context, *ListArbitrageCombinationExecutionsRequest) (*ListArbitrageCombinationExecutionsResponse, error)
 	ListArbitrageCombinationEvents(context.Context, *ListArbitrageCombinationEventsRequest) (*ListArbitrageCombinationEventsResponse, error)
@@ -372,6 +385,9 @@ func (UnimplementedTraderServiceServer) CloseArbitrageCombination(context.Contex
 }
 func (UnimplementedTraderServiceServer) PreflightArbitrageCombination(context.Context, *PreflightArbitrageCombinationRequest) (*PreflightArbitrageCombinationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PreflightArbitrageCombination not implemented")
+}
+func (UnimplementedTraderServiceServer) PreflightIncreaseTarget(context.Context, *PreflightIncreaseTargetRequest) (*PreflightIncreaseTargetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PreflightIncreaseTarget not implemented")
 }
 func (UnimplementedTraderServiceServer) ListArbitrageCombinationOrders(context.Context, *ListArbitrageCombinationOrdersRequest) (*ListArbitrageCombinationOrdersResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListArbitrageCombinationOrders not implemented")
@@ -712,6 +728,24 @@ func _TraderService_PreflightArbitrageCombination_Handler(srv interface{}, ctx c
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TraderService_PreflightIncreaseTarget_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreflightIncreaseTargetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TraderServiceServer).PreflightIncreaseTarget(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TraderService_PreflightIncreaseTarget_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TraderServiceServer).PreflightIncreaseTarget(ctx, req.(*PreflightIncreaseTargetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _TraderService_ListArbitrageCombinationOrders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListArbitrageCombinationOrdersRequest)
 	if err := dec(in); err != nil {
@@ -858,6 +892,10 @@ var TraderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PreflightArbitrageCombination",
 			Handler:    _TraderService_PreflightArbitrageCombination_Handler,
+		},
+		{
+			MethodName: "PreflightIncreaseTarget",
+			Handler:    _TraderService_PreflightIncreaseTarget_Handler,
 		},
 		{
 			MethodName: "ListArbitrageCombinationOrders",

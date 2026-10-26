@@ -57,6 +57,10 @@ class OrderSigningContext final {
   [[nodiscard]] const Address& signer_address() const noexcept;
   [[nodiscard]] CryptoResult Sign(const Order& order,
                                   Signature& output) noexcept;
+  // Recoverable secp256k1 signature (r || s || v). v is 27 or 28.
+  [[nodiscard]] CryptoResult SignRecoverable(
+      const Bytes32& digest,
+      std::array<std::uint8_t, 65>& signature) noexcept;
   [[nodiscard]] CryptoResult SignClobAuth(
       std::string_view timestamp, std::uint64_t nonce, char* output,
       std::size_t capacity, std::size_t& size) noexcept;

@@ -857,6 +857,7 @@ type CreateTradingAccountRequest struct {
 	VaultAddress     string                 `protobuf:"bytes,11,opt,name=vault_address,json=vaultAddress,proto3" json:"vault_address,omitempty"`
 	AccountIndex     *int64                 `protobuf:"varint,12,opt,name=account_index,json=accountIndex,proto3,oneof" json:"account_index,omitempty"`
 	ApiKeyIndex      *int32                 `protobuf:"varint,13,opt,name=api_key_index,json=apiKeyIndex,proto3,oneof" json:"api_key_index,omitempty"`
+	IdempotencyKey   string                 `protobuf:"bytes,14,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -982,6 +983,13 @@ func (x *CreateTradingAccountRequest) GetApiKeyIndex() int32 {
 	return 0
 }
 
+func (x *CreateTradingAccountRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
 type CreateTradingAccountResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Account       *TradingAccount        `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
@@ -1027,15 +1035,16 @@ func (x *CreateTradingAccountResponse) GetAccount() *TradingAccount {
 }
 
 type CreatePolymarketTradingAccountRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
-	ProductName   string                 `protobuf:"bytes,2,opt,name=product_name,json=productName,proto3" json:"product_name,omitempty"`
-	AccountName   string                 `protobuf:"bytes,3,opt,name=account_name,json=accountName,proto3" json:"account_name,omitempty"`
-	PrivateKey    string                 `protobuf:"bytes,4,opt,name=private_key,json=privateKey,proto3" json:"private_key,omitempty"`
-	WalletType    string                 `protobuf:"bytes,5,opt,name=wallet_type,json=walletType,proto3" json:"wallet_type,omitempty"`
-	FunderAddress string                 `protobuf:"bytes,6,opt,name=funder_address,json=funderAddress,proto3" json:"funder_address,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Token          string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	ProductName    string                 `protobuf:"bytes,2,opt,name=product_name,json=productName,proto3" json:"product_name,omitempty"`
+	AccountName    string                 `protobuf:"bytes,3,opt,name=account_name,json=accountName,proto3" json:"account_name,omitempty"`
+	PrivateKey     string                 `protobuf:"bytes,4,opt,name=private_key,json=privateKey,proto3" json:"private_key,omitempty"`
+	WalletType     string                 `protobuf:"bytes,5,opt,name=wallet_type,json=walletType,proto3" json:"wallet_type,omitempty"`
+	FunderAddress  string                 `protobuf:"bytes,6,opt,name=funder_address,json=funderAddress,proto3" json:"funder_address,omitempty"`
+	IdempotencyKey string                 `protobuf:"bytes,7,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CreatePolymarketTradingAccountRequest) Reset() {
@@ -1106,6 +1115,13 @@ func (x *CreatePolymarketTradingAccountRequest) GetWalletType() string {
 func (x *CreatePolymarketTradingAccountRequest) GetFunderAddress() string {
 	if x != nil {
 		return x.FunderAddress
+	}
+	return ""
+}
+
+func (x *CreatePolymarketTradingAccountRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
 	}
 	return ""
 }
@@ -4408,7 +4424,7 @@ const file_account_v1_account_proto_rawDesc = "" +
 	"\x1aListTradingAccountsRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\"O\n" +
 	"\x1bListTradingAccountsResponse\x120\n" +
-	"\x05items\x18\x01 \x03(\v2\x1a.account.v1.TradingAccountR\x05items\"\x88\x04\n" +
+	"\x05items\x18\x01 \x03(\v2\x1a.account.v1.TradingAccountR\x05items\"\xb1\x04\n" +
 	"\x1bCreateTradingAccountRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12!\n" +
 	"\fproduct_name\x18\x02 \x01(\tR\vproductName\x12\x1a\n" +
@@ -4426,11 +4442,12 @@ const file_account_v1_account_proto_rawDesc = "" +
 	" \x01(\tR\x0esigningAddress\x12#\n" +
 	"\rvault_address\x18\v \x01(\tR\fvaultAddress\x12(\n" +
 	"\raccount_index\x18\f \x01(\x03H\x00R\faccountIndex\x88\x01\x01\x12'\n" +
-	"\rapi_key_index\x18\r \x01(\x05H\x01R\vapiKeyIndex\x88\x01\x01B\x10\n" +
+	"\rapi_key_index\x18\r \x01(\x05H\x01R\vapiKeyIndex\x88\x01\x01\x12'\n" +
+	"\x0fidempotency_key\x18\x0e \x01(\tR\x0eidempotencyKeyB\x10\n" +
 	"\x0e_account_indexB\x10\n" +
 	"\x0e_api_key_index\"T\n" +
 	"\x1cCreateTradingAccountResponse\x124\n" +
-	"\aaccount\x18\x01 \x01(\v2\x1a.account.v1.TradingAccountR\aaccount\"\xec\x01\n" +
+	"\aaccount\x18\x01 \x01(\v2\x1a.account.v1.TradingAccountR\aaccount\"\x95\x02\n" +
 	"%CreatePolymarketTradingAccountRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12!\n" +
 	"\fproduct_name\x18\x02 \x01(\tR\vproductName\x12!\n" +
@@ -4439,7 +4456,8 @@ const file_account_v1_account_proto_rawDesc = "" +
 	"privateKey\x12\x1f\n" +
 	"\vwallet_type\x18\x05 \x01(\tR\n" +
 	"walletType\x12%\n" +
-	"\x0efunder_address\x18\x06 \x01(\tR\rfunderAddress\"^\n" +
+	"\x0efunder_address\x18\x06 \x01(\tR\rfunderAddress\x12'\n" +
+	"\x0fidempotency_key\x18\a \x01(\tR\x0eidempotencyKey\"^\n" +
 	"&CreatePolymarketTradingAccountResponse\x124\n" +
 	"\aaccount\x18\x01 \x01(\v2\x1a.account.v1.TradingAccountR\aaccount\"e\n" +
 	"\x1fGetPolymarketCredentialsRequest\x12\x14\n" +

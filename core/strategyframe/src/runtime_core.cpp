@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -270,7 +271,9 @@ oms::api::ResolvedInstrument CatalogRoutingImpl(
   oms::api::ResolvedInstrument routing{};
   routing.kind = source.venue == utils::md::Venue::Polymarket
                      ? oms::api::ExecutionRouteKind::Polymarket
-                     : oms::api::ExecutionRouteKind::Crypto;
+                     : source.venue == utils::md::Venue::Ibkr
+                           ? oms::api::ExecutionRouteKind::Ibkr
+                           : oms::api::ExecutionRouteKind::Crypto;
   routing.venue = static_cast<std::uint8_t>(source.venue);
   routing.product_type = static_cast<std::uint8_t>(source.product_type);
   routing.price_scale = source.price_scale;
@@ -286,6 +289,25 @@ oms::api::ResolvedInstrument CatalogRoutingImpl(
     routing.outcome = instrument.polymarket_outcome;
     routing.polymarket.condition_id = instrument.polymarket_condition_id;
     routing.polymarket.token_id = instrument.polymarket_token_id;
+  } else if (routing.kind == oms::api::ExecutionRouteKind::Ibkr) {
+    const auto end =
+        std::find(source.venue_symbol.begin(), source.venue_symbol.end(), '\0');
+    const std::string_view text(
+        source.venue_symbol.data(),
+        static_cast<std::size_t>(end - source.venue_symbol.begin()));
+    std::int64_t con_id = 0;
+    const auto parsed =
+        std::from_chars(text.data(), text.data() + text.size(), con_id);
+    if (text.empty() ||
+        source.ibkr_security_type == utils::md::IbkrSecurityType::Unknown ||
+        parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+        con_id <= 0) {
+      throw std::invalid_argument("invalid IBKR catalog routing");
+    }
+    routing.ibkr.con_id = con_id;
+    routing.ibkr.security_type = source.ibkr_security_type;
+    routing.ibkr.contract_multiplier = source.contract_multiplier;
+    routing.ibkr.contract_multiplier_scale = source.contract_multiplier_scale;
   } else {
     const auto end =
         std::find(source.venue_symbol.begin(), source.venue_symbol.end(), '\0');
@@ -312,6 +334,8 @@ oms::api::VenueInstrumentRef VenueReference(
     reference.polymarket.condition_id =
         routing.polymarket.condition_id;
     reference.polymarket.token_id = routing.polymarket.token_id;
+  } else if (routing.kind == oms::api::ExecutionRouteKind::Ibkr) {
+    reference.ibkr = routing.ibkr;
   } else {
     reference.crypto = routing.crypto;
   }
@@ -562,10 +586,15 @@ class RuntimeCore final : public detail::Runtime {
     std::uint32_t generation{};
     std::uint32_t notified_generation{};
     std::uint32_t deferred_count{};
+    std::uint32_t retire_fail_shift{};
     ExecutionState execution_state{ExecutionState::Unregistered};
     bool directory_active{};
+    bool retirement_inconsistent{};
+    bool retirement_conflict_logged{};
     std::uint64_t retire_eligible_since_mono_ns{};
     std::uint64_t last_execution_activity_mono_ns{};
+    std::uint64_t next_retire_attempt_mono_ns{};
+    bool lifecycle_ended{};
   };
 
   struct PendingQuery {
@@ -646,6 +675,44 @@ class RuntimeCore final : public detail::Runtime {
           const char* secret = Environment(venue.secret_env);
           if (!key || !secret) return Error::InvalidConfig;
           output.credentials = {key, secret};
+        } else if (venue.kind == VenueExecutionConfig::Kind::Hyperliquid) {
+          auto& output = live.hyperliquid;
+          output.account_id = venue.account_id;
+          output.enabled = true;
+          output.endpoints.rest = endpoint(venue.rest);
+          output.endpoints.websocket = endpoint(venue.user_websocket);
+          const auto strategy_instance =
+              config_.strategy.require_string("strategy_instance");
+          if (!strategy_instance || strategy_instance.value.empty())
+            return Error::InvalidConfig;
+          output.strategy_instance = strategy_instance.value;
+          const char* private_key = Environment(venue.private_key_env);
+          if (private_key == nullptr) return Error::InvalidConfig;
+          output.private_key = private_key;
+          if (!venue.account_address_env.empty()) {
+            const char* address = Environment(venue.account_address_env);
+            if (address == nullptr) return Error::InvalidConfig;
+            output.account_address = address;
+          }
+          if (!venue.vault_address_env.empty()) {
+            const char* vault = Environment(venue.vault_address_env);
+            if (vault == nullptr) return Error::InvalidConfig;
+            output.vault_address = vault;
+          }
+        } else if (venue.kind == VenueExecutionConfig::Kind::Ibkr) {
+          if (venue.client_id == 30 || venue.client_id == 31)
+            return Error::InvalidConfig;
+          const auto strategy_instance =
+              config_.strategy.require_string("strategy_instance");
+          if (!strategy_instance || strategy_instance.value.empty())
+            return Error::InvalidConfig;
+          auto& output = live.ibkr;
+          output.account_id = venue.account_id;
+          output.enabled = true;
+          output.client_id = venue.client_id;
+          output.gateway = {venue.gateway.host, venue.gateway.service};
+          output.account = venue.account;
+          output.strategy_instance = strategy_instance.value;
         } else {
           auto& output = live.polymarket;
           output.account_id = venue.account_id;
@@ -744,6 +811,12 @@ class RuntimeCore final : public detail::Runtime {
               break;
             case VenueExecutionConfig::Kind::Polymarket:
               adapter = oms::exchange::AdapterKind::Polymarket;
+              break;
+            case VenueExecutionConfig::Kind::Hyperliquid:
+              adapter = oms::exchange::AdapterKind::Hyperliquid;
+              break;
+            case VenueExecutionConfig::Kind::Ibkr:
+              adapter = oms::exchange::AdapterKind::Ibkr;
               break;
           }
           return adapter;
@@ -861,6 +934,11 @@ class RuntimeCore final : public detail::Runtime {
     result.tick_size = value.tick_size;
     result.lot_size = value.lot_size;
     result.contract_multiplier = value.contract_multiplier;
+    result.contract_multiplier_scale = value.contract_multiplier_scale;
+    result.ibkr_security_type = value.ibkr_security_type;
+    result.base_asset = value.base_asset;
+    result.quote_asset = value.quote_asset;
+    result.settle_asset = value.settle_asset;
     return result;
   }
 
@@ -1091,6 +1169,7 @@ class RuntimeCore final : public detail::Runtime {
     }
     if (value.kind == oms::api::RuntimeUpdateKind::OpenOrderSnapshot ||
         value.kind == oms::api::RuntimeUpdateKind::PositionSnapshot ||
+        value.kind == oms::api::RuntimeUpdateKind::BalanceSnapshot ||
         value.kind == oms::api::RuntimeUpdateKind::QueryComplete) {
       const QueryToken token =
           FromOms(value.kind == oms::api::RuntimeUpdateKind::OpenOrderSnapshot
@@ -1098,7 +1177,11 @@ class RuntimeCore final : public detail::Runtime {
                       : (value.kind ==
                                  oms::api::RuntimeUpdateKind::PositionSnapshot
                              ? value.position.query_token
-                             : value.query_complete.query_token));
+                             : (value.kind ==
+                                        oms::api::RuntimeUpdateKind::
+                                            BalanceSnapshot
+                                    ? value.balance.query_token
+                                    : value.query_complete.query_token)));
       const auto pending = std::find_if(
           pending_queries_.begin(), pending_queries_.end(),
           [&](const PendingQuery& query) { return query.token == token; });
@@ -1107,6 +1190,7 @@ class RuntimeCore final : public detail::Runtime {
         if ((value.open_order.reserved &
              oms::api::SnapshotUnmapped) != 0) {
           ++metrics_.query_unmapped_open_orders;
+          pending->snapshot_incomplete = true;
           if (reconcile_quarantine_size_ <
               reconcile_quarantine_.size()) {
             reconcile_quarantine_[reconcile_quarantine_size_++] = value;
@@ -1118,8 +1202,13 @@ class RuntimeCore final : public detail::Runtime {
         QueriedOrderView item{};
         item.account_id = value.open_order.account_id;
         item.instrument_id = value.open_order.instrument_id;
+        item.tracked_token =
+            FromOms(value.open_order.tracked_token);
+        item.client_order_id =
+            CopyId<ClientOrderId>(value.open_order.client_order_id);
         item.venue_order_id =
             CopyId<VenueOrderId>(value.open_order.venue_order_id);
+        item.snapshot_flags = value.open_order.reserved;
         item.status = FromOms(value.open_order.status);
         item.side = static_cast<Side>(value.open_order.side);
         item.quantity = FromOms(value.open_order.quantity);
@@ -1147,6 +1236,20 @@ class RuntimeCore final : public detail::Runtime {
         pending->positions.push_back(
             {value.position.account_id, value.position.instrument_id,
              FromOms(value.position.quantity)});
+        return;
+      }
+      if (value.kind == oms::api::RuntimeUpdateKind::BalanceSnapshot) {
+        BalanceSnapshot snapshot{};
+        snapshot.query_token = token;
+        snapshot.account_id = value.balance.account_id;
+        snapshot.asset_or_currency = value.balance.asset_or_currency;
+        snapshot.total_quantity = value.balance.total_quantity;
+        snapshot.held_quantity = value.balance.held_quantity;
+        snapshot.available_quantity = value.balance.available_quantity;
+        snapshot.scale = value.balance.scale;
+        if (callbacks_.balances_snapshot &&
+            !callbacks_.balances_snapshot(strategy_, snapshot))
+          fail_callback();
         return;
       }
       std::int32_t complete_error =
@@ -1193,7 +1296,7 @@ class RuntimeCore final : public detail::Runtime {
               !callbacks_.positions_snapshot(strategy_, snapshot))
             fail_callback();
         }
-      } else {
+      } else if (pending->kind == QueryComplete::Kind::OpenOrders) {
         OpenOrdersSnapshot snapshot{pending->token, pending->account_id,
                                     pending->orders};
         if (callbacks_.open_orders_snapshot &&
@@ -1251,11 +1354,20 @@ class RuntimeCore final : public detail::Runtime {
           value.command_result.kind ==
               oms::api::RuntimeCommandResultKind::RegisterInstrument ||
           value.command_result.kind ==
-              oms::api::RuntimeCommandResultKind::RetireInstrument) {
+              oms::api::RuntimeCommandResultKind::RetireInstrument ||
+          value.command_result.kind ==
+              oms::api::RuntimeCommandResultKind::CancelVenue) {
         update.token =
             FromOms(value.command_result.instrument.request_token);
         update.instrument_id =
             value.command_result.instrument.instrument_id;
+        if (value.command_result.kind ==
+            oms::api::RuntimeCommandResultKind::CancelVenue) {
+          if (callbacks_.execution &&
+              !callbacks_.execution(strategy_, update))
+            fail_callback();
+          return;
+        }
         const auto entry = std::find_if(
             catalogs_.begin(), catalogs_.end(), [&](const CatalogEntry& item) {
               return item.catalog.instrument_id == update.instrument_id;
@@ -1280,6 +1392,9 @@ class RuntimeCore final : public detail::Runtime {
                      oms::api::Error::Deferred) {
             entry->execution_state =
                 CatalogEntry::ExecutionState::Retiring;
+            const std::uint64_t delay =
+                entry->lifecycle_ended ? 1'000'000ULL : 50'000'000ULL;
+            entry->next_retire_attempt_mono_ns = MonotonicNowNs() + delay;
             if (entry->deferred_count !=
                 std::numeric_limits<std::uint32_t>::max())
               ++entry->deferred_count;
@@ -1292,12 +1407,69 @@ class RuntimeCore final : public detail::Runtime {
                       entry->catalog.instrument_id),
                   entry->deferred_count);
             }
-          } else {
-            entry->deferred_count = 0;
+          } else if (value.command_result.error ==
+                     oms::api::Error::InconsistentState) {
+            entry->retirement_inconsistent = true;
             entry->execution_state =
-                value.command_result.error == oms::api::Error::Ok
-                    ? CatalogEntry::ExecutionState::Retired
-                    : CatalogEntry::ExecutionState::Failed;
+                CatalogEntry::ExecutionState::Failed;
+            std::fprintf(
+                stderr,
+                "strategyframe: instrument %llu retirement is inconsistent\n",
+                static_cast<unsigned long long>(
+                    entry->catalog.instrument_id));
+          } else if (value.command_result.error == oms::api::Error::Ok ||
+                     value.command_result.error == oms::api::Error::NotFound) {
+            const bool has_order = std::any_of(
+                orders_.open_orders().begin(), orders_.open_orders().end(),
+                [instrument = entry->catalog.instrument_id](
+                    const OrderView& order) {
+                  return order.instrument_id == instrument;
+                });
+            if (has_order) {
+              entry->execution_state =
+                  CatalogEntry::ExecutionState::Retiring;
+              entry->next_retire_attempt_mono_ns =
+                  MonotonicNowNs() + 50'000'000ULL;
+              if (!entry->retirement_conflict_logged) {
+                entry->retirement_conflict_logged = true;
+                std::fprintf(
+                    stderr,
+                    "strategyframe: instrument %llu retired with an active order\n",
+                    static_cast<unsigned long long>(
+                        entry->catalog.instrument_id));
+              }
+            } else {
+              const InstrumentId retired_id = entry->catalog.instrument_id;
+              const auto retired_catalog = entry->catalog;
+              const bool lifecycle_ended = entry->lifecycle_ended;
+              catalogs_.erase(entry);
+              orders_.retire_instrument(retired_id);
+              positions_.retire_instrument(retired_id);
+              if (lifecycle_ended) {
+                (void)mds_.note_retired_expiry(
+                    retired_catalog.venue, retired_catalog.product_type,
+                    retired_catalog.canonical_symbol.data(),
+                    retired_catalog.expiry_unix_ns);
+              }
+              mds_.retire_instrument(retired_id);
+              instruments_.erase(
+                  std::remove_if(
+                      instruments_.begin(), instruments_.end(),
+                      [retired_id](const auto& instrument) {
+                        return instrument.instrument.instrument_id ==
+                               retired_id;
+                      }),
+                  instruments_.end());
+            }
+          } else {
+            entry->execution_state =
+                CatalogEntry::ExecutionState::Failed;
+            const std::uint64_t delay = std::min<std::uint64_t>(
+                50'000'000ULL << std::min<std::uint32_t>(
+                                    entry->retire_fail_shift, 4U),
+                1'000'000'000ULL);
+            if (entry->retire_fail_shift < 4) ++entry->retire_fail_shift;
+            entry->next_retire_attempt_mono_ns = MonotonicNowNs() + delay;
           }
         }
       } else {
@@ -1525,6 +1697,12 @@ class RuntimeCore final : public detail::Runtime {
         [](void* state, OrderToken token) noexcept {
           return static_cast<RuntimeCore*>(state)->cancel(token);
         },
+        [](void* state, AccountId account, InstrumentId instrument,
+           const ClientOrderId& client_order_id,
+           const VenueOrderId& venue_order_id) noexcept {
+          return static_cast<RuntimeCore*>(state)->cancel_venue_order(
+              account, instrument, client_order_id, venue_order_id);
+        },
         [](void* state, AccountId account) noexcept {
           return static_cast<RuntimeCore*>(state)->query(
               account, QueryComplete::Kind::OpenOrders);
@@ -1542,6 +1720,10 @@ class RuntimeCore final : public detail::Runtime {
            InstrumentId instrument) noexcept {
           return static_cast<RuntimeCore*>(state)->query(
               account, QueryComplete::Kind::Positions, instrument);
+        },
+        [](void* state, AccountId account) noexcept {
+          return static_cast<RuntimeCore*>(state)->query(
+              account, QueryComplete::Kind::Balances);
         },
         [](void* state, std::uint64_t deadline,
            std::uint64_t interval) noexcept {
@@ -1595,8 +1777,66 @@ class RuntimeCore final : public detail::Runtime {
         [](const void*) noexcept { return MonotonicNowNs(); },
         [](void* state) noexcept {
           static_cast<RuntimeCore*>(state)->request_stop();
+        },
+        [](void* state, InstrumentId instrument,
+           RetirementReason reason) noexcept {
+          return static_cast<RuntimeCore*>(state)
+              ->request_instrument_retirement(instrument, reason);
         }};
     return ops;
+  }
+
+  Result<void> request_instrument_retirement(
+      InstrumentId instrument_id, RetirementReason reason) noexcept {
+    if (std::this_thread::get_id() != owner_)
+      return {Error::InvalidThread};
+    if (reason != RetirementReason::LifecycleEnded)
+      return {Error::Unsupported};
+    const auto found = std::find_if(
+        catalogs_.begin(), catalogs_.end(),
+        [&](const CatalogEntry& entry) {
+          return entry.catalog.instrument_id == instrument_id;
+        });
+    if (found == catalogs_.end()) return {Error::NotFound};
+    if (found->execution_state == CatalogEntry::ExecutionState::Retiring ||
+        found->execution_state ==
+            CatalogEntry::ExecutionState::RetirePending ||
+        found->execution_state == CatalogEntry::ExecutionState::Retired) {
+      return {Error::Ok};
+    }
+    if (found->execution_state != CatalogEntry::ExecutionState::Active)
+      return {Error::InvalidState};
+    if (found->catalog.expiry_unix_ns == 0 ||
+        WallNowNs() < found->catalog.expiry_unix_ns) {
+      return {Error::InvalidState};
+    }
+    const bool has_pending_query = std::any_of(
+        pending_queries_.begin(), pending_queries_.end(),
+        [instrument_id](const PendingQuery& query) {
+          return query.instrument_id == 0 ||
+                 query.instrument_id == instrument_id;
+        });
+    if (has_pending_query) return {Error::WouldBlock};
+    const std::uint64_t now_mono = MonotonicNowNs();
+    if (found->last_execution_activity_mono_ns != 0 &&
+        now_mono >= found->last_execution_activity_mono_ns &&
+        now_mono - found->last_execution_activity_mono_ns < kRetireGraceNs) {
+      return {Error::WouldBlock};
+    }
+    if (!mds_.note_retired_expiry(
+            found->catalog.venue, found->catalog.product_type,
+            found->catalog.canonical_symbol.data(),
+            found->catalog.expiry_unix_ns) &&
+        !expiry_watermark_full_warned_) {
+      std::fputs(
+          "strategyframe: expiry watermark table is full\n", stderr);
+      expiry_watermark_full_warned_ = true;
+    }
+    found->lifecycle_ended = true;
+    found->execution_state = CatalogEntry::ExecutionState::Retiring;
+    if (found->retire_eligible_since_mono_ns == 0)
+      found->retire_eligible_since_mono_ns = now_mono;
+    return {Error::Ok};
   }
 
   Result<OrderToken> place(const OrderRequest& request) noexcept {
@@ -1665,25 +1905,8 @@ class RuntimeCore final : public detail::Runtime {
     if (catalog.execution_state != CatalogEntry::ExecutionState::Active)
       return false;
     if (config_.venues.empty()) return true;
-    oms::exchange::AdapterKind kind{};
-    if (catalog.catalog.venue == utils::md::Venue::Polymarket) {
-      kind = oms::exchange::AdapterKind::Polymarket;
-    } else if (catalog.catalog.venue == utils::md::Venue::Binance &&
-               catalog.catalog.product_type ==
-                   utils::md::ProductType::Spot) {
-      kind = oms::exchange::AdapterKind::BinanceSpot;
-    } else if (catalog.catalog.venue == utils::md::Venue::Binance &&
-               (catalog.catalog.product_type ==
-                    utils::md::ProductType::Perpetual ||
-                catalog.catalog.product_type ==
-                    utils::md::ProductType::Future)) {
-      kind = oms::exchange::AdapterKind::BinanceUsdm;
-    } else {
-      return false;
-    }
-    const auto status = execution_->venue_status(kind);
-    return status &&
-           status.value.status == oms::exchange::AdapterStatus::Ready;
+    return execution_ != nullptr &&
+           execution_->instrument_ready(catalog.routing);
   }
 
   bool drive_retirements() noexcept {
@@ -1691,6 +1914,11 @@ class RuntimeCore final : public detail::Runtime {
     std::size_t index = 0;
     while (index < catalogs_.size()) {
       auto& entry = catalogs_[index];
+      if (entry.lifecycle_ended && !entry.retirement_inconsistent &&
+          entry.execution_state == CatalogEntry::ExecutionState::Failed) {
+        entry.execution_state = CatalogEntry::ExecutionState::Retiring;
+        progress = true;
+      }
       if (entry.execution_state ==
           CatalogEntry::ExecutionState::Active) {
         const bool has_successor =
@@ -1744,7 +1972,11 @@ class RuntimeCore final : public detail::Runtime {
                 (venue.kind == VenueExecutionConfig::Kind::BinanceUsdm &&
                  entry.catalog.venue == Venue::Binance &&
                  (entry.catalog.product_type == ProductType::Perpetual ||
-                  entry.catalog.product_type == ProductType::Future));
+                  entry.catalog.product_type == ProductType::Future)) ||
+                (venue.kind == VenueExecutionConfig::Kind::Hyperliquid &&
+                 entry.catalog.venue == Venue::Hyperliquid) ||
+                (venue.kind == VenueExecutionConfig::Kind::Ibkr &&
+                 entry.catalog.venue == Venue::Ibkr);
             if (!matches) continue;
             ++related;
             if (!positions_.snapshot_confirms_zero(
@@ -1774,6 +2006,13 @@ class RuntimeCore final : public detail::Runtime {
       if (entry.execution_state ==
           CatalogEntry::ExecutionState::Retired) {
         const InstrumentId instrument_id = entry.catalog.instrument_id;
+        if (entry.lifecycle_ended) {
+          (void)mds_.note_retired_expiry(
+              entry.catalog.venue, entry.catalog.product_type,
+              entry.catalog.canonical_symbol.data(),
+              entry.catalog.expiry_unix_ns);
+        }
+        orders_.retire_instrument(instrument_id);
         positions_.retire_instrument(instrument_id);
         mds_.retire_instrument(instrument_id);
         instruments_.erase(
@@ -1804,6 +2043,12 @@ class RuntimeCore final : public detail::Runtime {
         ++index;
         continue;
       }
+      const std::uint64_t now_mono = MonotonicNowNs();
+      if (entry.next_retire_attempt_mono_ns != 0 &&
+          now_mono < entry.next_retire_attempt_mono_ns) {
+        ++index;
+        continue;
+      }
       const bool has_position =
           std::any_of(positions_.positions().begin(),
                       positions_.positions().end(),
@@ -1811,12 +2056,16 @@ class RuntimeCore final : public detail::Runtime {
                         return position.instrument_id == instrument_id &&
                                position.quantity.value != 0;
                       });
-      if (has_position || !execution_) {
+      if ((has_position && !entry.lifecycle_ended) || !execution_) {
         ++index;
         continue;
       }
       const auto submitted =
-          execution_->retire_instrument(kLane, instrument_id);
+          entry.lifecycle_ended
+              ? execution_->retire_instrument(
+                    kLane, instrument_id,
+                    oms::api::InstrumentRetirementMode::LifecycleEnded)
+              : execution_->retire_instrument(kLane, instrument_id);
       if (submitted) {
         entry.command_token = submitted.value;
         entry.execution_state =
@@ -1838,6 +2087,41 @@ class RuntimeCore final : public detail::Runtime {
                     : Result<OrderToken>{{}, FromOms(canceled.error)};
   }
 
+  Result<OrderToken> cancel_venue_order(
+      AccountId account_id, InstrumentId instrument_id,
+      const ClientOrderId& client_order_id,
+      const VenueOrderId& venue_order_id) noexcept {
+    if (std::this_thread::get_id() != owner_)
+      return {{}, Error::InvalidThread};
+    if (!execution_) return {{}, Error::NotReady};
+    if (account_id == 0 || client_order_id.length == 0 ||
+        client_order_id.length > sizeof(client_order_id.value) ||
+        venue_order_id.length == 0 ||
+        venue_order_id.length > sizeof(venue_order_id.value))
+      return {{}, Error::InvalidArgument};
+    const auto catalog = std::find_if(
+        catalogs_.begin(), catalogs_.end(),
+        [instrument_id](const CatalogEntry& entry) {
+          return entry.catalog.instrument_id == instrument_id;
+        });
+    if (catalog == catalogs_.end()) return {{}, Error::NotFound};
+    if (!execution_ready(*catalog)) return {{}, Error::NotReady};
+    oms::api::CancelVenueOrderRequest request{};
+    request.account_id = account_id;
+    request.instrument_id = instrument_id;
+    request.client_order_id.length = client_order_id.length;
+    std::memcpy(request.client_order_id.value.data(),
+                client_order_id.value, client_order_id.length);
+    request.venue_order_id.length = venue_order_id.length;
+    std::memcpy(request.venue_order_id.value.data(),
+                venue_order_id.value, venue_order_id.length);
+    request.routing = catalog->routing;
+    const auto canceled =
+        execution_->cancel_venue_order(kLane, request);
+    return canceled ? Result<OrderToken>{FromOms(canceled.value), Error::Ok}
+                    : Result<OrderToken>{{}, FromOms(canceled.error)};
+  }
+
   Result<QueryToken> query(AccountId account_id,
                            QueryComplete::Kind kind,
                            InstrumentId instrument_id = 0) noexcept {
@@ -1845,6 +2129,7 @@ class RuntimeCore final : public detail::Runtime {
       return {{}, Error::InvalidThread};
     if (!execution_) return {{}, Error::NotReady};
     const bool references_retiring =
+        kind != QueryComplete::Kind::Balances &&
         std::any_of(catalogs_.begin(), catalogs_.end(),
                     [instrument_id](const CatalogEntry& entry) {
                       const bool retiring =
@@ -1873,12 +2158,15 @@ class RuntimeCore final : public detail::Runtime {
           CatalogEntry::ExecutionState::Active)
         return {{}, Error::NotReady};
       request.scope = oms::api::QueryScope::SingleInstrument;
+      request.instrument_id = instrument_id;
       request.instrument = VenueReference(catalog->routing);
     }
     const auto submitted =
         kind == QueryComplete::Kind::OpenOrders
             ? execution_->query_open_orders(kLane, request)
-            : execution_->query_positions(kLane, request);
+            : (kind == QueryComplete::Kind::Positions
+                   ? execution_->query_positions(kLane, request)
+                   : execution_->query_balances(kLane, request));
     if (!submitted) return {{}, FromOms(submitted.error)};
     PendingQuery pending{};
     pending.token = FromOms(submitted.value);
@@ -1891,8 +2179,10 @@ class RuntimeCore final : public detail::Runtime {
       if (pending.position_epoch_at_submit == 0)
         return {{}, Error::CapacityExceeded};
     }
-    pending.orders.reserve(64);
-    pending.positions.reserve(64);
+    if (kind == QueryComplete::Kind::OpenOrders)
+      pending.orders.reserve(64);
+    else if (kind == QueryComplete::Kind::Positions)
+      pending.positions.reserve(64);
     pending_queries_.push_back(std::move(pending));
     return {FromOms(submitted.value), Error::Ok};
   }
@@ -1953,6 +2243,7 @@ class RuntimeCore final : public detail::Runtime {
   bool callback_failed_{};
   bool catalog_token_warned_{};
   bool catalog_field_warned_{};
+  bool expiry_watermark_full_warned_{};
   bool catalog_capacity_warned_{};
   std::uint32_t metric_sequence_{};
   std::uint32_t execution_metric_sequence_{};

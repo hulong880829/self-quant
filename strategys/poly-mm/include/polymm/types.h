@@ -43,6 +43,7 @@ struct SidecarEvent {
   enum class Kind : std::uint8_t {
     FairPrice = 1,
     FairPriceDisconnected = 2,
+    FairPriceUnavailable = 3,
   };
 
   Kind kind{Kind::FairPriceDisconnected};
@@ -72,13 +73,14 @@ struct Parameters {
   std::uint32_t max_order_resting_ms{1'000};
   std::int64_t requote_deviation_ticks{1};
   std::uint32_t no_trade_before_expiry_ms{30'000};
+  std::uint32_t expiry_order_grace_ms{3'000};
   double stop_loss_ticks{5.0};
   std::uint32_t fairprice_timer_us{200};
   double minimum_order_size{5.0};
   std::uint32_t startup_reconcile_timeout_ms{10'000};
   std::uint32_t max_bbo_age_ms{2'000};
   std::uint32_t max_bbo_skew_ms{500};
-  double taker_fee_bps{};
+  double polymarket_taker_fee_rate{0.07};
   double slippage_ticks{};
 };
 

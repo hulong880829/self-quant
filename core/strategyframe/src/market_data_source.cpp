@@ -22,6 +22,25 @@ namespace {
 
 constexpr std::size_t kBookCapacity = 4096;
 constexpr std::size_t kInstrumentCapacity = 4096;
+constexpr std::size_t kExpiryWatermarkCapacity = 64;
+
+bool SameCString(const char* lhs, std::size_t lhs_capacity, const char* rhs,
+                 std::size_t rhs_capacity) noexcept {
+  if (lhs == nullptr || rhs == nullptr || lhs_capacity == 0 ||
+      rhs_capacity == 0) {
+    return false;
+  }
+  const std::size_t shared =
+      lhs_capacity < rhs_capacity ? lhs_capacity : rhs_capacity;
+  for (std::size_t index = 0; index < shared; ++index) {
+    if (lhs[index] != rhs[index]) return false;
+    if (lhs[index] == '\0') return true;
+  }
+  const char* longer = lhs_capacity > rhs_capacity ? lhs : rhs;
+  const std::size_t longer_capacity =
+      lhs_capacity > rhs_capacity ? lhs_capacity : rhs_capacity;
+  return shared < longer_capacity && longer[shared] == '\0';
+}
 
 std::uint64_t NowNs() noexcept {
   return static_cast<std::uint64_t>(
@@ -224,6 +243,13 @@ struct MarketDataSource::Impl {
     Unchanged,
     Changed,
   };
+  struct ExpiryWatermark {
+    bool used{};
+    Venue venue{Venue::Unknown};
+    ProductType product{ProductType::Unknown};
+    std::array<char, 64> canonical_symbol{};
+    std::uint64_t max_retired_expiry_ns{};
+  };
   struct InstrumentSlot {
     InstrumentId id{};
     InstrumentMeta meta{};
@@ -255,6 +281,7 @@ struct MarketDataSource::Impl {
   std::vector<Stream> streams;
   Stream replay_stream;
   std::array<InstrumentSlot, kInstrumentCapacity> instruments{};
+  std::array<ExpiryWatermark, kExpiryWatermarkCapacity> expiry_watermarks{};
   std::deque<std::vector<std::byte>> replay;
   std::unique_ptr<mds::producer::ProducerRuntime> producer_runtime;
   RuntimeMetrics metrics{};
@@ -378,8 +405,84 @@ struct MarketDataSource::Impl {
     return nullptr;
   }
 
+  [[nodiscard]] bool series_watermarked(
+      Venue venue, ProductType product, const char* symbol,
+      std::size_t symbol_capacity) const noexcept {
+    for (const ExpiryWatermark& mark : expiry_watermarks) {
+      if (mark.used && mark.venue == venue && mark.product == product &&
+          SameCString(mark.canonical_symbol.data(),
+                      mark.canonical_symbol.size(), symbol, symbol_capacity)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  [[nodiscard]] bool catalog_retired(
+      const utils::md::InstrumentCatalog& value) const noexcept {
+    if (value.expiry_unix_ns == 0) return false;
+    for (const ExpiryWatermark& mark : expiry_watermarks) {
+      if (!mark.used || mark.venue != value.venue ||
+          mark.product != value.product_type) {
+        continue;
+      }
+      if (!SameCString(mark.canonical_symbol.data(),
+                       mark.canonical_symbol.size(),
+                       value.canonical_symbol.data(),
+                       value.canonical_symbol.size())) {
+        continue;
+      }
+      if (value.expiry_unix_ns <= mark.max_retired_expiry_ns) return true;
+    }
+    return false;
+  }
+
+  [[nodiscard]] bool note_retired_expiry(
+      Venue venue, ProductType product, const char* canonical_symbol,
+      std::uint64_t expiry_unix_ns) noexcept {
+    if (canonical_symbol == nullptr || canonical_symbol[0] == '\0' ||
+        expiry_unix_ns == 0) {
+      return false;
+    }
+    ExpiryWatermark* free = nullptr;
+    for (ExpiryWatermark& mark : expiry_watermarks) {
+      if (mark.used && mark.venue == venue && mark.product == product &&
+          SameCString(mark.canonical_symbol.data(),
+                      mark.canonical_symbol.size(), canonical_symbol,
+                      mark.canonical_symbol.size())) {
+        if (expiry_unix_ns > mark.max_retired_expiry_ns)
+          mark.max_retired_expiry_ns = expiry_unix_ns;
+        return true;
+      }
+      if (!mark.used && free == nullptr) free = &mark;
+    }
+    if (free == nullptr) return false;
+    free->used = true;
+    free->venue = venue;
+    free->product = product;
+    free->canonical_symbol = {};
+    for (std::size_t index = 0;
+         index + 1 < free->canonical_symbol.size() &&
+         canonical_symbol[index] != '\0';
+         ++index) {
+      free->canonical_symbol[index] = canonical_symbol[index];
+    }
+    free->max_retired_expiry_ns = expiry_unix_ns;
+    return true;
+  }
+
+  [[nodiscard]] std::size_t retired_expiry_slots() const noexcept {
+    std::size_t count = 0;
+    for (const ExpiryWatermark& mark : expiry_watermarks)
+      if (mark.used) ++count;
+    return count;
+  }
+
   bool upsert(const utils::md::Instrument& value) noexcept {
     if (value.instrument_id == 0) return false;
+    const bool watermarked = series_watermarked(
+        value.venue, value.product_type, value.canonical_symbol.data(),
+        value.canonical_symbol.size());
     std::size_t index = value.instrument_id % instruments.size();
     InstrumentSlot* reusable = nullptr;
     for (std::size_t probe = 0; probe < instruments.size(); ++probe) {
@@ -387,6 +490,11 @@ struct MarketDataSource::Impl {
       if (slot.id == value.instrument_id) {
         slot.meta.value = value;
         return true;
+      }
+      if (watermarked) {
+        if (slot.id == 0 && !slot.tombstone) return true;
+        index = (index + 1) % instruments.size();
+        continue;
       }
       if (slot.id == 0 && slot.tombstone && reusable == nullptr)
         reusable = &slot;
@@ -400,6 +508,7 @@ struct MarketDataSource::Impl {
       }
       index = (index + 1) % instruments.size();
     }
+    if (watermarked) return true;
     if (reusable != nullptr) {
       reusable->id = value.instrument_id;
       reusable->meta.value = value;
@@ -415,6 +524,7 @@ struct MarketDataSource::Impl {
       std::uint32_t generation) noexcept {
     if (value.instrument_id == 0 || generation == 0)
       return CatalogUpsert::Failed;
+    if (catalog_retired(value)) return CatalogUpsert::Unchanged;
     std::size_t index = value.instrument_id % instruments.size();
     InstrumentSlot* reusable = nullptr;
     for (std::size_t probe = 0; probe < instruments.size(); ++probe) {
@@ -935,6 +1045,17 @@ const RuntimeMetrics& MarketDataSource::metrics() const noexcept {
 void MarketDataSource::retire_instrument(
     InstrumentId instrument_id) noexcept {
   impl_->retire_instrument(instrument_id);
+}
+
+bool MarketDataSource::note_retired_expiry(
+    Venue venue, ProductType product, const char* canonical_symbol,
+    std::uint64_t expiry_unix_ns) noexcept {
+  return impl_->note_retired_expiry(venue, product, canonical_symbol,
+                                    expiry_unix_ns);
+}
+
+std::size_t MarketDataSource::retired_expiry_slots() const noexcept {
+  return impl_->retired_expiry_slots();
 }
 
 Error MarketDataSource::enqueue_replay(

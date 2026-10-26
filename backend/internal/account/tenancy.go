@@ -10,11 +10,11 @@ import (
 )
 
 var (
-	ErrAccountExists      = errors.New("platform account already exists")
-	ErrAccountConflict    = errors.New("platform account has active work")
-	ErrBrokerMissing      = errors.New("broker not found")
-	ErrBrokerInactive     = errors.New("broker is not active")
-	ErrDelegatedForbidden = errors.New("delegated session denied")
+	ErrAccountExists          = errors.New("platform account already exists")
+	ErrAccountConflict        = errors.New("platform account has active work")
+	ErrBrokerMissing          = errors.New("broker not found")
+	ErrBrokerInactive         = errors.New("broker is not active")
+	ErrDelegatedForbidden     = errors.New("delegated session denied")
 	ErrInvalidPlatformAccount = errors.New("invalid platform account")
 )
 

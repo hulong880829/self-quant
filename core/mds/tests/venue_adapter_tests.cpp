@@ -11,6 +11,7 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -1005,6 +1006,73 @@ void test_bybit() {
   assert(adapter->parse_ws(bbo, event, error));
   assert(event.type == AdapterEventType::Bbo);
   expect_no_allocation(*adapter, bbo, event, error);
+
+  auto one_sided_adapter = mds::exchange::make_venue_adapter(
+      Venue::Bybit, ProductType::Perpetual, 50);
+  assert(one_sided_adapter);
+  NormalizedEvent one_sided_event(50);
+  const std::array<std::pair<std::string_view, std::uint64_t>, 3>
+      one_sided_books{{
+          {R"({"topic":"orderbook.1.SPORTFUNUSDT","type":"snapshot","ts":10,"data":{"s":"SPORTFUNUSDT","b":[],"a":[],"u":100,"seq":100}})",
+           100},
+          {R"({"topic":"orderbook.1.SPORTFUNUSDT","type":"snapshot","ts":11,"data":{"s":"SPORTFUNUSDT","b":[],"a":[["0.001","100"]],"u":101,"seq":101}})",
+           101},
+          {R"({"topic":"orderbook.1.SPORTFUNUSDT","type":"snapshot","ts":12,"data":{"s":"SPORTFUNUSDT","b":[["0.001","100"]],"a":[],"u":102,"seq":102}})",
+           102},
+      }};
+  for (const auto &[payload, sequence] : one_sided_books) {
+    assert(one_sided_adapter->parse_ws(payload, one_sided_event, error));
+    assert(one_sided_event.type == AdapterEventType::Ignored);
+    assert(one_sided_event.ignore_reason ==
+           mds::exchange::IgnoreReason::OneSidedBook);
+    assert(one_sided_event.first_sequence == sequence);
+    assert(one_sided_event.final_sequence == sequence);
+    assert(one_sided_event.exchange_time_ms == sequence - 90);
+    assert(one_sided_event.bid.price == 0);
+    assert(one_sided_event.ask.price == 0);
+    assert(one_sided_event.bids.empty());
+    assert(one_sided_event.asks.empty());
+    assert(error.empty());
+  }
+
+  auto resumed_adapter = mds::exchange::make_venue_adapter(
+      Venue::Bybit, ProductType::Perpetual, 50);
+  assert(resumed_adapter);
+  assert(resumed_adapter->parse_ws(
+      R"({"topic":"orderbook.1.SPORTFUNUSDT","type":"snapshot","ts":10,"data":{"s":"SPORTFUNUSDT","b":[],"a":[],"u":100,"seq":100}})",
+      one_sided_event, error));
+  assert(one_sided_event.type == AdapterEventType::Ignored);
+  assert(one_sided_event.ignore_reason ==
+         mds::exchange::IgnoreReason::OneSidedBook);
+  assert(resumed_adapter->parse_ws(
+      R"({"topic":"orderbook.1.SPORTFUNUSDT","type":"snapshot","ts":11,"data":{"s":"SPORTFUNUSDT","b":[["100.01","1.250"]],"a":[["100.02","2.501"]],"u":101,"seq":101}})",
+      one_sided_event, error));
+  assert(one_sided_event.type == AdapterEventType::Bbo);
+  assert(one_sided_event.final_sequence == 101);
+  assert(one_sided_event.first_sequence == 101);
+  assert(one_sided_event.exchange_time_ms == 11);
+  assert(one_sided_event.bid.price == 10'001);
+  assert(one_sided_event.ask.price == 10'002);
+  assert(one_sided_event.bid.quantity == 1'250);
+  assert(one_sided_event.ask.quantity == 2'501);
+  assert(error.empty());
+
+  auto malformed_adapter = mds::exchange::make_venue_adapter(
+      Venue::Bybit, ProductType::Perpetual, 50);
+  assert(malformed_adapter);
+  assert(!malformed_adapter->parse_ws(
+      R"({"topic":"orderbook.1.SPORTFUNUSDT","type":"snapshot","ts":13,"data":{"s":"SPORTFUNUSDT","b":[["bad","1.250"]],"a":[],"u":103,"seq":103}})",
+      one_sided_event, error));
+  assert(error.find("invalid") != std::string::npos);
+  assert(!malformed_adapter->parse_ws(
+      R"({"topic":"orderbook.1.SPORTFUNUSDT","type":"snapshot","ts":14,"data":{"s":"SPORTFUNUSDT","b":[["0.001","100"],["0.002","50"]],"a":[],"u":104,"seq":104}})",
+      one_sided_event, error));
+  assert(error.find("exceeds configured event capacity") !=
+         std::string::npos);
+  assert(!resumed_adapter->parse_ws(
+      R"({"topic":"orderbook.1.SPORTFUNUSDT","type":"snapshot","ts":15,"data":{"s":"SPORTFUNUSDT","b":[],"a":[["100.001","2.501"]],"u":105,"seq":105}})",
+      one_sided_event, error));
+  assert(error.find("reason=scale") != std::string::npos);
 
   constexpr std::string_view depth_snapshot =
       R"({"topic":"orderbook.50.BTCUSDT","type":"snapshot","ts":20,"data":{"s":"BTCUSDT","b":[["100.0","1.000"]],"a":[["100.1","2.000"]],"u":200,"seq":300}})";

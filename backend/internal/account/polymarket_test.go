@@ -11,6 +11,7 @@ import (
 type memoryPolymarketStore struct {
 	account TradingAccountRecord
 	record  PolymarketCredentialRecord
+	claims  map[string]string
 }
 
 func (m *memoryPolymarketStore) Create(
@@ -26,6 +27,29 @@ func (m *memoryPolymarketStore) Create(
 	record.BindingStatus = "active"
 	m.account, m.record = account, record
 	return account, record, nil
+}
+
+func (m *memoryPolymarketStore) CreateIdempotent(
+	ctx context.Context,
+	key, requestHash string,
+	account TradingAccountRecord,
+	record PolymarketCredentialRecord,
+) (TradingAccountRecord, PolymarketCredentialRecord, bool, error) {
+	if m.claims == nil {
+		m.claims = map[string]string{}
+	}
+	if existing, ok := m.claims[key]; ok {
+		if existing != requestHash {
+			return TradingAccountRecord{}, PolymarketCredentialRecord{}, false, ErrBindIdempotencyConflict
+		}
+		return m.account, m.record, true, nil
+	}
+	created, stored, err := m.Create(ctx, account, record)
+	if err != nil {
+		return TradingAccountRecord{}, PolymarketCredentialRecord{}, false, err
+	}
+	m.claims[key] = requestHash
+	return created, stored, false, nil
 }
 
 func (m *memoryPolymarketStore) ListMetadataByOwner(

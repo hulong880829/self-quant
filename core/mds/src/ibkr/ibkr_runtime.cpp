@@ -6,6 +6,7 @@
 #include "mds/instrument/instrument_manager.h"
 #include "mds/publish/wire_publisher.h"
 #include "mds/transport/shared_ring.h"
+#include "utils/md/decimal.h"
 #include "utils/runtime/timestamp.h"
 
 #include <sys/eventfd.h>
@@ -38,6 +39,47 @@ namespace mds::ibkr {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+utils::md::IbkrSecurityType security_type_of(std::string_view text) noexcept {
+  std::string upper(text);
+  for (char &character : upper) {
+    character = static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
+  }
+  if (upper == "STK") return utils::md::IbkrSecurityType::Stock;
+  if (upper == "CMDTY") return utils::md::IbkrSecurityType::Commodity;
+  if (upper == "CASH") return utils::md::IbkrSecurityType::Cash;
+  return utils::md::IbkrSecurityType::Unknown;
+}
+
+bool positive_decimal(std::string_view text, std::uint8_t scale,
+                      std::int64_t &out) noexcept {
+  std::uint8_t required = 0;
+  if (text.empty() || !utils::md::decimal_scale(text, required) ||
+      required > scale ||
+      !utils::md::decimal_to_fixed(text, scale, out) || out <= 0) {
+    return false;
+  }
+  return true;
+}
+
+bool multiplier_from_details(utils::md::IbkrSecurityType type,
+                             std::string_view text, std::int64_t &mantissa,
+                             std::uint8_t &scale) noexcept {
+  if (text.empty() || text == "0") {
+    if (type == utils::md::IbkrSecurityType::Commodity) {
+      return false;
+    }
+    mantissa = 1;
+    scale = 0;
+    return type == utils::md::IbkrSecurityType::Stock ||
+           type == utils::md::IbkrSecurityType::Cash;
+  }
+  if (!utils::md::decimal_scale(text, scale) ||
+      !utils::md::decimal_to_fixed(text, scale, mantissa) || mantissa <= 0) {
+    return false;
+  }
+  return true;
+}
 
 template <std::size_t Size>
 void copy_text(std::array<char, Size> &destination, std::string_view source) {
@@ -243,6 +285,11 @@ struct IbkrRuntime::Impl {
     utils::md::InstrumentId instrument_id{};
     std::optional<BboAssembler> assembler;
     std::uint8_t resolved_price_scale{0};
+    std::int64_t tick_size{0};
+    std::int64_t lot_size{0};
+    std::int64_t contract_multiplier{0};
+    std::uint8_t contract_multiplier_scale{0};
+    utils::md::IbkrSecurityType security_type{utils::md::IbkrSecurityType::Unknown};
     SeqlockMailbox mailbox;
     std::atomic<bool> dirty{false};
     std::atomic<int> contract_state{0};
@@ -362,6 +409,11 @@ struct IbkrRuntime::Impl {
     copy_text(catalog.base_asset, base);
     copy_text(catalog.quote_asset, quote);
     copy_text(catalog.settle_asset, quote);
+    catalog.tick_size = slot.tick_size;
+    catalog.lot_size = slot.lot_size;
+    catalog.contract_multiplier = slot.contract_multiplier;
+    catalog.contract_multiplier_scale = slot.contract_multiplier_scale;
+    catalog.ibkr_security_type = slot.security_type;
     utils::md::EventHeader header{};
     header.instrument_id = slot.instrument_id;
     header.book_generation = generation.load(std::memory_order_acquire);
@@ -743,8 +795,32 @@ struct IbkrRuntime::Impl {
       isolate_slot(slot, "minTick scale");
       return;
     }
+    const auto security = security_type_of(chosen.sec_type);
+    std::int64_t tick_units = 0;
+    std::int64_t lot = 0;
+    std::int64_t minimum_size = 0;
+    std::int64_t multiplier = 0;
+    std::uint8_t multiplier_scale = 0;
+    if (security == utils::md::IbkrSecurityType::Unknown ||
+        !min_tick_fits_scale(chosen.min_tick, scale) ||
+        !double_price_to_fixed(chosen.min_tick, scale, tick_units) ||
+        !positive_decimal(chosen.size_increment_text, slot.spec.quantity_scale,
+                          lot) ||
+        !positive_decimal(chosen.min_size_text, slot.spec.quantity_scale,
+                          minimum_size) ||
+        !multiplier_from_details(security, chosen.multiplier_text, multiplier,
+                                 multiplier_scale)) {
+      isolate_slot(slot, "execution metadata");
+      return;
+    }
+    (void)minimum_size;
     slot.details = chosen;
     slot.resolved_price_scale = scale;
+    slot.tick_size = tick_units;
+    slot.lot_size = lot;
+    slot.contract_multiplier = multiplier;
+    slot.contract_multiplier_scale = multiplier_scale;
+    slot.security_type = security;
     slot.assembler.emplace(scale, slot.spec.quantity_scale);
     if (slot.instrument_id == 0) {
       std::string identity_error;

@@ -101,8 +101,11 @@ int main() {
           strategyframe::Error::Ok);
   Require(orders.open_orders().empty());
   Require(positions.find(7, 42).value.quantity.value == 100);
+  Require(orders.find(token).value.status ==
+          strategyframe::OrderStatus::Filled);
   Require(strategyframe::detail::ManagerAccess::Apply(orders, fill) ==
-          strategyframe::Error::NotFound);
+          strategyframe::Error::Ok);
+  Require(orders.open_orders().empty());
   const auto closing_trade = [] {
     strategyframe::TradeId id;
     constexpr char value[] = "trade-close";
@@ -221,5 +224,69 @@ int main() {
   Require(!strategyframe::expired_with_successor(50, 40, true));
   Require(!strategyframe::expired_with_successor(50, 50, false));
   Require(strategyframe::expired_with_successor(50, 50, true));
+
+  strategyframe::OrderManager terminal_orders(4);
+  strategyframe::OrderRequest terminal_request{};
+  terminal_request.account_id = 3;
+  terminal_request.instrument_id = 9;
+  terminal_request.side = strategyframe::Side::Buy;
+  terminal_request.quantity = {10, 0, {}};
+  terminal_request.price = {1, 0, {}};
+  const auto terminal_token = [](std::uint64_t sequence) {
+    return strategyframe::OrderToken{1, 1, sequence};
+  };
+  const auto cancel = [&](std::uint64_t sequence) {
+    strategyframe::ExecutionUpdate update{};
+    update.token = terminal_token(sequence);
+    update.status = strategyframe::OrderStatus::Canceled;
+    Require(strategyframe::detail::ManagerAccess::InsertPending(
+                terminal_orders, terminal_request, update.token) ==
+            strategyframe::Error::Ok);
+    Require(strategyframe::detail::ManagerAccess::Apply(
+                terminal_orders, update) == strategyframe::Error::Ok);
+  };
+  cancel(1);
+  Require(terminal_orders.open_orders().empty());
+  Require(terminal_orders.find(terminal_token(1)).value.status ==
+          strategyframe::OrderStatus::Canceled);
+  strategyframe::ExecutionUpdate late{};
+  late.kind = strategyframe::ExecutionUpdate::Kind::Fill;
+  late.token = terminal_token(1);
+  late.status = strategyframe::OrderStatus::Canceled;
+  late.fill_quantity = {4, 0, {}};
+  late.cumulative_quantity = {4, 0, {}};
+  late.remaining_quantity = {6, 0, {}};
+  Require(strategyframe::detail::ManagerAccess::Apply(terminal_orders, late) ==
+          strategyframe::Error::Ok);
+  Require(terminal_orders.find(terminal_token(1)).value.cumulative_quantity.value ==
+          4);
+  Require(terminal_orders.open_orders().empty());
+  strategyframe::ExecutionUpdate repeat{};
+  repeat.token = terminal_token(1);
+  repeat.status = strategyframe::OrderStatus::Canceled;
+  Require(strategyframe::detail::ManagerAccess::Apply(terminal_orders, repeat) ==
+          strategyframe::Error::Ok);
+  for (std::uint64_t sequence = 2; sequence <= 6; ++sequence) cancel(sequence);
+  Require(terminal_orders.terminal_overwrites() >= 1);
+  Require(!terminal_orders.find(terminal_token(1)));
+  Require(static_cast<bool>(terminal_orders.find(terminal_token(6))));
+  strategyframe::detail::ManagerAccess::RetireOrders(terminal_orders, 9);
+  Require(!terminal_orders.find(terminal_token(6)));
+
+  strategyframe::OrderManager wide(4096);
+  strategyframe::OrderRequest wide_request = terminal_request;
+  for (std::uint64_t sequence = 1; sequence <= 4096; ++sequence) {
+    const auto token = strategyframe::OrderToken{1, 1, sequence};
+    Require(strategyframe::detail::ManagerAccess::InsertPending(
+                wide, wide_request, token) == strategyframe::Error::Ok);
+    strategyframe::ExecutionUpdate done{};
+    done.token = token;
+    done.status = strategyframe::OrderStatus::Expired;
+    Require(strategyframe::detail::ManagerAccess::Apply(wide, done) ==
+            strategyframe::Error::Ok);
+  }
+  Require(wide.open_orders().empty());
+  Require(static_cast<bool>(wide.find(strategyframe::OrderToken{1, 1, 4096})));
+  Require(static_cast<bool>(wide.find(strategyframe::OrderToken{1, 1, 1})));
   return 0;
 }

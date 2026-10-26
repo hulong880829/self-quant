@@ -60,7 +60,8 @@ int main() {
     auto producer = ring.try_reserve();
     assert(producer.has_value());
     producer->emplace(value);
-    assert(producer->commit());
+    const bool committed = producer->commit();
+    if (!committed) return 1;
   }
   assert(ring.full());
   assert(ring.depth() == 4);
@@ -85,7 +86,8 @@ int main() {
     auto producer = ring.try_reserve();
     assert(producer.has_value());
     producer->emplace(value);
-    assert(producer->commit());
+    const bool committed = producer->commit();
+    if (!committed) return 1;
   }
 
   for (std::uint64_t expected = 3; expected <= 6; ++expected) {
@@ -109,7 +111,8 @@ int main() {
         continue;
       }
       lease->emplace(value++);
-      assert(lease->commit());
+      const bool committed = lease->commit();
+      if (!committed) std::abort();
     }
   });
   std::thread consumer([&] {
@@ -119,7 +122,9 @@ int main() {
         std::this_thread::yield();
         continue;
       }
-      assert(**lease == expected++);
+      const std::uint64_t actual = **lease;
+      if (actual != expected) std::abort();
+      ++expected;
       lease->release();
     }
   });
@@ -133,7 +138,8 @@ int main() {
   auto command = commands.try_reserve();
   assert(command.has_value());
   command->emplace();
-  assert(command->commit());
+  const bool command_committed = command->commit();
+  if (!command_committed) return 1;
 
   return 0;
 }

@@ -17,11 +17,50 @@ namespace polymm {
          std::abs(current_side - opposite_side);
 }
 
-[[nodiscard]] inline double taker_fee(
-    double price, double quantity, double taker_fee_bps) noexcept {
-  if (!(price > 0.0) || !(quantity > 0.0) || !(taker_fee_bps > 0.0))
+enum class FeeRounding : std::uint8_t { Nearest = 0, Up = 1 };
+
+[[nodiscard]] inline double polymarket_taker_fee(
+    double price, double quantity, double fee_rate,
+    FeeRounding rounding = FeeRounding::Nearest) noexcept {
+  if (!(price > 0.0) || !(price < 1.0) || !(quantity > 0.0) ||
+      !(fee_rate > 0.0) || fee_rate > 1.0) {
     return 0.0;
-  return price * quantity * taker_fee_bps / 10'000.0;
+  }
+  const double raw = quantity * fee_rate * price * (1.0 - price);
+  constexpr double kScale = 100'000.0;
+  const double scaled = raw * kScale;
+  const double units = rounding == FeeRounding::Up
+                           ? std::ceil(scaled - 1e-9)
+                           : std::round(scaled);
+  return units / kScale;
+}
+
+[[nodiscard]] inline double polymarket_taker_fee_per_share(
+    double price, double quantity, double fee_rate,
+    FeeRounding rounding = FeeRounding::Nearest) noexcept {
+  const double fee = polymarket_taker_fee(price, quantity, fee_rate, rounding);
+  if (!(quantity > 0.0)) return 0.0;
+  return fee / quantity;
+}
+
+[[nodiscard]] inline bool order_terms_ok(double price, double quantity,
+                                         double tick_size,
+                                         double fee_rate) noexcept {
+  return price > 0.0 && price < 1.0 && quantity > 0.0 && tick_size > 0.0 &&
+         fee_rate >= 0.0 && fee_rate <= 1.0;
+}
+
+enum class CloseLiquidity : std::uint8_t { PostOnly = 0, Ioc = 1 };
+
+[[nodiscard]] inline CloseLiquidity select_close_liquidity(
+    double bid, double quantity, double maker_target,
+    double fee_rate) noexcept {
+  if (!order_terms_ok(bid, quantity, 1.0, fee_rate))
+    return CloseLiquidity::PostOnly;
+  const double fee_per_share = polymarket_taker_fee_per_share(
+      bid, quantity, fee_rate, FeeRounding::Up);
+  if (bid - fee_per_share >= maker_target) return CloseLiquidity::Ioc;
+  return CloseLiquidity::PostOnly;
 }
 
 [[nodiscard]] inline double slippage_cost(
@@ -32,24 +71,27 @@ namespace polymm {
 }
 
 [[nodiscard]] inline bool stop_loss_triggered(
-    const PnlView& position, double tick_size, double stop_loss_ticks,
-    double taker_fee_bps = 0.0, double slippage_ticks = 0.0) noexcept {
-  if (!(position.quantity > 0.0) || !(tick_size > 0.0)) return false;
-  const double costs =
-      taker_fee(position.average_cost, position.quantity, taker_fee_bps) +
-      slippage_cost(position.quantity, tick_size, slippage_ticks);
-  return position.unrealized_exit - costs <=
-         -stop_loss_ticks * tick_size * position.quantity;
+    const PnlView& position, double bid, double tick_size,
+    double stop_loss_ticks, double fee_rate,
+    double slippage_ticks = 0.0) noexcept {
+  if (!(position.quantity > 0.0) ||
+      !order_terms_ok(bid, position.quantity, tick_size, fee_rate)) {
+    return false;
+  }
+  const double exit_fee = polymarket_taker_fee(
+      bid, position.quantity, fee_rate, FeeRounding::Up);
+  const double net = bid * position.quantity - exit_fee -
+                     slippage_cost(position.quantity, tick_size,
+                                   slippage_ticks) -
+                     position.average_cost * position.quantity;
+  return net <= -stop_loss_ticks * tick_size * position.quantity;
 }
 
 [[nodiscard]] inline double close_target_price(
-    double average_cost, double tick_size, std::int64_t profit_spread_ticks,
-    double taker_fee_bps, double slippage_ticks) noexcept {
-  const double fee_per_share =
-      average_cost > 0.0 ? average_cost * taker_fee_bps / 10'000.0 : 0.0;
+    double average_cost, double tick_size,
+    std::int64_t profit_spread_ticks) noexcept {
   return average_cost +
-         static_cast<double>(profit_spread_ticks) * tick_size +
-         slippage_ticks * tick_size + fee_per_share;
+         static_cast<double>(profit_spread_ticks) * tick_size;
 }
 
 [[nodiscard]] inline bool near_expiry(
